@@ -392,7 +392,7 @@ Measure this signal's noise over samples `first_sample:last_sample` of
 
 The measurement itself — despreading an untracked PRN through the caller's own
 correlator kernel — is the software receiver's, so it lives with the software
-backends: this method forwards to [`Tracking.despread_noise!`](@ref) on
+backends: this method forwards to [`despread_noise!`](@ref) on
 `context.downconvert_and_correlator`, which Tracking.jl implements for its
 backends. A loop process fills the window through
 [`append_noise_observation!`](@ref) instead and never reaches this method.
