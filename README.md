@@ -3,17 +3,76 @@
 
 # TrackingLoops.jl
 
-The per-record tracking-loop arithmetic of [Tracking.jl](https://github.com/JuliaGNSS/Tracking.jl),
-as a package of its own — and, on top of it, the loop core of a hardware
-correlator's dedicated loop process.
+The arithmetic of a GNSS tracking loop, one correlator record at a time.
 
-Tracking.jl imports everything here (correlators, discriminators, loop filters,
-bit and secondary-code sync, C/N₀ estimators, the delay-aware
-`NCOReferencedPLLAndDLL` with its NCO word timelines) and re-exports it, so the
-software receiver's `track!` is unchanged and bit-identical. Nothing here knows a device or a shared-memory
-segment: the loop process's engine on top of it is HardwareLoopCore.jl.
+A tracking loop takes the correlator outputs of one integration — early, prompt
+and late accumulators for one satellite — and turns them into what the next
+integration should run with: a carrier Doppler, a code Doppler, a navigation bit
+when one has completed, and a C/N₀ estimate. This package is that step, and
+nothing around it. It does not correlate, it does not read samples, and it does
+not know where its records come from or where its Doppler commands go.
 
-The loop engine is HardwareLoopCore.jl, the receiver side of its protocol is
-GNSSReceiver.jl's `RemoteHardwareLoop`, and the LiteX-M2SDR driver and the
-`gnss_loop` executable are in GNSSM2SDR.jl's `M2SDRLoop/`. See GNSSReceiver.jl's
-`docs/plans/2026-09-22-loop-process.md`.
+That makes it usable from anywhere a record shows up:
+
+- in a software receiver, where the same process correlates and closes the loop
+  ([Tracking.jl](https://github.com/JuliaGNSS/Tracking.jl) is built on it);
+- in a dedicated loop process next to an FPGA correlator, where records arrive
+  over DMA and the corrections are written to NCO registers
+  ([HardwareLoopCore.jl](https://github.com/JuliaGNSS/HardwareLoopCore.jl) is
+  built on it, and compiles it with `juliac --trim` into a small, allocation-free
+  executable);
+- in an analysis script that replays logged records.
+
+Because all of these run the same code, a loop tuned or debugged on one of them
+behaves identically on the others.
+
+## What is in it
+
+- **Correlators** — `EarlyPromptLateCorrelator`, `VeryEarlyPromptLateCorrelator`
+  for one or several antennas, with their accumulator accessors and the sample
+  shifts each tap is placed at.
+- **Discriminators and loop filters** — `pll_disc`, `fll_disc`, `dll_disc`, the
+  bandwidth rules that keep a loop stable for a given integration time, and the
+  code-Doppler aiding from the carrier.
+- **Doppler estimators** — `ConventionalPLLAndDLL`, the FLL-assisted
+  `ConventionalAssistedPLLAndDLL`, and `NCOReferencedPLLAndDLL`, which stays
+  stable when the correction it computes only takes effect several records
+  later, as it does with a hardware NCO. All three are stepped with one call,
+  `step_loop(estimator, state, record, words, landing_sample)`.
+- **NCO timelines** — `NCOTimeline` records which replica frequency ran over
+  which samples, so a record can be attributed to the word it was really
+  produced under rather than the one that was last requested.
+- **Bit and secondary-code synchronisation** — the `BitBuffer` with the
+  bit-edge and overlay-code detectors for every GPS, Galileo and BeiDou signal
+  GNSSSignals.jl models.
+- **C/N₀ estimation** — moments, NWPR and noise-reference estimators, plus the
+  noise-density window a noise-referenced estimator reads.
+- **The per-record fold** — `apply_record` advances a signal component's prompt
+  filter, C/N₀ estimator and bit buffer in one step, so every caller does it the
+  same way.
+
+Everything is a plain value or a small mutable state that is preallocated once,
+so a loop can be stepped for hours without allocating.
+
+## Example
+
+```julia
+using TrackingLoops, GNSSSignals, Unitful
+
+signal = GPSL1CA()
+fs = 4e6u"Hz"
+estimator = ConventionalAssistedPLLAndDLL()
+state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  # one per satellite
+loop = SignalLoopState(signal)              # bit buffer, C/N₀ estimator, prompt filter
+
+# For every correlator record `output::CorrelatorOutput` the correlator produced:
+loop, prompt, filtered, blocks =
+    apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready)
+record = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs)
+state, carrier_doppler, code_doppler =
+    step_loop(estimator, state, record, FixedNCOWord(carrier_hz, code_hz), NO_LANDING_SAMPLE)
+# program the next replica with carrier_doppler and code_doppler
+```
+
+See the docstrings of `step_loop`, `apply_record`, `NCOTimeline` and the
+estimators for the full signatures.
