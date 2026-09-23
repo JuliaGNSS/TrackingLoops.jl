@@ -1,6 +1,6 @@
 name = "TrackingLoops"
 uuid = "89eadfff-3a96-4166-8be0-4e8bed6efc30"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Soeren Schoenbrod <soeren.schoenbrod@juliahub.com> and contributors"]
 
 [deps]
