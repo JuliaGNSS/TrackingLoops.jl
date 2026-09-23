@@ -15,7 +15,7 @@ then folds over those records after the chunk. Storing the raw correlator plus
 count) and matches `last_fully_integrated_correlator`.
 
 An **external correlator producer** (e.g. an FPGA) can build these itself and
-feed them straight to the estimator with [`append_correlator_output!`](@ref);
+feed them straight to the estimator with [`Tracking.append_correlator_output!`](@ref);
 see [External correlator producers](@ref).
 
 Fields:

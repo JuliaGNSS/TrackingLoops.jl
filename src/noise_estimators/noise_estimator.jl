@@ -5,7 +5,7 @@ Abstract supertype for per-signal noise estimators — the source of the noise
 **density** `N₀` that [`NoiseRefCN0Estimator`](@ref) divides each record's prompt
 power by.
 
-One instance is held per **signal** in [`TrackState`](@ref)'s `noise_estimators`
+One instance is held per **signal** in [`Tracking.TrackState`](@ref)'s `noise_estimators`
 NamedTuple (keyed by `GNSSSignals.get_signal_id`), never per satellite: every
 satellite of a signal shares one floor, and averaging it once per signal is what
 makes the reference's own variance negligible against the per-record prompt
@@ -58,7 +58,7 @@ Three required methods, all with a default on this abstract type:
     has exactly one call site, inside `downconvert_and_correlate!`.
   - [`append_noise_observation!`](@ref) — append an observation built elsewhere.
     This is the **hardware** fill path (FPGA/ASIC correlator or a front-end
-    power monitor), parallel to [`append_correlator_output!`](@ref).
+    power monitor), parallel to [`Tracking.append_correlator_output!`](@ref).
   - [`get_noise_density`](@ref) — the signal's current density, or `nothing`
     while nothing has been measured yet. A read, not a drain: the window keeps
     sliding.
@@ -82,7 +82,7 @@ abstract type AbstractNoiseEstimator end
 
 """
 Type alias for a NamedTuple of [`AbstractNoiseEstimator`](@ref)s keyed by signal
-id — the shape [`TrackState`](@ref) holds them in. A NamedTuple and not a
+id — the shape [`Tracking.TrackState`](@ref) holds them in. A NamedTuple and not a
 `Dictionary`, because a dictionary would need an abstract value type as soon as
 two signals hold different estimator types, which is type-unstable and would
 allocate on every chunk.
@@ -423,12 +423,12 @@ $(SIGNATURES)
 
 Append one externally built [`NoiseObservation`](@ref) to `estimator`'s sliding
 window and return `estimator`. This is the **hardware** fill path, parallel to
-[`append_correlator_output!`](@ref) — see there for how the two differ.
+[`Tracking.append_correlator_output!`](@ref) — see there for how the two differ.
 
 The window is mutated in place and the struct is not rebuilt, so this is
 allocation-free in steady state and works through the immutable `TrackState`.
 
-The [`TrackState`](@ref) form selects the signal:
+The [`Tracking.TrackState`](@ref) form selects the signal:
 
 ```julia
 append_noise_observation!(track_state, obs)             # single-signal TrackState

@@ -16,7 +16,7 @@ $(SIGNATURES)
 Recommended carrier-loop-filter bandwidth for `signal`'s primary integration
 period. Sized so that the PLL time-bandwidth product `BL * T` lands at
 about 0.018 (≈10× margin from the 0.18 stability edge of the bilinear
-third-order filter). Used by [`TrackState(; signal=…)`](@ref) when the
+third-order filter). Used by [`Tracking.TrackState`](@ref) when the
 user doesn't pass an explicit `doppler_estimator`.
 
 Override by defining a method for your signal type, or by constructing

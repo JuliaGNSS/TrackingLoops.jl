@@ -146,7 +146,7 @@ interferer resolves. On an FPGA an arbitrary code phase is *easier* than phase 0
   - `buffered` — the sliding window itself, a **length-managed FIFO** written in
     place. The `Vector`'s own length is the position, so there is no ring index
     to write back and the struct is never rebuilt — which is what lets per-signal
-    state live in an immutable [`TrackState`](@ref).
+    state live in an immutable [`Tracking.TrackState`](@ref).
 
   - `totals` — the window's running sums (span, `M`-weighted density, looks),
     maintained as entries are pushed and dropped. They are what keeps both
@@ -392,7 +392,7 @@ Measure this signal's noise over samples `first_sample:last_sample` of
 
 The measurement itself — despreading an untracked PRN through the caller's own
 correlator kernel — is the software receiver's, so it lives with the software
-backends: this method forwards to [`despread_noise!`](@ref) on
+backends: this method forwards to [`Tracking.despread_noise!`](@ref) on
 `context.downconvert_and_correlator`, which Tracking.jl implements for its
 backends. A loop process fills the window through
 [`append_noise_observation!`](@ref) instead and never reaches this method.

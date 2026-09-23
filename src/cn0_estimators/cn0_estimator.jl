@@ -27,7 +27,7 @@ Fields:
   - `signal` — the signal the record belongs to.
   - `num_code_blocks` — primary-code blocks this record spanned. One for the
     default configuration; more when the correlate step was lengthened by
-    [`set_preferred_num_code_blocks_to_integrate!`](@ref) or an external
+    [`Tracking.set_preferred_num_code_blocks_to_integrate!`](@ref) or an external
     producer handed over longer records.
   - `num_code_blocks_per_bit` — blocks that form one navigation bit (symbol) of
     `signal`; `20` for GPS L1 C/A, `1` for GPS L1C-D / Galileo E1B, and `0` for a
@@ -160,7 +160,7 @@ able to say so, and one that does not must not pay for it.
 Two things key off it, and both are compile-time constants on the estimator's
 type:
 
-  - **Provisioning.** [`TrackState`](@ref) gives a signal a
+  - **Provisioning.** [`Tracking.TrackState`](@ref) gives a signal a
     [`CorrelatorNoiseEstimator`](@ref) only where that signal's estimator returns
     `true`. A signal that does not ask gets no entry at all, so its despread
     never runs and costs exactly zero — which is the answer for anyone who
@@ -206,7 +206,7 @@ The default CN0 estimator for `signal`: a [`NoiseRefCN0Estimator`](@ref)
 averaging over `num_prompts_for_cn0_estimation` records, against that signal's
 own measured noise density.
 
-It reads a density, so [`TrackState`](@ref) provisions the signal a
+It reads a density, so [`Tracking.TrackState`](@ref) provisions the signal a
 [`CorrelatorNoiseEstimator`](@ref) automatically (see
 [`requires_noise_density`](@ref)) and `track!` fills it from the samples — the
 sample-driven path needs no configuration at all.

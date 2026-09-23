@@ -24,7 +24,7 @@ to a fallback with a different bias (issue #217).
 A noise density for its **own signal** — not for its RF band, because what this
 divides by is the post-correlation floor and that depends on the despreading
 modulation (see [`AbstractNoiseEstimator`](@ref)). On the sample-driven path it
-is automatic: [`TrackState`](@ref) provisions a
+is automatic: [`Tracking.TrackState`](@ref) provisions a
 [`CorrelatorNoiseEstimator`](@ref) for every signal whose estimator asks for one
 (see [`requires_noise_density`](@ref)), and `track!` measures before the fold
 reads. On a correlator-ingest path you configure the same type and fill it with
@@ -200,7 +200,7 @@ Mean of the buffered per-record terms, converted once with `dBHz`.
 
 `integration_time` is **ignored**: `T` was applied per record in `update`, where
 each record's own value was known — a record lengthened by
-[`set_preferred_num_code_blocks_to_integrate!`](@ref) is therefore handled
+[`Tracking.set_preferred_num_code_blocks_to_integrate!`](@ref) is therefore handled
 correctly even when it sits in the ring beside shorter ones. The argument stays
 for interface uniformity with the other estimators.
 

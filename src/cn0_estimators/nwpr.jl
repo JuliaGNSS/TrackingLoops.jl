@@ -130,7 +130,7 @@ reported instead — a *different* estimator, with a different bias and, at the
 default [`MomentsCN0Estimator`](@ref), a ≈27.6 dB-Hz floor on pure noise. That
 is what [`NoiseRefCN0Estimator`](@ref) exists to retire (issue #217). It also
 includes records that are themselves at least as long as the window — with
-[`set_preferred_num_code_blocks_to_integrate!`](@ref) at one navigation bit, say,
+[`Tracking.set_preferred_num_code_blocks_to_integrate!`](@ref) at one navigation bit, say,
 a window closes on a single record, `NBP == WBP` identically, and the estimator
 reports its `fallback` for good.
 
