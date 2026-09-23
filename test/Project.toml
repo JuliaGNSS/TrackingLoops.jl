@@ -1,0 +1,10 @@
+[deps]
+AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
+GNSSSignals = "52c80523-2a4e-5c38-8979-05588f836870"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+TrackingLoops = "89eadfff-3a96-4166-8be0-4e8bed6efc30"
+Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
+
+[sources]
+TrackingLoops = {path = ".."}
