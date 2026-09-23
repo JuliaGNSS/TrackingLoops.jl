@@ -396,7 +396,7 @@ $(SIGNATURES)
 Measure one signal's noise on its band's samples and append the resulting
 observations to `estimator`'s window, returning `estimator`.
 
-`measurement` is the band's [`BandMeasurement`](@ref) — the samples are a band
+`measurement` is the band's [`Tracking.BandMeasurement`](@ref) — the samples are a band
 property, one front end feeding every signal on it; only the despreading code,
 and therefore the measured floor, is per signal. `first_sample` and `last_sample`
 bound the slice of it this call may consume (the current chunk). `context` is a
@@ -456,7 +456,7 @@ get_noise_density(::AbstractNoiseEstimator) = nothing
 $(SIGNATURES)
 
 Per-call side information handed to [`update_noise!`](@ref): what a software
-noise source may need and a [`BandMeasurement`](@ref) does not carry.
+noise source may need and a [`Tracking.BandMeasurement`](@ref) does not carry.
 
 Fields:
 

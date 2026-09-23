@@ -553,7 +553,7 @@ integration starts at secondary chip 0 — the true chip-0 boundary, since each
 rotation is anchored to the physical secondary chip 0 (see
 [`_update_secondary_accumulators!`](@ref)). The reported `SyncResult.phase` is
 therefore always `0`, and downstream code-phase snapping
-([`_snap_code_phase_from_synced_signal`](@ref)) anchors on that boundary.
+([`Tracking._snap_code_phase_from_synced_signal`](@ref)) anchors on that boundary.
 `polarity` is the sign of the winning period's coherent (overlay-wiped) sum
 (resolved to the data-bit / carrier sign downstream by the navigation preamble).
 """
@@ -609,7 +609,7 @@ tracking the best positive- and negated-polarity Hamming match in one
 pass. The winning rotation `d` is how far the buffer leads the reference,
 which maps to the secondary-chip offset of the **upcoming** integration
 as `phase = mod(N - d, N)` — exactly the value the post-sync `code_phase`
-snap ([`_snap_code_phase_from_synced_signal`](@ref)) anchors on. Returns
+snap ([`Tracking._snap_code_phase_from_synced_signal`](@ref)) anchors on. Returns
 `SyncResult(false, 0, 0)` when the best distance exceeds `max_errors`.
 
 Inlined so the per-signal `reference` / `N` constants fold at the call
@@ -1388,7 +1388,7 @@ for signals without a secondary code, where the field is unused.
 
 `secondary_phase` is the secondary chip the **upcoming** integration aligns to,
 and it is read exactly once: by the code-phase snap
-([`_snap_code_phase_from_synced_signal`](@ref)), which runs after the whole
+([`Tracking._snap_code_phase_from_synced_signal`](@ref)), which runs after the whole
 chunk has been folded. The detector reports it for the block right after the
 syncing record, so every further record folded in the same chunk — the ones
 `_apply_correlator_output` marks `correlated_pre_sync`, correlated with the

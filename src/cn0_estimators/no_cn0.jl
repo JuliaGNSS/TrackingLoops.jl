@@ -8,7 +8,7 @@ or, more importantly, to avoid *publishing a number that cannot be trusted*.
 
 Two places where that matters:
 
-  - the non-driver signals of a multi-signal [`TrackedSat`](@ref) whose C/N₀ is
+  - the non-driver signals of a multi-signal [`Tracking.TrackedSat`](@ref) whose C/N₀ is
     never read: `cn0_estimator = (NWPRCN0Estimator(), NoCN0Estimator())` (the
     saving is small — the per-record update is well under a per cent of a
     correlation — so reach for this for the reason below, not for speed);
