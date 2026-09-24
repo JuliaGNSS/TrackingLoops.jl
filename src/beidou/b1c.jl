@@ -89,7 +89,7 @@ end
 @inline get_code_block_buffer_type(::BeiDouB1C_D) = UInt8
 
 # The 1800-chip overlay search needs an exact-width 1800-bit container. The
-# `UInt1800` alias is defined in the top-level Tracking module via
+# `UInt1800` alias is defined in the top-level TrackingLoops module via
 # `BitIntegers.@define_integers 1800` for GPS L1C-P's identically sized overlay,
 # and is what `BitBuffer{B}` carries for B1C pilot throughout the tracker.
 @inline get_code_block_buffer_type(::BeiDouB1C_P) = UInt1800

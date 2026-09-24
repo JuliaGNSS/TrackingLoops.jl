@@ -15,8 +15,8 @@ then folds over those records after the chunk. Storing the raw correlator plus
 count) and matches `last_fully_integrated_correlator`.
 
 An **external correlator producer** (e.g. an FPGA) can build these itself and
-feed them straight to the estimator with [`Tracking.append_correlator_output!`](@ref);
-see [External correlator producers](@ref).
+feed them to [`apply_record`](@ref) and [`step_loop`](@ref) directly, or to
+Tracking.jl's `append_correlator_output!`.
 
 Fields:
 
@@ -27,17 +27,22 @@ Fields:
   - `integrated_samples`: samples integrated into this output (for `normalize`,
     the loop-filter `integration_time`, and the bit-buffer block count). For an
     external producer this is the true sample count of that integration.
-  - `sample_index`: sample index at which this integration ended, on the time
-    grid the Doppler estimator and vector tracking read. The software correlate
-    phase writes it **buffer-relative** — the end sample within the current
-    `track!` measurement (`signal_start_sample` returns to 1 at the top of every
-    `track!` call). An external producer with a free-running **global** sample
-    counter must therefore map its global timestamp onto the same per-chunk
-    origin before storing it here: subtract the sample index of the current
-    chunk/epoch origin so the value is relative to the chunk the estimator is
-    folding, keeping every satellite on one consistent time grid. The estimator
-    itself does not read `sample_index` (the loop filters key off
-    `integrated_samples`); it is preserved for downstream vector/Kalman tracking.
+  - `sample_index`: where this integration ended on the sample grid. As
+    [`mean_nco_word`](@ref) measures spans, the record covers
+    `[sample_index - integrated_samples, sample_index)`, so a word landing at
+    `sample_index` belongs to the next record. (Tracking.jl's software
+    correlator stores the 1-based index of the record's last sample, which is
+    the same number.)
+    The Doppler estimators read it to look up the replica words the record
+    ran on ([`mean_nco_word`](@ref)) and, for
+    [`NCOReferencedPLLAndDLL`](@ref), to place the record relative to the
+    landing sample. It must therefore be on the same time grid as the `words`
+    handed to [`step_loop`](@ref): device samples for an [`NCOTimeline`](@ref).
+    For a [`FixedNCOWord`](@ref) the words are the same everywhere, so any
+    consistent origin works — Tracking.jl's software correlator writes it
+    relative to the current `track!` measurement, and an external producer
+    feeding Tracking.jl must map its global counter onto that per-chunk origin
+    too, so every satellite stays on one time grid for vector tracking.
 """
 struct CorrelatorOutput{C<:AbstractCorrelator}
     correlator::C

@@ -143,7 +143,7 @@ reports its `fallback` for good.
   - `num_narrowband_code_blocks` — window length in primary-code blocks: the cap
     on the coherent sum, and the window length itself for a signal with **no**
     navigation-bit grid (a pilot, or a bare prompt stream fed through the
-    two-argument `Tracking.update`).
+    two-argument `TrackingLoops.update`).
   - `num_presync_narrowband_code_blocks` — window length in primary-code blocks
     used while the bit grid is still unknown (see the table above); `0`
     disables the pre-sync window and reports the `fallback` until sync.

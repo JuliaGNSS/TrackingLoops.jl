@@ -60,9 +60,9 @@ A beamformer that averages the antenna elements:
 
 ```julia
 struct MyBeamformer <: AbstractPostCorrFilter end
-Tracking.update(f::MyBeamformer, prompt) = f
-Tracking.get_weights(::MyBeamformer, ::NumAnts{1}) = 1.0 + 0.0im
-Tracking.get_weights(::MyBeamformer, ::NumAnts{M}) where {M} =
+TrackingLoops.update(f::MyBeamformer, prompt) = f
+TrackingLoops.get_weights(::MyBeamformer, ::NumAnts{1}) = 1.0 + 0.0im
+TrackingLoops.get_weights(::MyBeamformer, ::NumAnts{M}) where {M} =
     SVector{M,ComplexF64}(ntuple(_ -> 1 / M + 0.0im, M))
 ```
 """

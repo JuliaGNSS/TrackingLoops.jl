@@ -42,7 +42,7 @@ would build anyway.
 
 # Why a density and not a power
 
-For a correlator normalised the way `Tracking.normalize` normalises — by
+For a correlator normalised the way `TrackingLoops.normalize` normalises — by
 `integrated_samples * code_amplitude` — white input noise of per-sample variance
 `σ²` gives `E|P|² = σ²/N = N₀/T`. So `N₀ = σ²/f_s` is **independent of the
 integration time**, which is what lets one per-signal figure serve records of any
@@ -63,7 +63,7 @@ Three required methods, all with a default on this abstract type:
     while nothing has been measured yet. A read, not a drain: the window keeps
     sliding.
 
-A fourth, `Tracking.noise_window_looks`, is optional and only matters to a source
+A fourth, `TrackingLoops.noise_window_looks`, is optional and only matters to a source
 that reports a **covariance**: an `M×M` estimate averaged from fewer than `M`
 independent looks is rank-deficient by construction, so the fold withholds it
 until there are enough. A source that leaves the default in place reports no look
@@ -202,7 +202,7 @@ form a producer can report, since Tracking does the squaring, the scaling and
 all the averaging itself.
 
 `code_amplitude` is the RMS amplitude of the sampled replica (see
-`Tracking.normalize`); leave it at `1` for a ±1 code, pass the code's RMS for a
+`TrackingLoops.normalize`); leave it at `1` for a ±1 code, pass the code's RMS for a
 multi-level one (CBOC). `prn` records which code measured it.
 
 Pass an `SVector` of `M` per-antenna accumulations for an antenna array, and the

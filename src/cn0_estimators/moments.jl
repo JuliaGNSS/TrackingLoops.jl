@@ -23,7 +23,7 @@ $(SIGNATURES)
 Buffers the prompts such that they can be used to estimate the CN0.
 Returns a new estimator with the latest prompt added (immutable update).
 The moment ratio needs no side information, so this estimator implements only
-the prompt-only form of `Tracking.update`; see
+the prompt-only form of `TrackingLoops.update`; see
 [`update(::AbstractCN0Estimator, ::Any, ::CN0UpdateContext)`](@ref) for the
 extension point that also receives the navigation-bit context.
 """

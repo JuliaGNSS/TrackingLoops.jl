@@ -299,9 +299,17 @@ the device NCO instead of to the word the filter last computed:
 
 With zero delay both steps are the identity and the estimator *is* the
 conventional loop, so the software receiver's noise performance is inherited
-rather than re-tuned. `predict_landing = false` keeps step 1 and drops step 2:
-the documented **negative control**, which fails exactly like the conventional
-loop at a few epochs of delay.
+rather than re-tuned.
+
+Step 1 is not specific to this estimator: the conventional
+[`step_loop`](@ref) reads the applied code word from `words` too, and both
+discriminators are measured against the replica that ran, so neither loop
+needs a correction for it. What sets this estimator apart is step 2, including
+the re-basing of the frequency measurement onto the word that will be running
+at landing. `predict_landing = false` drops step 2 and is then arithmetically
+the [`ConventionalAssistedPLLAndDLL`](@ref): the documented **negative
+control**, which fails exactly like the conventional loop at a few epochs of
+delay.
 """
 struct NCOReferencedPLLAndDLL{CO<:AbstractLoopFilter} <: AbstractDopplerEstimator
     carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
@@ -447,9 +455,6 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
     phase_error = pll_disc(signal, filtered_correlator)
     frequency_error =
         fll_disc(signal, filtered_correlator, record.previous_prompt, integration_time)
-    fll_word =
-        isnan(previous_center) ? applied_carrier :
-        first(mean_nco_word(words, previous_center, center))
 
     if estimator.predict_landing && shift > 0
         # The phase error this record would show `shift` samples later, under
@@ -470,7 +475,11 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
             phase_error + 2π * shift * (f_hat - ramp_word) / sampling_freq_hz,
         )
         # The absolute frequency measurement, relative to the word that will be
-        # running under the record `shift` samples ahead.
+        # running under the record `shift` samples ahead. `fll_disc` measured
+        # against the word that ran between the two prompts' centres.
+        fll_word =
+            isnan(previous_center) ? applied_carrier :
+            first(mean_nco_word(words, previous_center, center))
         landing_word = first(mean_nco_word(words, record_start + shift, record_end + shift))
         frequency_error += (fll_word - landing_word) * Hz
     end

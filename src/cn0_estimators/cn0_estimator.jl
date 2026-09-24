@@ -6,7 +6,7 @@ Each [`Tracking.TrackedSignal`](@ref) holds one estimator instance, stored in a 
 parameter — pass any subtype instance as the `cn0_estimator` keyword of
 [`Tracking.TrackedSignal`](@ref) / [`Tracking.TrackedSat`](@ref) to replace the default
 [`NoiseRefCN0Estimator`](@ref); see [`default_cn0_estimator`](@ref) for which to
-pick when. Custom estimators subtype this and implement `Tracking.update` and
+pick when. Custom estimators subtype this and implement `TrackingLoops.update` and
 [`estimate_cn0`](@ref), plus [`requires_noise_density`](@ref) if they read a
 measured noise floor.
 """
@@ -15,7 +15,7 @@ abstract type AbstractCN0Estimator end
 """
 $(SIGNATURES)
 
-Per-record side information handed to `Tracking.update` alongside the prompt:
+Per-record side information handed to `TrackingLoops.update` alongside the prompt:
 everything the tracking loop knows about the record that an estimator cannot
 recover from the prompt stream alone. Its reason for existing is the
 **navigation-bit grid** — where the data-bit boundaries sit and whether they are
@@ -193,7 +193,7 @@ loop calls and the **extension point** for custom
 in `context` (see [`CN0UpdateContext`](@ref)).
 
 The default implementation drops `context` and calls the two-argument
-`Tracking.update(estimator, prompt)`, so an estimator that only needs the
+`TrackingLoops.update(estimator, prompt)`, so an estimator that only needs the
 prompt stream — like [`MomentsCN0Estimator`](@ref) — implements just that one.
 """
 update(estimator::AbstractCN0Estimator, prompt, ::CN0UpdateContext) =
