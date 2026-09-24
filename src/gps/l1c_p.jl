@@ -10,7 +10,7 @@ primary periods, then run a single 1800-phase shifted Hamming-distance
 sweep against the PRN's known overlay pattern.
 
 Returns `SyncResult(false, 0, 0)` until 1800 blocks have been buffered.
-Once that horizon is reached the generic [`_secondary_code_search`](@ref)
+Once that horizon is reached the generic `_secondary_code_search`
 rotation sweep picks the alignment whose Hamming distance to the overlay
 (or its negation) is minimal; if that distance is within the 2.5 %
 tolerance (≤ 45 errors) it reports `SyncResult(true, phase, ±1)` where

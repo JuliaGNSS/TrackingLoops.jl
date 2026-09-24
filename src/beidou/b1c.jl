@@ -45,10 +45,10 @@ B1C pilot broadcasts a per-PRN 1800-chip overlay code
 (BDS-SIS-ICD-B1C-1.0 §5.2.2, truncated Weil codes) on top of the 10 ms
 primary code, giving an 18 second cycle — dimensionally the same overlay as
 GPS L1C-P's, on the same carrier. The generic
-[`_detect_secondary_code_sync`](@ref) waits for the sliding
+`_detect_secondary_code_sync` waits for the sliding
 `code_block_bits` window to fill to 1800 primary periods, then runs a
 single 1800-phase shifted Hamming-distance sweep
-([`_secondary_code_search`](@ref)) against the PRN's overlay pattern,
+(`_secondary_code_search`) against the PRN's overlay pattern,
 accepting the best alignment within the 2.5 % tolerance
 ([`get_bit_edge_or_secondary_code_tolerance`](@ref), 45 errors here) and
 reporting the secondary-chip offset of the *upcoming* integration in
@@ -56,8 +56,8 @@ reporting the secondary-chip offset of the *upcoming* integration in
 
 Returns `SyncResult(false, 0, 0)` until 1800 blocks have been buffered.
 Like GPS L1C-P's, the overlay reaches the sweep through the generic
-[`_packed_secondary_code`](@ref): GNSSSignals exposes it as a
-[`PerPRNSecondaryCode`](@ref), and the per-chip packing cost is negligible
+`_packed_secondary_code`: GNSSSignals exposes it as a
+`PerPRNSecondaryCode`, and the per-chip packing cost is negligible
 next to the 1800-phase sweep that follows.
 """
 function detect_bit_or_secondary_code_sync(

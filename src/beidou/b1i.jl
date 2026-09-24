@@ -36,7 +36,7 @@
 $(SIGNATURES)
 
 Secondary-code sync detector for BeiDou B1I — the generic
-[`_detect_secondary_code_sync`](@ref) rotation search over the per-PRN
+`_detect_secondary_code_sync` rotation search over the per-PRN
 20-chip Neuman-Hoffman overlay (NH20; BDS-SIS-ICD-B1I-3.0 §5.2.1)
 overlaid on the 1 ms primary code period, giving a 20 ms tiered code. On
 the MEO/IGSO satellites (PRN 6-58) that carry NH20, one overlay period is
@@ -51,11 +51,11 @@ stay pre-sync.
 
 At runtime this method is reached only if a caller forces B1I onto the hard
 path; the live detector is the soft
-[`_detect_secondary_code_cfar`](@ref), which
+`_detect_secondary_code_cfar`, which
 [`uses_soft_secondary_code_detection`](@ref) selects for a 20-chip overlay.
 Both read the same per-PRN reference — this one via the generic
-[`_packed_secondary_code`](@ref), which reads the signal's
-[`PerPRNSecondaryCode`](@ref). Returns [`SyncResult`](@ref).
+`_packed_secondary_code`, which reads the signal's
+`PerPRNSecondaryCode`. Returns [`SyncResult`](@ref).
 """
 @inline function detect_bit_or_secondary_code_sync(
     signal::BeiDouB1I,

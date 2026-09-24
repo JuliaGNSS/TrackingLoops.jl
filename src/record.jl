@@ -204,7 +204,7 @@ end
                  correlated_pre_sync = false)
         -> (state, prompt, filtered_correlator, integrated_code_blocks, overshoot)
 
-[`fold_record`](@ref) on a [`SignalLoopState`](@ref): the new state (with the
+`fold_record` on a [`SignalLoopState`](@ref): the new state (with the
 filtered prompt as its `last_filtered_prompt`), the prompt, the filtered
 correlator the discriminators read, the blocks the record covered, and
 whether the record overshot the navigation-bit boundary — on which the bit

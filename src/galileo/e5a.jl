@@ -2,14 +2,14 @@
 $(SIGNATURES)
 
 Secondary-code sync detector for Galileo E5a-I — the generic
-[`_detect_secondary_code_sync`](@ref) rotation search over the 20-chip
+`_detect_secondary_code_sync` rotation search over the 20-chip
 CS20 secondary code (Galileo OS SIS ICD Table 19) overlaid on the 1 ms
 primary code period. E5a-I carries the F/NAV data stream at 50 sps, so one
 CS20 period (20 primary blocks) is exactly one channel symbol: the
 detector locks the secondary phase, and data-bit decoding then integrates
 one CS20 period per symbol. Default 2.5 % tolerance discretizes to 0
 (exact match over the 20-chip window). The packed reference comes from the
-generic [`_packed_secondary_code`](@ref). Returns [`SyncResult`](@ref).
+generic `_packed_secondary_code`. Returns [`SyncResult`](@ref).
 """
 @inline function detect_bit_or_secondary_code_sync(
     signal::GalileoE5aI,
@@ -24,14 +24,14 @@ end
 $(SIGNATURES)
 
 Secondary-code sync detector for Galileo E5a-Q — the generic
-[`_detect_secondary_code_sync`](@ref) rotation search over the per-PRN
+`_detect_secondary_code_sync` rotation search over the per-PRN
 100-chip CS100 secondary code (Galileo OS SIS ICD Table 20) overlaid on
 the 1 ms primary code period, giving a 100 ms cycle. E5a-Q is a dataless
 pilot; the CS100 overlay is its only sync feature, so the detector locks
 after a single CS100 period in the worst case and reports the upcoming
 integration's CS100 chip in `SyncResult.phase`. The per-PRN packed
-reference comes from the generic [`_packed_secondary_code`](@ref), which
-reads the signal's [`PerPRNSecondaryCode`](@ref). Returns
+reference comes from the generic `_packed_secondary_code`, which
+reads the signal's `PerPRNSecondaryCode`. Returns
 [`SyncResult`](@ref).
 """
 @inline function detect_bit_or_secondary_code_sync(

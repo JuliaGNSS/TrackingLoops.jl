@@ -10,7 +10,7 @@
 $(SIGNATURES)
 
 Secondary-code sync detector for the BeiDou B2a data component — the
-generic [`_detect_secondary_code_sync`](@ref) rotation search over the
+generic `_detect_secondary_code_sync` rotation search over the
 5-chip secondary code (`00010`, shared across all PRNs;
 BDS-SIS-ICD-B2a-1.0 §5.2.1) overlaid on the 1 ms primary code period. B2a
 carries B-CNAV2 at 200 sym/s, so one secondary period (5 primary blocks)
@@ -22,7 +22,7 @@ E5b-I's CS4.
 With `N = 5` the trait default routes B2a data to the soft, CFAR detector
 ([`uses_soft_secondary_code_detection`](@ref)); a 5-chip hard template
 match would be badly false-lock-prone. The packed reference comes from the
-generic [`_packed_secondary_code`](@ref). Returns [`SyncResult`](@ref).
+generic `_packed_secondary_code`. Returns [`SyncResult`](@ref).
 """
 @inline function detect_bit_or_secondary_code_sync(
     signal::BeiDouB2aI,
@@ -37,17 +37,17 @@ end
 $(SIGNATURES)
 
 Secondary-code sync detector for the BeiDou B2a pilot component — the
-generic [`_detect_secondary_code_sync`](@ref) rotation search over the
+generic `_detect_secondary_code_sync` rotation search over the
 per-PRN 100-chip secondary code (truncated length-1021 Weil codes,
 BDS-SIS-ICD-B2a-1.0 §5.2.1 Table 5-4) overlaid on the 1 ms primary code
 period, giving a 100 ms cycle. The B2a pilot is dataless; the overlay is
 its only sync feature, so the detector locks after a single overlay period
 in the worst case and reports the upcoming integration's secondary chip in
 `SyncResult.phase`. The per-PRN packed reference comes from the generic
-[`_packed_secondary_code`](@ref), which reads the signal's
-[`PerPRNSecondaryCode`](@ref) — the same shape as Galileo E5a-Q / E5b-Q /
+`_packed_secondary_code`, which reads the signal's
+`PerPRNSecondaryCode` — the same shape as Galileo E5a-Q / E5b-Q /
 E6-C. With `N = 100` the trait default routes the pilot to the soft
-[`_detect_secondary_code_cfar`](@ref)
+`_detect_secondary_code_cfar`
 ([`uses_soft_secondary_code_detection`](@ref)), so this method is reached
 only if a caller forces the hard path. Returns [`SyncResult`](@ref).
 """

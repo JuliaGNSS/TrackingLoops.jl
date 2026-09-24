@@ -3,17 +3,17 @@ const GalileoE1CAny = Union{GalileoE1C,GalileoE1C_BOC11}
 """
 $(SIGNATURES)
 
-Secondary-code sync detector for Galileo E1C (both [`GalileoE1C`](@ref)
-and the BOC(1,1) approximation [`GalileoE1C_BOC11`](@ref)).
+Secondary-code sync detector for Galileo E1C (both `GalileoE1C`
+and the BOC(1,1) approximation `GalileoE1C_BOC11`).
 
 E1C is the E1 pilot channel: no navigation data, but a 25-chip CS25
 secondary code (Galileo OS SIS ICD Table 4) overlaid on the 4 ms primary
 code period, giving a 100 ms cycle. The generic
-[`_detect_secondary_code_sync`](@ref) rotation search locks after a single
+`_detect_secondary_code_sync` rotation search locks after a single
 CS25 period in the worst case (default 2.5 % tolerance discretizes to 0,
 i.e. exact match over the 25-chip window) and reports the upcoming
 integration's CS25 chip in `SyncResult.phase`. The packed reference comes
-from the generic [`_packed_secondary_code`](@ref). Returns
+from the generic `_packed_secondary_code`. Returns
 [`SyncResult`](@ref).
 """
 @inline function detect_bit_or_secondary_code_sync(

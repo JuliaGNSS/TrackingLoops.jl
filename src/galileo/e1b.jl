@@ -3,8 +3,8 @@ const GalileoE1BAny = Union{GalileoE1B,GalileoE1B_BOC11}
 """
 $(SIGNATURES)
 
-Symbol-sync detector for Galileo E1B (both [`GalileoE1B`](@ref) and the
-BOC(1,1) approximation [`GalileoE1B_BOC11`](@ref)).
+Symbol-sync detector for Galileo E1B (both `GalileoE1B` and the
+BOC(1,1) approximation `GalileoE1B_BOC11`).
 
 E1B broadcasts one I/NAV channel symbol per 4 ms primary code period
 (250 sym/s; Galileo OS SIS ICD Table 11 — symbol period = primary code

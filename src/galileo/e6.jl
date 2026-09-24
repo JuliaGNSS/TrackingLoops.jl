@@ -39,18 +39,18 @@ at E6-B's four-times-faster symbol rate.
 $(SIGNATURES)
 
 Secondary-code sync detector for Galileo E6-C — the generic
-[`_detect_secondary_code_sync`](@ref) rotation search over the per-SVID
+`_detect_secondary_code_sync` rotation search over the per-SVID
 100-chip CS100 secondary code (Galileo E6-B/C Codes Technical Note §2.4,
 the OS SIS ICD's CS100₁₋₅₀ assigned CS100ₙ to SVID `n`) overlaid on the
 1 ms primary code period, giving a 100 ms cycle. E6-C is a dataless pilot;
 the CS100 overlay is its only sync feature, so the detector locks after a
 single CS100 period in the worst case and reports the upcoming
 integration's CS100 chip in `SyncResult.phase`. The per-PRN packed
-reference comes from the generic [`_packed_secondary_code`](@ref), which
-reads the signal's [`PerPRNSecondaryCode`](@ref) — E6-C draws the same
-CS100₁₋₅₀ half of the table as [`GalileoE5aQ`](@ref). With `N = 100` the
+reference comes from the generic `_packed_secondary_code`, which
+reads the signal's `PerPRNSecondaryCode` — E6-C draws the same
+CS100₁₋₅₀ half of the table as `GalileoE5aQ`. With `N = 100` the
 trait default routes E6-C to the soft
-[`_detect_secondary_code_cfar`](@ref)
+`_detect_secondary_code_cfar`
 ([`uses_soft_secondary_code_detection`](@ref)), so this method is reached
 only if a caller forces the hard path. Returns [`SyncResult`](@ref).
 """

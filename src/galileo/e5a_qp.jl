@@ -61,7 +61,7 @@ the same dataless/overlay-free shape but whose 1.5 s primary period is already a
 whole coherent integration, so there is nothing for a lock to unlock.
 
 It is therefore the same "fires immediately, nothing to find" body the
-one-symbol-per-code-period signals use, [`_detect_symbol_is_code_block_sync`](@ref):
+one-symbol-per-code-period signals use, `_detect_symbol_is_code_block_sync`:
 `phase` is 0 (no secondary code to index) and `polarity` is `+1` (with no data
 and no overlay there is no sign convention to recover). Returns
 [`SyncResult`](@ref).

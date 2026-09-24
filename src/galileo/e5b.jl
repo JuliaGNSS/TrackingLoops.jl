@@ -11,7 +11,7 @@
 $(SIGNATURES)
 
 Secondary-code sync detector for Galileo E5b-I — the generic
-[`_detect_secondary_code_sync`](@ref) rotation search over the 4-chip CS4
+`_detect_secondary_code_sync` rotation search over the 4-chip CS4
 secondary code (`1110`, shared across all SVIDs; Galileo OS SIS ICD v2.2
 §3.5.1) overlaid on the 1 ms primary code period. E5b-I carries the I/NAV
 data stream at 250 sym/s, so one CS4 period (4 primary blocks) is exactly
@@ -25,7 +25,7 @@ At the default 2.5 % tolerance the hard-path error budget discretizes to 0
 routes E5b-I to the soft, CFAR detector
 ([`uses_soft_secondary_code_detection`](@ref)) instead — a 4-chip hard
 template match would be badly false-lock-prone. The packed reference comes
-from the generic [`_packed_secondary_code`](@ref). Returns
+from the generic `_packed_secondary_code`. Returns
 [`SyncResult`](@ref).
 """
 @inline function detect_bit_or_secondary_code_sync(
@@ -41,18 +41,18 @@ end
 $(SIGNATURES)
 
 Secondary-code sync detector for Galileo E5b-Q — the generic
-[`_detect_secondary_code_sync`](@ref) rotation search over the per-SVID
+`_detect_secondary_code_sync` rotation search over the per-SVID
 100-chip CS100 secondary code (Galileo OS SIS ICD v2.2 §3.5.2, the CS100
 codes 51-100 assigned CS100₍ₙ₊₅₀₎ to SVID `n`) overlaid on the 1 ms
 primary code period, giving a 100 ms cycle. E5b-Q is a dataless pilot; the
 CS100 overlay is its only sync feature, so the detector locks after a
 single CS100 period in the worst case and reports the upcoming
 integration's CS100 chip in `SyncResult.phase`. The per-PRN packed
-reference comes from the generic [`_packed_secondary_code`](@ref), which
-reads the signal's [`PerPRNSecondaryCode`](@ref) — the same shape as
+reference comes from the generic `_packed_secondary_code`, which
+reads the signal's `PerPRNSecondaryCode` — the same shape as
 Galileo E5a-Q, which draws the other half (CS100₁₋₅₀) of the same table.
 With `N = 100` the trait default routes E5b-Q to the soft
-[`_detect_secondary_code_cfar`](@ref)
+`_detect_secondary_code_cfar`
 ([`uses_soft_secondary_code_detection`](@ref)), so this method is reached
 only if a caller forces the hard path. Returns [`SyncResult`](@ref).
 """
