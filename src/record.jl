@@ -283,8 +283,14 @@ end
     reset_signal_state(state::SignalLoopState) -> SignalLoopState
 
 The state a freshly armed channel starts from — no sync, empty soft bits, an
-empty C/N₀ ring, the default filter — reusing the vectors the previous
-occupant's state owned, so a re-arm allocates nothing.
+empty C/N₀ estimator, no previous prompt — reusing the vectors the previous
+occupant's state owned, so a re-arm allocates nothing. The post-correlation
+filter is kept as it is: it is configuration (a beamformer, say), not history,
+and a filter that adapts must be reset by whoever owns it.
+
+A custom [`AbstractCN0Estimator`](@ref) that carries history has to add a
+method to `TrackingLoops._reset_cn0_estimator`; without one this throws rather
+than hand the new satellite the old one's C/N₀.
 """
 reset_signal_state(state::SignalLoopState) = SignalLoopState(
     _fresh_bit_buffer(state.bit_buffer),
@@ -298,5 +304,22 @@ _reset_cn0_estimator(e::NoiseRefCN0Estimator) =
     (fill!(e.buffered_cn0, 0.0); NoiseRefCN0Estimator(e.num_records, e.buffered_cn0, 0, 0))
 _reset_cn0_estimator(e::MomentsCN0Estimator) =
     (fill!(e.prompt_buffer, zero(ComplexF64)); MomentsCN0Estimator(e.prompt_buffer, 0, 0))
+function _reset_cn0_estimator(e::NWPRCN0Estimator)
+    fill!(e.buffered_narrowband_powers, 0.0)
+    fill!(e.buffered_wideband_powers, 0.0)
+    _with_window_state(
+        e,
+        _reset_cn0_estimator(e.fallback);
+        ratio_current_index = 0,
+        filled_ratio_length = 0,
+        num_records_per_ratio = 0,
+        ratios_are_bit_aligned = false,
+    )
+end
 _reset_cn0_estimator(e::NoCN0Estimator) = e
-_reset_cn0_estimator(e::AbstractCN0Estimator) = e
+_reset_cn0_estimator(e::AbstractCN0Estimator) = throw(
+    ArgumentError(
+        "this C/N₀ estimator has no `TrackingLoops._reset_cn0_estimator` " *
+        "method; add one that empties its history",
+    ),
+)
