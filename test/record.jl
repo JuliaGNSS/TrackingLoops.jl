@@ -21,7 +21,7 @@
     cn0 = estimate_cn0(state, 1023 / get_code_frequency(signal))
     @test 10 * log10(ustrip(Hz, Unitful.linear(cn0))) ≈ 10 * log10(0.25 / 1e-6 - 1000) atol = 1e-6
     # A restarted bit clock forgets sync and keeps the rest.
-    restarted = TrackingLoops.restart_bit_clock(state)
+    restarted = restart_bit_clock(state)
     @test !has_bit_or_secondary_code_been_found(restarted)
     @test restarted.cn0_estimator === state.cn0_estimator
     @test restarted.last_filtered_prompt == state.last_filtered_prompt

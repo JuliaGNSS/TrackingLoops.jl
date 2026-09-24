@@ -82,5 +82,52 @@ end
     conv = init_estimator_state(ConventionalAssistedPLLAndDLL(), GalileoE1B(), 0.0Hz, 0.0Hz)
     @test conv isa SatConventionalPLLAndDLL
     @test conv.carrier_loop_filter_bandwidth == default_carrier_loop_filter_bandwidth(GalileoE1B())
-    @test TrackingLoops.estimator_state_type(ConventionalAssistedPLLAndDLL(), GPSL1CA()) === typeof(conv)
+    @test estimator_state_type(ConventionalAssistedPLLAndDLL(), GPSL1CA()) === typeof(conv)
+end
+
+@testset "Without a landing sample the NCO-referenced loop is the conventional loop" begin
+    # The software receiver's path: one fixed word per chunk and no landing
+    # sample, so the prediction branch is never entered.
+    signal = LOOP_SIGNAL
+    conventional = ConventionalAssistedPLLAndDLL()
+    referenced = NCOReferencedPLLAndDLL()
+    conv_state = init_estimator_state(conventional, signal, 100.0Hz, 0.1Hz)
+    ref_state = init_estimator_state(referenced, signal, 100.0Hz, 0.1Hz)
+    carrier, code = 100.0, 0.1
+    previous_prompt = complex(0.0, 0.0)
+    for k = 1:300
+        p = cis(0.3 + 0.002k)
+        output = CorrelatorOutput(loop_epl(0.45p, p, 0.55p), LOOP_N, LOOP_N * k)
+        record = LoopRecord(signal, output.correlator, previous_prompt, output, 1, LOOP_FS)
+        words = FixedNCOWord(carrier, code)
+        conv_state, conv_carrier, conv_code = step_loop(conventional, conv_state, record, words, NO_LANDING_SAMPLE)
+        ref_state, ref_carrier, ref_code = step_loop(referenced, ref_state, record, words, NO_LANDING_SAMPLE)
+        @test ref_carrier == conv_carrier
+        @test ref_code == conv_code
+        carrier, code = ustrip(Hz, conv_carrier), ustrip(Hz, conv_code)
+        previous_prompt = p
+    end
+end
+
+@testset "The negative control is the conventional loop at any delay" for d in (2, 4)
+    conventional = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(), d; steps = 300)
+    control = simulate_delayed_loop(NCOReferencedPLLAndDLL(; predict_landing = false), d; steps = 300)
+    @test control == conventional
+end
+
+@testset "Resetting the conventional loop keeps its bandwidths" begin
+    estimator = ConventionalAssistedPLLAndDLL(; code_loop_filter_bandwidth = 0.5Hz)
+    state = init_estimator_state(estimator, LOOP_SIGNAL, 0.0Hz, 0.0Hz)
+    output = CorrelatorOutput(loop_epl(0.4, cis(0.2), 0.6), LOOP_N, LOOP_N)
+    record = LoopRecord(LOOP_SIGNAL, output.correlator, cis(0.1), output, 1, LOOP_FS)
+    state, = step_loop(estimator, state, record, FixedNCOWord(0.0, 0.0), NO_LANDING_SAMPLE)
+    @test state.carrier_loop_filter.x1 != 0.0Hz
+    reset = reset_estimator_state(estimator, state, 42.0Hz, 0.02Hz)
+    @test reset isa typeof(state)
+    @test reset.init_carrier_doppler == 42.0Hz
+    @test reset.init_code_doppler == 0.02Hz
+    @test reset.carrier_loop_filter == ThirdOrderAssistedBilinearLF()
+    @test reset.code_loop_filter == SecondOrderBilinearLF()
+    @test reset.carrier_loop_filter_bandwidth == state.carrier_loop_filter_bandwidth
+    @test reset.code_loop_filter_bandwidth == 0.5Hz
 end

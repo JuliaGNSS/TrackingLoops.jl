@@ -3,8 +3,7 @@
 
 The device-independent core of a GNSS tracking loop, extracted from Tracking.jl
 so that the same code closes the loops in the software receiver and in the
-allocation-free *loop process* of a hardware correlator
-(GNSSReceiver.jl, `docs/plans/2026-09-22-loop-process.md`):
+allocation-free *loop process* of a hardware correlator:
 
   - the correlator record types and their accessors, the discriminators and
     the post-correlation filter;
@@ -122,6 +121,9 @@ export NumAnts,
     step_loop,
     SignalLoopState,
     apply_record,
+    restart_bit_clock,
+    reset_signal_state,
+    estimator_state_type,
     NCOTimeline,
     scheduled_words,
     FixedNCOWord,

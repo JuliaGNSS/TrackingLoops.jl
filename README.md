@@ -52,7 +52,9 @@ behaves identically on the others.
   same way.
 
 Everything is a plain value or a small mutable state that is preallocated once,
-so a loop can be stepped for hours without allocating.
+so a loop can be stepped for hours without allocating — provided the consumer
+drains the decoded soft bits (`get_soft_bits`) as they arrive; the bit buffer
+has room for 64 of them before its vector grows.
 
 ## Example
 
@@ -66,8 +68,10 @@ state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  
 loop = SignalLoopState(signal)              # bit buffer, C/N₀ estimator, prompt filter
 
 # For every correlator record `output::CorrelatorOutput` the correlator produced:
-loop, prompt, filtered, blocks =
+previous_prompt = loop.last_filtered_prompt   # read before `apply_record` replaces it
+loop, prompt, filtered, blocks, overshoot =
     apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready)
+overshoot && @warn "record crossed a navigation-bit boundary; bit sync restarted"
 record = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs)
 state, carrier_doppler, code_doppler =
     step_loop(estimator, state, record, FixedNCOWord(carrier_hz, code_hz), NO_LANDING_SAMPLE)

@@ -199,13 +199,18 @@ end
 
 """
     apply_record(state::SignalLoopState, signal, prn, output, sampling_frequency,
-                 noise_density, noise_density_ready, driver_carrier_phase = 0.0;
+                 noise_density, noise_density_ready,
+                 driver_carrier_phase = get_carrier_phase_offset(signal);
                  correlated_pre_sync = false)
-        -> (state, prompt, filtered_correlator, integrated_code_blocks)
+        -> (state, prompt, filtered_correlator, integrated_code_blocks, overshoot)
 
 [`fold_record`](@ref) on a [`SignalLoopState`](@ref): the new state (with the
 filtered prompt as its `last_filtered_prompt`), the prompt, the filtered
-correlator the discriminators read, and the blocks the record covered.
+correlator the discriminators read, the blocks the record covered, and
+whether the record overshot the navigation-bit boundary — on which the bit
+buffer dropped sync and restarted its search. Nothing here logs; report
+`overshoot` the way the caller reports things (Tracking.jl warns once per
+satellite).
 
 `driver_carrier_phase` is the carrier-phase offset of the satellite's
 estimator-driver signal (`get_carrier_phase_offset`), against which this
@@ -224,7 +229,7 @@ half of a pilot/data pair) must be handed the driver's.
     driver_carrier_phase::Real = get_carrier_phase_offset(signal);
     correlated_pre_sync::Bool = false,
 )
-    bit_buffer, cn0_estimator, post_corr_filter, prompt, filtered_correlator, _, integrated_code_blocks, _ =
+    bit_buffer, cn0_estimator, post_corr_filter, prompt, filtered_correlator, _, integrated_code_blocks, overshoot =
         fold_record(
             signal,
             prn,
@@ -245,7 +250,7 @@ half of a pilot/data pair) must be handed the driver's.
         prompt,
         integrated_code_blocks,
     )
-    new_state, prompt, filtered_correlator, integrated_code_blocks
+    new_state, prompt, filtered_correlator, integrated_code_blocks, overshoot
 end
 
 """
