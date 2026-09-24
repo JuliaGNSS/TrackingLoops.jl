@@ -43,12 +43,12 @@ mutable struct NCOTimeline
     count::Int
 end
 
-NCOTimeline(; capacity::Integer = 64) = NCOTimeline(
-    0.0,
-    0.0,
-    [ScheduledNCOWord(0, 0.0, 0.0) for _ = 1:capacity],
-    0,
-)
+function NCOTimeline(; capacity::Integer = 64)
+    # `schedule_word!` drops the oldest word to make room, so there has to be
+    # one to drop.
+    capacity >= 1 || throw(ArgumentError("an NCOTimeline needs a capacity of at least 1"))
+    NCOTimeline(0.0, 0.0, [ScheduledNCOWord(0, 0.0, 0.0) for _ = 1:capacity], 0)
+end
 
 "The words scheduled and not yet landed, oldest first (a view)."
 scheduled_words(timeline::NCOTimeline) = view(timeline.words, 1:timeline.count)
@@ -144,10 +144,21 @@ function promote_words!(timeline::NCOTimeline, sample)
     timeline
 end
 
-"Whether a scheduled word takes effect in `(lo, hi]`, i.e. whether records ending at `lo` and starting at `hi` ran on different words."
+"""
+    word_changes_within(timeline, lo, hi)
+
+Whether a scheduled word takes effect in `[lo, hi]`, i.e. whether a record
+ending at `lo` and one starting at `hi` ran on different words.
+
+The convention is [`mean_nco_word`](@ref)'s: a record ending at sample `b`
+covers `[b - integrated_samples, b)`, and a word landing at `s` is in effect
+from `s` on. So a word landing exactly at a record's end belongs to the next
+record, and two back-to-back records (`lo == hi`) ran on different words when
+one lands at that shared boundary.
+"""
 function word_changes_within(timeline::NCOTimeline, lo, hi)
     @inbounds for i = 1:timeline.count
-        lo < timeline.words[i].sample <= hi && return true
+        lo <= timeline.words[i].sample <= hi && return true
     end
     false
 end

@@ -16,8 +16,13 @@
     @test nco_word_at(tl, 2000) == (120.0, 0.12)
     @test all(mean_nco_word(tl, 999.5, 1000.5) .≈ (105.0, 0.105))
     @test word_changes_within(tl, 0, 1000)
-    @test !word_changes_within(tl, 1000, 2000 - 1)
+    @test !word_changes_within(tl, 1001, 2000 - 1)
     @test word_changes_within(tl, 1999, 2000)
+    # Back-to-back records meeting where a word lands ran on different words,
+    # exactly as `mean_nco_word` attributes them.
+    @test word_changes_within(tl, 1000, 1000)
+    @test mean_nco_word(tl, 0, 1000) != mean_nco_word(tl, 1000, 2000)
+    @test !word_changes_within(tl, 1500, 1500)
 
     # A newer command for the same or an earlier sample supersedes.
     schedule_word!(tl, 2000, 130.0, 0.13)
@@ -43,6 +48,12 @@
 end
 
 @testset "A timeline never grows past its capacity" begin
+    @test_throws ArgumentError NCOTimeline(; capacity = 0)
+    tl1 = NCOTimeline(; capacity = 1)
+    schedule_word!(tl1, 1000, 1.0, 0.0)
+    schedule_word!(tl1, 2000, 2.0, 0.0)
+    @test [w.sample for w in scheduled_words(tl1)] == [2000]
+    @test tl1.applied_carrier_doppler == 1.0
     tl = NCOTimeline(; capacity = 4)
     reset_timeline!(tl, 1.0, 0.1)
     for k = 1:10
