@@ -553,7 +553,7 @@ integration starts at secondary chip 0 — the true chip-0 boundary, since each
 rotation is anchored to the physical secondary chip 0 (see
 [`_update_secondary_accumulators!`](@ref)). The reported `SyncResult.phase` is
 therefore always `0`, and downstream code-phase snapping
-([`Tracking._snap_code_phase_from_synced_signal`](@ref)) anchors on that boundary.
+(Tracking.jl's `_snap_code_phase_from_synced_signal`) anchors on that boundary.
 `polarity` is the sign of the winning period's coherent (overlay-wiped) sum
 (resolved to the data-bit / carrier sign downstream by the navigation preamble).
 """
@@ -609,7 +609,7 @@ tracking the best positive- and negated-polarity Hamming match in one
 pass. The winning rotation `d` is how far the buffer leads the reference,
 which maps to the secondary-chip offset of the **upcoming** integration
 as `phase = mod(N - d, N)` — exactly the value the post-sync `code_phase`
-snap ([`Tracking._snap_code_phase_from_synced_signal`](@ref)) anchors on. Returns
+snap (Tracking.jl's `_snap_code_phase_from_synced_signal`) anchors on. Returns
 `SyncResult(false, 0, 0)` when the best distance exceeds `max_errors`.
 
 Inlined so the per-signal `reference` / `N` constants fold at the call
@@ -958,7 +958,7 @@ To loosen the tolerance for low-C/N₀ work, dispatch the trait on the (hard-pat
 signal type in your own module:
 
 ```julia
-Tracking.get_bit_edge_or_secondary_code_tolerance(::GPSL1C_P) = 0.05
+TrackingLoops.get_bit_edge_or_secondary_code_tolerance(::GPSL1C_P) = 0.05
 ```
 
 The override takes effect at the next call to
@@ -998,7 +998,7 @@ satellites stay pre-sync (see `src/beidou/b1i.jl`).
 Override per signal type to force the choice, e.g. to disable it:
 
 ```julia
-Tracking.uses_soft_bit_edge_detection(::SomeSignal) = false
+TrackingLoops.uses_soft_bit_edge_detection(::SomeSignal) = false
 ```
 
 The result is constant-folded per signal type, so the branch in
@@ -1036,7 +1036,7 @@ signal routes to at most one soft detector.
 Override per signal type to force the choice, e.g. to disable it:
 
 ```julia
-Tracking.uses_soft_secondary_code_detection(::GPSL5I) = false
+TrackingLoops.uses_soft_secondary_code_detection(::GPSL5I) = false
 ```
 
 The result is constant-folded per signal type, so the branch in
@@ -1063,7 +1063,7 @@ faster at the cost of more false locks; raise it to be more conservative.
 # Overriding
 
 ```julia
-Tracking.get_bit_edge_detection_confidence(::GPSL1CA) = 0.9999
+TrackingLoops.get_bit_edge_detection_confidence(::GPSL1CA) = 0.9999
 ```
 
 Takes effect at the next detector call — no TrackState rebuild needed.
@@ -1089,7 +1089,9 @@ is emitted each time that count reaches the signal's blocks-per-bit. A record
 that carries the count *past* the boundary — which only an external
 `CorrelatorOutput` producer whose records are not bit-aligned can produce —
 drops bit sync instead (`found` returns to `false`, so the detector re-runs from
-a clean accumulator) and warns; see issue #238.
+a clean accumulator); see issue #238. It does not log: [`apply_record`](@ref)
+reports the drop as its `overshoot` flag, and the caller decides what to do
+with it.
 """
 function buffer(
     signal::AbstractGNSSSignal,
@@ -1388,7 +1390,7 @@ for signals without a secondary code, where the field is unused.
 
 `secondary_phase` is the secondary chip the **upcoming** integration aligns to,
 and it is read exactly once: by the code-phase snap
-([`Tracking._snap_code_phase_from_synced_signal`](@ref)), which runs after the whole
+(Tracking.jl's `_snap_code_phase_from_synced_signal`), which runs after the whole
 chunk has been folded. The detector reports it for the block right after the
 syncing record, so every further record folded in the same chunk — the ones
 `_apply_correlator_output` marks `correlated_pre_sync`, correlated with the
