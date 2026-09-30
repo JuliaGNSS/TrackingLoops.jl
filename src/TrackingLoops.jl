@@ -26,6 +26,11 @@ here reads a raw sample, and nothing here knows a device or a segment.
 module TrackingLoops
 
 using BitIntegers
+using Dictionaries: Dictionaries
+using GNSSDecoder: GNSSDecoder
+using KalmanFilters: KalmanFilters
+using LinearAlgebra: LinearAlgebra
+using PositionVelocityTime: PositionVelocityTime
 using DocStringExtensions
 using GNSSSignals
 using SpecialFunctions: erfinv
