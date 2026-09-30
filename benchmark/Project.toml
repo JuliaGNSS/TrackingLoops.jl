@@ -1,0 +1,10 @@
+[deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+GNSSSignals = "52c80523-2a4e-5c38-8979-05588f836870"
+PositionVelocityTime = "52ec0b5e-ee36-11ea-211c-3d844fc5682d"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+TrackingLoops = "89eadfff-3a96-4166-8be0-4e8bed6efc30"
+Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
+
+[sources]
+TrackingLoops = {path = ".."}
