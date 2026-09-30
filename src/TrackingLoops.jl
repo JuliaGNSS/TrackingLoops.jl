@@ -26,9 +26,17 @@ here reads a raw sample, and nothing here knows a device or a segment.
 module TrackingLoops
 
 using BitIntegers
-using Dictionaries: Dictionaries
-using GNSSDecoder: GNSSDecoder, SECONDS_PER_WEEK
-using KalmanFilters: KalmanFilters
+using Dates: year, now, UTC
+using Dictionaries: Dictionary, set!
+using GNSSDecoder:
+    GNSSDecoder,
+    SECONDS_PER_WEEK,
+    decode!,
+    is_decoding_completed_for_positioning,
+    is_sat_healthy
+using Geodesy: ECEF, ENUfromECEF, wgs84
+using KalmanFilters:
+    KFTUIntermediate, UKFMUIntermediate, measurement_update!, time_update!
 using LinearAlgebra: dot
 using PositionVelocityTime:
     PositionVelocityTime,
@@ -36,17 +44,36 @@ using PositionVelocityTime:
     BiasColumns,
     BroadcastTimeOffset,
     CANDIDATE_HUB_SYSTEMS,
+    InterFrequencyBias,
+    IonosphericModel,
     PVTSolution,
+    PVTWorkspace,
     SPEED_OF_LIGHT,
+    SatInfo,
     SatelliteMeasurement,
+    SatelliteState,
+    SignalGroup,
     SupportedTimeSystem,
     TAITime,
     band_ifb_layout,
     band_ifb_layout!,
+    calc_DOP!,
+    calc_H!,
+    calc_course_over_ground,
     calc_line_of_sight,
+    calc_pvt!,
+    calc_satellite_clock_drift,
+    calc_satellite_position_and_velocity,
     calc_steering_offset,
     calc_ρ_hat!,
+    collect_measurement_rows!,
+    day_of_year,
+    empty_keeping_capacity!,
     fold_week_crossover,
+    get_sat_enu,
+    get_sat_position,
+    get_sat_velocity,
+    predict_atmospheric_delays!,
     time_scale_offset_to_gpst
 using DocStringExtensions
 using GNSSSignals
@@ -147,7 +174,21 @@ export NumAnts,
     reset_discriminator_accumulators,
     mean_code_discriminator,
     mean_carrier_discriminator,
+    release_from_vector_tracking,
     VectorTracking,
+    VectorTrackingState,
+    VTSignalGroup,
+    VTSat,
+    VTStatus,
+    VTReleaseReason,
+    VT_NOT_RELEASED,
+    VT_INELIGIBLE,
+    VT_BELOW_HORIZON,
+    VT_FALLBACK,
+    update_navigation!,
+    decode_soft_bits!,
+    position_uncertainty,
+    clock_uncertainty,
     init_estimator_state,
     reset_estimator_state,
     LoopRecord,
@@ -245,5 +286,6 @@ include("nco_timeline.jl")
 include("estimators.jl")
 include("vector/estimator.jl")
 include("vector/model.jl")
+include("vector/tracking.jl")
 
 end # module
