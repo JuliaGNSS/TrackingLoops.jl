@@ -99,8 +99,11 @@ end
         # themselves.
         @test sat.estimator_state.code_freq_update ===
               TL.nco_code_correction(predicted[j], measured, member.code_frequency, T) * Hz
-        @test sat.estimator_state.carrier_freq_update ===
-              TL.nco_carrier_correction(rate, member.pseudorange_rate, member.wavelength) * Hz
+        # The carrier correction evaluates the satellite's velocity afresh at the landing
+        # (the same instant here), where the compiler may contract the orbit arithmetic
+        # differently than in the row: equal to rounding, not to the bit.
+        @test sat.estimator_state.carrier_freq_update ≈
+              TL.nco_carrier_correction(rate, member.pseudorange_rate, member.wavelength) * Hz atol = 1e-9Hz
         @test sat.estimator_state.code_update_landing_lead == 0.0s
         @test sat.estimator_state.code_discr_acc == (0, 0.0)
     end
