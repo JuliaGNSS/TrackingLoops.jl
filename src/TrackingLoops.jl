@@ -12,7 +12,8 @@ allocation-free *loop process* of a hardware correlator:
   - the C/N₀ estimators and the noise-density window they read;
   - the loop filters' bandwidth rules and the Doppler estimators — the
     conventional FLL-assisted PLL/DLL and the delay-aware NCO-referenced
-    loop — behind one per-record [`step_loop`](@ref) on a plain per-satellite state;
+    loop — behind one per-record [`step_loop`](@ref) on a plain per-satellite state,
+    and the [`VectorPLLAndDLL`](@ref) a vector-tracking filter takes over;
   - the per-record fold [`apply_record`](@ref) that advances a signal
     component's prompt filter, C/N₀ estimator and bit buffer identically on
     both paths;
@@ -116,6 +117,14 @@ export NumAnts,
     SatConventionalPLLAndDLL,
     NCOReferencedPLLAndDLL,
     SatNCOReferencedPLLAndDLL,
+    VectorPLLAndDLL,
+    SatVectorPLLAndDLL,
+    enable_vector_tracking,
+    disable_vector_tracking,
+    set_vector_corrections,
+    reset_discriminator_accumulators,
+    mean_code_discriminator,
+    mean_carrier_discriminator,
     init_estimator_state,
     reset_estimator_state,
     LoopRecord,
@@ -211,5 +220,6 @@ include("loop_filters.jl")
 include("record.jl")
 include("nco_timeline.jl")
 include("estimators.jl")
+include("vector/estimator.jl")
 
 end # module
