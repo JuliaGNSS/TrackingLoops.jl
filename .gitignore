@@ -5,3 +5,5 @@
 test/Manifest.toml
 build/
 docs/Manifest.toml
+test/trim/Manifest.toml
+benchmark/Manifest.toml
