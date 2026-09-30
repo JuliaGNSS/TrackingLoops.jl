@@ -27,16 +27,33 @@ module TrackingLoops
 
 using BitIntegers
 using Dictionaries: Dictionaries
-using GNSSDecoder: GNSSDecoder
+using GNSSDecoder: GNSSDecoder, SECONDS_PER_WEEK
 using KalmanFilters: KalmanFilters
-using LinearAlgebra: LinearAlgebra
-using PositionVelocityTime: PositionVelocityTime
+using LinearAlgebra: dot
+using PositionVelocityTime:
+    PositionVelocityTime,
+    BandLayoutScratch,
+    BiasColumns,
+    BroadcastTimeOffset,
+    CANDIDATE_HUB_SYSTEMS,
+    PVTSolution,
+    SPEED_OF_LIGHT,
+    SatelliteMeasurement,
+    SupportedTimeSystem,
+    TAITime,
+    band_ifb_layout,
+    band_ifb_layout!,
+    calc_line_of_sight,
+    calc_steering_offset,
+    calc_ρ_hat!,
+    fold_week_crossover,
+    time_scale_offset_to_gpst
 using DocStringExtensions
 using GNSSSignals
 using SpecialFunctions: erfinv
 using StaticArrays
 using TrackingLoopFilters
-using Unitful: upreferred, uconvert, ustrip, dimension, NoUnits, Hz, dBHz, ms, s
+using Unitful: upreferred, uconvert, ustrip, dimension, NoUnits, Hz, dBHz, ms, s, m
 using Random: AbstractRNG, Xoshiro
 import Base.zero, Base.length
 
@@ -130,6 +147,7 @@ export NumAnts,
     reset_discriminator_accumulators,
     mean_code_discriminator,
     mean_carrier_discriminator,
+    VectorTracking,
     init_estimator_state,
     reset_estimator_state,
     LoopRecord,
@@ -226,5 +244,6 @@ include("record.jl")
 include("nco_timeline.jl")
 include("estimators.jl")
 include("vector/estimator.jl")
+include("vector/model.jl")
 
 end # module

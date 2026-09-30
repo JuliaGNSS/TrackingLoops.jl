@@ -3,7 +3,7 @@ using TrackingLoops
 using GNSSSignals
 using StaticArrays
 using Unitful
-using Unitful: Hz, dBHz, s
+using Unitful: Hz, dBHz, s, ms, @u_str
 using AllocCheck
 using TrackingLoopFilters: ThirdOrderAssistedBilinearLF, SecondOrderBilinearLF
 
@@ -13,6 +13,7 @@ include("noise_estimators.jl")
 include("nco_timeline.jl")
 include("estimators.jl")
 include("vector_estimator.jl")
+include("vector_model.jl")
 include("record.jl")
 include("signal_state.jl")
 include("bit_buffer.jl")
