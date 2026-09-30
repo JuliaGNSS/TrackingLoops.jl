@@ -61,3 +61,47 @@
     @test isempty(AllocCheck.check_allocs(pll_disc, Tuple{typeof(signal),typeof(output.correlator)}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(dll_disc, Tuple{typeof(signal),typeof(output.correlator),typeof(0.1Hz),typeof(fs)}; ignore_throw = true))
 end
+
+@testset "The vector loop's per-record path is allocation-free" begin
+    signal = GPSL1CA()
+    fs = 4e6Hz
+    for inner in (ConventionalAssistedPLLAndDLL(), NCOReferencedPLLAndDLL())
+        estimator = VectorPLLAndDLL(inner)
+        state = init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz)
+        output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000)
+        record = LoopRecord(signal, output.correlator, cis(0.1), output, 1, fs)
+        for words_type in (FixedNCOWord, NCOTimeline)
+            sig = Tuple{typeof(estimator),typeof(state),typeof(record),words_type,Int64}
+            @test isempty(AllocCheck.check_allocs(step_loop, sig; ignore_throw = true))
+        end
+        # A folded run in and out of the vector loop, the state kept in a `Ref`.
+        timeline = NCOTimeline()
+        reset_timeline!(timeline, 100.0, 0.1)
+        function run_vector_records!(state_ref, estimator, timeline, first_k, n)
+            local p, out, rec, carrier, code
+            st = state_ref[]
+            previous = complex(0.0, 0.0)
+            for k = first_k:(first_k+n-1)
+                if k % 50 == 0
+                    st = st.vt_on ? disable_vector_tracking(st) :
+                         set_vector_corrections(enable_vector_tracking(st), 0.1Hz, 1.0Hz, 0.002s)
+                end
+                p = cis(0.01k)
+                out = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
+                rec = LoopRecord(signal, out.correlator, previous, out, 1, fs)
+                st, carrier, code = step_loop(estimator, st, rec, timeline, Int64(4000k + 8000))
+                schedule_word!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
+                promote_words!(timeline, 4000k - 4000)
+                if k % 10 == 0
+                    st = reset_discriminator_accumulators(st)
+                end
+                previous = p
+            end
+            state_ref[] = st
+            nothing
+        end
+        state_ref = Ref(state)
+        run_vector_records!(state_ref, estimator, timeline, 1, 200)
+        @test (@allocated run_vector_records!(state_ref, estimator, timeline, 201, 200)) == 0
+    end
+end
