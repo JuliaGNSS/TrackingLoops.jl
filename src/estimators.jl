@@ -413,6 +413,34 @@ end
 # for anything already inside it.
 wrap_half_cycle(phase) = rem(phase, π, RoundNearest)
 
+# The phase error a record would show `shift` samples later, under the words
+# the NCO will run in between: the mean phase sits at the record's centre, so
+# the ramp is integrated from there. The signal's Doppler is the filter's own
+# estimate, before this record's innovation.
+@inline function _predict_landing_phase_error(
+    phase_error,
+    state::SatNCOReferencedPLLAndDLL,
+    words,
+    center,
+    shift,
+    integration_time,
+    sampling_frequency,
+)
+    sampling_freq_hz = Float64(ustrip(Hz, uconvert(Hz, sampling_frequency)))
+    carrier_loop_filter = state.carrier_loop_filter
+    f_hat = ustrip(
+        Hz,
+        uconvert(
+            Hz,
+            state.init_carrier_doppler +
+            carrier_loop_filter.x1 +
+            integration_time / 2 * carrier_loop_filter.x2,
+        ),
+    )
+    ramp_word = first(mean_nco_word(words, center, center + shift))
+    wrap_half_cycle(phase_error + 2π * shift * (f_hat - ramp_word) / sampling_freq_hz)
+end
+
 """
     step_loop(estimator::NCOReferencedPLLAndDLL, state, record::LoopRecord, words, landing_sample)
         -> (state, carrier_doppler, code_doppler)
@@ -431,7 +459,6 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
 )
     signal = record.signal
     sampling_frequency = record.sampling_frequency
-    sampling_freq_hz = Float64(ustrip(Hz, uconvert(Hz, sampling_frequency)))
     carrier_loop_filter = state.carrier_loop_filter
     code_loop_filter = state.code_loop_filter
     previous_center = state.previous_record_center
@@ -457,22 +484,14 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
         fll_disc(signal, filtered_correlator, record.previous_prompt, integration_time)
 
     if estimator.predict_landing && shift > 0
-        # The phase error this record would show `shift` samples later, under
-        # the words the NCO will run in between: the mean phase sits at the
-        # record's centre, so the ramp is integrated from there. The signal's
-        # Doppler is the filter's own estimate, before this record's innovation.
-        f_hat = ustrip(
-            Hz,
-            uconvert(
-                Hz,
-                state.init_carrier_doppler +
-                carrier_loop_filter.x1 +
-                integration_time / 2 * carrier_loop_filter.x2,
-            ),
-        )
-        ramp_word = first(mean_nco_word(words, center, center + shift))
-        phase_error = wrap_half_cycle(
-            phase_error + 2π * shift * (f_hat - ramp_word) / sampling_freq_hz,
+        phase_error = _predict_landing_phase_error(
+            phase_error,
+            state,
+            words,
+            center,
+            shift,
+            integration_time,
+            sampling_frequency,
         )
         # The absolute frequency measurement, relative to the word that will be
         # running under the record `shift` samples ahead. `fll_disc` measured
