@@ -168,6 +168,25 @@ Doppler already carries the vector loop's steering; follow up with
 disable_vector_tracking(state::SatVectorPLLAndDLL) = SatVectorPLLAndDLL(state.inner, false)
 
 """
+    release_from_vector_tracking(state::SatVectorPLLAndDLL, carrier_doppler, code_doppler)
+        -> SatVectorPLLAndDLL
+
+[`disable_vector_tracking`](@ref) with the inner loop re-seeded from the Dopplers
+the replica runs at — what [`reset_estimator_state`](@ref) does — so the scalar
+loop takes over from where the vector loop steered the replica, without a
+transient. This is how the vector-tracking filter hands a satellite back.
+"""
+release_from_vector_tracking(state::SatVectorPLLAndDLL, carrier_doppler, code_doppler) =
+    SatVectorPLLAndDLL(_reseed_inner(state.inner, carrier_doppler, code_doppler), false)
+
+# The inner reset reads the per-satellite state only, never the estimator's
+# configuration, so a default-configured estimator stands in for it.
+_reseed_inner(state::SatConventionalPLLAndDLL, carrier_doppler, code_doppler) =
+    reset_estimator_state(ConventionalPLLAndDLL(), state, carrier_doppler, code_doppler)
+_reseed_inner(state::SatNCOReferencedPLLAndDLL, carrier_doppler, code_doppler) =
+    reset_estimator_state(NCOReferencedPLLAndDLL(), state, carrier_doppler, code_doppler)
+
+"""
     set_vector_corrections(state, code_freq_update, carrier_freq_update, landing_lead = 0.0s)
 
 The filter's NCO corrections for this satellite, taking over at `landing_lead`
