@@ -50,6 +50,12 @@ behaves identically on the others.
 - **The per-record fold** — `apply_record` advances a signal component's prompt
   filter, C/N₀ estimator and bit buffer in one step, so every caller does it the
   same way.
+- **Vector tracking** — `VectorPLLAndDLL` wraps the scalar loop a satellite
+  runs until a navigation filter takes it over, and `update_navigation!` is
+  that filter: an unscented Kalman filter over position, velocity, one clock
+  per GNSS time system and the inter-frequency biases, which closes every
+  satellite's code and carrier loops at once. It also provides the PVT solution,
+  before vector tracking starts and while it runs.
 
 Everything is a plain value or a small mutable state that is preallocated once,
 so a loop can be stepped for hours without allocating — provided the consumer
@@ -80,3 +86,56 @@ state, carrier_doppler, code_doppler =
 
 See the docstrings of `step_loop`, `apply_record`, `NCOTimeline` and the
 estimators for the full signatures.
+
+## Vector tracking
+
+Vector tracking needs a decoded navigation message and a first position fix, so
+every satellite starts on a conventional loop. Wrap that loop in a
+`VectorPLLAndDLL`; it runs the loop unchanged until the filter takes the
+satellite over:
+
+```julia
+estimator = VectorPLLAndDLL(ConventionalAssistedPLLAndDLL())  # or NCOReferencedPLLAndDLL()
+state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)
+```
+
+Each signal gets a `VTSignalGroup`, a preallocated vector of `VTSat` slots. The
+filter is built once for the tuple of groups:
+
+```julia
+gps = VTSignalGroup(GPSL1CA(), [VTSat(decoder, state) for (decoder, state) in channels])
+vt = VectorTrackingState(VectorTracking(), (gps,))
+
+# once per navigation cycle, `cycle_time` after the previous one:
+for (sat, channel) in zip(gps.sats, channels)
+    sat.active = true
+    sat.decoder = channel.decoder          # keep it current with decode_soft_bits!
+    sat.estimator_state = channel.state
+    sat.code_phase = channel.code_phase    # the replica running at the cycle epoch
+    sat.carrier_doppler = channel.carrier_doppler
+    sat.code_doppler = channel.code_doppler
+    sat.code_phase_at_landing = channel.code_phase  # no NCO delay
+    sat.carrier_doppler_at_landing = channel.carrier_doppler
+    sat.cn0_dbhz = channel.cn0
+    sat.in_lock = channel.in_lock
+    sat.pvt_ready = channel.pvt_ready
+end
+pvt, status = update_navigation!(vt, (gps,), cycle_time)
+# copy every `sat.estimator_state` back to its channel, and act on `sat.release_reason`
+```
+
+Until vector tracking runs, a cycle solves the scalar PVT over the satellites
+marked `pvt_ready`. Its first fix seeds the filter, and from then on every cycle
+fuses the accumulated DLL and FLL discriminators and writes each member's NCO
+corrections into its estimator state. With a hardware correlator the
+corrections take effect when the command lands. Pass `landing_lead` and the
+replica predicted there (`code_phase_at_landing`, `carrier_doppler_at_landing`)
+and the corrections are sized for that moment. Nothing is logged: `VTStatus`
+reports the events, and each `VTSat` its `release_reason`. Once warm, a cycle
+allocates nothing and compiles with `juliac --trim=safe` (see `test/trim`).
+
+## Platforms
+
+TrackingLoops runs on Linux, macOS and FreeBSD. It does not install on Windows
+because the navigation-message decoder it depends on (GNSSDecoder.jl) needs
+Aff3ct, which has no Windows build.
