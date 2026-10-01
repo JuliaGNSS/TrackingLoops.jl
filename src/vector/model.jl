@@ -364,7 +364,7 @@ end
     NavFilterModel
 
 The navigation filter's linear process model for one integration interval: `F`
-and `Q`, rebuilt in place when the interval changes (see
+and `Q`, rebuilt in place whenever the measured interval changes (see
 `ensure_nav_filter_integration_time!`).
 """
 mutable struct NavFilterModel
@@ -393,20 +393,21 @@ function rebuild_nav_filter_model!(model::NavFilterModel, config::VectorTracking
     model
 end
 
-# The navigation filter's update interval is measured each cycle; rebuild the
-# process model only when it drifts by more than 5 %. The normal deviation is the
-# chunk-size quantisation — a cycle runs on the first chunk boundary at or past the
-# nominal interval, so the interval overshoots by up to one chunk length (e.g. 4 ms
-# on 100 ms ≈ 4 %); the 5 % band absorbs that without rebuilding `F`/`Q` every
-# cycle, while a genuine cadence change still triggers a rebuild.
+# The navigation filter's update interval is measured each cycle, and the process model
+# must propagate the state by exactly that interval: `reference_time` advances by it, so a
+# model kept at the nominal interval mispredicts every cycle by the difference — the
+# clock bias by `drift·ΔT`, the position by `v·ΔT`. The normal deviation is the
+# chunk-size quantisation (a cycle runs on the first chunk boundary at or past the
+# nominal interval, so it overshoots by up to one chunk, e.g. 4 ms on 100 ms), and with a
+# TCXO's hundreds of m/s of clock drift that alone is metres against a clock process noise
+# of centimetres. So `F`/`Q` are rebuilt whenever the interval changes at all; the rebuild
+# is cheap and allocates nothing.
 function ensure_nav_filter_integration_time!(
     model::NavFilterModel,
     config::VectorTracking,
     integration_time,
 )
-    nav_integration_time = model.integration_time
-    abs(integration_time - nav_integration_time) / nav_integration_time <= 0.05 &&
-        return model
+    integration_time == model.integration_time && return model
     rebuild_nav_filter_model!(model, config, integration_time)
 end
 
