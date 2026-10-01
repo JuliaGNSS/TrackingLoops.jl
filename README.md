@@ -1,5 +1,8 @@
+[![Docs: stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://JuliaGNSS.github.io/TrackingLoops.jl/stable)
+[![Docs: dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://JuliaGNSS.github.io/TrackingLoops.jl/dev)
 [![CI](https://github.com/JuliaGNSS/TrackingLoops.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/JuliaGNSS/TrackingLoops.jl/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/JuliaGNSS/TrackingLoops.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/JuliaGNSS/TrackingLoops.jl)
+[![semantic-release](https://img.shields.io/badge/%20%20%F0%9F%93%A6%F0%9F%9A%80-semantic--release-e10079.svg)](https://github.com/semantic-release/semantic-release)
 
 # TrackingLoops.jl
 
@@ -78,5 +81,5 @@ state, carrier_doppler, code_doppler =
 # program the next replica with carrier_doppler and code_doppler
 ```
 
-See the docstrings of `step_loop`, `apply_record`, `NCOTimeline` and the
-estimators for the full signatures.
+See the [documentation](https://JuliaGNSS.github.io/TrackingLoops.jl/stable)
+for the full API reference.
