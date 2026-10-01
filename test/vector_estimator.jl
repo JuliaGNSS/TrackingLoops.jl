@@ -21,7 +21,7 @@ end
     @test state.carrier_discr_acc == (0, 0.0Hz)
     @test state.code_freq_update == 0.0Hz
     @test state.carrier_freq_update == 0.0Hz
-    @test state.previous_code_freq_update == 0.0Hz
+    @test state.code_freq_update_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test state.code_update_landing_lead == 0.0s
     @test estimator_state_type(estimator, GPSL1CA()) === typeof(state)
     @test mean_code_discriminator(state) === nothing
@@ -218,10 +218,12 @@ end
     # The corrections take over one another.
     @test steered.code_freq_update == 1.0Hz
     @test steered.carrier_freq_update == 10.0Hz
-    @test steered.previous_code_freq_update == 0.0Hz
+    @test steered.code_freq_update_history == (1.0Hz, 0.0Hz, 0.0Hz)
     @test steered.code_update_landing_lead == 0.02s
     next = set_vector_corrections(steered, 2.0Hz, 20.0Hz)
-    @test next.previous_code_freq_update == 1.0Hz
+    @test next.code_freq_update_history == (2.0Hz, 1.0Hz, 0.0Hz)
+    @test set_vector_corrections(next, 3.0Hz, 0.0Hz).code_freq_update_history ==
+          (3.0Hz, 2.0Hz, 1.0Hz)
     @test next.code_freq_update == 2.0Hz
     @test next.code_update_landing_lead == 0.0s
     @test next.code_discr_acc == (3, 0.3)
@@ -234,30 +236,39 @@ end
     @test released.carrier_discr_acc == (0, 0.0Hz)
     @test released.code_freq_update == 0.0Hz
     @test released.carrier_freq_update == 0.0Hz
-    @test released.previous_code_freq_update == 0.0Hz
+    @test released.code_freq_update_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test released.code_update_landing_lead == 0.0s
     @test enable_vector_tracking(released).code_freq_update == 0.0Hz
 end
 
-@testset "Resetting keeps the vector flag and zeroes the corrections" begin
+@testset "Resetting keeps the vector flag and stops applying the corrections" begin
     estimator = VectorPLLAndDLL(ConventionalAssistedPLLAndDLL(; carrier_loop_filter_bandwidth = 12.0Hz))
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     record = vector_record(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
-    state = set_vector_corrections(enable_vector_tracking(state), 0.5Hz, 4.0Hz, 0.01s)
+    state = set_vector_corrections(enable_vector_tracking(state), 0.5Hz, 4.0Hz)
     state, = step_loop(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
-    state = set_vector_corrections(state, 0.6Hz, 4.0Hz)
+    state = set_vector_corrections(state, 0.6Hz, 4.0Hz, 0.01s)
     @test state.inner.carrier_loop_filter != ThirdOrderAssistedBilinearLF()
     reset = reset_estimator_state(estimator, state, 150.0Hz, 0.2Hz)
     @test reset isa typeof(state)
     @test reset.vt_on
     @test reset.code_discr_acc == (0, 0.0)
     @test reset.carrier_discr_acc == (0, 0.0Hz)
+    # The re-seeded Dopplers carry the last correction, so it is no longer applied…
     @test reset.code_freq_update == 0.0Hz
     @test reset.carrier_freq_update == 0.0Hz
-    @test reset.previous_code_freq_update == 0.0Hz
-    @test reset.code_update_landing_lead == 0.0s
+    # …but the replica is still steered by it, so the next code measurement is moved to
+    # the epoch exactly as without the reset.
+    @test reset.code_freq_update_history == (0.6Hz, 0.5Hz, 0.0Hz)
+    @test reset.code_update_landing_lead == 0.01s
+    @test TrackingLoops.code_phase_advance(reset, 0.1) == TrackingLoops.code_phase_advance(state, 0.1)
+    @test TrackingLoops.code_phase_advance(reset, 0.1) != 0.0
     @test reset.inner.carrier_loop_filter == ThirdOrderAssistedBilinearLF()
     @test reset.inner.carrier_loop_filter_bandwidth == 12.0Hz
     @test reset.inner.init_carrier_doppler == 150.0Hz
     @test reset.inner.init_code_doppler == 0.2Hz
+    # With nothing applied, the code Doppler is the re-seeded one plus the carrier aiding.
+    _, carrier_doppler, code_doppler =
+        step_loop(estimator, reset, record, FixedNCOWord(150.0, 0.2), NO_LANDING_SAMPLE)
+    @test code_doppler ≈ 0.2Hz + (carrier_doppler - 150.0Hz) * get_code_center_frequency_ratio(GPSL1CA())
 end
