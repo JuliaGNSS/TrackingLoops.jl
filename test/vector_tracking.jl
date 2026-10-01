@@ -100,11 +100,14 @@ end
         # themselves.
         @test sat.estimator_state.code_freq_update ===
               TL.nco_code_correction(predicted[j], measured, member.code_frequency, T) * Hz
-        # The carrier correction evaluates the satellite's velocity afresh at the landing
-        # (the same instant here), where the compiler may contract the orbit arithmetic
-        # differently than in the row: equal to rounding, not to the bit.
-        @test sat.estimator_state.carrier_freq_update ≈
-              TL.nco_carrier_correction(rate, member.pseudorange_rate, member.wavelength) * Hz atol = 1e-9Hz
+        # Without a delay the landing is the epoch, so the carrier correction is made of
+        # the cycle's own prediction from the row, not of an orbit evaluated afresh: bit
+        # for bit. That prediction is the one recomputed here, to rounding (the compiler
+        # may contract the arithmetic differently in this calling context).
+        @test sat.estimator_state.carrier_freq_update ===
+              TL.nco_carrier_correction(buffers.predicted_pseudorange_rates[j],
+                  member.pseudorange_rate, member.wavelength) * Hz
+        @test buffers.predicted_pseudorange_rates[j] ≈ rate atol = 1e-9
         @test sat.estimator_state.code_update_landing_lead == 0.0s
         @test sat.estimator_state.code_discr_acc == (0, 0.0)
     end
