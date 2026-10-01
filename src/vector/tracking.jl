@@ -706,46 +706,23 @@ end
 # moves by millimetres in `τ`). The code correction removes the range error (the TOW-based,
 # atmosphere-corrected range, no discriminator term), the carrier correction the rate
 # error against the replica's own Doppler at landing (no FLL term). With no NCO delay
-# every quantity is the epoch's and these are the corrections at the updated state.
+# every quantity is the epoch's and these are the corrections at the updated state, so
+# the member's predictions and measured pseudorange (`_predict_members!`) are reused
+# rather than evaluated again.
 function _close_loops!(acc, group, g, buffer, vt, reference_tow, T)
     buffers = vt.buffers
     members = buffers.members
-    idxs = vt.model.idxs
     for (j, member) in enumerate(members)
         member.group == g && buffers.active[j] || continue
         sat = group.sats[member.slot]
-        τ = ustrip(s, sat.landing_lead)
-        landing_time =
-            member.time + (sat.code_phase_at_landing - sat.code_phase) / member.code_frequency
-        landing_orbit = calc_satellite_position_and_velocity(sat.decoder, landing_time)
-        landing_position = get_sat_position(landing_orbit)
-        landing_velocity = get_sat_velocity(landing_orbit)
-        propagate_state!(buffers.x_landing, vt.x, idxs, τ)
-        position_and_bias_vector!(buffers.ξ_landing, buffers.x_landing, idxs)
-        buffers.landing_position[1] = landing_position
-        buffers.landing_columns.clock_bias_indices[1] = member.clock_bias_index
-        buffers.landing_columns.ifb_indices[1] = member.ifb_index
-        calc_ρ_hat!(
-            buffers.landing_range,
-            buffers.landing_position,
-            buffers.ξ_landing,
-            buffers.landing_columns,
-        )
-        predicted_pseudorange = buffers.landing_range[1]
-        user_pos, user_vel, user_clock_drift = nav_filter_states(buffers.x_landing, idxs)
-        predicted_rate = predict_pseudorange_rate(
-            user_pos,
-            user_vel,
-            user_clock_drift,
-            landing_position,
-            landing_velocity,
-            calc_satellite_clock_drift(sat.decoder, landing_time),
-        )
-        measured_pseudorange =
-            pseudorange_from_tows(
-                reference_tow + τ,
-                landing_time - (member.time - member.time_gpst_count),
-            ) - buffers.delays[j]
+        if sat.landing_lead == 0.0s && sat.code_phase_at_landing == sat.code_phase
+            predicted_pseudorange = buffers.predicted_pseudoranges[j]
+            predicted_rate = buffers.predicted_pseudorange_rates[j]
+            measured_pseudorange = buffers.measured_pseudoranges[j]
+        else
+            predicted_pseudorange, predicted_rate, measured_pseudorange =
+                _predict_at_landing(vt, sat, member, j, reference_tow)
+        end
         measured_rate = member.wavelength * ustrip(Hz, sat.carrier_doppler_at_landing)
         code_update = nco_code_correction(
             predicted_pseudorange,
@@ -762,6 +739,46 @@ function _close_loops!(acc, group, g, buffer, vt, reference_tow, T)
         )
     end
     acc
+end
+
+# The predicted pseudorange and rate of member `j` where its command lands, at the state
+# propagated there, and the pseudorange its replica realises there.
+function _predict_at_landing(vt::VectorTrackingState, sat::VTSat, member::VTMember, j, reference_tow)
+    buffers = vt.buffers
+    idxs = vt.model.idxs
+    τ = ustrip(s, sat.landing_lead)
+    landing_time =
+        member.time + (sat.code_phase_at_landing - sat.code_phase) / member.code_frequency
+    landing_orbit = calc_satellite_position_and_velocity(sat.decoder, landing_time)
+    landing_position = get_sat_position(landing_orbit)
+    landing_velocity = get_sat_velocity(landing_orbit)
+    propagate_state!(buffers.x_landing, vt.x, idxs, τ)
+    position_and_bias_vector!(buffers.ξ_landing, buffers.x_landing, idxs)
+    buffers.landing_position[1] = landing_position
+    buffers.landing_columns.clock_bias_indices[1] = member.clock_bias_index
+    buffers.landing_columns.ifb_indices[1] = member.ifb_index
+    calc_ρ_hat!(
+        buffers.landing_range,
+        buffers.landing_position,
+        buffers.ξ_landing,
+        buffers.landing_columns,
+    )
+    predicted_pseudorange = buffers.landing_range[1]
+    user_pos, user_vel, user_clock_drift = nav_filter_states(buffers.x_landing, idxs)
+    predicted_rate = predict_pseudorange_rate(
+        user_pos,
+        user_vel,
+        user_clock_drift,
+        landing_position,
+        landing_velocity,
+        calc_satellite_clock_drift(sat.decoder, landing_time),
+    )
+    measured_pseudorange =
+        pseudorange_from_tows(
+            reference_tow + τ,
+            landing_time - (member.time - member.time_gpst_count),
+        ) - buffers.delays[j]
+    predicted_pseudorange, predicted_rate, measured_pseudorange
 end
 
 # Release the members of this group whose `active` flag equals `which`, for `reason`.
@@ -851,6 +868,7 @@ function _seed!(vt::VectorTrackingState, groups, cycle_time)
     _measure_pseudoranges!(vt, ionospheric_correction, reference_tow)
     # First loop closure: the filter is seeded exactly at the fix, so the NCO corrections
     # are the prediction residuals at the seeded state.
+    _predict_members!(vt)
     resize!(buffers.active, length(members))
     fill!(buffers.active, true)
     _fold_groups(_close_loops!, 0, groups, buffers.states, 1, vt, reference_tow, T)
