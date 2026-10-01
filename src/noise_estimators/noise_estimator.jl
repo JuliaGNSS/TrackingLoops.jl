@@ -5,7 +5,7 @@ Abstract supertype for per-signal noise estimators — the source of the noise
 **density** `N₀` that [`NoiseRefCN0Estimator`](@ref) divides each record's prompt
 power by.
 
-One instance is held per **signal** in [`Tracking.TrackState`](@ref)'s `noise_estimators`
+One instance is held per **signal** in `Tracking.TrackState`'s `noise_estimators`
 NamedTuple (keyed by `GNSSSignals.get_signal_id`), never per satellite: every
 satellite of a signal shares one floor, and averaging it once per signal is what
 makes the reference's own variance negligible against the per-record prompt
@@ -58,7 +58,7 @@ Three required methods, all with a default on this abstract type:
     has exactly one call site, inside `downconvert_and_correlate!`.
   - [`append_noise_observation!`](@ref) — append an observation built elsewhere.
     This is the **hardware** fill path (FPGA/ASIC correlator or a front-end
-    power monitor), parallel to [`Tracking.append_correlator_output!`](@ref).
+    power monitor), parallel to `Tracking.append_correlator_output!`.
   - [`get_noise_density`](@ref) — the signal's current density, or `nothing`
     while nothing has been measured yet. A read, not a drain: the window keeps
     sliding.
@@ -82,7 +82,7 @@ abstract type AbstractNoiseEstimator end
 
 """
 Type alias for a NamedTuple of [`AbstractNoiseEstimator`](@ref)s keyed by signal
-id — the shape [`Tracking.TrackState`](@ref) holds them in. A NamedTuple and not a
+id — the shape `Tracking.TrackState` holds them in. A NamedTuple and not a
 `Dictionary`, because a dictionary would need an abstract value type as soon as
 two signals hold different estimator types, which is type-unstable and would
 allocate on every chunk.
@@ -133,8 +133,17 @@ struct NoiseObservation{D,T}
     prn::Int16
 end
 
-# Canonical density type. Every builder converts to it, so a band's window is
-# concretely typed however the caller spelled their sampling frequency.
+# Every builder converts to it, so a band's window is concretely typed however
+# the caller spelled their sampling frequency.
+"""
+    NoiseDensity
+
+The type of a single-antenna noise density `N₀`, `typeof(1.0 / 1.0Hz)`: what
+every shipped observation builder produces, and what
+[`get_noise_density`](@ref) returns for a single-antenna estimator. A
+multi-antenna window measures a spatial covariance matrix instead; see
+[`noise_density_type`](@ref).
+"""
 const NoiseDensity = typeof(1.0 / 1.0Hz)
 
 # The same, per element of a multi-antenna window's spatial covariance `R̂`. The
@@ -396,7 +405,7 @@ $(SIGNATURES)
 Measure one signal's noise on its band's samples and append the resulting
 observations to `estimator`'s window, returning `estimator`.
 
-`measurement` is the band's [`Tracking.BandMeasurement`](@ref) — the samples are a band
+`measurement` is the band's `Tracking.BandMeasurement` — the samples are a band
 property, one front end feeding every signal on it; only the despreading code,
 and therefore the measured floor, is per signal. `first_sample` and `last_sample`
 bound the slice of it this call may consume (the current chunk). `context` is a
@@ -423,12 +432,12 @@ $(SIGNATURES)
 
 Append one externally built [`NoiseObservation`](@ref) to `estimator`'s sliding
 window and return `estimator`. This is the **hardware** fill path, parallel to
-[`Tracking.append_correlator_output!`](@ref) — see there for how the two differ.
+`Tracking.append_correlator_output!` — see there for how the two differ.
 
 The window is mutated in place and the struct is not rebuilt, so this is
 allocation-free in steady state and works through the immutable `TrackState`.
 
-The [`Tracking.TrackState`](@ref) form selects the signal:
+The `Tracking.TrackState` form selects the signal:
 
 ```julia
 append_noise_observation!(track_state, obs)             # single-signal TrackState
@@ -456,7 +465,7 @@ get_noise_density(::AbstractNoiseEstimator) = nothing
 $(SIGNATURES)
 
 Per-call side information handed to [`update_noise!`](@ref): what a software
-noise source may need and a [`Tracking.BandMeasurement`](@ref) does not carry.
+noise source may need and a `Tracking.BandMeasurement` does not carry.
 
 Fields:
 

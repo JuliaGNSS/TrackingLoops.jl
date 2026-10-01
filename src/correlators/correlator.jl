@@ -1,4 +1,21 @@
+"""
+    AbstractCorrelator{M}
+
+Abstract supertype for the accumulators of one integration, for `M` antennas.
+A subtype holds one complex accumulator per tap (and antenna) and answers
+[`get_accumulators`](@ref), [`get_prompt`](@ref), [`get_num_ants`](@ref),
+[`get_correlator_sample_shifts`](@ref) and the other accessors.
+"""
 abstract type AbstractCorrelator{M} end
+
+"""
+    AbstractEarlyPromptLateCorrelator{M} <: AbstractCorrelator{M}
+
+Abstract supertype for correlators with an early, a prompt and a late tap —
+the taps the discriminators read ([`get_early`](@ref), [`get_prompt`](@ref),
+[`get_late`](@ref)). [`EarlyPromptLateCorrelator`](@ref) and
+[`VeryEarlyPromptLateCorrelator`](@ref) are its subtypes.
+"""
 abstract type AbstractEarlyPromptLateCorrelator{M} <: AbstractCorrelator{M} end
 
 """

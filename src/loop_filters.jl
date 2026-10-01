@@ -1,3 +1,12 @@
+"""
+    MAX_LOOP_BANDWIDTH_TIME_PRODUCT
+
+The loop bandwidth–update interval product `BL · Δt` the bandwidth rules aim
+for: `0.018`, about a tenth of the `BL · Δt < 0.18` stability edge of the
+bilinear third-order carrier filter. See
+[`default_carrier_loop_filter_bandwidth`](@ref) and
+[`effective_code_loop_filter_bandwidth`](@ref).
+"""
 # Target `BL · Δt` for a loop update interval of `Δt` — ~10× margin from the
 # `BL · Δt < 0.18` practical stability edge of the bilinear third-order carrier
 # filter. Sizes the carrier default against the primary code period, and caps
@@ -16,7 +25,7 @@ $(SIGNATURES)
 Recommended carrier-loop-filter bandwidth for `signal`'s primary integration
 period. Sized so that the PLL time-bandwidth product `BL * T` lands at
 about 0.018 (≈10× margin from the 0.18 stability edge of the bilinear
-third-order filter). Used by [`Tracking.TrackState`](@ref) when the
+third-order filter). Used by `Tracking.TrackState` when the
 user doesn't pass an explicit `doppler_estimator`.
 
 Override by defining a method for your signal type, or by constructing
@@ -125,7 +134,16 @@ function aid_dopplers(
     init_carrier_doppler + carrier_doppler, init_code_doppler + code_doppler
 end
 
+"""
+    calculate_carrier_frequency_update(signal, carrier_loop_filter, correlator, previous_prompt, integration_time, loop_bandwidth)
+        -> (carrier_freq_update, carrier_loop_filter)
 
+One carrier-loop step: the PLL discriminator ([`pll_disc`](@ref)) of
+`correlator`, filtered by `carrier_loop_filter` at `loop_bandwidth`. An
+FLL-assisted filter (`ThirdOrderAssistedBilinearLF`) is additionally fed the FLL
+discriminator ([`fll_disc`](@ref)) between `previous_prompt` and this record's
+prompt. Returns the carrier-frequency correction and the advanced filter.
+"""
 function calculate_carrier_frequency_update(
     signal::AbstractGNSSSignal,
     carrier_loop_filter::ThirdOrderAssistedBilinearLF,
@@ -156,6 +174,17 @@ function calculate_carrier_frequency_update(
     filter_loop(carrier_loop_filter, pll_discriminator, integration_time, loop_bandwidth)
 end
 
+"""
+    calculate_code_frequency_update(signal, code_loop_filter, correlator, code_doppler, sampling_frequency, integration_time, loop_bandwidth)
+        -> (code_freq_update, code_loop_filter)
+
+One code-loop step: the DLL discriminator ([`dll_disc`](@ref)) of
+`correlator`, filtered by `code_loop_filter` at `loop_bandwidth`. `code_doppler`
+is the code Doppler the replica ran with, which the discriminator needs to
+convert the tap spacing from samples to chips. Returns the code-frequency
+correction (before carrier aiding, see [`aid_dopplers`](@ref)) and the advanced
+filter.
+"""
 function calculate_code_frequency_update(
     signal::AbstractGNSSSignal,
     code_loop_filter::AbstractLoopFilter,

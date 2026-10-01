@@ -146,7 +146,7 @@ interferer resolves. On an FPGA an arbitrary code phase is *easier* than phase 0
   - `buffered` — the sliding window itself, a **length-managed FIFO** written in
     place. The `Vector`'s own length is the position, so there is no ring index
     to write back and the struct is never rebuilt — which is what lets per-signal
-    state live in an immutable [`Tracking.TrackState`](@ref).
+    state live in an immutable `Tracking.TrackState`.
 
   - `totals` — the window's running sums (span, `M`-weighted density, looks),
     maintained as entries are pushed and dropped. They are what keeps both

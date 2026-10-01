@@ -2,9 +2,9 @@
 $(SIGNATURES)
 
 Abstract supertype for CN0 (carrier-to-noise-density ratio) estimators.
-Each [`Tracking.TrackedSignal`](@ref) holds one estimator instance, stored in a type
+Each `Tracking.TrackedSignal` holds one estimator instance, stored in a type
 parameter — pass any subtype instance as the `cn0_estimator` keyword of
-[`Tracking.TrackedSignal`](@ref) / [`Tracking.TrackedSat`](@ref) to replace the default
+`Tracking.TrackedSignal` / `Tracking.TrackedSat` to replace the default
 [`NoiseRefCN0Estimator`](@ref); see [`default_cn0_estimator`](@ref) for which to
 pick when. Custom estimators subtype this and implement `TrackingLoops.update` and
 [`estimate_cn0`](@ref), plus [`requires_noise_density`](@ref) if they read a
@@ -27,7 +27,7 @@ Fields:
   - `signal` — the signal the record belongs to.
   - `num_code_blocks` — primary-code blocks this record spanned. One for the
     default configuration; more when the correlate step was lengthened by
-    [`Tracking.set_preferred_num_code_blocks_to_integrate!`](@ref) or an external
+    `Tracking.set_preferred_num_code_blocks_to_integrate!` or an external
     producer handed over longer records.
   - `num_code_blocks_per_bit` — blocks that form one navigation bit (symbol) of
     `signal`; `20` for GPS L1 C/A, `1` for GPS L1C-D / Galileo E1B, and `0` for a
@@ -160,7 +160,7 @@ able to say so, and one that does not must not pay for it.
 Two things key off it, and both are compile-time constants on the estimator's
 type:
 
-  - **Provisioning.** [`Tracking.TrackState`](@ref) gives a signal a
+  - **Provisioning.** `Tracking.TrackState` gives a signal a
     [`CorrelatorNoiseEstimator`](@ref) only where that signal's estimator returns
     `true`. A signal that does not ask gets no entry at all, so its despread
     never runs and costs exactly zero — which is the answer for anyone who
@@ -206,7 +206,7 @@ The default CN0 estimator for `signal`: a [`NoiseRefCN0Estimator`](@ref)
 averaging over `num_prompts_for_cn0_estimation` records, against that signal's
 own measured noise density.
 
-It reads a density, so [`Tracking.TrackState`](@ref) provisions the signal a
+It reads a density, so `Tracking.TrackState` provisions the signal a
 [`CorrelatorNoiseEstimator`](@ref) automatically (see
 [`requires_noise_density`](@ref)) and `track!` fills it from the samples — the
 sample-driven path needs no configuration at all.
