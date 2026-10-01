@@ -46,20 +46,22 @@ Filled by the caller:
     NCO delay, read from the [`NCOTimeline`](@ref), not the last command):
     `code_phase` (chips), `carrier_phase`, `carrier_doppler`, `code_doppler`;
   - at the landing of the command computed now: `landing_lead` (how long after
-    the epoch it lands), `code_phase_at_landing` and `carrier_doppler_at_landing`
-    (the replica predicted there under the words already committed). The code
-    phase at landing counts on from `code_phase`: it is `code_phase` plus the
-    chips the replica advances until the landing, not reduced to a code period,
-    so it is read against the same decoded bit. Without an NCO delay these are
-    `0.0s`, `code_phase` and `carrier_doppler`;
+    the epoch it lands, at most `2.5` navigation cycles), `code_phase_at_landing`,
+    `carrier_doppler_at_landing` and `code_doppler_at_landing` (the replica
+    predicted there under the words already committed). The code phase at
+    landing counts on from `code_phase`: it is `code_phase` plus the chips the
+    replica advances until the landing, not reduced to a code period, so it is
+    read against the same decoded bit. Without an NCO delay these are `0.0s`,
+    `code_phase`, `carrier_doppler` and `code_doppler`;
   - `cn0_dbhz`, `coherent_integration_time` (the last dump's) and
     `early_late_spacing` (chips, measured from the correlator);
   - the flags `in_lock` and `pvt_ready` (ready to enter the scalar PVT solve).
 
 Written back: `estimator_state` (membership, corrections, emptied
 accumulators) and `release_reason` (a [`VTReleaseReason`](@ref)). A released
-satellite's inner loop is re-seeded from `carrier_doppler` and `code_doppler`
-(see [`release_from_vector_tracking`](@ref)).
+satellite's inner loop is re-seeded from `carrier_doppler_at_landing` and
+`code_doppler_at_landing`, the replica its scalar loop takes over from (see
+[`release_from_vector_tracking`](@ref)).
 """
 @kwdef mutable struct VTSat{D,E<:SatVectorPLLAndDLL}
     prn::Int
@@ -73,6 +75,7 @@ satellite's inner loop is re-seeded from `carrier_doppler` and `code_doppler`
     landing_lead::typeof(1.0s) = 0.0s
     code_phase_at_landing::Float64 = 0.0
     carrier_doppler_at_landing::typeof(1.0Hz) = 0.0Hz
+    code_doppler_at_landing::typeof(1.0Hz) = 0.0Hz
     cn0_dbhz::Float64 = NaN
     coherent_integration_time::typeof(1.0s) = 0.001s
     early_late_spacing::Float64 = 0.5
@@ -396,10 +399,15 @@ function _reset_release_reasons!(acc, group, g, buffer)
     acc
 end
 
-# Hand `sat` back to its scalar loop for `reason`.
+# Hand `sat` back to its scalar loop for `reason`. The words committed until the
+# landing were the vector loop's, so the scalar loop takes over from the replica
+# there; without an NCO delay that is the epoch's.
 function _release!(sat::VTSat, reason::VTReleaseReason)
-    sat.estimator_state =
-        release_from_vector_tracking(sat.estimator_state, sat.carrier_doppler, sat.code_doppler)
+    sat.estimator_state = release_from_vector_tracking(
+        sat.estimator_state,
+        sat.carrier_doppler_at_landing,
+        sat.code_doppler_at_landing,
+    )
     sat.release_reason = reason
     nothing
 end

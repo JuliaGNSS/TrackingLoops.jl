@@ -204,6 +204,7 @@ function fill_vtsat!(vtsat::VTSat, sat::SimSat, epoch_sample, landing_sample; in
         vtsat.landing_lead = 0.0s
         vtsat.code_phase_at_landing = epoch_state.code_phase
         vtsat.carrier_doppler_at_landing = carrier * Hz
+        vtsat.code_doppler_at_landing = code * Hz
     else
         lead = (landing_sample - epoch_sample) / fs
         # The replica's code phase at landing under the words already committed.
@@ -218,7 +219,9 @@ function fill_vtsat!(vtsat::VTSat, sat::SimSat, epoch_sample, landing_sample; in
         # The code phase at landing counts on from the epoch's.
         vtsat.code_phase_at_landing =
             epoch_state.code_phase + (u - sat.replica_time) * sat.code_frequency
-        vtsat.carrier_doppler_at_landing = first(nco_word_at(sat.timeline, landing_sample)) * Hz
+        landing_carrier, landing_code = nco_word_at(sat.timeline, landing_sample)
+        vtsat.carrier_doppler_at_landing = landing_carrier * Hz
+        vtsat.code_doppler_at_landing = landing_code * Hz
     end
     vtsat.cn0_dbhz = 45.0
     vtsat.coherent_integration_time = record_ms(sat.signal) * 1.0ms
