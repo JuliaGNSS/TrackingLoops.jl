@@ -27,6 +27,20 @@ tail_code_errors(results) = maximum(r -> maximum(abs, r.code_errors), results)
     @test tail_code_errors(results[51:end]) < 0.01
 end
 
+@testset "Cycles off the nominal interval are propagated by their own length" begin
+    # A cycle runs on the first chunk boundary past the nominal interval: 104 ms cycles on
+    # a filter built for 100 ms, under a TCXO's 600 m/s of clock drift. A process model
+    # kept at 100 ms would mispredict the clock by drift · 4 ms = 2.4 m every cycle.
+    rx = SimReceiver(; records_per_cycle = 104, nominal_cycle = 100.0ms,
+        truth_kw = (; clock_drift = 600.0))
+    results, _, diverged = run_simulation!(rx, 100)
+    @test !diverged
+    @test rx.vt.model.integration_time ≈ 104.0ms
+    tail = results[51:end]
+    @test tail_errors(rx, tail) < 0.2
+    @test tail_code_errors(tail) < 0.005
+end
+
 @testset "An outage of some satellites is ridden through" begin
     rx = SimReceiver()
     # Three satellites lose their signal for five seconds and stay in the loop, steered

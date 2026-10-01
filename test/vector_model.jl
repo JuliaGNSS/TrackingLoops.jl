@@ -230,13 +230,18 @@ end
     )
     @test loose_ifb.Q[ifb_index, ifb_index] ≈ 25 * nav_ifb.Q[ifb_index, ifb_index]
 
-    # Integration-time management: minor deviations are tolerated, larger ones
-    # rebuild the process model in place.
+    # Integration-time management: the process model follows the measured interval,
+    # however small the deviation (a chunk's 4 ms on 100 ms is metres of clock bias at a
+    # TCXO's drift), rebuilt in place.
     nav = TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 100.0ms)
     F = nav.F
-    TL.ensure_nav_filter_integration_time!(nav, config, 0.1005s)
-    @test nav.integration_time == 100.0ms
-    @test nav.F[1, 2] == 0.1
+    Q = copy(nav.Q)
+    TL.ensure_nav_filter_integration_time!(nav, config, 100.0ms)
+    @test nav.Q == Q
+    TL.ensure_nav_filter_integration_time!(nav, config, 0.104s)
+    @test nav.integration_time == 0.104s
+    @test nav.F[1, 2] == 0.104
+    @test nav.Q == TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 0.104s).Q
     TL.ensure_nav_filter_integration_time!(nav, config, 0.2s)
     @test nav.integration_time == 0.2s
     @test nav.F[1, 2] ≈ 0.2
