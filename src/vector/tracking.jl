@@ -593,8 +593,11 @@ end
 function _measurement_buffers!(buffers::VTBuffers, num_states, num_measurements)
     cache = buffers.measurement_updates
     if num_measurements > length(cache)
+        # The element type is not isbits: every new slot must be filled, or it is
+        # `#undef` for a later, smaller count.
+        num_cached = length(cache)
         resize!(cache, num_measurements)
-        cache[num_measurements] = nothing
+        fill!(view(cache, (num_cached+1):num_measurements), nothing)
     end
     cached = cache[num_measurements]
     isnothing(cached) || return cached
@@ -1069,13 +1072,20 @@ function _write_solution!(vt::VectorTrackingState, groups)
         set!(member_sats, _member_key(layout, members[j]), _member_info(buffers, j))
     end
 
+    # Only the biases this update measured, as `calc_pvt` reports only the ones it
+    # estimated: a time system or band without a measurement coasts on its process noise
+    # (or was never seeded at all), and a consumer could not tell its value from a
+    # measured one.
     inter_system_biases = solution.inter_system_biases
     for (index, time_system) in enumerate(layout.time_systems)
         index == vt.primary_clock_index && continue
+        _is_measured(member -> member.clock_bias_index == index, members, included) ||
+            continue
         inter_system_biases[time_system] = (x[idxs.clock_biases[index]] - primary_clock_bias) * m
     end
     inter_frequency_biases = solution.inter_frequency_biases
     for (index, band) in enumerate(layout.extra_bands)
+        _is_measured(member -> member.ifb_index == index, members, included) || continue
         inter_frequency_biases[band] =
             InterFrequencyBias(x[idxs.ifb[index]] * m, layout.reference_bands[index])
     end
@@ -1096,6 +1106,13 @@ function _write_solution!(vt::VectorTrackingState, groups)
     nothing
 end
 
+# Whether one of the members at `included` satisfies `predicate`.
+function _is_measured(predicate::F, members, included) where {F}
+    for j in included
+        predicate(members[j]) && return true
+    end
+    false
+end
 _member_key(layout::NavFilterLayout, member::VTMember) =
     (layout.signal_id_by_group[member.group], member.prn)
 

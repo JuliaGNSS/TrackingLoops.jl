@@ -245,6 +245,19 @@ end
     @test results[1].status.num_members == length(rx.sats)
 end
 
+@testset "Biases are reported only for what was measured" begin
+    rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()))
+    # No Galileo satellite in lock: its clock coasts and is not reported.
+    gps_only!(v, sat, epoch, landing) =
+        (fill_vtsat!(v, sat, epoch, landing); sat.signal isa GalileoE1B && (v.in_lock = false))
+    results, sample, _ = run_simulation!(rx, 10; fill! = gps_only!)
+    @test results[end].status.running
+    @test !haskey(results[end].pvt.inter_system_biases, GST())
+    @test all(key -> first(key) === :GPSL1CA, keys(results[end].pvt.sats))
+    results, _, _ = run_simulation!(rx, 3; start_sample = sample)
+    @test haskey(results[end].pvt.inter_system_biases, GST())
+end
+
 @testset "A re-seed reads the epoch offset afresh" begin
     rx = SimReceiver()
     results, sample, _ = run_simulation!(rx, 5)
@@ -303,4 +316,15 @@ end
     results, _, diverged = run_simulation!(rx, 2; start_sample = sample)
     @test !diverged
     @test all(r -> r.status.running, results)
+end
+
+@testset "The measurement-buffer cache grows without undefined slots" begin
+    rx = SimReceiver()
+    run_simulation!(rx, 2)
+    buffers = rx.vt.buffers
+    n = length(buffers.measurement_updates)
+    num_states = length(rx.vt.x)
+    @test size(TL._measurement_buffers!(buffers, num_states, n + 3).z) == (n + 3,)
+    @test size(TL._measurement_buffers!(buffers, num_states, n + 1).z) == (n + 1,)
+    @test length(buffers.measurement_updates) == n + 3
 end
