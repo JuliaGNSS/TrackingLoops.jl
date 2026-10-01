@@ -121,6 +121,8 @@ for (sat, channel) in zip(gps.sats, channels)
     sat.carrier_doppler_at_landing = channel.carrier_doppler
     sat.code_doppler_at_landing = channel.code_doppler
     sat.cn0_dbhz = channel.cn0
+    sat.coherent_integration_time = channel.coherent_integration_time  # the last dump's
+    sat.early_late_spacing = channel.early_late_spacing                # chips
     sat.in_lock = channel.in_lock
     sat.pvt_ready = channel.pvt_ready
 end
@@ -133,10 +135,14 @@ marked `pvt_ready`. Its first fix seeds the filter, and from then on every cycle
 fuses the accumulated DLL and FLL discriminators and writes each member's NCO
 corrections into its estimator state. With a hardware correlator the
 corrections take effect when the command lands. Pass `landing_lead` and the
-replica predicted there (`code_phase_at_landing`, `carrier_doppler_at_landing`)
-and the corrections are sized for that moment. Nothing is logged: `VTStatus`
-reports the events, and each `VTSat` its `release_reason`. Once warm, a cycle
-allocates nothing and compiles with `juliac --trim=safe` (see `test/trim`).
+replica predicted there (`code_phase_at_landing`, `carrier_doppler_at_landing`,
+`code_doppler_at_landing`) and the corrections are sized for that moment; a
+released satellite's scalar loop takes over from that replica. The landing may
+lie up to 2.5 cycles after the epoch. `coherent_integration_time` and
+`early_late_spacing` size the measurement noise, so they must be the
+correlator's own. Nothing is logged: `VTStatus` reports the events, and each
+`VTSat` its `release_reason`. Once warm, a cycle allocates nothing and compiles
+with `juliac --trim=safe` (see `test/trim`).
 
 ## Platforms
 
