@@ -2,6 +2,7 @@
 # `vector_simulation.jl`: seeding from the scalar fix, the loop closure, membership and
 # release, the solution, and decoding.
 using PositionVelocityTime: calc_ρ_hat!, PVTSolution, TAITime
+using Geodesy: ENUfromECEF, wgs84
 
 @testset "VTSat defaults" begin
     decoder = GNSSDecoderState(GPSL1CA(), 5)
@@ -216,6 +217,32 @@ end
     @test released.release_reason == VT_INELIGIBLE
     @test released.estimator_state.inner.init_carrier_doppler == released.carrier_doppler + 3.0Hz
     @test released.estimator_state.inner.init_code_doppler == released.code_doppler + 0.002Hz
+end
+
+@testset "A satellite is admitted only above the admission mask" begin
+    rx = SimReceiver()
+    _, sample, _ = run_simulation!(rx, 5)
+    vt = rx.vt
+    group = rx.group
+    sat = group.sats[1]
+    sat.estimator_state = disable_vector_tracking(sat.estimator_state)
+    user_pos = first(TL.nav_filter_states(vt.x, vt.model.idxs))
+    here = ENUfromECEF(ECEF(user_pos...), wgs84)
+    antipode = ENUfromECEF(ECEF((-user_pos)...), wgs84)
+    @test TL._is_above_admission_mask(group.signal, sat, here)
+    @test !TL._is_above_admission_mask(group.signal, sat, antipode)
+    # Eligible and in lock, but below the mask: not admitted, so a satellite at the
+    # horizon is not admitted and released every cycle. A member stays a member; the
+    # elevation mask of the running cycle releases it.
+    @test !TL._update_membership!(false, group, 1, nothing, antipode)
+    @test !sat.estimator_state.vt_on
+    @test all(v -> v.estimator_state.vt_on, group.sats[2:end])
+    TL._update_membership!(false, group, 1, nothing, here)
+    @test sat.estimator_state.vt_on
+    # A running cycle admits it back at the filter's own position.
+    sat.estimator_state = disable_vector_tracking(sat.estimator_state)
+    results, _, _ = run_simulation!(rx, 1; start_sample = sample)
+    @test results[1].status.num_members == length(rx.sats)
 end
 
 @testset "update_navigation! rejects a cycle time and landing leads it cannot use" begin

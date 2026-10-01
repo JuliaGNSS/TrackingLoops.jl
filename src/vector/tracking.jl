@@ -22,7 +22,9 @@ this cycle:
   - `VT_NOT_RELEASED`: it was not;
   - `VT_INELIGIBLE`: no longer tracked (`active == false`), decoded for
     positioning, or healthy;
-  - `VT_BELOW_HORIZON`: below the horizon at the updated position;
+  - `VT_BELOW_HORIZON`: below the horizon at the updated position. It is not
+    admitted again until it stands a degree above the horizon, so a satellite
+    at the horizon is not admitted and released every cycle;
   - `VT_FALLBACK`: vector tracking stopped (starvation timeout, or no member
     left).
 
@@ -417,9 +419,23 @@ _is_eligible(sat::VTSat) =
     is_decoding_completed_for_positioning(sat.decoder) &&
     is_sat_healthy(sat.decoder)
 
-# Admit the satellites that are eligible (tracked, decoded for positioning, healthy)
-# *and* in lock, and release the members that are no longer eligible. Returns whether
-# anything was released.
+# The elevation a satellite has to reach before it is admitted, above the horizon at
+# which a member is released: the hysteresis keeps a satellite near the horizon from
+# being admitted and released, its scalar loop re-seeded, every cycle. One degree is a
+# few minutes of a rising satellite.
+const ADMISSION_ELEVATION = deg2rad(1.0)
+
+# Whether a satellite stands at least `ADMISSION_ELEVATION` above the horizon of
+# `enu_from_ecef`, at its transmit time.
+function _is_above_admission_mask(signal, sat::VTSat, enu_from_ecef)
+    orbit = calc_satellite_position_and_velocity(_satellite_state(signal, sat))
+    get_sat_enu(enu_from_ecef, _ecef(get_sat_position(orbit))).ϕ >= ADMISSION_ELEVATION
+end
+
+# Admit the satellites that are eligible (tracked, decoded for positioning, healthy),
+# in lock and above the admission mask at the filter's position (`enu_from_ecef`), and
+# release the members that are no longer eligible. Returns whether anything was
+# released.
 #
 # NOTE: admission is deliberately gated on `in_lock` and not on a stricter
 # ranging-ready flag, even though admitting a satellite whose code phase is still tens
@@ -430,12 +446,15 @@ _is_eligible(sat::VTSat) =
 #
 # A member out of lock is not released: it stays in the loop, unmeasured, and keeps
 # receiving corrections.
-function _update_membership!(released, group, g, buffer)
+function _update_membership!(released, group, g, buffer, enu_from_ecef)
     for sat in group.sats
         eligible = _is_eligible(sat)
+        state = sat.estimator_state
         if eligible && sat.in_lock
-            sat.estimator_state = enable_vector_tracking(sat.estimator_state)
-        elseif !eligible && sat.estimator_state.vt_on
+            if state.vt_on || _is_above_admission_mask(group.signal, sat, enu_from_ecef)
+                sat.estimator_state = enable_vector_tracking(state)
+            end
+        elseif !eligible && state.vt_on
             _release!(sat, VT_INELIGIBLE)
             released = true
         end
@@ -855,7 +874,10 @@ function _run_cycle!(vt::VectorTrackingState, groups, cycle_time)
     reference_time = mod(advanced_reference_time, SECONDS_PER_WEEK * s)
     reference_tow = ustrip(s, reference_time)
 
-    released = _fold_groups(_update_membership!, false, groups, buffers.states, 1)
+    # Admission is judged at the solution the filter starts the cycle from.
+    admission_frame = ENUfromECEF(_ecef(first(nav_filter_states(vt.x, idxs))), wgs84)
+    released =
+        _fold_groups(_update_membership!, false, groups, buffers.states, 1, admission_frame)
     ionospheric_correction = _gather_members!(vt, groups, T)
     members = buffers.members
     num_members = length(members)
