@@ -245,6 +245,49 @@ end
     @test results[1].status.num_members == length(rx.sats)
 end
 
+@testset "A re-seed reads the epoch offset afresh" begin
+    rx = SimReceiver()
+    results, sample, _ = run_simulation!(rx, 5)
+    before = results[end].pvt.time
+    # The scalar solve takes over, and the cached epoch offset is a week stale, as after
+    # a GPST week rollover no running cycle saw.
+    rx.vt.time_epoch_offset -= TL.SECONDS_PER_WEEK
+    rx.vt.running = false
+    results, _, _ = run_simulation!(rx, 2; start_sample = sample)
+    @test results[1].status.enabled
+    @test results[2].status.running
+    @test results[2].pvt.time - before ≈ 0.2 atol = 1e-3
+end
+
+@testset "Stale members of a rebuilt state do not stop the seed" begin
+    rx = SimReceiver()
+    _, sample, _ = run_simulation!(rx, 5)
+    @test all(v -> v.estimator_state.vt_on, rx.group.sats)
+    # A loop process rebuilds its state over the channel states it kept, all still in
+    # the loop, one of them reacquired and not decoded yet.
+    vt = VectorTrackingState(VectorTracking(), rx.groups; approximate_year = 2021,
+        enable_ionospheric_correction = false, enable_tropospheric_correction = false)
+    rebuilt = SimReceiver(rx.channels, rx.groups, vt, rx.truth, rx.estimator, rx.cycle_ms, rx.delay_ms)
+    prn = rx.sats[1].decoder.prn
+    reacquired!(v, sat, epoch, landing) = begin
+        fill_vtsat!(v, sat, epoch, landing)
+        if v.prn == prn
+            v.decoder = GNSSDecoderState(GPSL1CA(), prn)
+            v.pvt_ready = false
+        end
+    end
+    results, _, _ = run_simulation!(rebuilt, 1; fill! = reacquired!, start_sample = sample)
+    status = results[1].status
+    @test status.enabled
+    @test status.released
+    @test rx.group.sats[1].release_reason == VT_INELIGIBLE
+    @test !rx.group.sats[1].estimator_state.vt_on
+    @test status.num_members == length(rx.sats) - 1
+    # The others start over in the loop, with nothing stale accumulated.
+    @test all(v -> v.estimator_state.vt_on && v.estimator_state.code_discr_acc == (0, 0.0),
+        rx.group.sats[2:end])
+end
+
 @testset "update_navigation! rejects a cycle time and landing leads it cannot use" begin
     rx = SimReceiver()
     _, sample, _ = run_simulation!(rx, 2)
