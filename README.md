@@ -119,6 +119,7 @@ for (sat, channel) in zip(gps.sats, channels)
     sat.code_doppler = channel.code_doppler
     sat.code_phase_at_landing = channel.code_phase  # no NCO delay
     sat.carrier_doppler_at_landing = channel.carrier_doppler
+    sat.code_doppler_at_landing = channel.code_doppler
     sat.cn0_dbhz = channel.cn0
     sat.in_lock = channel.in_lock
     sat.pvt_ready = channel.pvt_ready

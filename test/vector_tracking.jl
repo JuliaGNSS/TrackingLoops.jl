@@ -166,6 +166,8 @@ end
     @test released.estimator_state.code_freq_update == 0.0Hz
     @test released.estimator_state.inner.init_carrier_doppler == released.carrier_doppler
     @test released.estimator_state.inner.init_code_doppler == released.code_doppler
+    @test released.carrier_doppler_at_landing == released.carrier_doppler
+    @test released.code_doppler_at_landing == released.code_doppler
     @test results[1].status.num_members == length(rx.sats) - 1
     @test !haskey(rx.vt.member_sats, (:GPSL1CA, released.prn))
     @test all(v.release_reason == VT_NOT_RELEASED for v in rx.group.sats if v !== released)
@@ -192,6 +194,28 @@ end
     new_decoder = decode_soft_bits!(decoder, state)
     @test new_decoder isa typeof(decoder)
     @test isempty(get_soft_bits(state))
+end
+
+@testset "A released satellite takes over from the replica at landing" begin
+    rx = SimReceiver()
+    _, sample, _ = run_simulation!(rx, 5)
+    # Under an NCO delay the words committed until the landing are the vector loop's,
+    # so the scalar loop re-seeds from the replica there, not from the epoch's.
+    prn = rx.sats[2].decoder.prn
+    function drop_delayed!(v, sat, epoch, landing)
+        fill_vtsat!(v, sat, epoch, landing)
+        if v.prn == prn
+            v.active = false
+            v.landing_lead = 0.02s
+            v.carrier_doppler_at_landing = v.carrier_doppler + 3.0Hz
+            v.code_doppler_at_landing = v.code_doppler + 0.002Hz
+        end
+    end
+    run_simulation!(rx, 1; fill! = drop_delayed!, start_sample = sample)
+    released = rx.group.sats[2]
+    @test released.release_reason == VT_INELIGIBLE
+    @test released.estimator_state.inner.init_carrier_doppler == released.carrier_doppler + 3.0Hz
+    @test released.estimator_state.inner.init_code_doppler == released.code_doppler + 0.002Hz
 end
 
 @testset "update_navigation! rejects a cycle time and landing leads it cannot use" begin
