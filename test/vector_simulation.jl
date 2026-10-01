@@ -261,6 +261,7 @@ function SimReceiver(;
     num_sats = typemax(Int),
     records_per_cycle = 100, # cycle length in milliseconds
     delay_records = 0,       # NCO delay in milliseconds
+    nominal_cycle = records_per_cycle * 1.0ms, # the filter's process model to start from
     truth_kw = (;),
 )
     fixtures = map(fixture_decoders, signals)
@@ -277,7 +278,7 @@ function SimReceiver(;
     end
     vt = VectorTrackingState(config, groups; approximate_year = 2021,
         enable_ionospheric_correction = false, enable_tropospheric_correction = false,
-        integration_time = records_per_cycle * 1.0ms)
+        integration_time = nominal_cycle)
     SimReceiver(channels, groups, vt, truth, estimator, records_per_cycle, delay_records)
 end
 
