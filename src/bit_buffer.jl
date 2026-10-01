@@ -858,18 +858,33 @@ function BitBuffer(
 end
 
 @inline length(bit_buffer::BitBuffer) = Base.length(bit_buffer.soft_bits)
+"""
+    has_bit_or_secondary_code_been_found(bit_buffer::BitBuffer)
+    has_bit_or_secondary_code_been_found(state::SignalLoopState)
+
+Whether the signal's navigation-bit boundary (data signals) or secondary-code
+phase (pilots) has been found. From then on the signal may be integrated over
+more than one primary code period, and completed bits are collected for
+[`get_soft_bits`](@ref).
+"""
 @inline has_bit_or_secondary_code_been_found(bit_buffer::BitBuffer) = bit_buffer.found
 
-# Get the soft bits, i.e. the accumulated (summed) filtered prompt of each
-# completed bit. This is the only decoded-bit store; a hard decision is the
-# sign, `soft_bit > 0`. Bits recovered from the pre-sync sign window at
-# bit-sync time only have ±1 prompt signs available; their sign-vote sum is
-# scaled by the sync-time prompt magnitude so the magnitudes stay comparable
-# (as reliabilities) with the coherently accumulated post-sync bits. The
-# buffer is reset to length 0 at the start of each `track` call. Kept as a
-# plain comment (not a docstring) to match the sibling accessor
-# `get_num_bits`, which `checkdocs = :exports` would otherwise require to
-# appear in the manual.
+"""
+    get_soft_bits(bit_buffer::BitBuffer)
+    get_soft_bits(state::SignalLoopState)
+
+The soft bits decoded so far: for each completed navigation bit, the sum of
+its filtered prompts (real part, after de-rotation). A hard decision is the
+sign, `soft_bit > 0`; the magnitude is the bit's reliability.
+
+Bits recovered from the pre-sync window at the moment of bit sync only have
+the ±1 signs of their prompts available; their sign-vote sum is scaled by the
+sync-time prompt magnitude so that their magnitudes stay comparable with the
+coherently accumulated post-sync bits.
+
+This is the buffer's own vector, not a copy. The consumer drains it (`empty!`)
+after reading; it has room for 64 bits before it grows and allocates.
+"""
 @inline get_soft_bits(bit_buffer::BitBuffer) = bit_buffer.soft_bits
 
 """

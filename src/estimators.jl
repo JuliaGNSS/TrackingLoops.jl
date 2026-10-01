@@ -408,9 +408,13 @@ function reset_estimator_state(
     )
 end
 
-# A BPSK prompt fixes the carrier phase modulo π, and so does `pll_disc`; a
-# predicted phase error has to be folded into the same (−π/2, π/2] range. Exact
-# for anything already inside it.
+"""
+    wrap_half_cycle(phase)
+
+Fold a carrier-phase error (in radians) into `[−π/2, π/2]`, the range a
+BPSK prompt — and therefore [`pll_disc`](@ref) — can tell the phase in, since
+a data bit flip turns the prompt by π. Exact for any phase already inside it.
+"""
 wrap_half_cycle(phase) = rem(phase, π, RoundNearest)
 
 """
