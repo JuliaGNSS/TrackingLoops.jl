@@ -287,107 +287,40 @@ One record through the vector loop. Out of the vector loop this is
     code_doppler
 end
 
-# The inner loop's record, in the vector loop: the carrier filter stepped with
-# the filter's carrier correction in its FLL slot, the code filter frozen and
-# the code correction in place of its output. Returns the inner state, both
-# Dopplers and the two discriminators to accumulate: the DLL (normalised with
-# the code word the record ran on, as in the scalar loop) and the raw FLL — the
-# mean offset from the replica that ran between the two prompts' centres,
-# before any re-basing onto a landing word.
+# The inner loop's record, in the vector loop: the discriminators exactly as the
+# inner loop measures them (`_record_discriminators`; the NCO-referenced loop's
+# phase error keeps its prediction to the landing sample), the carrier filter
+# stepped with the filter's carrier correction in its FLL slot, the code filter
+# frozen and the code correction in place of its output. Returns the inner
+# state, both Dopplers and the two discriminators to accumulate: the DLL and the
+# raw FLL — the mean offset from the replica that ran between the two prompts'
+# centres, before any re-basing onto a landing word.
 @inline function _step_vector_loop(
-    ::ConventionalPLLAndDLL,
-    state::SatConventionalPLLAndDLL,
+    estimator,
+    state,
     record::LoopRecord,
     words,
     landing_sample::Int64,
     code_freq_update,
     carrier_freq_update,
 )
-    signal = record.signal
-    integration_time = record.integrated_samples / record.sampling_frequency
-    record_start = record.sample_index - record.integrated_samples
-    _, applied_code = mean_nco_word(words, record_start, record.sample_index)
-    carrier_bandwidth = state.carrier_loop_filter_bandwidth / record.integrated_code_blocks
-    filtered_correlator = record.filtered_correlator
-    phase_error = pll_disc(signal, filtered_correlator)
-    frequency_error =
-        fll_disc(signal, filtered_correlator, record.previous_prompt, integration_time)
-    dll_discriminator =
-        dll_disc(signal, filtered_correlator, applied_code * Hz, record.sampling_frequency)
+    discriminators = _record_discriminators(estimator, state, record, words, landing_sample)
     carrier_filter_output, carrier_loop_filter = filter_loop(
         state.carrier_loop_filter,
-        (phase_error, carrier_freq_update),
-        integration_time,
-        carrier_bandwidth,
+        (discriminators.phase_error, carrier_freq_update),
+        discriminators.integration_time,
+        discriminators.carrier_bandwidth,
     )
     carrier_doppler, code_doppler = aid_dopplers(
-        signal,
+        record.signal,
         state.init_carrier_doppler,
         state.init_code_doppler,
         carrier_filter_output,
         code_freq_update,
     )
-    SatConventionalPLLAndDLL(state; carrier_loop_filter),
+    _stepped_state(state, carrier_loop_filter, state.code_loop_filter, discriminators.center),
     carrier_doppler,
     code_doppler,
-    dll_discriminator,
-    frequency_error
-end
-
-@inline function _step_vector_loop(
-    estimator::NCOReferencedPLLAndDLL,
-    state::SatNCOReferencedPLLAndDLL,
-    record::LoopRecord,
-    words,
-    landing_sample::Int64,
-    code_freq_update,
-    carrier_freq_update,
-)
-    signal = record.signal
-    sampling_frequency = record.sampling_frequency
-    shift = landing_sample == NO_LANDING_SAMPLE ? 0 : landing_sample - record.fold_end
-    record_end = record.sample_index
-    record_samples = record.integrated_samples
-    record_start = record_end - record_samples
-    center = record_end - record_samples / 2
-    integration_time = record_samples / sampling_frequency
-    filtered_correlator = record.filtered_correlator
-    _, applied_code = mean_nco_word(words, record_start, record_end)
-    phase_error = pll_disc(signal, filtered_correlator)
-    frequency_error =
-        fll_disc(signal, filtered_correlator, record.previous_prompt, integration_time)
-    # The PLL keeps its landing prediction; the FLL slot carries the filter's
-    # correction, so the frequency re-basing has nothing to act on.
-    if estimator.predict_landing && shift > 0
-        phase_error = _predict_landing_phase_error(
-            phase_error,
-            state,
-            words,
-            center,
-            shift,
-            integration_time,
-            sampling_frequency,
-        )
-    end
-    dll_discriminator =
-        dll_disc(signal, filtered_correlator, applied_code * Hz, sampling_frequency)
-    carrier_bandwidth = state.carrier_loop_filter_bandwidth / record.integrated_code_blocks
-    carrier_filter_output, carrier_loop_filter = filter_loop(
-        state.carrier_loop_filter,
-        (phase_error, carrier_freq_update),
-        integration_time,
-        carrier_bandwidth,
-    )
-    carrier_doppler, code_doppler = aid_dopplers(
-        signal,
-        state.init_carrier_doppler,
-        state.init_code_doppler,
-        carrier_filter_output,
-        code_freq_update,
-    )
-    SatNCOReferencedPLLAndDLL(state; carrier_loop_filter, previous_record_center = center),
-    carrier_doppler,
-    code_doppler,
-    dll_discriminator,
-    frequency_error
+    discriminators.code_error,
+    discriminators.raw_frequency_error
 end
