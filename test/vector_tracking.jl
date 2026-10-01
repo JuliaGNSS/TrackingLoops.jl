@@ -193,3 +193,20 @@ end
     @test new_decoder isa typeof(decoder)
     @test isempty(get_soft_bits(state))
 end
+
+@testset "update_navigation! rejects a cycle time and landing leads it cannot use" begin
+    rx = SimReceiver()
+    _, sample, _ = run_simulation!(rx, 2)
+    @test_throws ArgumentError update_navigation!(rx.vt, rx.groups, 0.0s)
+    @test_throws ArgumentError update_navigation!(rx.vt, rx.groups, -0.1s)
+    @test_throws ArgumentError update_navigation!(rx.vt, rx.groups, Inf * s)
+    sat = rx.group.sats[1]
+    sat.landing_lead = 0.26s
+    @test_throws ArgumentError update_navigation!(rx.vt, rx.groups, 0.1s)
+    sat.landing_lead = -0.01s
+    @test_throws ArgumentError update_navigation!(rx.vt, rx.groups, 0.1s)
+    # Nothing was touched: the loop runs on.
+    results, _, diverged = run_simulation!(rx, 2; start_sample = sample)
+    @test !diverged
+    @test all(r -> r.status.running, results)
+end

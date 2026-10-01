@@ -71,14 +71,16 @@ state and, on top, the interface to the vector-tracking filter.
     the satellite runs the inner loop and nothing is accumulated.
   - `code_discr_acc` / `carrier_discr_acc`: `(count, sum)` of the DLL output
     (chips) and the raw FLL discriminator (Hz) since the filter last read them.
-  - `code_freq_update` / `carrier_freq_update`: the corrections in effect,
-    written by [`set_vector_corrections`](@ref) only — the per-record step never
-    writes them.
-  - `previous_code_freq_update` and `code_update_landing_lead`: the code
-    correction that was in effect before `code_freq_update`, and how long after
-    the filter's cycle epoch `code_freq_update` reached the replica (zero for a
-    software correlator). The filter's next code measurement needs both to move
-    the mid-cycle mean discriminator to the epoch.
+  - `code_freq_update` / `carrier_freq_update`: the corrections the per-record
+    step applies, written by [`set_vector_corrections`](@ref) only — the
+    per-record step never writes them.
+  - `code_freq_update_history` and `code_update_landing_lead`: the last three
+    code corrections the filter set, newest first, and how long after the
+    filter's cycle epoch the newest reached the replica (zero for a software
+    correlator). The filter's next code measurement needs them to move the
+    mid-cycle mean discriminator to the epoch. They record what the replica was
+    steered by, so a [`reset_estimator_state`](@ref), which folds the newest
+    correction into the inner loop's Dopplers, keeps them.
 """
 struct SatVectorPLLAndDLL{S}
     inner::S
@@ -87,12 +89,20 @@ struct SatVectorPLLAndDLL{S}
     carrier_discr_acc::Tuple{Int,typeof(1.0Hz)}
     code_freq_update::typeof(1.0Hz)
     carrier_freq_update::typeof(1.0Hz)
-    previous_code_freq_update::typeof(1.0Hz)
+    code_freq_update_history::NTuple{3,typeof(1.0Hz)}
     code_update_landing_lead::typeof(1.0s)
 end
 
-SatVectorPLLAndDLL(inner, vt_on::Bool) =
-    SatVectorPLLAndDLL(inner, vt_on, (0, 0.0), (0, 0.0Hz), 0.0Hz, 0.0Hz, 0.0Hz, 0.0s)
+SatVectorPLLAndDLL(inner, vt_on::Bool) = SatVectorPLLAndDLL(
+    inner,
+    vt_on,
+    (0, 0.0),
+    (0, 0.0Hz),
+    0.0Hz,
+    0.0Hz,
+    (0.0Hz, 0.0Hz, 0.0Hz),
+    0.0s,
+)
 
 function SatVectorPLLAndDLL(
     state::SatVectorPLLAndDLL{S};
@@ -107,7 +117,7 @@ function SatVectorPLLAndDLL(
         something(carrier_discr_acc, state.carrier_discr_acc),
         state.code_freq_update,
         state.carrier_freq_update,
-        state.previous_code_freq_update,
+        state.code_freq_update_history,
         state.code_update_landing_lead,
     )
 end
@@ -131,19 +141,27 @@ init_estimator_state(
 """
     reset_estimator_state(estimator::VectorPLLAndDLL, state, carrier_doppler, code_doppler)
 
-Re-seed the inner loop from the converged Dopplers and zero both accumulators
-and all corrections, keeping `vt_on`. The corrections must go with the re-seed:
-the converged Dopplers already contain the last correction, so keeping it
-would apply it twice.
+Re-seed the inner loop from the converged Dopplers, zero both accumulators and
+stop applying the corrections, keeping `vt_on`. The corrections must leave the
+NCO words with the re-seed: the converged Dopplers already contain the last
+correction, so keeping it would apply it twice. The replica is still steered by
+it, though, so the correction history and its landing lead, which the next
+code measurement is moved to the epoch with, are kept.
 """
 reset_estimator_state(
     estimator::VectorPLLAndDLL,
-    state::SatVectorPLLAndDLL,
+    state::SatVectorPLLAndDLL{S},
     carrier_doppler,
     code_doppler,
-) = SatVectorPLLAndDLL(
+) where {S} = SatVectorPLLAndDLL{S}(
     reset_estimator_state(estimator.inner, state.inner, carrier_doppler, code_doppler),
     state.vt_on,
+    (0, 0.0),
+    (0, 0.0Hz),
+    0.0Hz,
+    0.0Hz,
+    state.code_freq_update_history,
+    state.code_update_landing_lead,
 )
 
 """
@@ -191,25 +209,28 @@ _reseed_inner(state::SatNCOReferencedPLLAndDLL, carrier_doppler, code_doppler) =
 
 The filter's NCO corrections for this satellite, taking over at `landing_lead`
 after the filter's cycle epoch (zero for a software correlator). The code
-correction in effect so far is kept as `previous_code_freq_update`. Applies to
-a satellite out of the vector loop too, where the corrections are simply not
+correction joins the front of `code_freq_update_history`. Applies to a
+satellite out of the vector loop too, where the corrections are simply not
 used.
 """
-set_vector_corrections(
+function set_vector_corrections(
     state::SatVectorPLLAndDLL{S},
     code_freq_update,
     carrier_freq_update,
     landing_lead = 0.0s,
-) where {S} = SatVectorPLLAndDLL{S}(
-    state.inner,
-    state.vt_on,
-    state.code_discr_acc,
-    state.carrier_discr_acc,
-    code_freq_update,
-    carrier_freq_update,
-    state.code_freq_update,
-    landing_lead,
-)
+) where {S}
+    newest, previous, _ = state.code_freq_update_history
+    SatVectorPLLAndDLL{S}(
+        state.inner,
+        state.vt_on,
+        state.code_discr_acc,
+        state.carrier_discr_acc,
+        code_freq_update,
+        carrier_freq_update,
+        (code_freq_update, newest, previous),
+        landing_lead,
+    )
+end
 
 """
     reset_discriminator_accumulators(state::SatVectorPLLAndDLL) -> SatVectorPLLAndDLL
