@@ -68,6 +68,11 @@ chips from a BOC discriminator (`CalculateSlopeAbs` on `SinBocCorrelationFunctio
 Against the full CBOC/TMBOC modulations a residual gain error of the modulation
 mismatch remains, and the discriminator is linear only within the inner tap offset.
 
+Throws an `ArgumentError` if both tap offsets, after quantization to whole samples,
+are one chip or more: the envelope is zero at both, so the slope is undefined. The
+correlator's constructor rejects such shifts already; this catches preferred shifts
+just below one chip that a coarse sampling rate rounds up to it.
+
 Raw discriminator form from:
 https://gnss-sdr.org/docs/sp-blocks/tracking/#implementation-galileo_e1_dll_pll_veml_tracking
 """
@@ -91,6 +96,14 @@ function dll_disc(
             sampling_frequency,
             code_frequency,
         ) * code_phase_delta
+    # Constant message: this path is compiled with `juliac --trim`.
+    min(inner_offset, outer_offset) < 1 || throw(
+        ArgumentError(
+            "VEML dll_disc: both tap offsets are one chip or more at this sampling " *
+            "frequency, where the BOC(1,1) correlation peak has vanished; " *
+            "use code shifts below one chip.",
+        ),
+    )
     slope = _veml_discriminator_slope(inner_offset, outer_offset)
     VE = abs(get_very_early(correlator))
     E = abs(get_early(correlator))

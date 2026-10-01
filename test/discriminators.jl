@@ -141,6 +141,20 @@ end
           (0.3 + 0.8 - 0.1 - 0.6) / (0.3 + 0.8 + 0.1 + 0.6)
 end
 
+@testset "VEML discriminator refuses taps quantized off the correlation peak" begin
+    signal = GalileoE1B()
+    correlator = update_accumulator(
+        VeryEarlyPromptLateCorrelator(),
+        SVector{5,ComplexF64}(0.2, 0.7, 1.0, 0.7, 0.2),
+    )
+    # Sampled at the code rate, a sample is a chip: the default ±0.15/±0.6 chip
+    # taps both round to one sample, i.e. one chip, where the envelope is zero.
+    @test_throws ArgumentError dll_disc(signal, correlator, 0.0Hz, 1.023MHz)
+    # Twice the code rate puts the taps at half a chip: finite, and zero for
+    # symmetric taps.
+    @test dll_disc(signal, correlator, 0.0Hz, 2.046MHz) == 0
+end
+
 # A chips-calibrated discriminator has an S-curve slope of 1 at the origin: sweep
 # a true code offset τ over the linear region, build the accumulators by
 # correlating the (noiseless) code against tap replicas at the correlator's

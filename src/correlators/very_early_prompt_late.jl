@@ -40,12 +40,28 @@ $(SIGNATURES)
 
 VeryEarlyPromptLateCorrelator constructor without parameters and some default parameters.
 Default parameters take from https://gnss-sdr.org/docs/sp-blocks/tracking/#implementation-galileo_e1_dll_pll_veml_tracking
+
+Throws an `ArgumentError` if both code shifts are one chip or more: the BOC(1,1)
+correlation peak the VEML discriminator ([`dll_disc`](@ref)) is calibrated on has
+vanished there, so no tap would see the signal.
 """
 function VeryEarlyPromptLateCorrelator(;
     num_ants::NumAnts = NumAnts(1),
     preferred_early_late_to_prompt_code_shift = 0.15,
     preferred_very_early_late_to_prompt_code_shift = 0.6,
 )
+    min(
+        preferred_early_late_to_prompt_code_shift,
+        preferred_very_early_late_to_prompt_code_shift,
+    ) < 1 || throw(
+        ArgumentError(
+            "VeryEarlyPromptLateCorrelator: the early/late code shift " *
+            "($preferred_early_late_to_prompt_code_shift chips) or the very-early/very-late " *
+            "code shift ($preferred_very_early_late_to_prompt_code_shift chips) must be " *
+            "below one chip; the VEML discriminator is calibrated on the BOC(1,1) " *
+            "correlation peak, which has vanished from one chip on.",
+        ),
+    )
     VeryEarlyPromptLateCorrelator(
         get_initial_accumulator(num_ants, NumAccumulators(5)),
         preferred_early_late_to_prompt_code_shift,
