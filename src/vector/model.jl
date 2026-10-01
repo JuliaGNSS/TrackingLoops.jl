@@ -482,16 +482,23 @@ end
 # The code phase (chips) the vector loop's code correction steered out over the second
 # half of the cycle, `∫_{T/2}^{T} c(t) dt`: it moves the mean code discriminator, which
 # measures the average delay error while the NCO was already steering it out and so sits
-# at mid-cycle, to the epoch the code observable is read at. `c_new` is the correction set
-# last cycle, `c_old` the one before it, and `L` how long after the last epoch `c_new`
-# reached the replica. Without an NCO delay `L = 0`, and this is exactly `c_new·T/2`
-# (`x − y·0.0 == x`); with `L ≥ T` the whole half-cycle ran on `c_old`.
+# at mid-cycle, to the epoch the code observable is read at. `c₀, c₁, c₂` are the code
+# corrections of the last three cycles, newest first, and `L` how long after its cycle's
+# epoch each reached the replica: `c₀` at `L` after the last epoch, `c₁` at `L − T` and
+# `c₂` at `L − 2T`. Without an NCO delay `L = 0`, and this is exactly `c₀·T/2`
+# (`x − y·0.0 == x`). With `T ≤ L ≤ 1.5T` the half-cycle ran on `c₁` until it landed,
+# and with `1.5T ≤ L ≤ 2.5T` on `c₂` and then `c₁`. A longer delay would need a fourth
+# correction; `update_navigation!` rejects it (`MAX_LANDING_LEAD_CYCLES`).
 function code_phase_advance(state::SatVectorPLLAndDLL, T)
-    c_new = ustrip(Hz, state.code_freq_update)
-    c_old = ustrip(Hz, state.previous_code_freq_update)
+    c₀, c₁, c₂ = map(c -> ustrip(Hz, c), state.code_freq_update_history)
     L = ustrip(s, state.code_update_landing_lead)
-    c_new * T / 2 - (c_new - c_old) * clamp(L - T / 2, 0.0, T / 2)
+    c₀ * T / 2 - (c₀ - c₁) * clamp(L - T / 2, 0.0, T / 2) -
+    (c₁ - c₂) * clamp(L - 3T / 2, 0.0, T / 2)
 end
+
+# The longest NCO delay, in navigation cycles, `code_phase_advance` covers with the three
+# corrections it keeps.
+const MAX_LANDING_LEAD_CYCLES = 2.5
 
 # Mean DLL discriminator (chips) over the last filter interval, advanced to the epoch by
 # `code_phase_advance`. `dll_disc`'s sense is reversed relative to its own observable,

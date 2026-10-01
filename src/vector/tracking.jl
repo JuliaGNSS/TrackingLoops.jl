@@ -1085,9 +1085,17 @@ interval, not the nominal one.
 Returns the solution (the state's `pvt`) and a [`VTStatus`](@ref). Each
 `VTSat`'s `release_reason` says whether and why it was released this cycle.
 Nothing is logged; the caller reports the events.
+
+Throws an `ArgumentError` for a `cycle_time` that is not positive and finite, and for
+an active satellite whose `landing_lead` is negative or longer than `2.5 ·
+cycle_time` (the code measurement keeps the corrections of three cycles to cover
+the delay).
 """
 function update_navigation!(vt::VectorTrackingState, groups::Tuple, cycle_time)
     buffers = vt.buffers
+    0.0s < cycle_time < Inf * s ||
+        throw(ArgumentError("the navigation cycle time must be positive and finite"))
+    _fold_groups(_check_landing_lead, nothing, groups, buffers.states, 1, uconvert(s, cycle_time))
     _fold_groups(_reset_release_reasons!, nothing, groups, buffers.states, 1)
     enabled = released = fell_back = false
     if vt.enabled && vt.running
@@ -1116,6 +1124,19 @@ function update_navigation!(vt::VectorTrackingState, groups::Tuple, cycle_time)
         released,
     )
     vt.pvt, status
+end
+
+function _check_landing_lead(acc, group, g, buffer, cycle_time)
+    for sat in group.sats
+        sat.active || continue
+        0.0s <= sat.landing_lead <= MAX_LANDING_LEAD_CYCLES * cycle_time || throw(
+            ArgumentError(
+                "a satellite's landing lead must lie between zero and 2.5 navigation " *
+                "cycles",
+            ),
+        )
+    end
+    acc
 end
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -889,17 +889,26 @@ end
     # Without an NCO delay the advance is the correction's `c·T/2`, bit for bit.
     for c_new in (0.37, -2.5, 1e-3), c_old in (0.0, 4.0, -1.1)
         state = set_vector_corrections(set_vector_corrections(base, c_old * Hz, 0.0Hz), c_new * Hz, 0.0Hz)
-        @test state.previous_code_freq_update == c_old * Hz
+        @test state.code_freq_update_history == (c_new * Hz, c_old * Hz, 0.0Hz)
         @test TL.code_phase_advance(state, T) === c_new * T / 2
         state = SatVectorPLLAndDLL(state; code_discr_acc = (4, 0.2))
         @test TL.accumulated_code_discriminator(state, T) === -0.05 + c_new * T / 2
     end
-    # A correction landing in the second half-cycle leaves the old one on the replica
-    # until it lands; one landing after the epoch leaves the old one for the whole
-    # half-cycle.
-    old = set_vector_corrections(base, 1.0Hz, 0.0Hz)
-    for (L, expected) in ((0.03, 2.0 * 0.05), (0.075, 2.0 * 0.025 + 1.0 * 0.025), (0.1, 1.0 * 0.05), (0.2, 1.0 * 0.05))
-        state = set_vector_corrections(old, 2.0Hz, 0.0Hz, L * s)
+    # Under an NCO delay the second half-cycle ran on the corrections in effect before
+    # the newest landed: on `c₁` while the newest lands inside it or after the epoch, and
+    # on `c₂` while `c₁` itself lands only after mid-cycle (`L > 1.5T`).
+    c₂, c₁, c₀ = 0.5, 1.0, 2.0
+    older = set_vector_corrections(set_vector_corrections(base, c₂ * Hz, 0.0Hz), c₁ * Hz, 0.0Hz)
+    for (L, expected) in (
+        (0.03, c₀ * 0.05),
+        (0.075, c₀ * 0.025 + c₁ * 0.025),
+        (0.1, c₁ * 0.05),
+        (0.15, c₁ * 0.05),
+        (0.175, c₁ * 0.025 + c₂ * 0.025),
+        (0.2, c₂ * 0.05),
+        (0.25, c₂ * 0.05),
+    )
+        state = set_vector_corrections(older, c₀ * Hz, 0.0Hz, L * s)
         @test TL.code_phase_advance(state, T) ≈ expected
     end
 end
