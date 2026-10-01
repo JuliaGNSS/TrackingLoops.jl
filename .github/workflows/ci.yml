@@ -17,9 +17,11 @@ jobs:
           - '1'
         os:
           - ubuntu-latest
+        # Windows is intentionally excluded: GNSSDecoder depends on Aff3ct,
+        # which has no Windows binary (aff3ct/streampu does not build on
+        # MinGW, so aff3ct_jll skips Windows), so the package cannot be
+        # installed there.
         include:
-          - os: windows-latest
-            version: '1'
           - os: macOS-latest
             version: '1'
     steps:
@@ -37,3 +39,22 @@ jobs:
           disable_search: true
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+  trim:
+    name: Trimmed executable (juliac --trim=safe)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.13'
+      - uses: julia-actions/cache@v3
+      - name: Install JuliaC
+        # `Pkg.Apps.add` does not install the General registry on demand the way
+        # `Pkg.add` does, and a fresh runner has none yet.
+        run: |
+          julia -e 'using Pkg; Pkg.Registry.add("General"); Pkg.Apps.add("JuliaC")'
+          echo "$HOME/.julia/bin" >> "$GITHUB_PATH"
+      - name: Build and compare the trimmed vector-tracking app
+        run: |
+          julia --project=test/trim -e 'using Pkg; Pkg.instantiate()'
+          julia --project=test/trim test/trim/check.jl
