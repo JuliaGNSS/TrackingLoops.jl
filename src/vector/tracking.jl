@@ -802,31 +802,39 @@ function _enable_fix_satellites!(num_enabled, group, g, buffer, vt)
     num_enabled
 end
 
-function _count_fix_satellites(n, group, g, buffer, vt)
-    signal_id = vt.layout.signal_id_by_group[g]
+# Slots still in the loop when a fix seeds it — a loop process that rebuilt its
+# `VectorTrackingState` over channel states it kept — carry the old filter's
+# accumulators and corrections. The ineligible ones would have no measurement row and
+# are released, as a running cycle releases them; the others start over in the loop,
+# like a satellite joining. Returns whether any was released.
+function _restart_stale_members!(released, group, g, buffer)
     for sat in group.sats
-        sat.active && haskey(vt.pvt.sats, (signal_id, sat.prn)) && (n += 1)
+        state = sat.estimator_state
+        state.vt_on || continue
+        if _is_eligible(sat)
+            sat.estimator_state = enable_vector_tracking(disable_vector_tracking(state))
+        else
+            _release!(sat, VT_INELIGIBLE)
+            released = true
+        end
     end
-    n
+    released
 end
 
 # Switch from scalar to vector tracking off the fresh scalar fix in `vt.pvt`: promote the
 # fix's satellites into the vector loop, seed the navigation filter from the fix, and close
 # the loops a first time so the NCOs already steer toward the navigation solution — with
-# no measurement update and no accumulator reset. Returns `false`, touching nothing, when
-# the fix has kept no tracked satellite.
+# no measurement update and no accumulator reset. A fresh fix always has satellites, and
+# every one of them is an active slot (only those enter the scalar solve), so there is
+# always a member to seed from. Returns whether a stale member was released.
 function _seed!(vt::VectorTrackingState, groups, cycle_time)
     buffers = vt.buffers
-    # Need at least one still-tracked fix satellite to seed the loop from: the guard sits
-    # before anything is put in the loop and keeps the reference epoch below defined. The
-    # filter and its per-cycle observability watchdog take over the geometry check from
-    # there.
-    _fold_groups(_count_fix_satellites, 0, groups, buffers.states, 1, vt) == 0 && return false
     model = vt.model
     ensure_nav_filter_integration_time!(model, vt.config, cycle_time)
     T = ustrip(s, model.integration_time)
     pvt = vt.pvt
     vt.primary_clock_index = initial_nav_state!(vt.x, vt.P, vt.layout, model.idxs, pvt)
+    released = _fold_groups(_restart_stale_members!, false, groups, buffers.states, 1)
     _fold_groups(_enable_fix_satellites!, 0, groups, buffers.states, 1, vt)
     ionospheric_correction = _gather_members!(vt, groups, T)
     members = buffers.members
@@ -846,7 +854,11 @@ function _seed!(vt::VectorTrackingState, groups, cycle_time)
     vt.running = true
     vt.reference_time = reference_tow * s
     vt.time_with_insufficient_meas = 0.0s
-    true
+    # The epoch offset is re-read with the reference epoch it anchors: one cached by an
+    # earlier run would be a week stale if the scalar solve was in control across a
+    # week rollover, which no running cycle saw.
+    vt.time_epoch_offset = _primary_time_epoch_offset(vt, eachindex(members))
+    released
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -983,10 +995,15 @@ end
 _ecef(v) = ECEF(v[1], v[2], v[3])
 
 # The epoch offset from a measured member of the primary system, or the cached one.
-function _resolve_time_epoch_offset(vt::VectorTrackingState)
-    isnothing(vt.time_epoch_offset) || return vt.time_epoch_offset
+_resolve_time_epoch_offset(vt::VectorTrackingState) =
+    isnothing(vt.time_epoch_offset) ?
+    _primary_time_epoch_offset(vt, vt.buffers.candidates) : vt.time_epoch_offset
+
+# The epoch offset read off the first of the members at `indices` of the primary system,
+# `nothing` if there is none.
+function _primary_time_epoch_offset(vt::VectorTrackingState, indices)
     members = vt.buffers.members
-    for j in vt.buffers.candidates
+    for j in indices
         members[j].clock_bias_index == vt.primary_clock_index &&
             return time_epoch_offset(vt.buffers.rows[j])
     end
@@ -1102,8 +1119,10 @@ interval, not the nominal one.
   - **Vector tracking not running:** the scalar PVT over the satellites marked
     `pvt_ready`. A fresh fix seeds the filter from it, puts the fix's
     satellites that are still tracked into the vector loop and closes their
-    loops a first time at the seeded state.
-  - **Running:** one filter cycle: the members are admitted and released, their
+    loops a first time at the seeded state. Slots still in the loop from
+    before are released if no longer eligible, and start over otherwise.
+  - **Running:** one filter cycle: the members are admitted (decoded, healthy,
+    in lock and a degree above the horizon) and released, their
     accumulated discriminators measured and fused, and every member's NCO
     corrections written into its `estimator_state`, sized for the moment each
     lands (`landing_lead`). Members out of lock stay in the loop, unmeasured.
@@ -1139,7 +1158,8 @@ function update_navigation!(vt::VectorTrackingState, groups::Tuple, cycle_time)
         # `calc_pvt!` returns the very solution it was handed on an epoch it cannot
         # solve, so identity is exactly the freshness test.
         if vt.enabled && pvt !== previous_pvt
-            enabled = _seed!(vt, groups, uconvert(s, cycle_time))
+            enabled = true
+            released = _seed!(vt, groups, uconvert(s, cycle_time))
         end
     end
     num_members = _fold_groups(_count_members, 0, groups, buffers.states, 1)
