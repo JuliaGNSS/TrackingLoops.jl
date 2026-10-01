@@ -71,6 +71,27 @@ end
     @test get_very_late(multi) == SVector(1.0 + 0.0im, -1.0 + 0.0im)
 end
 
+@testset "A VEML correlator refuses taps that all miss the correlation peak" begin
+    # Both shifts at a chip or more: the BOC(1,1) envelope is zero at every tap.
+    @test_throws ArgumentError VeryEarlyPromptLateCorrelator(;
+        preferred_early_late_to_prompt_code_shift = 1.0,
+        preferred_very_early_late_to_prompt_code_shift = 1.5,
+    )
+    @test_throws ArgumentError VeryEarlyPromptLateCorrelator(;
+        preferred_early_late_to_prompt_code_shift = 1.2,
+        preferred_very_early_late_to_prompt_code_shift = 1.0,
+    )
+    # One tap on the peak is enough for a finite slope.
+    @test VeryEarlyPromptLateCorrelator(;
+        preferred_early_late_to_prompt_code_shift = 0.15,
+        preferred_very_early_late_to_prompt_code_shift = 1.2,
+    ) isa VeryEarlyPromptLateCorrelator
+    @test VeryEarlyPromptLateCorrelator(;
+        preferred_early_late_to_prompt_code_shift = 0.99,
+        preferred_very_early_late_to_prompt_code_shift = 0.99,
+    ) isa VeryEarlyPromptLateCorrelator
+end
+
 @testset "Correlator sample shifts" begin
     gpsl1 = GPSL1CA()
     code_frequency = get_code_frequency(gpsl1)
