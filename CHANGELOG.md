@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v1.1.1...v1.1.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* **discriminators:** refuse VEML taps that all miss the correlation peak ([d16a236](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/d16a23610d52ad6f2b97ad460c0b80d331accaad))
+
 ## [1.1.1](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v1.1.0...v1.1.1) (2026-09-30)
 
 No changes to the package. Replaces the accidental 2.0.0 release.
