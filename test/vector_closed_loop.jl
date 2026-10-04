@@ -155,3 +155,63 @@ end
     _, results, diverged = run(25; fill! = fill_ignoring_delay!)
     @test diverged || !results[end].status.running
 end
+
+@testset "The filter corrects the atmospheric delays" begin
+    # The true ranges carry PositionVelocityTime's ionospheric and tropospheric delays,
+    # metres each, which the filter predicts at its own position every cycle.
+    rx = SimReceiver(; atmosphere = true)
+    results, _, diverged = run_simulation!(rx, 100)
+    @test !diverged
+    @test all(r -> r.status.running, results)
+    tail = results[51:end]
+    @test tail_errors(rx, tail) < 0.2
+    @test tail_code_errors(tail) < 0.005
+    # The control: the same delays left uncorrected bias the solution by metres.
+    rx = SimReceiver(; atmosphere = true, correct_atmosphere = false)
+    results, _, diverged = run_simulation!(rx, 100)
+    @test !diverged
+    @test tail_errors(rx, results[51:end]) > 2.0
+end
+
+@testset "Two bands share one filter and its inter-frequency bias" begin
+    # GPS L1 C/A and L2CM from the same satellites, with a 4 m hardware delay on L2.
+    rx = SimReceiver(; signals = (GPSL1CA(), GPSL2CM()), range_biases = (0.0, 4.0))
+    num_sats = sum(length, rx.channels)
+    @test rx.vt.layout.extra_bands == [:L2]
+    results, _, diverged = run_simulation!(rx, 100)
+    @test !diverged
+    @test all(r -> r.status.running && r.status.num_members == num_sats, results)
+    tail = results[51:end]
+    @test tail_errors(rx, tail) < 0.2
+    @test tail_code_errors(tail) < 0.005
+    ifb = results[end].pvt.inter_frequency_biases[:L2]
+    @test ifb.reference == :L1
+    @test abs(ifb.value - 4.0u"m") < 0.05u"m"
+    @test count(key -> first(key) === :GPSL2CM, results[end].measured) == length(rx.channels[2])
+end
+
+@testset "A scarce constellation's clock collapses onto GPS through the GGTO" begin
+    # Three GPS satellites and one Galileo satellite cannot determine a position and two
+    # clocks. The Galileo satellite broadcasts the GGTO, so its clock is tied to the GPS
+    # one by a pseudo-measurement, in the scalar fix that seeds the filter and in every
+    # filter cycle.
+    rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1))
+    galileo = only(rx.channels[2])
+    galileo.decoder = with_zero_ggto(galileo.decoder)
+    results, _, diverged = run_simulation!(rx, 100)
+    @test !diverged
+    @test results[1].status.enabled
+    @test all(r -> r.status.running && r.status.num_members == 4, results)
+    @test all(r -> length(r.measured) == 4, results)
+    gst_clock, gpst_clock, isb = only(rx.vt.buffers.observability.hub_offset_constraints)
+    @test (gst_clock, gpst_clock) == (2, 1)
+    @test isb == 0.0
+    tail = results[51:end]
+    @test tail_errors(rx, tail) < 0.5
+    @test tail_code_errors(tail) < 0.005
+    @test abs(results[end].pvt.inter_system_biases[GST()]) < 0.05u"m"
+    # Without the GGTO there is nothing to collapse onto, and no fix to seed from.
+    rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1))
+    results, _, _ = run_simulation!(rx, 5)
+    @test all(r -> !r.status.running && !r.status.enabled, results)
+end
