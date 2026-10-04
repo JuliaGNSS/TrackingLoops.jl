@@ -7,11 +7,18 @@
 # Doppler the estimator commands — is propagated record by record. Every record's
 # correlator is the triangle autocorrelation at the true-minus-replica code error and
 # the carrier phase error, so the per-record `VectorPLLAndDLL` and the filter above it
-# run on exactly what a real correlator would see, without the noise.
+# run on exactly what a real correlator would see, without the noise. Optionally the
+# true ranges carry the atmospheric delays of PositionVelocityTime's models and a
+# per-signal hardware delay, an inter-frequency bias.
 using PositionVelocityTime:
     _precompile_states,
     _PRECOMPILE_GPS_L1CA_STATES,
     _PRECOMPILE_GALILEO_E1B_STATES,
+    _precompile_cnav,
+    day_of_year,
+    predict_atmospheric_delays,
+    satellite_measurement,
+    select_ionospheric_correction,
     calc_corrected_time,
     calc_satellite_position_and_velocity,
     calc_satellite_clock_drift,
@@ -21,6 +28,7 @@ using PositionVelocityTime:
     SignalGroup,
     calc_pvt
 using GNSSDecoder: GNSSDecoderState, get_time_of_week
+using Accessors: @set
 using Geodesy: ECEF
 using LinearAlgebra: norm
 
@@ -35,6 +43,22 @@ end
 function fixture_decoders(signal::GalileoE1B)
     states = _precompile_states(signal, _PRECOMPILE_GALILEO_E1B_STATES, identity, GalileoE1B())
     [state.decoder for state in states], states
+end
+# GPS L2CM on the GPS L1 C/A fixture satellites, with CNAV data carrying their ephemerides.
+function fixture_decoders(signal::GPSL2CM)
+    states = _precompile_states(signal, _PRECOMPILE_GPS_L1CA_STATES, _precompile_cnav, GPSL1CA())
+    [state.decoder for state in states], states
+end
+
+# A Galileo decoder that has decoded a GGTO of zero, the offset the simulated time
+# scales have: the fixtures were captured without one.
+function with_zero_ggto(decoder)
+    data = decoder.data
+    data = @set data.A_0G = 0.0
+    data = @set data.A_1G = 0.0
+    data = @set data.t_0G = 0
+    data = @set data.WN_0G = data.WN
+    @set decoder.data = data
 end
 
 # The receiver's truth: a straight line at constant velocity and a clock bias
@@ -69,6 +93,18 @@ mutable struct SimSat{D,E,S}
     clock_offset::Float64  # corrected − uncorrected transmit time
     in_view::Bool          # false during a scripted outage
     timeline::NCOTimeline
+    const range_bias::Float64 # a hardware delay on this signal (m)
+    const atmosphere::Any     # `nothing`, or the `(; correction, doy)` of the delays
+end
+
+# The atmospheric delay (m) of a satellite at `position`, seen from the true receiver
+# position `r` at receiver time `t`: PositionVelocityTime's ionospheric and
+# tropospheric models, which the filter corrects with.
+function atmospheric_delay(sat::SimSat, r, position, t)
+    isnothing(sat.atmosphere) && return 0.0
+    rows = [(; position, center_frequency = sat.center_frequency)]
+    only(predict_atmospheric_delays([r[1], r[2], r[3], 0.0], rows,
+        sat.atmosphere.correction, t, sat.atmosphere.doy, true))
 end
 
 # The satellite state of a replica at uncorrected transmit time `u`.
@@ -94,7 +130,8 @@ function true_transmit(sat::SimSat, truth::SimTruth, t)
         orbit = calc_satellite_position_and_velocity(sat.decoder, t_t)
         position, velocity = orbit.position, orbit.velocity
         calc_ρ_hat!(ρ, [SVector{3,Float64}(position)], ξ, columns)
-        t_t = t - ρ[1] / TrackingLoops.SPEED_OF_LIGHT
+        delay = sat.range_bias + atmospheric_delay(sat, r, SVector{3,Float64}(position), t)
+        t_t = t - (ρ[1] + delay) / TrackingLoops.SPEED_OF_LIGHT
     end
     sat.transmit_time = t_t
     t_t, SVector{3,Float64}(position), SVector{3,Float64}(velocity),
@@ -117,18 +154,20 @@ end
 
 # A channel locked onto the truth at receiver time `t`: the replica on the true
 # transmit time, carrier phase and Dopplers.
-function SimSat(signal, decoder, estimator, truth::SimTruth, t; delayed = false)
+function SimSat(signal, decoder, estimator, truth::SimTruth, t; range_bias = 0.0, atmosphere = nothing)
     base_tow = Float64(get_time_of_week(decoder))
     code_frequency = Float64(ustrip(Hz, get_code_frequency(signal)))
     center_frequency = Float64(ustrip(Hz, get_center_frequency(signal)))
     ratio = get_code_center_frequency_ratio(signal)
     probe = SimSat(signal, decoder, base_tow, code_frequency, center_frequency,
-        nothing, 0.0, 0.0, 0.0, 0.0, complex(0.0), t - 0.075, 0.0, true, NCOTimeline())
+        nothing, 0.0, 0.0, 0.0, 0.0, complex(0.0), t - 0.075, 0.0, true, NCOTimeline(),
+        range_bias, atmosphere)
     t_t, = true_transmit(probe, truth, t)
     doppler = true_doppler(probe, truth, t)
     state = init_estimator_state(estimator, signal, doppler * Hz, doppler * ratio * Hz)
     sat = SimSat(signal, decoder, base_tow, code_frequency, center_frequency, state,
-        t_t, 0.0, doppler, doppler * ratio, complex(0.0), t_t, 0.0, true, NCOTimeline())
+        t_t, 0.0, doppler, doppler * ratio, complex(0.0), t_t, 0.0, true, NCOTimeline(),
+        range_bias, atmosphere)
     # Uncorrected transmit time of the replica: invert the clock correction.
     u = t_t
     for _ = 1:3
@@ -261,7 +300,10 @@ function SimReceiver(;
     signals = (GPSL1CA(),),
     estimator = VectorPLLAndDLL(),
     config = VectorTracking(),
-    num_sats = typemax(Int),
+    num_sats = typemax(Int), # or one count per signal
+    range_biases = map(_ -> 0.0, signals), # per signal (m)
+    atmosphere = false, # delay the true ranges by the modelled atmosphere
+    correct_atmosphere = atmosphere, # and let the filter correct them
     records_per_cycle = 100, # cycle length in milliseconds
     delay_records = 0,       # NCO delay in milliseconds
     nominal_cycle = records_per_cycle * 1.0ms, # the filter's process model to start from
@@ -272,15 +314,26 @@ function SimReceiver(;
     fix = calc_pvt(SignalGroup(GPSL1CA(), gps_states); approximate_year = 2021)
     t0 = maximum(maximum(calc_corrected_time, last(f)) for f in fixtures) + 0.075
     truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0, truth_kw...)
-    channels = map(signals, fixtures) do signal, (decoders, _)
-        n = min(num_sats, length(decoders))
-        [SimSat(signal, decoders[i], estimator, truth, t0) for i = 1:n]
+    num_sats = num_sats isa Tuple ? num_sats : map(_ -> num_sats, signals)
+    delays = nothing
+    if atmosphere
+        row = satellite_measurement(first(gps_states), 2021)
+        delays = (;
+            correction = select_ionospheric_correction(
+                map((signal, f) -> SignalGroup(signal, last(f)), signals, fixtures)),
+            doy = day_of_year(row.system_start_time, row.week, t0),
+        )
+    end
+    channels = map(signals, fixtures, num_sats, range_biases) do signal, (decoders, _), n, range_bias
+        n = min(n, length(decoders))
+        [SimSat(signal, decoders[i], estimator, truth, t0; range_bias, atmosphere = delays) for i = 1:n]
     end
     groups = map(signals, channels) do signal, sats
         VTSignalGroup(signal, [VTSat(sat.decoder, sat.state; prn = sat.decoder.prn) for sat in sats])
     end
     vt = VectorTrackingState(config, groups; approximate_year = 2021,
-        enable_ionospheric_correction = false, enable_tropospheric_correction = false,
+        enable_ionospheric_correction = correct_atmosphere,
+        enable_tropospheric_correction = correct_atmosphere,
         integration_time = nominal_cycle)
     SimReceiver(channels, groups, vt, truth, estimator, records_per_cycle, delay_records)
 end
