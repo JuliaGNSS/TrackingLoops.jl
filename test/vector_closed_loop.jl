@@ -3,6 +3,19 @@
 # timeout, several constellations, and an NCO delay whose landing the corrections are
 # sized for.
 
+using Accessors: @set
+
+# A Galileo decoder that has decoded a GGTO of zero, the offset the simulated time
+# scales have: the fixtures were captured without one.
+function with_zero_ggto(decoder)
+    data = decoder.data
+    data = @set data.A_0G = 0.0
+    data = @set data.A_1G = 0.0
+    data = @set data.t_0G = 0
+    data = @set data.WN_0G = data.WN
+    @set decoder.data = data
+end
+
 tail_errors(receiver, results) = maximum(r -> position_error(receiver, r), results)
 tail_code_errors(results) = maximum(r -> maximum(abs, r.code_errors), results)
 

@@ -28,7 +28,6 @@ using PositionVelocityTime:
     SignalGroup,
     calc_pvt
 using GNSSDecoder: GNSSDecoderState, get_time_of_week
-using Accessors: @set
 using Geodesy: ECEF
 using LinearAlgebra: norm
 
@@ -50,17 +49,6 @@ function fixture_decoders(signal::GPSL2CM)
     [state.decoder for state in states], states
 end
 
-# A Galileo decoder that has decoded a GGTO of zero, the offset the simulated time
-# scales have: the fixtures were captured without one.
-function with_zero_ggto(decoder)
-    data = decoder.data
-    data = @set data.A_0G = 0.0
-    data = @set data.A_1G = 0.0
-    data = @set data.t_0G = 0
-    data = @set data.WN_0G = data.WN
-    @set decoder.data = data
-end
-
 # The receiver's truth: a straight line at constant velocity and a clock bias
 # drifting at a constant rate, both in metres.
 Base.@kwdef struct SimTruth
@@ -75,6 +63,25 @@ truth_position(truth::SimTruth, t) = truth.position + truth.velocity * (t - trut
 truth_clock_bias(truth::SimTruth, t) = truth.clock_bias + truth.clock_drift * (t - truth.t0)
 
 # One simulated channel.
+# The atmosphere the true ranges pass through: PositionVelocityTime's ionospheric
+# `correction` (held as `Any`, the way `predict_atmospheric_delays` takes it) and the
+# troposphere's day of year, or none at all.
+struct SimAtmosphere
+    enabled::Bool
+    correction::Any
+    doy::Int
+end
+const NO_ATMOSPHERE = SimAtmosphere(false, nothing, 1)
+
+# The atmosphere over the fixture satellites of `signals`, dated by a GPS fixture `state`
+# at time of week `t`.
+function sim_atmosphere(signals, fixtures, state, t)
+    row = satellite_measurement(state, 2021)
+    correction = select_ionospheric_correction(
+        map((signal, f) -> SignalGroup(signal, last(f)), signals, fixtures))
+    SimAtmosphere(true, correction, day_of_year(row.system_start_time, row.week, t))
+end
+
 mutable struct SimSat{D,E,S}
     signal::S
     decoder::D
@@ -94,14 +101,14 @@ mutable struct SimSat{D,E,S}
     in_view::Bool          # false during a scripted outage
     timeline::NCOTimeline
     const range_bias::Float64 # a hardware delay on this signal (m)
-    const atmosphere::Any     # `nothing`, or the `(; correction, doy)` of the delays
+    const atmosphere::SimAtmosphere
 end
 
 # The atmospheric delay (m) of a satellite at `position`, seen from the true receiver
 # position `r` at receiver time `t`: PositionVelocityTime's ionospheric and
 # tropospheric models, which the filter corrects with.
 function atmospheric_delay(sat::SimSat, r, position, t)
-    isnothing(sat.atmosphere) && return 0.0
+    sat.atmosphere.enabled || return 0.0
     rows = [(; position, center_frequency = sat.center_frequency)]
     only(predict_atmospheric_delays([r[1], r[2], r[3], 0.0], rows,
         sat.atmosphere.correction, t, sat.atmosphere.doy, true))
@@ -154,7 +161,7 @@ end
 
 # A channel locked onto the truth at receiver time `t`: the replica on the true
 # transmit time, carrier phase and Dopplers.
-function SimSat(signal, decoder, estimator, truth::SimTruth, t; range_bias = 0.0, atmosphere = nothing)
+function SimSat(signal, decoder, estimator, truth::SimTruth, t; range_bias = 0.0, atmosphere = NO_ATMOSPHERE)
     base_tow = Float64(get_time_of_week(decoder))
     code_frequency = Float64(ustrip(Hz, get_code_frequency(signal)))
     center_frequency = Float64(ustrip(Hz, get_center_frequency(signal)))
@@ -293,6 +300,9 @@ function Base.getproperty(receiver::SimReceiver, name::Symbol)
     getfield(receiver, name)
 end
 
+per_signal(n::Tuple, signals) = n
+per_signal(n, signals) = map(_ -> n, signals)
+
 # The record length of a signal: one code period, in milliseconds.
 record_ms(signal) = round(Int, 1000 * get_code_length(signal) / ustrip(Hz, get_code_frequency(signal)))
 
@@ -314,17 +324,8 @@ function SimReceiver(;
     fix = calc_pvt(SignalGroup(GPSL1CA(), gps_states); approximate_year = 2021)
     t0 = maximum(maximum(calc_corrected_time, last(f)) for f in fixtures) + 0.075
     truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0, truth_kw...)
-    num_sats = num_sats isa Tuple ? num_sats : map(_ -> num_sats, signals)
-    delays = nothing
-    if atmosphere
-        row = satellite_measurement(first(gps_states), 2021)
-        delays = (;
-            correction = select_ionospheric_correction(
-                map((signal, f) -> SignalGroup(signal, last(f)), signals, fixtures)),
-            doy = day_of_year(row.system_start_time, row.week, t0),
-        )
-    end
-    channels = map(signals, fixtures, num_sats, range_biases) do signal, (decoders, _), n, range_bias
+    delays = atmosphere ? sim_atmosphere(signals, fixtures, first(gps_states), t0) : NO_ATMOSPHERE
+    channels = map(signals, fixtures, per_signal(num_sats, signals), range_biases) do signal, (decoders, _), n, range_bias
         n = min(n, length(decoders))
         [SimSat(signal, decoders[i], estimator, truth, t0; range_bias, atmosphere = delays) for i = 1:n]
     end
