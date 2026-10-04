@@ -972,4 +972,20 @@ end
     x3, P3 = zeros(n3), zeros(n3, n3)
     TL.initial_nav_state!(x3, P3, layout3, idxs3, pvt)
     @test P3[idxs3.clock_biases[3], idxs3.clock_biases[3]] == 100.0^2
+    # A band the fix did not measure starts from zero with the generous RF-chain variance.
+    pvt_l1 = @set pvt.inter_frequency_biases = Dict{Symbol,InterFrequencyBias}()
+    TL.initial_nav_state!(x, P, layout, idxs, pvt_l1)
+    @test x[idxs.ifb[1]] == 0.0
+    @test P[idxs.ifb[1], idxs.ifb[1]] == 30.0^2
+    # A third-order motion model starts with zero acceleration, of its own variance.
+    config3 = VectorTracking(; motion_model_order = 3)
+    idxs_acc = TL.NavFilterIndices(config3, layout)
+    n_acc = TL.num_nav_states(config3, layout)
+    x_acc, P_acc = zeros(n_acc), zeros(n_acc, n_acc)
+    TL.initial_nav_state!(x_acc, P_acc, layout, idxs_acc, pvt)
+    @test length(idxs_acc.acc) == 3
+    @test all(iszero, x_acc[idxs_acc.acc])
+    @test all(a -> P_acc[a, a] > 0, idxs_acc.acc)
+    @test x_acc[idxs_acc.pos] == x[idxs.pos]
+    @test x_acc[idxs_acc.vel] == x[idxs.vel]
 end
