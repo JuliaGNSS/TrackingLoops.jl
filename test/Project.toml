@@ -10,11 +10,12 @@ TrackingLoopFilters = "0814aff9-93cb-554c-9fff-9bf1cfdb5efa"
 TrackingLoops = "89eadfff-3a96-4166-8be0-4e8bed6efc30"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
-[sources]
-TrackingLoops = {path = ".."}
+[sources.TrackingLoops]
+path = ".."
 
 [compat]
 AllocCheck = "0.2.6"
 InteractiveUtils = "1"
 Random = "1"
 Statistics = "1"
+TrackingLoops = "1"
