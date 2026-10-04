@@ -30,6 +30,11 @@ using Pkg
 Pkg.add("TrackingLoops")
 ```
 
+TrackingLoops runs on Linux, macOS and FreeBSD. It does not install on Windows
+because the navigation-message decoder it depends on
+([GNSSDecoder.jl](https://github.com/JuliaGNSS/GNSSDecoder.jl)) needs Aff3ct,
+which has no Windows build.
+
 ## One loop iteration
 
 Per satellite you hold a Doppler-estimator state and, per tracked signal of
@@ -82,6 +87,8 @@ buffer has room for 64 of them before its vector grows.
 - [C/N₀ estimation](@ref) — the moments, NWPR and noise-referenced estimators.
 - [Noise estimation](@ref) — the noise-density window a noise-referenced
   estimator reads.
+- [Vector tracking](@ref) — the estimator a navigation filter takes over, and
+  the filter that closes every satellite's loops at once.
 - [Internals](@ref) — the unexported functions and types, for those extending
   the package.
 

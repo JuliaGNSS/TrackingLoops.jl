@@ -17,7 +17,10 @@ allocation-free *loop process* of a hardware correlator:
   - the per-record fold [`apply_record`](@ref) that advances a signal
     component's prompt filter, C/N₀ estimator and bit buffer identically on
     both paths;
-  - the [`NCOTimeline`](@ref): what a hardware NCO ran and will run.
+  - the [`NCOTimeline`](@ref): what a hardware NCO ran and will run;
+  - vector tracking: the navigation filter behind [`update_navigation!`](@ref)
+    that closes every satellite's loops at once, and solves the PVT before
+    it takes over.
 
 Tracking.jl depends on this package for its software correlator; the loop
 process's engine (HardwareLoopCore.jl) depends on it without Tracking. Nothing
