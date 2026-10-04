@@ -23,6 +23,7 @@ makedocs(
         "bit_sync.md",
         "cn0_estimators.md",
         "noise_estimators.md",
+        "vector_tracking.md",
         "internals.md",
     ],
 )
