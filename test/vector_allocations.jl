@@ -59,19 +59,20 @@ end
     @test measure_navigation(rx.vt, rx.groups, 0.1s) == 0
 end
 
-@testset "A Galileo satellite's decoded GGTO allocates" begin
-    # GNSSDecoder 5.0.1 allocates while reading a decoded GGTO (`galileo_ggto_offset`,
-    # JuliaGNSS/GNSSDecoder.jl#101),
-    # once per Galileo satellite and cycle, in the scalar solve and in the filter alike.
-    # Real satellites broadcast the GGTO; the fixtures do not, which is why the cycles
-    # above stay clean. Here it also collapses the Galileo clock onto the GPS one.
-    rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1))
-    galileo = only(rx.channels[2])
-    galileo.decoder = with_zero_ggto(galileo.decoder)
-    run_simulation!(rx, 20)
-    @test rx.vt.running
-    @test !isempty(rx.vt.buffers.observability.hub_offset_constraints)
-    @test_broken measure_navigation(rx.vt, rx.groups, 0.1s) == 0
+@testset "Cycles with a decoded GGTO are allocation-free" begin
+    # Real Galileo satellites broadcast the GGTO and the fixtures do not, so it is set by
+    # hand. Reading it allocated before GNSSDecoder 5.0.2 (JuliaGNSS/GNSSDecoder.jl#101).
+    # Here it also collapses the Galileo clock onto the GPS one.
+    for config in (nothing, VectorTracking())
+        rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1), config)
+        galileo = only(rx.channels[2])
+        galileo.decoder = with_zero_ggto(galileo.decoder)
+        run_simulation!(rx, 20)
+        @test rx.vt.running == !isnothing(config)
+        isnothing(config) ||
+            @test !isempty(rx.vt.buffers.observability.hub_offset_constraints)
+        @test measure_navigation(rx.vt, rx.groups, 0.1s) == 0
+    end
 end
 
 @testset "decode_soft_bits! is allocation-free" begin
