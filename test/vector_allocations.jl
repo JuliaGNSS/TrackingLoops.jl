@@ -60,7 +60,8 @@ end
 end
 
 @testset "A Galileo satellite's decoded GGTO allocates" begin
-    # GNSSDecoder 5.0.1 allocates while reading a decoded GGTO (`galileo_ggto_offset`),
+    # GNSSDecoder 5.0.1 allocates while reading a decoded GGTO (`galileo_ggto_offset`,
+    # JuliaGNSS/GNSSDecoder.jl#101),
     # once per Galileo satellite and cycle, in the scalar solve and in the filter alike.
     # Real satellites broadcast the GGTO; the fixtures do not, which is why the cycles
     # above stay clean. Here it also collapses the Galileo clock onto the GPS one.
