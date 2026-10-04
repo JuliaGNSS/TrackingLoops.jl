@@ -272,3 +272,32 @@ end
         step_loop(estimator, reset, record, FixedNCOWord(150.0, 0.2), NO_LANDING_SAMPLE)
     @test code_doppler ≈ 0.2Hz + (carrier_doppler - 150.0Hz) * get_code_center_frequency_ratio(GPSL1CA())
 end
+
+@testset "Releasing re-seeds the inner loop, with $(nameof(typeof(inner)))" for inner in (
+    ConventionalAssistedPLLAndDLL(; carrier_loop_filter_bandwidth = 12.0Hz),
+    NCOReferencedPLLAndDLL(; carrier_loop_filter_bandwidth = 12.0Hz),
+)
+    estimator = VectorPLLAndDLL(inner)
+    state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
+    record = vector_record(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
+    state = set_vector_corrections(enable_vector_tracking(state), 0.5Hz, 4.0Hz, 0.01s)
+    state, = step_loop(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
+    released = release_from_vector_tracking(state, 150.0Hz, 0.2Hz)
+    @test released isa typeof(state)
+    @test !released.vt_on
+    # The inner loop starts over from the handed-over replica, with its own
+    # configuration kept: the per-satellite state carries it.
+    @test released.inner == reset_estimator_state(inner, state.inner, 150.0Hz, 0.2Hz)
+    @test released.inner.init_carrier_doppler == 150.0Hz
+    @test released.inner.init_code_doppler == 0.2Hz
+    @test released.inner.carrier_loop_filter_bandwidth == 12.0Hz
+    # Nothing the vector loop owned survives.
+    @test released.code_discr_acc == (0, 0.0)
+    @test released.carrier_discr_acc == (0, 0.0Hz)
+    @test released.code_freq_update == 0.0Hz
+    @test released.carrier_freq_update == 0.0Hz
+    @test released.code_freq_update_history == (0.0Hz, 0.0Hz, 0.0Hz)
+    # Out of the vector loop it steps exactly as the re-seeded inner loop.
+    @test step_loop(estimator, released, record, FixedNCOWord(150.0, 0.2), NO_LANDING_SAMPLE)[2:3] ==
+          step_loop(inner, released.inner, record, FixedNCOWord(150.0, 0.2), NO_LANDING_SAMPLE)[2:3]
+end
