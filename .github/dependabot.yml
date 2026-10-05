@@ -8,7 +8,8 @@ updates:
     schedule:
       interval: "weekly"
     commit-message:
-      prefix: "build(deps)"
+      prefix: "build"
+      include: "scope"
     groups:
       julia-dependencies:
         patterns:
