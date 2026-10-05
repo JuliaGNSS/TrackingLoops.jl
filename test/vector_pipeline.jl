@@ -18,6 +18,17 @@ const WARM_PIPELINE = let
     (; rx, results, sample)
 end
 
+# A copy of the warm receiver to run on. On Julia 1.10 `deepcopy` keeps no spare
+# capacity of an empty vector, so the soft-bit buffers get theirs back: the first soft
+# bit of every satellite would allocate otherwise.
+function warm_pipeline()
+    rx = deepcopy(WARM_PIPELINE.rx)
+    for slot in rx.vt.groups[1].slots
+        sizehint!(slot.bit_buffer.soft_bits, 64)
+    end
+    rx
+end
+
 @testset "From records alone: bit sync, decoding, the scalar fix, the filter" begin
     rx = PipelineReceiver()
     results, sample, diverged = run_pipeline!(rx, 36.0)
@@ -97,7 +108,7 @@ end
 end
 
 @testset "From records alone, an outage of some satellites is ridden through" begin
-    rx = deepcopy(WARM_PIPELINE.rx)
+    rx = warm_pipeline()
     start = WARM_PIPELINE.sample
     t_start = start / 4e6
     # Three satellites lose their signal for four seconds: they drop out of lock and
@@ -168,7 +179,7 @@ end
 end
 
 @testset "A dropped satellite frees its slot for the next" begin
-    rx = deepcopy(WARM_PIPELINE.rx)
+    rx = warm_pipeline()
     nav = rx.vt
     start = WARM_PIPELINE.sample
     slots = nav.groups[1].slots
@@ -205,9 +216,8 @@ end
     @test !TL.is_decoding_completed_for_positioning(gone_slot.running_decoder)
     @test nav.registrations == 9
     # Dropping, freeing and taking the slot over allocated nothing, and neither did the
-    # warm records and cycles around it. Julia 1.10 allocates on this path, which the
-    # allocation-free loop process, built with juliac on 1.12 or later, never runs on.
-    @test rx.allocated[] == 0 skip = VERSION < v"1.11"
+    # warm records and cycles around it.
+    @test rx.allocated[] == 0
     @test all(r -> r.status.running, results)
     # With every slot taken, one more satellite grows the group.
     another = SimSat(GPSL1CA(), gone.decoder, rx.estimator, rx.truth, sim_time(rx, sample);
@@ -223,7 +233,7 @@ end
 end
 
 @testset "A re-acquired satellite gets its slot and its decoded data back" begin
-    rx = deepcopy(WARM_PIPELINE.rx)
+    rx = warm_pipeline()
     nav = rx.vt
     lost = rx.sats[2]
     index = lost.state.slot
@@ -257,7 +267,7 @@ end
 end
 
 @testset "A warm minute allocates nothing" begin
-    rx = deepcopy(WARM_PIPELINE.rx)
+    rx = warm_pipeline()
     rx.measuring[] = true
     results, _, diverged = run_pipeline!(rx, 60.0; start_sample = WARM_PIPELINE.sample)
     @test !diverged
