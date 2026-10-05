@@ -197,3 +197,38 @@ end
     b, = step_loop(estimator, b, engine_record(5, 4000 * 1001), words, NO_LANDING_SAMPLE)
     @test nav.cycle_epoch == 10
 end
+
+@testset "A member dropped while its records stopped rejoins released" begin
+    estimator = VectorPLLAndDLL(GPSL1CA())
+    nav = estimator.navigation
+    group = nav.groups[1]
+    words = FixedNCOWord(100.0, 0.1)
+    a = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
+    b = init_estimator_state(estimator, GPSL1CA(), 50.0Hz, 0.05Hz)
+    for k = 1:10
+        a, = step_loop(estimator, a, engine_record(3, 4000k), words, NO_LANDING_SAMPLE)
+        b, = step_loop(estimator, b, engine_record(5, 4000k), words, NO_LANDING_SAMPLE)
+    end
+    # `b` is a member of the vector loop, in the slot and in the state its host keeps.
+    slot = group.slots[b.slot]
+    b = TL._enable_vector_tracking(b)
+    slot.estimator_state = b
+    # Its records stop for longer than two cycles: a cycle drops it and releases it, but
+    # only in the slot — the host never hands the satellite the release.
+    for k = 11:400
+        a, = step_loop(estimator, a, engine_record(3, 4000k), words, NO_LANDING_SAMPLE)
+    end
+    @test !slot.occupied
+    @test !slot.estimator_state.vt_on
+    @test b.vt_on
+    # Its records resume: it registers anew, and takes up the release it missed, its
+    # scalar loop re-seeded from the replica's Dopplers.
+    resumed = FixedNCOWord(120.0, 0.12)
+    b, = step_loop(estimator, b, engine_record(5, 4000 * 401), resumed, NO_LANDING_SAMPLE)
+    @test slot.occupied
+    @test !b.vt_on
+    @test !slot.estimator_state.vt_on
+    @test b.code_freq_update == 0.0Hz
+    @test b.inner.init_carrier_doppler == 120.0Hz
+    @test b.inner.init_code_doppler == 0.12Hz
+end
