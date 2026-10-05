@@ -1,5 +1,48 @@
 # Changelog
 
+# [3.0.0](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v2.0.0...v3.0.0) (2026-10-05)
+
+
+* feat(vector)!: run the whole vector-tracking pipeline inside the estimator ([0531407](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/05314072560b6cf34d02014563db5ad20740581e))
+
+
+### Bug Fixes
+
+* **vector:** release a satellite that rejoins after being dropped while in the vector loop ([feb1e57](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/feb1e57402cd3579c7956acd702ea6476cfc1b8b))
+
+
+### Features
+
+* let every estimator report the navigation solution, its cycle and its satellites ([525ab35](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/525ab35c031b4b0927e8625e60826ecc15e8f12f))
+* let records identify their satellite and replica code phase ([61fe804](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/61fe804288b4f47ec4c7b38df9d5695d91c16a49))
+
+
+### BREAKING CHANGES
+
+* `VectorPLLAndDLL(inner)` is now
+`VectorPLLAndDLL(signals...; inner = ConventionalAssistedPLLAndDLL(), config,
+cycle_time = 100ms, lock_cn0_threshold = 30dBHz, max_satellites_per_signal,
+approximate_year, enable_ionospheric_correction,
+enable_tropospheric_correction)`: list every ranging signal the satellites
+use, and pass what used to go to `VectorTrackingState` here. The records it
+is stepped with must carry `prn` and `code_phase` (`LoopRecord(...; prn,
+sample_offset)`, `CorrelatorOutput(..., code_phase)`) on a time grid shared
+by all satellites; a dataless pilot signal is rejected. `VTSat`,
+`VTSignalGroup`, `VectorTrackingState` and `update_navigation!` are removed:
+step every satellite through `step_loop`, and read
+`navigation_solution(estimator)` and `navigation_status(estimator)` instead
+of `update_navigation!`'s `(pvt, status)`, `release_reason(estimator,
+signal, prn)` instead of `VTSat.release_reason`, and `member_sats(estimator)`
+instead of `vt.member_sats`. `position_uncertainty` and `clock_uncertainty`
+take the estimator. `decode_soft_bits!` is removed: the estimator decodes
+the bits itself. `enable_vector_tracking`, `disable_vector_tracking`,
+`set_vector_corrections`, `release_from_vector_tracking`,
+`reset_discriminator_accumulators`, `mean_code_discriminator` and
+`mean_carrier_discriminator` are no longer exported: the engine drives the
+satellite states itself.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
 # [2.0.0](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v1.1.2...v2.0.0) (2026-10-04)
 
 
