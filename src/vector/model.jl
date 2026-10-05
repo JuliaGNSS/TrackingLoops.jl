@@ -1296,6 +1296,15 @@ end
 # error its covariance is scaled by in `seed_fix_covariance!`.
 const FIX_PSEUDORANGE_STD = 1.0
 
+# The smallest ratio of the Cholesky factor's diagonal to its largest entry that
+# `seed_fix_covariance!` takes for a full-rank `H`. The factorization alone does not
+# tell: an exactly singular `HᵀH` — a bias column that duplicates another, as an
+# inter-frequency bias does the clock of a constellation seen on that band alone — often
+# leaves a pivot rounding error has made slightly positive instead of failing, and its
+# inverse then carries variances of 10¹⁵ m². A ratio of 10⁻⁶ admits a condition number
+# of `HᵀH` up to about 10¹², far beyond any fix worth seeding from.
+const FIX_MIN_PIVOT_RATIO = 1e-6
+
 # Overwrite the position and bias block of `P`, as `initial_nav_state!` seeded it, with
 # the covariance of the least-squares fix it was seeded from: `σ² (HᵀH)⁻¹` for the
 # design matrix `H` of the fix's satellites (`calc_H!`, over the dense bias columns of
@@ -1308,7 +1317,8 @@ const FIX_PSEUDORANGE_STD = 1.0
 # line of sight — which the full block carries. A bias state the fix did not seed keeps
 # its generous variance, uncorrelated, though the position's variance still counts it as
 # an unknown. `normal_matrix` is a square scratch matrix of `H`'s column count. Returns
-# whether the block was written: a rank-deficient `H` leaves `P` as seeded.
+# whether the block was written: a rank-deficient `H` (`_has_full_rank`) leaves `P` as
+# seeded.
 function seed_fix_covariance!(
     P,
     idxs::NavFilterIndices,
@@ -1322,7 +1332,7 @@ function seed_fix_covariance!(
 )
     mul!(normal_matrix, H', H)
     factorization = cholesky!(Symmetric(normal_matrix); check = false)
-    issuccess(factorization) || return false
+    _has_full_rank(factorization) || return false
     covariance = LinearAlgebra.inv!(factorization)
     σ² = FIX_PSEUDORANGE_STD^2
     num_columns = size(covariance, 1)
@@ -1332,6 +1342,20 @@ function seed_fix_covariance!(
         i == 0 || j == 0 || (P[i, j] = σ² * covariance[row, column])
     end
     true
+end
+
+# Whether the Cholesky factorization of a normal matrix shows its design to have full
+# column rank: it succeeded, and no pivot is negligible beside the largest
+# (`FIX_MIN_PIVOT_RATIO`).
+function _has_full_rank(factorization)
+    issuccess(factorization) || return false
+    factors = factorization.factors
+    smallest, largest = Inf, 0.0
+    for k in axes(factors, 1)
+        smallest = min(smallest, factors[k, k])
+        largest = max(largest, factors[k, k])
+    end
+    smallest > FIX_MIN_PIVOT_RATIO * largest
 end
 
 # The state behind column `column` of the fix's dense design matrix, `0` for a bias
