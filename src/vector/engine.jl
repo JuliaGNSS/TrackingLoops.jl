@@ -230,7 +230,10 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     slot.first_epoch = _epoch_at_or_after(nav, slot.last_end_time)
     slot.snapshot_epoch = typemin(Int)
     slot.decoder = slot.running_decoder
-    slot.estimator_state = state
+    # A satellite registers out of the vector loop. One whose state is still in it was
+    # released by the cycle that dropped it, or never was the member of this slot: it
+    # takes the release up on this record (`_take_up_cycle`), re-seeding its scalar loop.
+    slot.estimator_state = _disable_vector_tracking(state)
     slot.in_lock = false
     slot.pvt_ready = false
     slot.release_reason = VT_NOT_RELEASED
