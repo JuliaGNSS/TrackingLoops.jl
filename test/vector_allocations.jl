@@ -1,62 +1,89 @@
 # Every kind of navigation cycle allocates nothing once its buffers have grown: the
 # scalar solve, a running cycle, a release, a rejoin, the fallback, and a re-seed from
-# a fresh scalar fix, for one constellation and for two. The one allocation a run makes
-# on purpose — the unscented update's intermediate, built once per measurement count —
-# is paid by the warm-up.
-measure_navigation(vt, groups, cycle_time) = @allocated update_navigation!(vt, groups, cycle_time)
+# a fresh scalar fix, for one constellation and for two, with the engine filled by hand
+# (`vector_simulation.jl`). The pipeline's records and cycles, registrations and freed
+# slots are checked in `vector_pipeline.jl`.
+
+# Fill every channel's slot for the epoch at `sample`, as `run_cycle!` does, then
+# measure the cycle alone.
+function measure_navigation(rx::SimReceiver, sample; fill! = fill_slot!)
+    nav = rx.vt
+    nav.pending_epoch = round(Int, sample / (rx.nominal_ms * SAMPLES_PER_MS))
+    for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
+        fill!(group.slots[i], sat, sample, NO_LANDING_SAMPLE, nav)
+    end
+    now = sample / ustrip(Hz, SIM_FS)
+    @allocated TL._navigation_cycle!(nav, now)
+end
+
+# The satellites take the latest cycle up, as they would on their next record.
+function take_up!(rx::SimReceiver, sample)
+    for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
+        sat.state = TL._take_up_cycle(rx.vt, group, group.slots[i], sat.state,
+            take_up_record(sat, sample), sim_words(sat, NO_LANDING_SAMPLE), Int64(sample))
+    end
+end
 
 @testset "Navigation cycles are allocation-free, $(length(signals)) signal group(s)" for signals in (
     (GPSL1CA(),),
     (GPSL1CA(), GalileoE1B()),
 )
+    cycle = 100 * SAMPLES_PER_MS
     scalar = SimReceiver(; signals, config = nothing)
-    run_simulation!(scalar, 3)
-    @test measure_navigation(scalar.vt, scalar.groups, 0.1s) == 0
+    _, sample, _ = run_simulation!(scalar, 3)
+    @test measure_navigation(scalar, sample + cycle) == 0
 
     rx = SimReceiver(; signals)
-    run_simulation!(rx, 20)
+    _, sample, _ = run_simulation!(rx, 20)
     @test rx.vt.running
-    @test measure_navigation(rx.vt, rx.groups, 0.1s) == 0
-    # A measured interval off the nominal one rebuilds the process model in place.
-    @test measure_navigation(rx.vt, rx.groups, 0.13s) == 0
-    @test rx.vt.model.integration_time == 0.13s
+    sample += cycle
+    @test measure_navigation(rx, sample) == 0
+    take_up!(rx, sample)
+    # A skipped epoch rebuilds the process model in place.
+    sample += 2cycle
+    @test measure_navigation(rx, sample) == 0
+    @test rx.vt.model.integration_time == 0.2s
+    take_up!(rx, sample)
 
-    sat = rx.group.sats[2]
-    sat.active = false
-    @test measure_navigation(rx.vt, rx.groups, 0.1s) == 0
-    @test sat.release_reason == VT_INELIGIBLE
-    sat.active = true
-    @test measure_navigation(rx.vt, rx.groups, 0.1s) == 0
-    @test sat.estimator_state.vt_on
+    slot = rx.group.slots[2]
+    sample += cycle
+    @test measure_navigation(rx, sample; fill! = (v, sat, e, l, nav) ->
+        (fill_slot!(v, sat, e, l, nav); v === slot && drop_slot!(v))) == 0
+    @test slot.release_reason == VT_INELIGIBLE
+    take_up!(rx, sample)
+    sample += cycle
+    @test measure_navigation(rx, sample) == 0
+    take_up!(rx, sample)
+    @test rx.sats[2].state.vt_on
 
-    for group in rx.groups, v in group.sats
-        v.in_lock = false
-        v.pvt_ready = false
-    end
+    unlocked!(v, sat, e, l, nav) = (fill_slot!(v, sat, e, l, nav); v.in_lock = false; v.pvt_ready = false)
     rx.vt.time_with_insufficient_meas = 10.0s
-    @test measure_navigation(rx.vt, rx.groups, 0.1s) == 0
+    sample += cycle
+    @test measure_navigation(rx, sample; fill! = unlocked!) == 0
     @test !rx.vt.running
-    @test measure_navigation(rx.vt, rx.groups, 0.1s) == 0
+    take_up!(rx, sample)
+    sample += cycle
+    @test measure_navigation(rx, sample; fill! = unlocked!) == 0
+    take_up!(rx, sample)
 
-    for group in rx.groups, v in group.sats
-        v.in_lock = true
-        v.pvt_ready = true
-    end
-    @test measure_navigation(rx.vt, rx.groups, 0.1s) == 0
+    sample += cycle
+    @test measure_navigation(rx, sample) == 0
     @test rx.vt.running
+    @test navigation_status(rx.estimator).enabled
 end
 
 @testset "Navigation cycles are allocation-free with $name" for (name, kw) in (
     ("the atmospheric corrections", (; atmosphere = true)),
     ("two bands", (; signals = (GPSL1CA(), GPSL2CM()), range_biases = (0.0, 4.0))),
 )
+    cycle = 100 * SAMPLES_PER_MS
     scalar = SimReceiver(; kw..., config = nothing)
-    run_simulation!(scalar, 3)
-    @test measure_navigation(scalar.vt, scalar.groups, 0.1s) == 0
+    _, sample, _ = run_simulation!(scalar, 3)
+    @test measure_navigation(scalar, sample + cycle) == 0
     rx = SimReceiver(; kw...)
-    run_simulation!(rx, 20)
+    _, sample, _ = run_simulation!(rx, 20)
     @test rx.vt.running
-    @test measure_navigation(rx.vt, rx.groups, 0.1s) == 0
+    @test measure_navigation(rx, sample + cycle) == 0
 end
 
 @testset "Cycles with a decoded GGTO are allocation-free" begin
@@ -69,22 +96,26 @@ end
         rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1), config)
         galileo = only(rx.channels[2])
         galileo.decoder = with_zero_ggto(galileo.decoder)
-        run_simulation!(rx, 20)
+        _, sample, _ = run_simulation!(rx, 20)
         @test rx.vt.running == !isnothing(config)
         isnothing(config) ||
             @test !isempty(rx.vt.buffers.observability.hub_offset_constraints)
-        @test measure_navigation(rx.vt, rx.groups, 0.1s) == 0 skip = VERSION < v"1.11"
+        @test measure_navigation(rx, sample + 100 * SAMPLES_PER_MS) == 0 skip = VERSION < v"1.11"
     end
 end
 
-@testset "decode_soft_bits! is allocation-free" begin
-    state = SignalLoopState(GPSL1CA())
-    decoder = GNSSDecoderState(GPSL1CA(), 3)
-    decode_twice!(decoder, state, bits) = @allocated begin
-        append!(get_soft_bits(state), bits)
-        decoder = decode_soft_bits!(decoder, state)
-    end
-    bits = Float32[isodd(i) ? 1 : -1 for i = 1:20]
-    decode_twice!(decoder, state, bits)
-    @test decode_twice!(decoder, state, bits) == 0
+@testset "A satellite takes a cycle up without allocating" begin
+    rx = SimReceiver()
+    _, sample, _ = run_simulation!(rx, 5)
+    sample += 100 * SAMPLES_PER_MS
+    measure_navigation(rx, sample)
+    group = rx.group
+    sat = rx.sats[1]
+    slot = group.slots[1]
+    record = take_up_record(sat, sample)
+    words = sim_words(sat, NO_LANDING_SAMPLE)
+    state = sat.state
+    take_up(state) = @allocated TL._take_up_cycle(rx.vt, group, slot, state, record, words, Int64(sample))
+    take_up(state)
+    @test take_up(state) == 0
 end

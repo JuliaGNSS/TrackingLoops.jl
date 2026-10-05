@@ -18,9 +18,10 @@ allocation-free *loop process* of a hardware correlator:
     component's prompt filter, C/N₀ estimator and bit buffer identically on
     both paths;
   - the [`NCOTimeline`](@ref): what a hardware NCO ran and will run;
-  - vector tracking: the navigation filter behind [`update_navigation!`](@ref)
-    that closes every satellite's loops at once, and solves the PVT before
-    it takes over.
+  - vector tracking: [`VectorPLLAndDLL`](@ref), whose navigation engine
+    decodes every satellite's bits, solves the PVT and then closes every
+    satellite's loops at once with a navigation filter, all from the records
+    it is stepped with.
 
 Tracking.jl depends on this package for its software correlator; the loop
 process's engine (HardwareLoopCore.jl) depends on it without Tracking. Nothing
@@ -33,8 +34,10 @@ using Dates: year, now, UTC
 using Dictionaries: Dictionary, set!
 using GNSSDecoder:
     GNSSDecoder,
+    GNSSDecoderState,
     SECONDS_PER_WEEK,
     decode!,
+    reset_decoder_state!,
     is_decoding_completed_for_positioning,
     is_sat_healthy
 using Geodesy: ECEF, ENUfromECEF, wgs84
@@ -171,25 +174,17 @@ export NumAnts,
     SatNCOReferencedPLLAndDLL,
     VectorPLLAndDLL,
     SatVectorPLLAndDLL,
-    enable_vector_tracking,
-    disable_vector_tracking,
-    set_vector_corrections,
-    reset_discriminator_accumulators,
-    mean_code_discriminator,
-    mean_carrier_discriminator,
-    release_from_vector_tracking,
     VectorTracking,
-    VectorTrackingState,
-    VTSignalGroup,
-    VTSat,
     VTStatus,
     VTReleaseReason,
     VT_NOT_RELEASED,
     VT_INELIGIBLE,
     VT_BELOW_HORIZON,
     VT_FALLBACK,
-    update_navigation!,
-    decode_soft_bits!,
+    navigation_solution,
+    navigation_status,
+    release_reason,
+    member_sats,
     position_uncertainty,
     clock_uncertainty,
     init_estimator_state,
@@ -264,9 +259,8 @@ so the estimators are interchangeable:
     estimator chooses to keep.
 
 [`ConventionalPLLAndDLL`](@ref), [`NCOReferencedPLLAndDLL`](@ref) and the
-vector loop [`VectorPLLAndDLL`](@ref) all implement it. What the vector loop
-adds on top — the navigation filter writing its corrections into the
-satellite's state between two records — happens outside the per-record step.
+vector loop [`VectorPLLAndDLL`](@ref) all implement it. The vector loop's
+navigation engine runs inside its `step_loop` too, from what the records carry.
 """
 abstract type AbstractDopplerEstimator end
 
@@ -307,5 +301,6 @@ include("estimators.jl")
 include("vector/estimator.jl")
 include("vector/model.jl")
 include("vector/tracking.jl")
+include("vector/engine.jl")
 
 end # module

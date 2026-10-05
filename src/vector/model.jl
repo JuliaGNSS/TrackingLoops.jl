@@ -41,7 +41,7 @@
                    insufficient_meas_timeout = 10.0s)
 
 Configuration of the vector-tracking navigation filter, for a
-[`VectorTrackingState`](@ref): the platform and the receiver's oscillator. The
+[`VectorPLLAndDLL`](@ref): the platform and the receiver's oscillator. The
 defaults suit a vehicle carrying a consumer-grade front end.
 
 # Fields
@@ -488,7 +488,7 @@ end
 # `c₂` at `L − 2T`. Without an NCO delay `L = 0`, and this is exactly `c₀·T/2`
 # (`x − y·0.0 == x`). With `T ≤ L ≤ 1.5T` the half-cycle ran on `c₁` until it landed,
 # and with `1.5T ≤ L ≤ 2.5T` on `c₂` and then `c₁`. A longer delay would need a fourth
-# correction; `update_navigation!` rejects it (`MAX_LANDING_LEAD_CYCLES`).
+# correction; a satellite taking up a cycle rejects it (`MAX_LANDING_LEAD_CYCLES`).
 function code_phase_advance(state::SatVectorPLLAndDLL, T)
     c₀, c₁, c₂ = map(c -> ustrip(Hz, c), state.code_freq_update_history)
     L = ustrip(s, state.code_update_landing_lead)
@@ -505,7 +505,7 @@ const MAX_LANDING_LEAD_CYCLES = 2.5
 # hence the negated mean. Zero when nothing was accumulated (see
 # `has_accumulated_discriminators`).
 function accumulated_code_discriminator(state::SatVectorPLLAndDLL, T)
-    mean = mean_code_discriminator(state)
+    mean = _mean_code_discriminator(state)
     isnothing(mean) ? 0.0 : -mean + code_phase_advance(state, T)
 end
 
@@ -534,7 +534,7 @@ end
 # correction, whose sign follows the carrier loop's transient rather than the correction, so
 # it does not accumulate across cycles.
 function accumulated_carrier_discriminator(state::SatVectorPLLAndDLL)
-    mean = mean_carrier_discriminator(state)
+    mean = _mean_carrier_discriminator(state)
     isnothing(mean) ? 0.0 : ustrip(Hz, mean)
 end
 
@@ -552,8 +552,8 @@ end
 # Both accumulators are incremented in the same branch of `step_loop`, so the two counts
 # never disagree; the carrier one is checked as well so this stays true if that changes.
 has_accumulated_discriminators(state::SatVectorPLLAndDLL) =
-    !isnothing(mean_code_discriminator(state)) &&
-    !isnothing(mean_carrier_discriminator(state))
+    !isnothing(_mean_code_discriminator(state)) &&
+    !isnothing(_mean_carrier_discriminator(state))
 
 # Linear carrier-to-noise density (Hz) floored to 1, from a CN0 estimate in
 # dB-Hz. The floor keeps a starved estimator from producing a degenerate
