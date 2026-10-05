@@ -145,6 +145,20 @@ end
     @test all(r -> position_error(rx, r) < 3 * ustrip(u"m", r.status.position_std), results)
 end
 
+@testset "Without redundancy, the filter settles onto the truth and stays there" begin
+    # Four GPS satellites, a GDOP of about 40: every metre of range error left in the
+    # simulated signals moves the solution by tens. With the satellite clocks held at
+    # their initial broadcast correction, the solution drifted off by about 0.17 m/s
+    # after a few hundred cycles, beyond 10 m by cycle 1200, while the reported
+    # uncertainty levelled off (JuliaGNSS/TrackingLoops.jl#25).
+    rx = SimReceiver(; signals = (GPSL1CA(),), num_sats = (4,))
+    results, _, diverged = run_simulation!(rx, 1200)
+    @test !diverged
+    @test all(r -> r.status.running, results)
+    @test all(r -> position_error(rx, r) < 3 * ustrip(u"m", r.status.position_std), results)
+    @test tail_errors(rx, results[601:end]) < 0.5
+end
+
 @testset "Corrections sized for their landing match the loop without a delay" begin
     # A 20 ms navigation cycle and the NCO-referenced inner loop, whose landing
     # prediction keeps the carrier loop locked under the delay. A 15 ms delay lands the

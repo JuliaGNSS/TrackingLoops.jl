@@ -25,6 +25,7 @@ using PositionVelocityTime:
     satellite_measurement,
     select_ionospheric_correction,
     calc_corrected_time,
+    correct_clock,
     calc_satellite_position_and_velocity,
     calc_satellite_clock_drift,
     calc_ρ_hat!,
@@ -105,7 +106,6 @@ mutable struct SimSat{D,E,S}
     code_doppler::Float64
     previous_prompt::ComplexF64
     transmit_time::Float64 # the latest true transmit time, a warm start
-    clock_offset::Float64  # corrected − uncorrected transmit time
     in_view::Bool          # false during a scripted outage
     amplitude::Float64     # of the signal, scripted to fade it
     timeline::NCOTimeline
@@ -186,23 +186,32 @@ function SimSat(signal, decoder, estimator, truth::SimTruth, t; range_bias = 0.0
     ratio = get_code_center_frequency_ratio(signal)
     noise_std = isinf(cn0_dbhz) ? 0.0 : sqrt(1 / (2 * 10^(cn0_dbhz / 10) * 1e-3))
     probe = SimSat(signal, decoder, base_tow, code_frequency, center_frequency,
-        nothing, 0.0, 0.0, 0.0, 0.0, complex(0.0), t - 0.075, 0.0, true, 1.0, NCOTimeline(),
+        nothing, 0.0, 0.0, 0.0, 0.0, complex(0.0), t - 0.075, true, 1.0, NCOTimeline(),
         range_bias, atmosphere, stream, noise_std, Xoshiro(seed), 0)
     t_t, = true_transmit(probe, truth, t)
     doppler = true_doppler(probe, truth, t)
     state = init_estimator_state(estimator, signal, doppler * Hz, doppler * ratio * Hz)
     sat = SimSat(signal, decoder, base_tow, code_frequency, center_frequency, state,
-        t_t, 0.0, doppler, doppler * ratio, complex(0.0), t_t, 0.0, true, 1.0, NCOTimeline(),
+        t_t, 0.0, doppler, doppler * ratio, complex(0.0), t_t, true, 1.0, NCOTimeline(),
         range_bias, atmosphere, stream, noise_std, Xoshiro(seed), 0)
-    # Uncorrected transmit time of the replica: invert the clock correction.
-    u = t_t
-    for _ = 1:3
-        u += t_t - calc_corrected_time(replica_satellite_state(sat, u))
-    end
-    sat.replica_time = u
-    sat.clock_offset = t_t - u
+    sat.replica_time = uncorrected_time(sat, t_t)
     reset_timeline!(sat.timeline, doppler, doppler * ratio)
     sat
+end
+
+# The satellite clock's own reading — the uncorrected transmit time its signal carries —
+# at the corrected transmit time `t_t`: the broadcast clock correction inverted. It is
+# inverted at every instant, not once: the correction drifts (`a_f1`, the relativistic
+# term) by up to a few millimetres of range per second, and a satellite clock frozen at
+# its initial offset is a range error growing linearly over the run, different for
+# every satellite, which a geometry without redundancy amplifies by its DOP into a drift
+# of the solution.
+function uncorrected_time(sat::SimSat, t_t)
+    u = t_t
+    for _ = 1:3
+        u += t_t - correct_clock(sat.decoder, sat.signal, u)
+    end
+    u
 end
 
 triangle(x) = max(0.0, 1.0 - abs(x))
@@ -221,7 +230,7 @@ function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_inde
     carrier, code = mean_nco_word(words, record_start, sample_index)
     t_t, = true_transmit(sat, truth, t_mid)
     f_true = true_doppler(sat, truth, t_mid)
-    u_true = t_t - sat.clock_offset
+    u_true = uncorrected_time(sat, t_t)
     u_replica = sat.replica_time + dt / 2 * (1 + code / sat.code_frequency)
     code_error = (u_true - u_replica) * sat.code_frequency
     mean_phase = sat.phase_error + (f_true - carrier) * dt / 2
