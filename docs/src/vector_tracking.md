@@ -83,9 +83,11 @@ every satellite starts on its scalar loop:
    runs, each cycle solves the scalar PVT over the satellites that are in lock
    (C/N₀ above `lock_cn0_threshold`, bit sync found), decoded for positioning
    and healthy.
-2. The first fix seeds the filter. The fix's satellites join the vector loop,
-   and take their first corrections, computed at the seeded state, on their next
-   record.
+2. The first fix seeds the filter. The filter starts from the fix's position
+   and clock biases, with the covariance the fix's geometry gives them, so a fix
+   of poor geometry (a high DOP) starts the filter as uncertain as it is. The
+   fix's satellites join the vector loop, and take their first corrections,
+   computed at the seeded state, on their next record.
 3. While it runs, a satellite is admitted once it is decoded, healthy, in lock
    and a degree above the horizon. A member out of lock stays in the loop,
    unmeasured, and is predicted through the outage. A member that misses an

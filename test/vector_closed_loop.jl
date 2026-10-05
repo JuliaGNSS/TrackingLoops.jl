@@ -132,6 +132,19 @@ end
     @test count(key -> first(key) === :GalileoE1B, results[end].measured) == length(rx.channels[2])
 end
 
+@testset "Seeded from a high-DOP fix, the filter reports the uncertainty it has" begin
+    # Four GPS satellites and one Galileo: the scalar fix has a GDOP of about 45, which
+    # turns the simulation's sub-metre modelling error into a fix metres off. Seeded
+    # with a fixed covariance, the filter stayed about 5 m off while reporting under a
+    # metre (JuliaGNSS/TrackingLoops.jl#16).
+    rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (4, 1))
+    results, _, diverged = run_simulation!(rx, 300)
+    @test !diverged
+    @test all(r -> r.status.running, results)
+    @test position_error(rx, results[1]) > 3.0
+    @test all(r -> position_error(rx, r) < 3 * ustrip(u"m", r.status.position_std), results)
+end
+
 @testset "Corrections sized for their landing match the loop without a delay" begin
     # A 20 ms navigation cycle and the NCO-referenced inner loop, whose landing
     # prediction keeps the carrier loop locked under the delay. A 15 ms delay lands the

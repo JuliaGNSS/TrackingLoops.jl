@@ -1212,7 +1212,9 @@ end
 # (the pseudorange reference epoch is already corrected by the fix's clock bias); the
 # other systems' biases and the inter-frequency biases are seeded from the fix where it
 # observed them, and start at zero with a generous variance where it did not — their
-# first measurements then pull them in through the Kalman update.
+# first measurements then pull them in through the Kalman update. The fixed variances
+# of the position and the seeded biases are a fallback: `seed_fix_covariance!` replaces
+# them with the fix's own covariance wherever its geometry is known.
 function initial_nav_state!(x, P, layout::NavFilterLayout, idxs::NavFilterIndices, pvt::PVTSolution)
     c = SPEED_OF_LIGHT
 
@@ -1257,25 +1259,94 @@ function initial_nav_state!(x, P, layout::NavFilterLayout, idxs::NavFilterIndice
         state_index = idxs.clock_biases[index]
         if index == primary_clock_index
             P[state_index, state_index] = init_std_clock_bias^2
-        elseif haskey(pvt.inter_system_biases, time_system)
+        elseif _fix_seeds_clock(pvt, layout, primary_clock_index, index)
             x[state_index] = ustrip(m, pvt.inter_system_biases[time_system])
             P[state_index, state_index] = init_std_clock_bias^2
         else
             P[state_index, state_index] = init_std_unseeded_clock_bias^2
         end
     end
-    for (index, band) in enumerate(layout.extra_bands)
+    for index in eachindex(layout.extra_bands)
         state_index = idxs.ifb[index]
-        # Only take the fix's bias when it was measured against the same
-        # reference band as the filter's layout — otherwise it refers to a
-        # different quantity.
-        if haskey(pvt.inter_frequency_biases, band) &&
-           pvt.inter_frequency_biases[band].reference == layout.reference_bands[index]
-            x[state_index] = ustrip(m, pvt.inter_frequency_biases[band].value)
+        if _fix_seeds_ifb(pvt, layout, index)
+            x[state_index] = ustrip(m, pvt.inter_frequency_biases[layout.extra_bands[index]].value)
             P[state_index, state_index] = init_std_seeded_ifb^2
         else
             P[state_index, state_index] = init_std_unseeded_ifb^2
         end
     end
     primary_clock_index
+end
+
+# Whether the fix estimated the clock-bias state `index` (the primary one, or another
+# system's through its inter-system bias), so that `initial_nav_state!` seeds it.
+_fix_seeds_clock(pvt::PVTSolution, layout::NavFilterLayout, primary_clock_index, index) =
+    index == primary_clock_index || haskey(pvt.inter_system_biases, layout.time_systems[index])
+
+# Whether the fix seeds the inter-frequency-bias state `index`: only when it measured the
+# bias against the same reference band as the filter's layout — otherwise it refers to a
+# different quantity.
+function _fix_seeds_ifb(pvt::PVTSolution, layout::NavFilterLayout, index)
+    band = layout.extra_bands[index]
+    haskey(pvt.inter_frequency_biases, band) &&
+        pvt.inter_frequency_biases[band].reference == layout.reference_bands[index]
+end
+
+# The pseudorange error (m) a scalar fix is taken to carry — the user equivalent range
+# error its covariance is scaled by in `seed_fix_covariance!`.
+const FIX_PSEUDORANGE_STD = 1.0
+
+# Overwrite the position and bias block of `P`, as `initial_nav_state!` seeded it, with
+# the covariance of the least-squares fix it was seeded from: `σ² (HᵀH)⁻¹` for the
+# design matrix `H` of the fix's satellites (`calc_H!`, over the dense bias columns of
+# `dense_bias_columns!`, whose state-to-column maps `clock_used` and `ifb_used` are), and
+# `σ = FIX_PSEUDORANGE_STD`. A fixed variance, whatever the geometry, takes a fix of a
+# GDOP of 40 as accurate as one of 2: its error, many times the variance, is then held by
+# the measurements that agree with it, while the covariance shrinks (JuliaGNSS/
+# TrackingLoops.jl#16). The geometry also correlates the position with the clocks — an
+# inter-system bias determined by one satellite is as wrong as the position along its
+# line of sight — which the full block carries. A bias state the fix did not seed keeps
+# its generous variance, uncorrelated, though the position's variance still counts it as
+# an unknown. `normal_matrix` is a square scratch matrix of `H`'s column count. Returns
+# whether the block was written: a rank-deficient `H` leaves `P` as seeded.
+function seed_fix_covariance!(
+    P,
+    idxs::NavFilterIndices,
+    layout::NavFilterLayout,
+    pvt::PVTSolution,
+    primary_clock_index,
+    H,
+    normal_matrix,
+    clock_used,
+    ifb_used,
+)
+    mul!(normal_matrix, H', H)
+    factorization = cholesky!(Symmetric(normal_matrix); check = false)
+    issuccess(factorization) || return false
+    covariance = LinearAlgebra.inv!(factorization)
+    σ² = FIX_PSEUDORANGE_STD^2
+    num_columns = size(covariance, 1)
+    for column = 1:num_columns, row = 1:num_columns
+        i = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_used, ifb_used, row)
+        j = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_used, ifb_used, column)
+        i == 0 || j == 0 || (P[i, j] = σ² * covariance[row, column])
+    end
+    true
+end
+
+# The state behind column `column` of the fix's dense design matrix, `0` for a bias
+# state the fix did not seed.
+function _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_used, ifb_used, column)
+    column <= 3 && return idxs.pos[column]
+    for (index, dense) in enumerate(clock_used)
+        dense == column - 3 || continue
+        return _fix_seeds_clock(pvt, layout, primary_clock_index, index) ?
+               idxs.clock_biases[index] : 0
+    end
+    num_clocks = count(!iszero, clock_used)
+    for (index, dense) in enumerate(ifb_used)
+        dense == column - 3 - num_clocks || continue
+        return _fix_seeds_ifb(pvt, layout, index) ? idxs.ifb[index] : 0
+    end
+    0
 end
