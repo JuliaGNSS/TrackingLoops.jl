@@ -131,3 +131,23 @@ end
     @test reset.carrier_loop_filter_bandwidth == state.carrier_loop_filter_bandwidth
     @test reset.code_loop_filter_bandwidth == 0.5Hz
 end
+
+@testset "$(nameof(typeof(estimator))) is driven through the estimator interface alone" for estimator in (
+    ConventionalAssistedPLLAndDLL(),
+    NCOReferencedPLLAndDLL(),
+    VectorPLLAndDLL(),
+    VectorPLLAndDLL(NCOReferencedPLLAndDLL()),
+)
+    # What a host calls, and nothing else: build, step a record, reset.
+    state = init_estimator_state(estimator, LOOP_SIGNAL, 100.0Hz, 0.0Hz)
+    @test state isa estimator_state_type(estimator, LOOP_SIGNAL)
+    output = CorrelatorOutput(loop_epl(0.5, 1.0, 0.5), LOOP_N, LOOP_N)
+    record = LoopRecord(LOOP_SIGNAL, output.correlator, complex(0.0, 0.0), output, 1, LOOP_FS)
+    stepped, carrier_doppler, code_doppler =
+        @inferred step_loop(estimator, state, record, FixedNCOWord(100.0, 0.0), NO_LANDING_SAMPLE)
+    @test stepped isa typeof(state)
+    @test carrier_doppler isa typeof(1.0Hz)
+    @test code_doppler isa typeof(1.0Hz)
+    @test @inferred(reset_estimator_state(estimator, stepped, carrier_doppler, code_doppler)) isa
+          typeof(state)
+end
