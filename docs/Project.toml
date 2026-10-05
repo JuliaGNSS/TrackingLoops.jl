@@ -9,3 +9,5 @@ TrackingLoops = {path = ".."}
 
 [compat]
 Documenter = "1"
+GNSSSignals = "4"
+Unitful = "1"
