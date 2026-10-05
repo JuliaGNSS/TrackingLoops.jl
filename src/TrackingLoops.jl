@@ -248,8 +248,25 @@ function update end
 $(SIGNATURES)
 
 Abstract supertype for Doppler estimators. Concrete subtypes carry estimator
-configuration; the per-satellite state lives with the satellite — see
-[`init_estimator_state`](@ref) and [`step_loop`](@ref).
+configuration; the per-satellite state lives with the satellite.
+
+Every estimator implements one interface, and a host (Tracking.jl's `track!`,
+a hardware correlator's loop process) drives it through that interface alone,
+so the estimators are interchangeable:
+
+  - [`init_estimator_state`](@ref)`(estimator, driver_signal, carrier_doppler,
+    code_doppler)` builds a satellite's state;
+  - [`step_loop`](@ref)`(estimator, state, record, words, landing_sample)`
+    folds one record into it and returns `(state, carrier_doppler,
+    code_doppler)`;
+  - [`reset_estimator_state`](@ref)`(estimator, state, carrier_doppler,
+    code_doppler)` re-seeds it from converged Dopplers, keeping what the
+    estimator chooses to keep.
+
+[`ConventionalPLLAndDLL`](@ref), [`NCOReferencedPLLAndDLL`](@ref) and the
+vector loop [`VectorPLLAndDLL`](@ref) all implement it. What the vector loop
+adds on top — the navigation filter writing its corrections into the
+satellite's state between two records — happens outside the per-record step.
 """
 abstract type AbstractDopplerEstimator end
 
