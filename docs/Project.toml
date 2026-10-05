@@ -4,8 +4,9 @@ GNSSSignals = "52c80523-2a4e-5c38-8979-05588f836870"
 TrackingLoops = "89eadfff-3a96-4166-8be0-4e8bed6efc30"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
-[sources]
-TrackingLoops = {path = ".."}
+[sources.TrackingLoops]
+path = ".."
 
 [compat]
 Documenter = "1"
+TrackingLoops = "2"
