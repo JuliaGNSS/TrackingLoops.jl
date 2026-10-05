@@ -53,12 +53,13 @@ behaves identically on the others.
 - **The per-record fold** — `apply_record` advances a signal component's prompt
   filter, C/N₀ estimator and bit buffer in one step, so every caller does it the
   same way.
-- **Vector tracking** — `VectorPLLAndDLL` wraps the scalar loop a satellite
-  runs until a navigation filter takes it over, and `update_navigation!` is
-  that filter: an unscented Kalman filter over position, velocity, one clock
-  per GNSS time system and the inter-frequency biases, which closes every
-  satellite's code and carrier loops at once. It also provides the PVT solution,
-  before vector tracking starts and while it runs.
+- **Vector tracking** — `VectorPLLAndDLL` is a Doppler estimator like the
+  others, stepped with the same `step_loop`, whose navigation engine does the
+  whole pipeline from the records it is handed: it decodes every satellite's
+  navigation bits, solves the PVT, and then closes every satellite's code and
+  carrier loops at once with a navigation filter — an unscented Kalman filter
+  over position, velocity, one clock per GNSS time system and the
+  inter-frequency biases.
 
 Everything is a plain value or a small mutable state that is preallocated once,
 so a loop can be stepped for hours without allocating — provided the consumer
@@ -92,57 +93,35 @@ for the full API reference.
 
 ## Vector tracking
 
-Vector tracking needs a decoded navigation message and a first position fix, so
-every satellite starts on a conventional loop. Wrap that loop in a
-`VectorPLLAndDLL`; it runs the loop unchanged until the filter takes the
-satellite over:
+Build one `VectorPLLAndDLL` for all the ranging signals the receiver tracks, and
+step every satellite with it like any other loop. The records must name their
+satellite (`prn`), report the replica's code phase at their end (`code_phase`
+on the `CorrelatorOutput`) and share one time grid (`sample_offset`):
 
 ```julia
-estimator = VectorPLLAndDLL(ConventionalAssistedPLLAndDLL())  # or NCOReferencedPLLAndDLL()
-state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)
+estimator = VectorPLLAndDLL(GPSL1CA(), GalileoE1B())   # inner = ConventionalAssistedPLLAndDLL()
+state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  # one per satellite
+
+# For every record, as above, but naming the satellite:
+record = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs; prn, sample_offset)
+state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words, landing_sample)
+
+navigation_solution(estimator)   # the latest PVTSolution
+navigation_status(estimator)     # what the latest navigation cycle did
 ```
 
-Each signal gets a `VTSignalGroup`, a preallocated vector of `VTSat` slots. The
-filter is built once for the tuple of groups:
-
-```julia
-gps = VTSignalGroup(GPSL1CA(), [VTSat(decoder, state) for (decoder, state) in channels])
-vt = VectorTrackingState(VectorTracking(), (gps,))
-
-# once per navigation cycle, `cycle_time` after the previous one:
-for (sat, channel) in zip(gps.sats, channels)
-    sat.active = true
-    sat.decoder = channel.decoder          # keep it current with decode_soft_bits!
-    sat.estimator_state = channel.state
-    sat.code_phase = channel.code_phase    # the replica running at the cycle epoch
-    sat.carrier_doppler = channel.carrier_doppler
-    sat.code_doppler = channel.code_doppler
-    sat.code_phase_at_landing = channel.code_phase  # no NCO delay
-    sat.carrier_doppler_at_landing = channel.carrier_doppler
-    sat.code_doppler_at_landing = channel.code_doppler
-    sat.cn0_dbhz = channel.cn0
-    sat.coherent_integration_time = channel.coherent_integration_time  # the last dump's
-    sat.early_late_spacing = channel.early_late_spacing                # chips
-    sat.in_lock = channel.in_lock
-    sat.pvt_ready = channel.pvt_ready
-end
-pvt, status = update_navigation!(vt, (gps,), cycle_time)
-# copy every `sat.estimator_state` back to its channel, and act on `sat.release_reason`
-```
-
-Until vector tracking runs, a cycle solves the scalar PVT over the satellites
-marked `pvt_ready`. Its first fix seeds the filter, and from then on every cycle
-fuses the accumulated DLL and FLL discriminators and writes each member's NCO
-corrections into its estimator state. With a hardware correlator the
-corrections take effect when the command lands. Pass `landing_lead` and the
-replica predicted there (`code_phase_at_landing`, `carrier_doppler_at_landing`,
-`code_doppler_at_landing`) and the corrections are sized for that moment; a
-released satellite's scalar loop takes over from that replica. The landing may
-lie up to 2.5 cycles after the epoch. `coherent_integration_time` and
-`early_late_spacing` size the measurement noise, so they must be the
-correlator's own. Nothing is logged: `VTStatus` reports the events, and each
-`VTSat` its `release_reason`. Once warm, a cycle allocates nothing and compiles
-with `juliac --trim=safe` (see `test/trim`).
+Each satellite runs its scalar loop until the filter takes it over. Inside
+`step_loop` the estimator syncs to the satellite's bits, decodes them, estimates
+its C/N₀ and snapshots it at every navigation epoch; the record that brings the
+last satellite past an epoch runs that epoch's cycle — the scalar PVT until its
+first fix seeds the filter, a filter iteration after that — and each satellite
+takes the cycle's admission, release and corrections up on its next record,
+sized for where its command lands (at `landing_sample` with a hardware NCO).
+Nothing is logged: `navigation_status` reports the events, `release_reason` why
+a satellite was handed back. Storage is preallocated for
+`max_satellites_per_signal` satellites per signal and reused as satellites come
+and go; once warm, records and cycles allocate nothing and compile with
+`juliac --trim=safe` (see `test/trim`).
 
 ## Platforms
 
