@@ -1,7 +1,7 @@
 # The navigation filter's model, ported from GNSSReceiver's `test/vector_tracking.jl`:
 # the configuration, the layout and state indices, the process model, the measurement
 # model and its noise, the bias observability and the loop-closure maths.
-using LinearAlgebra: diag, eigvals, Symmetric, I, Diagonal, norm
+using LinearAlgebra: diag, eigvals, Symmetric, I, Diagonal, norm, normalize, isposdef
 using Accessors: @set
 using GNSSDecoder: GNSSDecoderState
 using PositionVelocityTime: PositionVelocityTime, SPEED_OF_LIGHT, BiasColumns, calc_ρ_hat!,
@@ -988,4 +988,58 @@ end
     @test all(a -> P_acc[a, a] > 0, idxs_acc.acc)
     @test x_acc[idxs_acc.pos] == x[idxs.pos]
     @test x_acc[idxs_acc.vel] == x[idxs.vel]
+end
+
+@testset "The seeded covariance is the fix's, scaled by its geometry" begin
+    layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
+    config = VectorTracking()
+    idxs = TL.NavFilterIndices(config, layout)
+    n = TL.num_nav_states(config, layout)
+    user = SVector(6.378e6, 0.0, 0.0)
+    # Four GPS satellites and one Galileo satellite, the Galileo clock determined by its
+    # lone satellite alone — the inter-system bias is as wrong as the position along it.
+    directions = [(1.0, 0.0, 0.0), (0.6, 0.8, 0.0), (0.6, -0.4, 0.7), (0.5, -0.3, -0.8), (0.7, 0.5, 0.5)]
+    members = [
+        _test_member(; group = k == 5 ? 2 : 1, slot = k, prn = k, clock_bias_index = k == 5 ? 2 : 1,
+            sat_position = user + 2.0e7 * normalize(SVector(d))) for (k, d) in enumerate(directions)
+    ]
+    positions = [member.sat_position for member in members]
+    gst_bias = Dict{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}(GST() => 2.0u"m")
+    pvt = PVTSolution(; position = ECEF(user...), reference_system = GPST(), inter_system_biases = gst_bias)
+    clock_used, ifb_used = zeros(Int, 2), zeros(Int, 0)
+    columns, primary = TL.dense_bias_columns!(Int[], Int[], clock_used, ifb_used, members, eachindex(members), 1)
+    H = calc_H!(zeros(5, 5), positions, [user..., 0.0, 0.0], columns)
+    dop = calc_DOP!(zeros(5, 5), H, ECEF(user...), primary)
+
+    x, P = zeros(n), zeros(n, n)
+    TL.initial_nav_state!(x, P, layout, idxs, pvt)
+    seeded = copy(P)
+    @test TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(5, 5), clock_used, ifb_used)
+    block = [idxs.pos; idxs.clock_biases]
+    @test P[block, block] ≈ TL.FIX_PSEUDORANGE_STD^2 * inv(H' * H)
+    @test TL.position_uncertainty(P, idxs) ≈ TL.FIX_PSEUDORANGE_STD * dop.PDOP
+    @test P ≈ P'
+    @test isposdef(Symmetric(P))
+    @test P[idxs.clock_biases[2], idxs.pos[1]] != 0
+    # Velocity and clock drift keep their seed.
+    others = setdiff(1:n, block)
+    @test P[others, others] == seeded[others, others]
+    @test all(iszero, P[others, block])
+
+    # A Galileo clock the fix did not seed keeps its generous, uncorrelated variance; the
+    # position is still uncertain by the geometry that leaves that clock unknown.
+    pvt_gps = @set pvt.inter_system_biases = empty(gst_bias)
+    x2, P2 = zeros(n), zeros(n, n)
+    TL.initial_nav_state!(x2, P2, layout, idxs, pvt_gps)
+    @test TL.seed_fix_covariance!(P2, idxs, layout, pvt_gps, 1, H, zeros(5, 5), clock_used, ifb_used)
+    gal = idxs.clock_biases[2]
+    @test P2[gal, gal] == 100.0^2
+    @test all(iszero, P2[gal, setdiff(1:n, gal)])
+    @test P2[idxs.pos, idxs.pos] ≈ P[idxs.pos, idxs.pos]
+
+    # A rank-deficient design leaves the seed as it was.
+    P3 = copy(seeded)
+    H_degenerate = calc_H!(zeros(5, 5), fill(positions[1], 5), [user..., 0.0, 0.0], columns)
+    @test !TL.seed_fix_covariance!(P3, idxs, layout, pvt, 1, H_degenerate, zeros(5, 5), clock_used, ifb_used)
+    @test P3 == seeded
 end

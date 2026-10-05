@@ -43,7 +43,7 @@ using GNSSDecoder:
 using Geodesy: ECEF, ENUfromECEF, wgs84
 using KalmanFilters:
     KFTUIntermediate, UKFMUIntermediate, measurement_update!, time_update!
-using LinearAlgebra: dot
+using LinearAlgebra: LinearAlgebra, dot, mul!, cholesky!, issuccess, Symmetric
 using PositionVelocityTime:
     PositionVelocityTime,
     BandLayoutScratch,

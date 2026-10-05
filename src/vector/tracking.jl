@@ -1025,6 +1025,53 @@ function _restart_stale_members!(released, group, g, buffer, vt)
     released
 end
 
+# Scale the seeded covariance by the geometry of the fix (`seed_fix_covariance!`): the
+# design matrix of the members the fix solved with, at the seeded position. The
+# candidates are rebuilt by every cycle, so they serve as scratch here.
+function _seed_fix_covariance!(vt::VectorNavigation)
+    buffers = vt.buffers
+    members = buffers.members
+    layout = vt.layout
+    idxs = vt.model.idxs
+    included = empty!(buffers.candidates)
+    for j in eachindex(members)
+        haskey(vt.pvt.sats, _member_key(layout, members[j])) && push!(included, j)
+    end
+    isempty(included) && return false
+    resize!(buffers.candidate_positions, length(included))
+    for (k, j) in enumerate(included)
+        buffers.candidate_positions[k] = members[j].sat_position
+    end
+    columns, _ = dense_bias_columns!(
+        buffers.dense_clock_indices,
+        buffers.dense_ifb_indices,
+        buffers.clock_used,
+        buffers.ifb_used,
+        members,
+        included,
+        vt.primary_clock_index,
+    )
+    num_columns = 3 + columns.num_clock_biases + columns.num_ifb
+    length(included) < num_columns && return false
+    if size(buffers.design_matrix, 1) < length(included)
+        buffers.design_matrix = zeros(2 * length(included), size(buffers.design_matrix, 2))
+    end
+    H = view(buffers.design_matrix, 1:length(included), 1:num_columns)
+    position_and_bias_vector!(buffers.ξ, vt.x, idxs)
+    calc_H!(H, buffers.candidate_positions, buffers.ξ, columns)
+    seed_fix_covariance!(
+        vt.P,
+        idxs,
+        layout,
+        vt.pvt,
+        vt.primary_clock_index,
+        H,
+        buffers.normal_matrices[num_columns],
+        buffers.clock_used,
+        buffers.ifb_used,
+    )
+end
+
 # Switch from scalar to vector tracking off the fresh scalar fix in `vt.pvt`: promote the
 # fix's satellites into the vector loop, seed the navigation filter from the fix, and close
 # the loops a first time so the NCOs already steer toward the navigation solution — with
@@ -1041,6 +1088,7 @@ function _seed!(vt::VectorNavigation, groups, cycle_time)
     released = _fold_groups(_restart_stale_members!, false, groups, buffers.states, 1, vt)
     _fold_groups(_enable_fix_satellites!, 0, groups, buffers.states, 1, vt)
     ionospheric_correction = _gather_members!(vt, groups, T)
+    _seed_fix_covariance!(vt)
     members = buffers.members
     # The pseudorange reference epoch is the latest transmit time corrected by the fix's
     # receiver clock bias, matching how `calc_pvt` timestamps the fix.
