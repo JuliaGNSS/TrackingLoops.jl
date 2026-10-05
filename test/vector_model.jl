@@ -871,7 +871,7 @@ end
     # ADD to the pseudorange-rate measurement (`λ · carrier_doppler + λ · mean_fll`);
     # the discriminator enters with its own sign, not flipped. Pins the sign so a
     # re-introduced negation is caught.
-    base = init_estimator_state(VectorPLLAndDLL(), GPSL1CA(), 20.0Hz, 0.0Hz)
+    base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
     # Mean = sum / count: (2, 6 Hz) → +3 Hz, (1, −4 Hz) → −4 Hz.
     pos = SatVectorPLLAndDLL(base; carrier_discr_acc = (2, 6.0Hz))
     neg = SatVectorPLLAndDLL(base; carrier_discr_acc = (1, -4.0Hz))
@@ -884,11 +884,11 @@ end
 end
 
 @testset "The code measurement is moved from mid-cycle to the epoch" begin
-    base = init_estimator_state(VectorPLLAndDLL(), GPSL1CA(), 20.0Hz, 0.0Hz)
+    base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
     T = 0.1
     # Without an NCO delay the advance is the correction's `c·T/2`, bit for bit.
     for c_new in (0.37, -2.5, 1e-3), c_old in (0.0, 4.0, -1.1)
-        state = set_vector_corrections(set_vector_corrections(base, c_old * Hz, 0.0Hz), c_new * Hz, 0.0Hz)
+        state = TL._set_vector_corrections(TL._set_vector_corrections(base, c_old * Hz, 0.0Hz), c_new * Hz, 0.0Hz)
         @test state.code_freq_update_history == (c_new * Hz, c_old * Hz, 0.0Hz)
         @test TL.code_phase_advance(state, T) === c_new * T / 2
         state = SatVectorPLLAndDLL(state; code_discr_acc = (4, 0.2))
@@ -898,7 +898,7 @@ end
     # the newest landed: on `c₁` while the newest lands inside it or after the epoch, and
     # on `c₂` while `c₁` itself lands only after mid-cycle (`L > 1.5T`).
     c₂, c₁, c₀ = 0.5, 1.0, 2.0
-    older = set_vector_corrections(set_vector_corrections(base, c₂ * Hz, 0.0Hz), c₁ * Hz, 0.0Hz)
+    older = TL._set_vector_corrections(TL._set_vector_corrections(base, c₂ * Hz, 0.0Hz), c₁ * Hz, 0.0Hz)
     for (L, expected) in (
         (0.03, c₀ * 0.05),
         (0.075, c₀ * 0.025 + c₁ * 0.025),
@@ -908,7 +908,7 @@ end
         (0.2, c₂ * 0.05),
         (0.25, c₂ * 0.05),
     )
-        state = set_vector_corrections(older, c₀ * Hz, 0.0Hz, L * s)
+        state = TL._set_vector_corrections(older, c₀ * Hz, 0.0Hz, L * s)
         @test TL.code_phase_advance(state, T) ≈ expected
     end
 end
@@ -918,7 +918,7 @@ end
     # navigation filter cannot distinguish from a genuine zero residual measured at full
     # weight. `has_accumulated_discriminators` is the guard that keeps such a member out of
     # the measurement set.
-    base = init_estimator_state(VectorPLLAndDLL(), GPSL1CA(), 20.0Hz, 0.0Hz)
+    base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
     accumulated = SatVectorPLLAndDLL(base; code_discr_acc = (3, 0.06), carrier_discr_acc = (3, 6.0Hz))
     nothing_accumulated = SatVectorPLLAndDLL(base; code_discr_acc = (0, 0.0), carrier_discr_acc = (0, 0.0Hz))
     @test TL.has_accumulated_discriminators(accumulated)

@@ -1,7 +1,8 @@
 # Vector tracking closed over many cycles on the synthetic satellites of
-# `vector_simulation.jl`: convergence, an outage, the fallback after the starvation
-# timeout, several constellations, and an NCO delay whose landing the corrections are
-# sized for.
+# `vector_simulation.jl`, with the engine filled by hand from the fixture decoders:
+# convergence, an outage, the fallback after the starvation timeout, several
+# constellations and bands, and an NCO delay whose landing the corrections are sized
+# for. `vector_pipeline.jl` closes the loop on records alone.
 
 using Accessors: @set
 
@@ -40,16 +41,17 @@ tail_code_errors(results) = maximum(r -> maximum(abs, r.code_errors), results)
     @test tail_code_errors(results[51:end]) < 0.01
 end
 
-@testset "Cycles off the nominal interval are propagated by their own length" begin
-    # A cycle runs on the first chunk boundary past the nominal interval: 104 ms cycles on
-    # a filter built for 100 ms, under a TCXO's 600 m/s of clock drift. A process model
-    # kept at 100 ms would mispredict the clock by drift · 4 ms = 2.4 m every cycle.
-    rx = SimReceiver(; records_per_cycle = 104, nominal_cycle = 100.0ms,
+@testset "A cycle over a skipped epoch is propagated by its own length" begin
+    # Every other epoch is skipped (as when the satellites resume after a gap): 200 ms
+    # cycles on a filter built for 100 ms, under a TCXO's 600 m/s of clock drift. A
+    # process model kept at 100 ms would mispredict the clock by drift · 100 ms = 60 m
+    # every cycle.
+    rx = SimReceiver(; records_per_cycle = 200, nominal_records = 100,
         truth_kw = (; clock_drift = 600.0))
-    results, _, diverged = run_simulation!(rx, 100)
+    results, _, diverged = run_simulation!(rx, 60)
     @test !diverged
-    @test rx.vt.model.integration_time ≈ 104.0ms
-    tail = results[51:end]
+    @test rx.vt.model.integration_time ≈ 200.0ms
+    tail = results[31:end]
     @test tail_errors(rx, tail) < 0.2
     @test tail_code_errors(tail) < 0.005
 end
@@ -81,8 +83,8 @@ end
     _, sample, _ = run_simulation!(rx, 19)
     # The receiver flags every satellite out of lock (and so not ready for a scalar
     # solve), while the signals stay: nothing can be measured.
-    unlocked!(vtsat, sat, epoch, landing) =
-        (fill_vtsat!(vtsat, sat, epoch, landing; in_lock = false); vtsat.pvt_ready = false)
+    unlocked!(slot, sat, epoch, landing, nav) =
+        (fill_slot!(slot, sat, epoch, landing, nav; in_lock = false); slot.pvt_ready = false)
     results, sample, diverged = run_simulation!(rx, 105; start_sample = sample, fill! = unlocked!)
     @test !diverged
     timers = [r.status.time_with_insufficient_meas for r in results]
@@ -100,8 +102,8 @@ end
     @test results[fallback].pvt.time isa PositionVelocityTime.TAITime
     @test isempty(results[fallback].measured)
     # The released satellites run their scalar loops: nothing steered, nothing accumulated.
-    @test all(v -> !v.estimator_state.vt_on && v.estimator_state.code_freq_update == 0.0Hz, rx.group.sats)
-    @test all(v -> v.estimator_state.code_discr_acc == (0, 0.0), rx.group.sats)
+    @test all(sat -> !sat.state.vt_on && sat.state.code_freq_update == 0.0Hz, rx.sats)
+    @test all(sat -> sat.state.code_discr_acc == (0, 0.0), rx.sats)
     # Not ready, no satellite enters the scalar solve, so nothing re-seeds…
     @test all(r -> !r.status.running && !r.status.enabled, results[fallback+1:end])
     # …until the receiver flags them in lock again: the first scalar fix seeds vector
@@ -135,9 +137,8 @@ end
     # prediction keeps the carrier loop locked under the delay. A 15 ms delay lands the
     # code correction inside the second half of the cycle, a 25 ms one after the next
     # epoch: both branches of the mid-cycle advance.
-    estimator = VectorPLLAndDLL(NCOReferencedPLLAndDLL())
     run(delay; kw...) = begin
-        rx = SimReceiver(; estimator, records_per_cycle = 20, delay_records = delay)
+        rx = SimReceiver(; inner = NCOReferencedPLLAndDLL(), records_per_cycle = 20, delay_records = delay)
         results, _, diverged = run_simulation!(rx, 1000; kw...)
         rx, results, diverged
     end
@@ -155,17 +156,11 @@ end
         # The rate residue of NCO motion the signal does not back stays at the level of
         # the undelayed loop's.
         @test rate_residual(tail) < 2 * rate_residual(tail0) + 1e-3u"m/s"
-        @test all(v -> v.estimator_state.code_update_landing_lead ≈ delay * 1.0ms, rx.group.sats)
+        @test all(sat -> sat.state.code_update_landing_lead ≈ delay * 1.0ms, rx.sats)
     end
     # The negative control: the same delay with the corrections sized as if they acted at
     # the epoch loses the loop.
-    function fill_ignoring_delay!(vtsat, sat, epoch, landing)
-        fill_vtsat!(vtsat, sat, epoch, landing)
-        vtsat.landing_lead = 0.0s
-        vtsat.code_phase_at_landing = vtsat.code_phase
-        vtsat.carrier_doppler_at_landing = vtsat.carrier_doppler
-    end
-    _, results, diverged = run(25; fill! = fill_ignoring_delay!)
+    _, results, diverged = run(25; ignore_delay = true)
     @test diverged || !results[end].status.running
 end
 

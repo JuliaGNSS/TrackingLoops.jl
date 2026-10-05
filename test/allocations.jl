@@ -66,15 +66,26 @@ end
     signal = GPSL1CA()
     fs = 4e6Hz
     for inner in (ConventionalAssistedPLLAndDLL(), NCOReferencedPLLAndDLL())
-        estimator = VectorPLLAndDLL(inner)
+        estimator = VectorPLLAndDLL(signal; inner)
         state = init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz)
-        output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000)
-        record = LoopRecord(signal, output.correlator, cis(0.1), output, 1, fs)
+        output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000, 0.0)
+        record = LoopRecord(signal, output.correlator, cis(0.1), output, 1, fs; prn = 3)
+        nav = estimator.navigation
+        group = first(nav.groups)
+        slot = first(group.slots)
+        # The pieces of a record that never allocate, as far as AllocCheck sees: not the
+        # registration, which may grow a group past its preallocated slots by design, nor
+        # the bit clock's decoding, whose bounded vote tally and logging it cannot see
+        # through. The run below measures the whole record.
         for words_type in (FixedNCOWord, NCOTimeline)
             sig = Tuple{typeof(estimator),typeof(state),typeof(record),words_type,Int64}
-            @test isempty(AllocCheck.check_allocs(step_loop, sig; ignore_throw = true))
+            @test isempty(AllocCheck.check_allocs(TrackingLoops._step_satellite, sig; ignore_throw = true))
+            @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_epoch!,
+                Tuple{typeof(nav),typeof(group),typeof(slot),typeof(state),typeof(record),words_type};
+                ignore_throw = true))
         end
-        # A folded run in and out of the vector loop, the state kept in a `Ref`.
+        # A run through the whole estimator, the state kept in a `Ref`: the satellite
+        # registers, syncs to nothing and the engine cycles every 100 ms.
         timeline = NCOTimeline()
         reset_timeline!(timeline, 100.0, 0.1)
         function run_vector_records!(state_ref, estimator, timeline, first_k, n)
@@ -82,26 +93,20 @@ end
             st = state_ref[]
             previous = complex(0.0, 0.0)
             for k = first_k:(first_k+n-1)
-                if k % 50 == 0
-                    st = st.vt_on ? disable_vector_tracking(st) :
-                         set_vector_corrections(enable_vector_tracking(st), 0.1Hz, 1.0Hz, 0.002s)
-                end
-                p = cis(0.01k)
-                out = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
-                rec = LoopRecord(signal, out.correlator, previous, out, 1, fs)
+                p = cis(0.01k) * (isodd(k ÷ 20) ? 1 : -1)
+                out = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k, 0.0)
+                rec = LoopRecord(signal, out.correlator, previous, out, 1, fs; prn = 3)
                 st, carrier, code = step_loop(estimator, st, rec, timeline, Int64(4000k + 8000))
                 schedule_word!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
                 promote_words!(timeline, 4000k - 4000)
-                if k % 10 == 0
-                    st = reset_discriminator_accumulators(st)
-                end
                 previous = p
             end
             state_ref[] = st
             nothing
         end
         state_ref = Ref(state)
-        run_vector_records!(state_ref, estimator, timeline, 1, 200)
-        @test (@allocated run_vector_records!(state_ref, estimator, timeline, 201, 200)) == 0
+        run_vector_records!(state_ref, estimator, timeline, 1, 400)
+        @test (@allocated run_vector_records!(state_ref, estimator, timeline, 401, 400)) == 0
+        @test nav.cycle_id >= 7
     end
 end

@@ -30,7 +30,7 @@ function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, p
         p = cis(mean_phase)
         output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, b)
         landing = Int64(b + d * LOOP_N)
-        record = LoopRecord(LOOP_SIGNAL, output.correlator, previous_prompt, output, 1, LOOP_FS)
+        record = LoopRecord(LOOP_SIGNAL, output.correlator, previous_prompt, output, 1, LOOP_FS; prn = 1)
         state, carrier, code = step_loop(estimator, state, record, timeline, landing)
         previous_prompt = p
         schedule_word!(timeline, landing, ustrip(Hz, carrier), ustrip(Hz, code))
@@ -135,14 +135,15 @@ end
 @testset "$(nameof(typeof(estimator))) is driven through the estimator interface alone" for estimator in (
     ConventionalAssistedPLLAndDLL(),
     NCOReferencedPLLAndDLL(),
-    VectorPLLAndDLL(),
-    VectorPLLAndDLL(NCOReferencedPLLAndDLL()),
+    VectorPLLAndDLL(LOOP_SIGNAL),
+    VectorPLLAndDLL(LOOP_SIGNAL; inner = NCOReferencedPLLAndDLL()),
 )
     # What a host calls, and nothing else: build, step a record, reset.
     state = init_estimator_state(estimator, LOOP_SIGNAL, 100.0Hz, 0.0Hz)
     @test state isa estimator_state_type(estimator, LOOP_SIGNAL)
     output = CorrelatorOutput(loop_epl(0.5, 1.0, 0.5), LOOP_N, LOOP_N)
-    record = LoopRecord(LOOP_SIGNAL, output.correlator, complex(0.0, 0.0), output, 1, LOOP_FS)
+    # The record names its satellite, which the vector loop's navigation engine needs.
+    record = LoopRecord(LOOP_SIGNAL, output.correlator, complex(0.0, 0.0), output, 1, LOOP_FS; prn = 5)
     stepped, carrier_doppler, code_doppler =
         @inferred step_loop(estimator, state, record, FixedNCOWord(100.0, 0.0), NO_LANDING_SAMPLE)
     @test stepped isa typeof(state)

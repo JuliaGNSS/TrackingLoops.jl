@@ -1,37 +1,23 @@
-# Entry point of the `juliac --trim=safe` check (see `check.jl`): vector tracking on
-# the synthetic GPS and Galileo satellites of `../vector_simulation.jl`, from the
-# scalar fix through a partial outage to a steady state, printed so the trimmed
-# executable's output can be compared against a regular Julia session. It is the
-# loop process's workload: the per-record `step_loop` of every channel and
-# `update_navigation!` once per cycle.
+# Entry point of the `juliac --trim=safe` check (see `check.jl`): vector tracking from
+# records alone, on the synthetic GPS L1 C/A satellites of `../vector_simulation.jl`
+# that broadcast real navigation bits — bit sync, decoding, the scalar fix, the seed
+# and a steady state through a partial outage — printed so the trimmed executable's
+# output can be compared against a regular Julia session. It is the loop process's
+# workload: `step_loop` on every record of every channel, and nothing else.
 using TrackingLoops, GNSSSignals, StaticArrays, Unitful, LinearAlgebra
 using Unitful: Hz, s, ms
 
 include(joinpath(@__DIR__, "..", "vector_simulation.jl"))
 
-# Every channel of one group through one millisecond; the records end on the
-# group's own code period.
-function step_group!(channels, estimator, truth, k, sample_index, landing)
-    n = record_ms(first(channels).signal)
-    k % n == 0 || return nothing
-    for sat in channels
-        simulate_record!(sat, estimator, truth, truth.t0 + sample_index / 4e6,
-            n * SAMPLES_PER_MS, sample_index, landing)
-    end
-    nothing
-end
-
-function fill_group!(channels, group, epoch, landing, outage::Bool)
-    for (i, sat) in enumerate(channels)
+# Every channel's records that end within the millisecond ending at `sample`.
+function step_channels!(rx, sample, outage::Bool)
+    for (i, sat) in enumerate(rx.sats)
         sat.in_view = !(outage && i <= 2)
-        fill_vtsat!(group.sats[i], sat, epoch, landing)
-    end
-    nothing
-end
-
-function copy_back!(channels, group)
-    for (i, sat) in enumerate(channels)
-        sat.state = group.sats[i].estimator_state
+        while sat.next_end_sample <= sample
+            record_end = sat.next_end_sample
+            pipeline_record!(rx, sat, rx.last_ends[i])
+            rx.last_ends[i] = record_end
+        end
     end
     nothing
 end
@@ -56,23 +42,20 @@ end
 
 function (@main)(args::Vector{String})::Cint
     io = Core.stdout
-    rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()))
-    channels, groups = rx.channels, rx.groups
+    rx = PipelineReceiver()
+    nav = rx.estimator.navigation
+    last_cycle = nav.cycle_id
     sample = 0
-    for cycle = 1:60
-        for k = 1:rx.cycle_ms
-            sample_index = sample + k * SAMPLES_PER_MS
-            step_group!(channels[1], rx.estimator, rx.truth, k, sample_index, NO_LANDING_SAMPLE)
-            step_group!(channels[2], rx.estimator, rx.truth, k, sample_index, NO_LANDING_SAMPLE)
+    # 33 s: the first fix comes 26.2 s in; a two-second outage of two satellites late on.
+    for _ = 1:33_000
+        sample += SAMPLES_PER_MS
+        t = sample / 4e6
+        step_channels!(rx, sample, 29.0 <= t <= 31.0)
+        if nav.cycle_id != last_cycle
+            last_cycle = nav.cycle_id
+            status = nav.status
+            (status.enabled || last_cycle % 20 == 0) && report(io, last_cycle, nav.pvt, status)
         end
-        sample += rx.cycle_ms * SAMPLES_PER_MS
-        outage = 20 <= cycle <= 30
-        fill_group!(channels[1], groups[1], sample, NO_LANDING_SAMPLE, outage)
-        fill_group!(channels[2], groups[2], sample, NO_LANDING_SAMPLE, outage)
-        pvt, status = update_navigation!(rx.vt, groups, 0.1s)
-        copy_back!(channels[1], groups[1])
-        copy_back!(channels[2], groups[2])
-        (cycle <= 3 || cycle % 10 == 0) && report(io, cycle, pvt, status)
     end
     return 0
 end

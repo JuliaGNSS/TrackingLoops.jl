@@ -5,6 +5,7 @@ using StaticArrays
 using Unitful
 using Unitful: Hz, dBHz, s, ms, @u_str
 using AllocCheck
+using LinearAlgebra: norm
 using TrackingLoopFilters: ThirdOrderAssistedBilinearLF, SecondOrderBilinearLF
 
 include("correlators.jl")
@@ -16,7 +17,9 @@ include("vector_estimator.jl")
 include("vector_model.jl")
 include("vector_simulation.jl")
 include("vector_tracking.jl")
+include("vector_engine.jl")
 include("vector_closed_loop.jl")
+include("vector_pipeline.jl")
 include("record.jl")
 include("signal_state.jl")
 include("bit_buffer.jl")
