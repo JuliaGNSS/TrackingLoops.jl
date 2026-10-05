@@ -1,7 +1,7 @@
 # The navigation filter's model, ported from GNSSReceiver's `test/vector_tracking.jl`:
 # the configuration, the layout and state indices, the process model, the measurement
 # model and its noise, the bias observability and the loop-closure maths.
-using LinearAlgebra: diag, eigvals, Symmetric, I, Diagonal, norm, normalize, isposdef
+using LinearAlgebra: diag, eigvals, Symmetric, I, Diagonal, norm, isposdef
 using Accessors: @set
 using GNSSDecoder: GNSSDecoderState
 using PositionVelocityTime: PositionVelocityTime, SPEED_OF_LIGHT, BiasColumns, calc_ρ_hat!,
@@ -1001,7 +1001,7 @@ end
     directions = [(1.0, 0.0, 0.0), (0.6, 0.8, 0.0), (0.6, -0.4, 0.7), (0.5, -0.3, -0.8), (0.7, 0.5, 0.5)]
     members = [
         _test_member(; group = k == 5 ? 2 : 1, slot = k, prn = k, clock_bias_index = k == 5 ? 2 : 1,
-            sat_position = user + 2.0e7 * normalize(SVector(d))) for (k, d) in enumerate(directions)
+            sat_position = user + 2.0e7 * SVector(d) / norm(SVector(d))) for (k, d) in enumerate(directions)
     ]
     positions = [member.sat_position for member in members]
     gst_bias = Dict{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}(GST() => 2.0u"m")
