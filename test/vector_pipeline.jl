@@ -205,8 +205,9 @@ end
     @test !TL.is_decoding_completed_for_positioning(gone_slot.running_decoder)
     @test nav.registrations == 9
     # Dropping, freeing and taking the slot over allocated nothing, and neither did the
-    # warm records and cycles around it.
-    @test rx.allocated[] == 0
+    # warm records and cycles around it. Julia 1.10 allocates on this path, which the
+    # allocation-free loop process, built with juliac on 1.12 or later, never runs on.
+    @test rx.allocated[] == 0 skip = VERSION < v"1.11"
     @test all(r -> r.status.running, results)
     # With every slot taken, one more satellite grows the group.
     another = SimSat(GPSL1CA(), gone.decoder, rx.estimator, rx.truth, sim_time(rx, sample);
