@@ -54,6 +54,33 @@ end
     # Each satellite took up every cycle once.
     @test all(sat -> sat.state.cycle_id == nav.cycle_id, rx.sats)
     @test nav.registrations == length(rx.sats)
+    # What a consumer reads off the estimator: the cycle count and its epoch on the
+    # records' grid, the solution with its DOP, and per satellite what the engine
+    # decoded and measured.
+    estimator = rx.estimator
+    @test navigation_cycle(estimator) == length(results)
+    @test navigation_epoch(estimator) ≈ 35.9s
+    @test navigation_epoch(estimator) ≈ (results[end].time - rx.truth.t0) * s
+    solution = navigation_solution(estimator)
+    @test solution.dop !== nothing && 0 < solution.dop.GDOP < 10
+    for sat in rx.sats
+        report = satellite_report(estimator, GPSL1CA(), sat.decoder.prn)
+        @test report isa SatelliteReport
+        @test report.prn == sat.decoder.prn
+        @test report.tracked && report.bit_synced && report.in_lock && report.pvt_ready
+        @test report.in_vector_loop
+        @test report.release_reason == VT_NOT_RELEASED
+        @test report.epoch ≈ navigation_epoch(estimator)
+        @test 40 < report.cn0_dbhz < 50
+        @test TL.is_decoding_completed_for_positioning(report.decoder)
+        @test report.decoder.data.sqrt_A == sat.decoder.data.sqrt_A
+    end
+    @test satellite_report(estimator, GPSL1CA(), 32) === nothing
+    @test satellite_report(estimator, GalileoE1B(), rx.sats[1].decoder.prn) === nothing
+    report_of(e, signal, prn) = @allocated satellite_report(e, signal, prn)
+    signal = GPSL1CA()
+    report_of(estimator, signal, rx.sats[1].decoder.prn)
+    @test report_of(estimator, signal, rx.sats[1].decoder.prn) == 0
 end
 
 @testset "From records alone, on a clean signal" begin
@@ -155,6 +182,7 @@ end
     results, sample, diverged = run_pipeline!(rx, 0.5; start_sample = start)
     @test !diverged
     @test !gone_slot.occupied
+    @test !satellite_report(rx.estimator, GPSL1CA(), gone.decoder.prn).tracked
     @test any(r -> r.status.released, results)
     @test release_reason(rx.estimator, GPSL1CA(), gone.decoder.prn) in (VT_INELIGIBLE, VT_NOT_RELEASED)
     @test all(r -> r.status.num_members == 7, results[end-2:end])

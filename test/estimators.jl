@@ -151,4 +151,16 @@ end
     @test code_doppler isa typeof(1.0Hz)
     @test @inferred(reset_estimator_state(estimator, stepped, carrier_doppler, code_doppler)) isa
           typeof(state)
+    # What it knows of the navigation solution: nothing, for a scalar loop.
+    if estimator isa VectorPLLAndDLL
+        @test navigation_cycle(estimator) isa Int
+        @test navigation_solution(estimator) !== nothing
+        @test satellite_report(estimator, LOOP_SIGNAL, 5) isa SatelliteReport
+    else
+        @test navigation_solution(estimator) === nothing
+        @test navigation_status(estimator) === nothing
+        @test navigation_cycle(estimator) === nothing
+        @test navigation_epoch(estimator) === nothing
+        @test satellite_report(estimator, LOOP_SIGNAL, 5) === nothing
+    end
 end

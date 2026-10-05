@@ -637,3 +637,54 @@ end
 "The estimator-state type a Doppler estimator produces (for slot typing)."
 estimator_state_type(estimator::AbstractDopplerEstimator, driver_signal::AbstractGNSSSignal) =
     typeof(init_estimator_state(estimator, driver_signal, 0.0Hz, 0.0Hz))
+
+# ── What an estimator knows of the navigation solution ───────────────────────
+
+"""
+    navigation_solution(estimator) -> Union{PVTSolution,Nothing}
+
+The latest navigation solution an estimator computed, or `nothing` for an
+estimator that computes none (the scalar loops). [`VectorPLLAndDLL`](@ref)
+returns the scalar PVT's until its filter is seeded and the filter's after
+that: position, velocity, time, clock bias and drift, the DOP, the satellites
+that determined it with their residuals, and the inter-system and
+inter-frequency biases. Its containers are reused by the next cycle, so copy
+out what is needed later.
+"""
+navigation_solution(::AbstractDopplerEstimator) = nothing
+
+"""
+    navigation_status(estimator) -> Union{VTStatus,Nothing}
+
+What the latest navigation cycle did ([`VTStatus`](@ref)), or `nothing` for an
+estimator without one.
+"""
+navigation_status(::AbstractDopplerEstimator) = nothing
+
+"""
+    navigation_cycle(estimator) -> Union{Int,Nothing}
+
+How many navigation cycles the estimator has run, or `nothing` for an estimator
+without them. The count changes exactly when [`navigation_solution`](@ref) and
+[`navigation_status`](@ref) do, so a consumer polling it after every step reads
+each solution once.
+"""
+navigation_cycle(::AbstractDopplerEstimator) = nothing
+
+"""
+    navigation_epoch(estimator) -> Union{typeof(1.0s),Nothing}
+
+The epoch the latest navigation solution refers to, on the records' time grid:
+`sample_index / sampling_frequency` of the moment it describes. `nothing`
+before the first cycle, and for an estimator without navigation cycles.
+"""
+navigation_epoch(::AbstractDopplerEstimator) = nothing
+
+"""
+    satellite_report(estimator, signal, prn) -> Union{SatelliteReport,Nothing}
+
+What the estimator knows of satellite `prn` of `signal` (a
+[`SatelliteReport`](@ref)), or `nothing` when it keeps no per-satellite
+navigation state (the scalar loops) or has never seen the satellite.
+"""
+satellite_report(::AbstractDopplerEstimator, ::AbstractGNSSSignal, ::Integer) = nothing

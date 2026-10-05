@@ -33,6 +33,47 @@ two, and not for a fallback.
 """
 @enum VTReleaseReason VT_NOT_RELEASED VT_INELIGIBLE VT_BELOW_HORIZON VT_FALLBACK
 
+"""
+    SatelliteReport
+
+What a [`VectorPLLAndDLL`](@ref) knows of one satellite (see
+[`satellite_report`](@ref)), so a consumer need not decode its bits or estimate
+its C/N₀ again:
+
+  - `prn`, and `tracked`: whether a satellite is stepped on it now (`false` once
+    it went two cycles without a record; the rest then describes it as it was);
+  - `decoder`: its navigation-message decoder, up to the last record — the
+    ephemeris, health and time of week. It shares its buffers with the one the
+    estimator keeps decoding into, so copy (`copy(decoder)`) what is needed after
+    the next record;
+  - `bit_synced`: whether its bit clock has found the bit edges;
+  - at the latest epoch it was snapshotted at (`epoch`, on the records' time
+    grid, `nothing` before the first): `cn0_dbhz`, `in_lock` (synced and the
+    C/N₀ above the lock threshold) and `pvt_ready` (in lock, decoded for
+    positioning and healthy);
+  - `in_vector_loop`: whether the latest cycle has it in the vector loop, and
+    `release_reason` whether and why that cycle released it.
+
+The report is the estimator's own object, one per satellite slot, refreshed by
+every `satellite_report` call, which therefore allocates nothing: copy out what
+is needed beyond the next call.
+"""
+mutable struct SatelliteReport{D}
+    prn::Int
+    tracked::Bool
+    decoder::D
+    bit_synced::Bool
+    epoch::Union{Nothing,typeof(1.0s)}
+    cn0_dbhz::Float64
+    in_lock::Bool
+    pvt_ready::Bool
+    in_vector_loop::Bool
+    release_reason::VTReleaseReason
+end
+
+SatelliteReport(decoder) =
+    SatelliteReport(0, false, decoder, false, nothing, NaN, false, false, false, VT_NOT_RELEASED)
+
 # One satellite of the navigation engine. A slot is never deleted: a satellite that is
 # dropped leaves it free with all its storage, for the next satellite to reuse.
 mutable struct VTSlot{D,B<:Unsigned,E<:SatVectorPLLAndDLL}
@@ -80,6 +121,8 @@ mutable struct VTSlot{D,B<:Unsigned,E<:SatVectorPLLAndDLL}
     restart_cycle::Int
     correction_cycle::Int
     member_index::Int
+    # What `satellite_report` hands out, refreshed in place.
+    const report::SatelliteReport{D}
 end
 
 function VTSlot(signal::AbstractGNSSSignal, prn::Integer, state::SatVectorPLLAndDLL, num_prompts_for_cn0_estimation)
@@ -116,6 +159,7 @@ function VTSlot(signal::AbstractGNSSSignal, prn::Integer, state::SatVectorPLLAnd
         -1,
         -1,
         0,
+        SatelliteReport(decoder),
     )
 end
 
@@ -419,6 +463,41 @@ navigation_solution(estimator::VectorPLLAndDLL) = estimator.navigation.pvt
 What the latest navigation cycle did (see [`VTStatus`](@ref)).
 """
 navigation_status(estimator::VectorPLLAndDLL) = estimator.navigation.status
+
+navigation_cycle(estimator::VectorPLLAndDLL) = estimator.navigation.cycle_id
+
+function navigation_epoch(estimator::VectorPLLAndDLL)
+    nav = estimator.navigation
+    nav.cycle_epoch == typemin(Int) ? nothing : nav.cycle_epoch * nav.cycle_time
+end
+
+function satellite_report(estimator::VectorPLLAndDLL, signal::AbstractGNSSSignal, prn::Integer)
+    nav = estimator.navigation
+    _satellite_report(nav, nav.groups, signal, Int(prn))
+end
+
+_satellite_report(nav, ::Tuple{}, signal, prn) = nothing
+function _satellite_report(nav, groups::Tuple, signal::S, prn) where {S}
+    group = first(groups)
+    group.signal isa S || return _satellite_report(nav, Base.tail(groups), signal, prn)
+    for slot in group.slots
+        slot.prn == prn && slot.registration > 0 || continue
+        report = slot.report
+        report.prn = slot.prn
+        report.tracked = slot.occupied
+        report.decoder = slot.running_decoder
+        report.bit_synced = slot.bit_buffer.found
+        report.epoch =
+            slot.snapshot_epoch == typemin(Int) ? nothing : slot.snapshot_epoch * nav.cycle_time
+        report.cn0_dbhz = slot.cn0_dbhz
+        report.in_lock = slot.in_lock
+        report.pvt_ready = slot.pvt_ready
+        report.in_vector_loop = slot.estimator_state.vt_on
+        report.release_reason = slot.release_reason
+        return report
+    end
+    nothing
+end
 
 """
     member_sats(estimator::VectorPLLAndDLL)

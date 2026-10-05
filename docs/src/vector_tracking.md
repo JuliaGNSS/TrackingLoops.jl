@@ -134,6 +134,29 @@ also at hand as [`position_uncertainty`](@ref) and
 latest cycle released a satellite, and [`member_sats`](@ref) reports every
 member of the loop, measured and coasted.
 
+[`navigation_cycle`](@ref) counts the cycles, so a consumer that polls it after
+each step reads every solution exactly once, and [`navigation_epoch`](@ref) is
+the moment the latest solution describes, on the records' time grid.
+[`satellite_report`](@ref) hands out what the engine knows of a satellite — its
+decoder, bit sync, C/N₀, lock, readiness for the PVT and membership — so a
+receiver neither decodes the bits nor estimates the C/N₀ a second time.
+
+Every estimator answers these: the scalar loops with `nothing`, so a host can
+ask whichever estimator it was given.
+
+```julia
+cycle = navigation_cycle(estimator)
+if cycle != last_cycle            # `nothing` for a scalar loop: never a new solution
+    last_cycle = cycle
+    pvt = navigation_solution(estimator)       # position, velocity, time, DOP, …
+    report = satellite_report(estimator, GPSL1CA(), prn)
+end
+```
+
+The solution, the per-member report and the satellite reports are the
+estimator's own objects, reused by the next cycle or call: copy out what is
+needed later.
+
 ## Storage
 
 The estimator allocates the slots of `max_satellites_per_signal` satellites per
