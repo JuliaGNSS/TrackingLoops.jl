@@ -1043,3 +1043,32 @@ end
     @test !TL.seed_fix_covariance!(P3, idxs, layout, pvt, 1, H_degenerate, zeros(5, 5), clock_used, ifb_used)
     @test P3 == seeded
 end
+
+@testset "A singular design the factorization lets through leaves the seed as it was" begin
+    # Galileo seen on E5a alone: the L5 inter-frequency-bias column duplicates the
+    # Galileo clock column, so `HᵀH` is singular. For this geometry rounding can leave its
+    # last Cholesky pivot slightly positive rather than failing the factorization, and
+    # the inverse would seed the Galileo clock with a variance of about 10¹⁵ m².
+    layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GalileoE5aI()))
+    config = VectorTracking()
+    idxs = TL.NavFilterIndices(config, layout)
+    n = TL.num_nav_states(config, layout)
+    user = SVector(6.378e6, 0.0, 0.0)
+    directions = [(1.0, 0.0, 0.0), (0.6, 0.8, 0.0), (0.6, -0.4, 0.7), (0.5, -0.3, -0.8), (0.7, 0.5, 0.5), (0.4, -0.7, -0.6)]
+    members = [
+        _test_member(; group = k <= 4 ? 1 : 3, slot = k, prn = k, clock_bias_index = k <= 4 ? 1 : 2,
+            ifb_index = k <= 4 ? 0 : 1, signal = k <= 4 ? GPSL1CA() : GalileoE5aI(),
+            sat_position = user + 2.0e7 * SVector(d) / norm(SVector(d))) for (k, d) in enumerate(directions)
+    ]
+    positions = [member.sat_position for member in members]
+    gst_bias = Dict{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}(GST() => 2.0u"m")
+    pvt = PVTSolution(; position = ECEF(user...), reference_system = GPST(), inter_system_biases = gst_bias)
+    clock_used, ifb_used = zeros(Int, 2), zeros(Int, 1)
+    columns, _ = TL.dense_bias_columns!(Int[], Int[], clock_used, ifb_used, members, eachindex(members), 1)
+    H = calc_H!(zeros(6, 6), positions, [user..., 0.0, 0.0, 0.0], columns)
+    x, P = zeros(n), zeros(n, n)
+    TL.initial_nav_state!(x, P, layout, idxs, pvt)
+    seeded = copy(P)
+    @test !TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(6, 6), clock_used, ifb_used)
+    @test P == seeded
+end
