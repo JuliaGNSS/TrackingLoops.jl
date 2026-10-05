@@ -60,12 +60,22 @@ Fields:
     relative to the current `track!` measurement, and an external producer
     feeding Tracking.jl must map its global counter onto that per-chunk origin
     too, so every satellite stays on one time grid for vector tracking.
+  - `code_phase`: the replica's code phase (chips) at `sample_index`. The end
+    sample alone pins the replica only to within one sample, so
+    [`VectorPLLAndDLL`](@ref) reads the code phase from here. Only its part
+    past the nearest code-block boundary is used, so any wrap convention works.
+    `NaN` when the producer does not report it (the three-argument
+    constructor), which only vector tracking needs.
 """
 struct CorrelatorOutput{C<:AbstractCorrelator}
     correlator::C
     integrated_samples::Int
     sample_index::Int
+    code_phase::Float64
 end
+
+CorrelatorOutput(correlator::AbstractCorrelator, integrated_samples::Integer, sample_index::Integer) =
+    CorrelatorOutput(correlator, Int(integrated_samples), Int(sample_index), NaN)
 
 type_for_num_ants(num_ants::NumAnts{1}) = ComplexF64
 type_for_num_ants(num_ants::NumAnts{N}) where {N} = SVector{N,ComplexF64}

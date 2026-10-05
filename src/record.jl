@@ -93,6 +93,40 @@ estimate_cn0(state::SignalLoopState, integration_time) =
     )
 end
 
+# Keep a pre-sync-correlated record's prompt out of the coherent sum where the
+# sync changed the replica under it (secondary-code wipe-off), but always let it
+# advance the accumulator's block count.
+@inline _drops_pre_sync_prompt(signal::AbstractGNSSSignal, correlated_pre_sync::Bool) =
+    correlated_pre_sync && get_secondary_code_length(signal) > 1
+
+# One record into the bit buffer: `bit_block_count` blocks (from
+# `calc_num_code_blocks_for_bit_buffer`) of the de-rotated `bit_prompt`. Shared by
+# `fold_record` and the vector loop's own bit clock, so the two cannot diverge.
+@inline function _advance_bit_buffer(
+    signal::AbstractGNSSSignal,
+    prn::Integer,
+    bit_buffer::BitBuffer,
+    bit_block_count::Integer,
+    bit_prompt,
+    correlated_pre_sync::Bool,
+)
+    drop_prompt = _drops_pre_sync_prompt(signal, correlated_pre_sync)
+    bit_buffer = buffer(
+        signal,
+        prn,
+        bit_buffer,
+        bit_block_count,
+        drop_prompt ? zero(bit_prompt) : bit_prompt,
+    )
+    # Such a record also moves the secondary-code anchor: the code-phase snap
+    # runs after this fold and aligns the *upcoming* integration to
+    # `bit_buffer.secondary_phase`.
+    if correlated_pre_sync
+        bit_buffer = _advance_secondary_phase(signal, bit_buffer, bit_block_count)
+    end
+    bit_buffer
+end
+
 """
     fold_record(signal, prn, bit_buffer, cn0_estimator, post_corr_filter, output,
                 sampling_frequency, noise_density, noise_density_ready,
@@ -153,10 +187,7 @@ Tracking's per-record advance performs, in the same order.
     # De-rotate the prompt onto the driver's (real) phase frame before both the
     # sync search and the coherent bit accumulation.
     bit_prompt = prompt * _carrier_phase_derotation(driver_carrier_phase, signal)
-    # Keep a pre-sync-correlated record's prompt out of the coherent sum where
-    # the sync changed the replica under it (secondary-code wipe-off), but
-    # always let it advance the accumulator's block count.
-    drop_prompt = correlated_pre_sync && get_secondary_code_length(signal) > 1
+    drop_prompt = _drops_pre_sync_prompt(signal, correlated_pre_sync)
     scalar_noise_density = _reduce_noise_density(noise_density, weights)
     cn0_estimator = _update_cn0_estimator(
         cn0_estimator,
@@ -169,19 +200,8 @@ Tracking's per-record advance performs, in the same order.
         noise_density_ready,
         output.integrated_samples / sampling_frequency,
     )
-    bit_buffer = buffer(
-        signal,
-        prn,
-        bit_buffer,
-        bit_block_count,
-        drop_prompt ? zero(bit_prompt) : bit_prompt,
-    )
-    # Such a record also moves the secondary-code anchor: the code-phase snap
-    # runs after this fold and aligns the *upcoming* integration to
-    # `bit_buffer.secondary_phase`.
-    if correlated_pre_sync
-        bit_buffer = _advance_secondary_phase(signal, bit_buffer, bit_block_count)
-    end
+    bit_buffer =
+        _advance_bit_buffer(signal, prn, bit_buffer, bit_block_count, bit_prompt, correlated_pre_sync)
     # A post-sync record that carried the accumulator past the bit boundary
     # made `buffer` drop sync and restart the search: report it, so the caller
     # can say so (a receiver logs, a loop process publishes a status event).
