@@ -26,6 +26,19 @@ it covered, the band's sampling frequency, and `fold_end` — the end sample of
 the last record of the fold this record belongs to, which is what a landing
 sample is measured against (every record of a fold maps onto the delay-free
 loop's record the same distance ahead).
+
+Two fields identify the record to an estimator that keeps per-satellite state
+of its own, as [`VectorPLLAndDLL`](@ref) does:
+
+  - `prn`: the satellite (`0` when the host does not say);
+  - `code_phase`: the replica's code phase (chips) at `sample_index`, from the
+    [`CorrelatorOutput`](@ref) (`NaN` when the producer does not report it).
+
+For such an estimator `sample_index / sampling_frequency` must also be the
+time since one origin shared by every satellite of the band. A host whose
+correlator restarts its sample count passes that origin's offset as
+`sample_offset` to the constructor that takes a `CorrelatorOutput`; it is added
+to `sample_index` and `fold_end`.
 """
 struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F}
     signal::S
@@ -36,7 +49,33 @@ struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F}
     fold_end::Int
     integrated_code_blocks::Int
     sampling_frequency::F
+    prn::Int
+    code_phase::Float64
 end
+
+LoopRecord(
+    signal::AbstractGNSSSignal,
+    filtered_correlator::AbstractCorrelator,
+    previous_prompt,
+    integrated_samples::Integer,
+    sample_index::Integer,
+    fold_end::Integer,
+    integrated_code_blocks::Integer,
+    sampling_frequency;
+    prn::Integer = 0,
+    code_phase::Real = NaN,
+) = LoopRecord(
+    signal,
+    filtered_correlator,
+    ComplexF64(previous_prompt),
+    Int(integrated_samples),
+    Int(sample_index),
+    Int(fold_end),
+    Int(integrated_code_blocks),
+    sampling_frequency,
+    Int(prn),
+    Float64(code_phase),
+)
 
 LoopRecord(
     signal,
@@ -46,15 +85,19 @@ LoopRecord(
     integrated_code_blocks,
     sampling_frequency;
     fold_end = output.sample_index,
+    prn::Integer = 0,
+    sample_offset::Integer = 0,
 ) = LoopRecord(
     signal,
     filtered_correlator,
     ComplexF64(previous_prompt),
     output.integrated_samples,
-    output.sample_index,
-    Int(fold_end),
+    output.sample_index + Int(sample_offset),
+    Int(fold_end) + Int(sample_offset),
     Int(integrated_code_blocks),
     sampling_frequency,
+    Int(prn),
+    output.code_phase,
 )
 
 # ── The conventional PLL/DLL ─────────────────────────────────────────────────

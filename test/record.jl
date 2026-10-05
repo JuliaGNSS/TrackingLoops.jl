@@ -40,3 +40,25 @@ end
     # The recorded prompt is the un-rotated one; the rotation only reaches the bit buffer.
     @test state.last_filtered_prompt == prompt
 end
+
+@testset "A loop record identifies its satellite and replica phase" begin
+    correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
+    output = CorrelatorOutput(correlator, 4000, 8000, 3.25)
+    record = LoopRecord(GPSL1CA(), correlator, cis(0.1), output, 1, 4e6Hz)
+    @test record.prn == 0
+    @test record.code_phase == 3.25
+    @test record.sample_index == 8000
+    @test record.fold_end == 8000
+    # The host's per-measurement origin moves onto the band's common one.
+    shifted = LoopRecord(GPSL1CA(), correlator, cis(0.1), output, 1, 4e6Hz;
+        fold_end = 12_000, prn = 7, sample_offset = 40_000)
+    @test shifted.prn == 7
+    @test shifted.sample_index == 48_000
+    @test shifted.fold_end == 52_000
+    @test shifted.integrated_samples == 4000
+    # The positional form keeps its eight arguments.
+    plain = LoopRecord(GPSL1CA(), correlator, cis(0.1), 4000, 8000, 8000, 1, 4e6Hz)
+    @test plain.prn == 0 && isnan(plain.code_phase)
+    @test LoopRecord(GPSL1CA(), correlator, cis(0.1), 4000, 8000, 8000, 1, 4e6Hz;
+        prn = 3, code_phase = 0.5).prn == 3
+end

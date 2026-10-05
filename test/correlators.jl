@@ -261,4 +261,7 @@ end
     @test output.correlator === correlator
     @test output.integrated_samples == 4000
     @test output.sample_index == 8000
+    # A producer that does not report the replica's code phase leaves it `NaN`.
+    @test isnan(output.code_phase)
+    @test CorrelatorOutput(correlator, 4000, 8000, 1022.75).code_phase == 1022.75
 end
