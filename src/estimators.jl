@@ -131,8 +131,9 @@ LoopRecord(
 
 """
 Per-satellite state for the conventional PLL and DLL Doppler estimator.
-Holds initial Doppler values, loop filter states and the carrier loop's
-[`FrequencyLockIndicator`](@ref).
+Holds initial Doppler values, loop filter states, the carrier loop's
+[`FrequencyLockIndicator`](@ref) and the passengers' pending
+[`SignalCombiningSums`](@ref).
 """
 @kwdef struct SatConventionalPLLAndDLL{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     init_carrier_doppler::typeof(1.0Hz)
@@ -142,6 +143,7 @@ Holds initial Doppler values, loop filter states and the carrier loop's
     carrier_loop_filter_bandwidth::typeof(1.0Hz) = 18.0Hz
     code_loop_filter_bandwidth::typeof(1.0Hz) = 1.0Hz
     frequency_lock::FrequencyLockIndicator = FrequencyLockIndicator()
+    signal_combining_sums::SignalCombiningSums = SignalCombiningSums()
 end
 
 function SatConventionalPLLAndDLL(
@@ -151,6 +153,7 @@ function SatConventionalPLLAndDLL(
     carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     frequency_lock::Maybe{FrequencyLockIndicator} = nothing,
+    signal_combining_sums::Maybe{SignalCombiningSums} = nothing,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     SatConventionalPLLAndDLL{CA,CO}(
         sat_conventional_pll_and_dll.init_carrier_doppler,
@@ -166,6 +169,7 @@ function SatConventionalPLLAndDLL(
         sat_conventional_pll_and_dll.code_loop_filter_bandwidth :
         code_loop_filter_bandwidth,
         something(frequency_lock, sat_conventional_pll_and_dll.frequency_lock),
+        something(signal_combining_sums, sat_conventional_pll_and_dll.signal_combining_sums),
     )
 end
 
@@ -186,11 +190,23 @@ against the record's integration time
 ([`effective_carrier_loop_filter_bandwidth`](@ref),
 [`effective_code_loop_filter_bandwidth`](@ref)), so a longer coherent
 integration needs no re-tuning.
+
+`combine_signals = true` combines the discriminators of a satellite's other
+signals, the passengers, into the loops of the signal whose records
+[`step_loop`](@ref) closes them on, the driver; the host folds each passenger
+record with [`combine_passenger_record`](@ref). See
+[Signal combining](@ref). Each passenger is assumed to integrate no longer than
+the driver. A longer passenger record is combined only into the driver record it
+ends in, with a weight proportional to its integration time (its cube for the
+FLL), so it dominates that one loop update with a reading averaged over its own,
+longer record; its FLL reading also has the narrower range ±1/(4·T_passenger).
+Make the longest-integrating signal (typically the pilot) the driver.
 """
 struct ConventionalPLLAndDLL{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter} <:
        AbstractDopplerEstimator
     carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
+    combine_signals::Bool
 end
 
 function ConventionalPLLAndDLL(
@@ -198,8 +214,13 @@ function ConventionalPLLAndDLL(
     ::Type{CO} = SecondOrderBilinearLF;
     carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    combine_signals::Bool = false,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
-    ConventionalPLLAndDLL{CA,CO}(carrier_loop_filter_bandwidth, code_loop_filter_bandwidth)
+    ConventionalPLLAndDLL{CA,CO}(
+        carrier_loop_filter_bandwidth,
+        code_loop_filter_bandwidth,
+        combine_signals,
+    )
 end
 
 """
@@ -207,32 +228,37 @@ $(SIGNATURES)
 
 Create a ConventionalPLLAndDLL with FLL-assisted carrier tracking: a
 `ThirdOrderAssistedBilinearLF` carrier loop filter combining the PLL and FLL
-discriminators. Bandwidths default to `nothing` (auto).
+discriminators. Bandwidths default to `nothing` (auto) and signal combining to
+off, see [`ConventionalPLLAndDLL`](@ref).
 """
 function ConventionalAssistedPLLAndDLL(
     ::Type{CO} = SecondOrderBilinearLF;
     carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    combine_signals::Bool = false,
 ) where {CO<:AbstractLoopFilter}
     ConventionalPLLAndDLL(
         ThirdOrderAssistedBilinearLF,
         CO;
         carrier_loop_filter_bandwidth,
         code_loop_filter_bandwidth,
+        combine_signals,
     )
 end
 
-# Kwarg-update constructor for tweaking bandwidths in place.
+# Kwarg-update constructor for tweaking the configuration in place.
 function ConventionalPLLAndDLL(
     pll_and_dll::ConventionalPLLAndDLL{CA,CO};
     carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    combine_signals::Maybe{Bool} = nothing,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     ConventionalPLLAndDLL{CA,CO}(
         isnothing(carrier_loop_filter_bandwidth) ?
         pll_and_dll.carrier_loop_filter_bandwidth : carrier_loop_filter_bandwidth,
         isnothing(code_loop_filter_bandwidth) ? pll_and_dll.code_loop_filter_bandwidth :
         code_loop_filter_bandwidth,
+        something(combine_signals, pll_and_dll.combine_signals),
     )
 end
 
@@ -264,6 +290,7 @@ function init_estimator_state(
         default_code_loop_filter_bandwidth(driver_signal) :
         estimator.code_loop_filter_bandwidth,
         FrequencyLockIndicator(),
+        SignalCombiningSums(),
     )
 end
 
@@ -275,8 +302,9 @@ _constructorof(::Type{T}) where {T} = Base.typename(T).wrapper
     reset_estimator_state(estimator, state, carrier_doppler, code_doppler)
 
 Zero the loop-filter integrators, restart the carrier loop's staging on the
-FLL-assisted PLL (see [`FrequencyLockIndicator`](@ref)) and re-seed the state
-from the converged Dopplers, keeping the per-satellite bandwidths.
+FLL-assisted PLL (see [`FrequencyLockIndicator`](@ref)), drop pending passenger
+discriminators and re-seed the state from the converged Dopplers, keeping the
+per-satellite bandwidths.
 """
 function reset_estimator_state(
     ::ConventionalPLLAndDLL,
@@ -292,6 +320,7 @@ function reset_estimator_state(
         state.carrier_loop_filter_bandwidth,
         state.code_loop_filter_bandwidth,
         FrequencyLockIndicator(),
+        SignalCombiningSums(),
     )
 end
 
@@ -381,7 +410,13 @@ end
     code_loop_filter,
     center,
     frequency_lock,
-) = SatConventionalPLLAndDLL(state; carrier_loop_filter, code_loop_filter, frequency_lock)
+) = SatConventionalPLLAndDLL(
+    state;
+    carrier_loop_filter,
+    code_loop_filter,
+    frequency_lock,
+    signal_combining_sums = SignalCombiningSums(),
+)
 
 # The carrier loop's staging: an FLL-assisted filter is fed the FLL reading and
 # advances the frequency lock indicator until it latches, and is fed zero after,
@@ -403,6 +438,16 @@ end
     discriminators.frequency_error, frequency_lock
 end
 
+# The driver's discriminators with the passengers' pending ones, for a state that
+# holds them; the step's `_stepped_state` starts the sums afresh.
+@inline _with_passengers(state, record::LoopRecord, discriminators, loops) = discriminators
+@inline _with_passengers(
+    state::SatConventionalPLLAndDLL,
+    record::LoopRecord,
+    discriminators,
+    loops,
+) = _combine_discriminators(discriminators, state.signal_combining_sums, record, loops)
+
 @inline _uses_fll(::ThirdOrderAssistedBilinearLF) = true
 @inline _uses_fll(::AbstractLoopFilter) = false
 
@@ -411,7 +456,12 @@ end
 # capped by its stability product against the record's integration time, and the
 # Dopplers aided.
 @inline function _step_scalar_loop(estimator, state, record::LoopRecord, words, landing_sample::Int64)
-    discriminators = _record_discriminators(estimator, state, record, words, landing_sample)
+    discriminators = _with_passengers(
+        state,
+        record,
+        _record_discriminators(estimator, state, record, words, landing_sample),
+        _ALL_LOOPS,
+    )
     integration_time = discriminators.integration_time
     code_bandwidth =
         effective_code_loop_filter_bandwidth(state.code_loop_filter_bandwidth, integration_time)
@@ -449,6 +499,112 @@ end
     carrier_doppler,
     code_doppler
 end
+
+"""
+    combines_signals(estimator) -> Bool
+
+Whether `estimator` combines passenger discriminators into the driver's loops,
+so that the host folds each passenger record with
+[`combine_passenger_record`](@ref). `false` for every estimator but a
+[`ConventionalPLLAndDLL`](@ref) built with `combine_signals = true`, and a
+[`VectorPLLAndDLL`](@ref) whose inner loop is one.
+"""
+combines_signals(::AbstractDopplerEstimator) = false
+combines_signals(estimator::ConventionalPLLAndDLL) = estimator.combine_signals
+
+"""
+    combine_passenger_record(estimator, state, record::LoopRecord, words;
+                             driver_signal, differential_group_delay_chips = NaN)
+        -> state
+
+Fold one completed passenger record into the per-satellite `state`: its
+discriminators, weighted by its signal's ICD power share and integration time,
+join the sums the driver's next [`step_loop`](@ref) closes its loops on. Call it
+for every passenger record in sample order, each before the driver record it
+ends within (or ends at); records left pending after the driver's last carry
+over to its next. `words` are the replica words the satellite ran on.
+
+  - `record` is the passenger's own record, its `previous_prompt` following
+    [`LoopRecord`](@ref)'s contract for the passenger's own record sequence.
+    Its `wiped_off` and `polarity` are not read: passengers always read the
+    two-quadrant discriminators, and a four-quadrant driver reading is combined
+    with them only within their range.
+  - `driver_signal` rotates the passenger's prompt onto the driver's carrier
+    phase frame by the nominal carrier phase offsets.
+  - `differential_group_delay_chips`, the passenger's group delay minus the
+    driver's in chips, refers its DLL discriminator to the driver's code phase;
+    `NaN` (unknown) leaves the passenger out of the code loop.
+
+The FLL is combined only while it is formed, before frequency lock. An
+estimator that does not combine signals ([`combines_signals`](@ref)) returns
+`state` unchanged. See [Signal combining](@ref).
+"""
+@inline combine_passenger_record(
+    ::AbstractDopplerEstimator,
+    state,
+    record::LoopRecord,
+    words;
+    driver_signal::AbstractGNSSSignal,
+    differential_group_delay_chips::Real = NaN,
+) = state
+
+@inline function combine_passenger_record(
+    estimator::ConventionalPLLAndDLL,
+    state::SatConventionalPLLAndDLL,
+    record::LoopRecord,
+    words;
+    driver_signal::AbstractGNSSSignal,
+    differential_group_delay_chips::Real = NaN,
+)
+    combines_signals(estimator) || return state
+    _with_passenger_record(
+        state,
+        record,
+        words,
+        _scalar_loops_to_combine(state),
+        driver_signal,
+        differential_group_delay_chips,
+    )
+end
+
+# The scalar loops passengers are combined into: all, but the FLL only while it
+# is formed.
+@inline _scalar_loops_to_combine(state::SatConventionalPLLAndDLL) = (
+    pll = true,
+    fll = _uses_fll(state.carrier_loop_filter) && !state.frequency_lock.locked,
+    dll = true,
+)
+
+@inline _with_passenger_record(
+    state::SatConventionalPLLAndDLL,
+    record::LoopRecord,
+    words,
+    loops,
+    driver_signal::AbstractGNSSSignal,
+    differential_group_delay_chips::Real,
+) = SatConventionalPLLAndDLL(
+    state;
+    signal_combining_sums = _add_passenger_discriminators(
+        state.signal_combining_sums,
+        record,
+        words,
+        loops,
+        driver_signal,
+        differential_group_delay_chips,
+    ),
+)
+
+"""
+    drop_pending_passengers(estimator, state) -> state
+
+`state` without the passengers' pending discriminators, for a host whose
+driver drops its in-flight integration (e.g. at a code-phase snap): the
+passenger records still pending ended before the driver's re-integration
+starts. `state` unchanged for an estimator that does not combine signals.
+"""
+drop_pending_passengers(::AbstractDopplerEstimator, state) = state
+drop_pending_passengers(::ConventionalPLLAndDLL, state::SatConventionalPLLAndDLL) =
+    SatConventionalPLLAndDLL(state; signal_combining_sums = SignalCombiningSums())
 
 # ── The NCO-referenced (delay-aware) PLL/DLL ─────────────────────────────────
 

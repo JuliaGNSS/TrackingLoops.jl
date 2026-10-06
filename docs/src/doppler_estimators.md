@@ -167,6 +167,68 @@ NCO-referenced loop holds through five records of delay instead of six. At the
 default 18 Hz both the conventional and the NCO-referenced loop hold through
 about twenty.
 
+## Signal combining
+
+A satellite tracked on several signals of one band (e.g. Galileo E1C and E1B)
+closes its loops on one of them, the driver, whose records go through
+[`step_loop`](@ref). With `combine_signals = true` on the estimator, e.g.
+`ConventionalAssistedPLLAndDLL(; combine_signals = true)`, the discriminators of
+the other signals, the passengers, are combined with the driver's into a
+weighted mean before the loop filters read it. A mean rather than a sum, so the
+loop gain does not change with the number of signals. The host folds each
+passenger record with [`combine_passenger_record`](@ref), in sample order and
+before the driver record it ends within, and asks [`combines_signals`](@ref)
+whether to.
+
+  - **Weights** are each signal's ICD power share
+    (`GNSSSignals.get_relative_power`) times the record's integration time, and
+    for the FLL times the integration time squared on top, as its noise variance
+    falls with its cube. All signals of a satellite share one antenna and one
+    path, so the power split fixes their C/N₀ ratio; no C/N₀ estimate is read.
+    The discriminators are calibrated (PLL in cycles, FLL in Hz, DLL in chips),
+    so the mean is unbiased whatever the weights; they only decide how much
+    noise is removed.
+  - **Time alignment:** every passenger record folded before a driver record is
+    combined into it, and the driver's step starts the sums afresh. Records
+    folded after the driver's last one stay pending in the satellite's state
+    ([`SignalCombiningSums`](@ref)) for its next; a host that drops the driver's
+    in-flight integration drops them with [`drop_pending_passengers`](@ref).
+    Where no passenger record is pending, the driver's loops close on its own
+    discriminators, bit for bit. Each passenger is assumed to integrate no
+    longer than the driver, as a longer record would dominate the one driver
+    update it is combined into: make the longest-integrating signal (typically
+    the pilot) the driver.
+  - **PLL and FLL:** passengers read the two-quadrant (Costas) discriminators,
+    which are blind to a sign flip of a whole record, so data passengers and
+    records correlated before a passenger's own sync are combined like any
+    other. They are combined into a carrier loop while it is formed, the FLL
+    until frequency lock. Into a four-quadrant driver discriminator they are
+    combined only while its reading lies within their own two-quadrant range,
+    ±1/4 cycle for the PLL and ±1/(4T) for the FLL, where both read the error
+    alike. In simulation (Galileo E1C driving, E1B combined) this lowers the
+    carrier-phase jitter after the sync by about 30 % from 20 to 40 dB-Hz, and
+    less at 18 dB-Hz, without adding cycle slips. A passenger's prompt is
+    rotated onto the driver's phase frame by the signals' nominal carrier phase
+    offsets (`get_carrier_phase_offset`); a residual phase bias between the
+    components is not modelled and shifts the combined lock point.
+  - **DLL:** a passenger is combined into the code loop only where its group
+    delay relative to the driver's is known, passed as
+    `differential_group_delay_chips`; zero is not assumed. Its discriminator is
+    referred to the driver's code phase by it.
+  - **Vector tracking:** out of the vector loop, [`VectorPLLAndDLL`](@ref)
+    combines as its inner loop does. In the vector loop passengers are combined
+    into the PLL only: the code loop and the FLL branch belong to the
+    navigation filter, which reads the driver's own discriminators.
+  - The [`NCOReferencedPLLAndDLL`](@ref) does not combine: it steps the
+    driver's phase error predicted to the landing sample, which the passengers'
+    records are not.
+
+```@autodocs
+Modules = [TrackingLoops]
+Pages = ["signal_combining.jl"]
+Private = false
+```
+
 ## Integration length
 
 ```@autodocs
