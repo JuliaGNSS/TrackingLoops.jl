@@ -218,7 +218,12 @@ export NumAnts,
     mean_nco_word,
     wrap_half_cycle,
     is_wiped_off,
-    sync_polarity
+    sync_polarity,
+    WeightedSum,
+    SignalCombiningSums,
+    combines_signals,
+    combine_passenger_record,
+    drop_pending_passengers
 
 const Maybe{T} = Union{T,Nothing}
 
@@ -308,6 +313,7 @@ include("sample_parameters.jl")
 include("loop_filters.jl")
 include("record.jl")
 include("nco_timeline.jl")
+include("signal_combining.jl")
 include("estimators.jl")
 include("vector/estimator.jl")
 include("vector/model.jl")

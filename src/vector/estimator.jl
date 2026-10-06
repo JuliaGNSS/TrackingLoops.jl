@@ -362,7 +362,15 @@ end
     code_freq_update,
     carrier_freq_update,
 )
-    discriminators = _record_discriminators(estimator, state, record, words, landing_sample)
+    # The navigation filter owns the code loop and the FLL branch, so passengers
+    # are combined into the PLL only. The DLL and FLL readings accumulated for the
+    # filter stay the driver's own.
+    discriminators = _with_passengers(
+        state,
+        record,
+        _record_discriminators(estimator, state, record, words, landing_sample),
+        _PLL_ONLY,
+    )
     carrier_filter_output, carrier_loop_filter = filter_loop(
         state.carrier_loop_filter,
         (discriminators.phase_error, carrier_freq_update),
@@ -390,3 +398,30 @@ end
     discriminators.code_error,
     discriminators.raw_frequency_error
 end
+
+combines_signals(estimator::VectorPLLAndDLL) = combines_signals(estimator.inner)
+
+# In the vector loop passengers join the PLL only; out of it, the inner loop's.
+function combine_passenger_record(
+    estimator::VectorPLLAndDLL,
+    state::SatVectorPLLAndDLL,
+    record::LoopRecord,
+    words;
+    driver_signal::AbstractGNSSSignal,
+    differential_group_delay_chips::Real = NaN,
+)
+    combines_signals(estimator) || return state
+    loops = state.vt_on ? _PLL_ONLY : _scalar_loops_to_combine(state.inner)
+    inner = _with_passenger_record(
+        state.inner,
+        record,
+        words,
+        loops,
+        driver_signal,
+        differential_group_delay_chips,
+    )
+    SatVectorPLLAndDLL(state; inner)
+end
+
+drop_pending_passengers(estimator::VectorPLLAndDLL, state::SatVectorPLLAndDLL) =
+    SatVectorPLLAndDLL(state; inner = drop_pending_passengers(estimator.inner, state.inner))
