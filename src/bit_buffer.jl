@@ -1449,3 +1449,41 @@ function reset(bit_buffer::BitBuffer{B}) where {B<:Unsigned}
         bit_buffer.phase_acc,
     )
 end
+
+"""
+    is_wiped_off(signal, synced::Bool) -> Bool
+
+Whether the replica wipes every sign modulation off `signal`'s prompt, so that
+consecutive prompts share their sign: a dataless signal, synced to its
+secondary code where it has one. `synced` is whether the bit buffer had found
+the secondary code when the record was correlated, i.e. before the fold that
+detects it. Where this holds, the FLL may be four-quadrant
+(`fll_disc(...; four_quadrant = true)`); pass it as a [`LoopRecord`](@ref)'s
+`wiped_off`.
+"""
+@inline is_wiped_off(signal::AbstractGNSSSignal, synced::Bool) =
+    iszero(get_data_frequency(signal)) && (get_secondary_code_length(signal) == 1 || synced)
+
+"""
+    sync_polarity(signal, bit_buffer, prn) -> Int8
+
+The polarity of a pilot's prompt according to its secondary-code sync, which
+the four-quadrant PLL reads the prompt with (`pll_disc(...; polarity)`), or `0`
+for the Costas PLL: a data signal, a pilot before its sync, and a pilot without
+a secondary code (GPS L2 CL, Galileo E5a-QP), whose sync reads no sign. Pass it
+as a [`LoopRecord`](@ref)'s `polarity`, from the bit buffer as it was when the
+record was correlated.
+
+The sync reads the sign off one whole secondary period of the prompt summed
+with the code wiped off. That sum was correlated with a pre-sync replica, which
+carries secondary chip 0 on every block, so the post-sync prompt has the sync
+polarity times chip 0. If the Costas loop slipped half a cycle between the sync
+and the switch, the four-quadrant PLL pulls the carrier phase over by half a
+cycle: that is the start of the resolved carrier phase, not a slip within it.
+"""
+@inline function sync_polarity(signal::AbstractGNSSSignal, bit_buffer::BitBuffer, prn::Integer)
+    is_wiped_off(signal, bit_buffer.found) && get_secondary_code_length(signal) > 1 ||
+        return Int8(0)
+    chip0 = GNSSSignals.secondary_value(get_secondary_code(signal), prn, 0)
+    Int8(bit_buffer.polarity * sign(chip0))
+end

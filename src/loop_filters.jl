@@ -87,6 +87,76 @@ end
 """
 $(SIGNATURES)
 
+Window of the frequency lock indicator for `signal` at the record length
+`integration_time`: the FLL is dropped once its mean reading over this window
+stays below [`frequency_lock_threshold`](@ref). By default 0.5 s, and at least
+four records. Override by defining a method for your signal type.
+"""
+frequency_lock_window(signal::AbstractGNSSSignal, integration_time) =
+    max(0.5s, uconvert(s, 4 * integration_time))
+
+"""
+$(SIGNATURES)
+
+Threshold of the frequency lock indicator for `signal` at the record length
+`integration_time`, see [`frequency_lock_window`](@ref). By default 3 Hz, and at
+most 1/(16T), a quarter of the two-quadrant FLL's range and an eighth of the
+four-quadrant one's (0.04 Hz at GPS L2 CL's 1.5 s). Override by defining a method
+for your signal type.
+"""
+frequency_lock_threshold(signal::AbstractGNSSSignal, integration_time) =
+    min(3.0Hz, uconvert(Hz, 1 / (16 * integration_time)))
+
+"""
+    FrequencyLockIndicator()
+
+The frequency lock indicator of a satellite's carrier loop, held in the scalar
+estimators' per-satellite state. The carrier loop starts as an FLL-assisted PLL
+and drops the FLL once the mean FLL reading over a
+[`frequency_lock_window`](@ref) stays below [`frequency_lock_threshold`](@ref).
+The lock latches; [`reset_estimator_state`](@ref) restarts the staging.
+
+Fields:
+
+  - `integrated_frequency_error`: FLL readings integrated over the current window;
+  - `window_time`: length of the current window;
+  - `locked`: whether frequency lock has been declared (latched).
+"""
+struct FrequencyLockIndicator
+    integrated_frequency_error::typeof(1.0Hz * 1.0s)
+    window_time::typeof(1.0s)
+    locked::Bool
+end
+
+FrequencyLockIndicator() = FrequencyLockIndicator(0.0Hz * 0.0s, 0.0s, false)
+
+# Advance the frequency lock indicator by one record's FLL reading, in windows
+# of `frequency_lock_window`. The window mean is the phase advance across the
+# window over its length, so its noise falls with the window length rather than
+# with each record's SNR. A record without a previous prompt has no FLL reading
+# and is left out; a latched lock is kept as is.
+@inline function _update_frequency_lock(
+    indicator::FrequencyLockIndicator,
+    signal::AbstractGNSSSignal,
+    fll_discriminator,
+    previous_prompt::Complex,
+    integration_time,
+)
+    (indicator.locked || iszero(previous_prompt)) && return indicator
+    dt = uconvert(s, integration_time)
+    integrated_error = indicator.integrated_frequency_error + fll_discriminator * dt
+    window_time = indicator.window_time + dt
+    window_time < frequency_lock_window(signal, integration_time) &&
+        return FrequencyLockIndicator(integrated_error, window_time, false)
+    locked =
+        abs(integrated_error / window_time) <
+        frequency_lock_threshold(signal, integration_time)
+    FrequencyLockIndicator(0.0Hz * 0.0s, 0.0s, locked)
+end
+
+"""
+$(SIGNATURES)
+
 Aid dopplers. That is velocity aiding for the carrier doppler and carrier aiding
 for the code doppler.
 """

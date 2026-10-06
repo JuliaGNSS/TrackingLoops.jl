@@ -369,7 +369,15 @@ end
         carrier_filter_output,
         code_freq_update,
     )
-    _stepped_state(state, carrier_loop_filter, state.code_loop_filter, discriminators.center),
+    # Not staged: the FLL slot carries the navigation filter's carrier update, and
+    # the frequency lock indicator is left as it is.
+    _stepped_state(
+        state,
+        carrier_loop_filter,
+        state.code_loop_filter,
+        discriminators.center,
+        state.frequency_lock,
+    ),
     carrier_doppler,
     code_doppler,
     discriminators.code_error,
