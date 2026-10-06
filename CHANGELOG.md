@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.0.1](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v3.0.0...v3.0.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **vector:** keep the fixed seed for a singular fix design ([bf2d8df](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/bf2d8dfe50fa66bde62af319a394a06b7d46f439))
+* **vector:** seed the filter covariance from the geometry of the scalar fix ([f01d865](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/f01d865d9d01bd539ac7eb1c753ab3f87f4d47c3)), closes [#16](https://github.com/JuliaGNSS/TrackingLoops.jl/issues/16)
+
 # [3.0.0](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v2.0.0...v3.0.0) (2026-10-05)
 
 
