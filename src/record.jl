@@ -180,9 +180,8 @@ Tracking's per-record advance performs, in the same order.
         sampling_frequency,
         has_bit_or_secondary_code_been_found(bit_buffer),
     )
-    # Blocks this record actually covered, for the driver's `1/N` carrier-
-    # bandwidth scaling. The floor at 1 covers the fractional-block record right
-    # after a sync phase-snap accumulator reset.
+    # Blocks this record actually covered. The floor at 1 covers the
+    # fractional-block record right after a sync phase-snap accumulator reset.
     integrated_code_blocks = max(1, bit_block_count)
     # De-rotate the prompt onto the driver's (real) phase frame before both the
     # sync search and the coherent bit accumulation.
