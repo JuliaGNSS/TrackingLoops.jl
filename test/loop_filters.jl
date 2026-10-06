@@ -2,7 +2,8 @@
 # the bandwidth parts of Tracking.jl's `test/conventional_pll_and_dll.jl`.
 
 using Unitful: ms
-using TrackingLoopFilters: filter_loop
+using TrackingLoopFilters: filter_loop, ThirdOrderBilinearLF
+using Random: MersenneTwister
 
 @testset "Doppler aiding" begin
     gpsl1 = GPSL1CA()
@@ -12,16 +13,31 @@ using TrackingLoopFilters: filter_loop
 end
 
 @testset "Default loop bandwidths" begin
-    # Carrier: `BL·T = 0.018` against the primary code period.
-    @test default_carrier_loop_filter_bandwidth(GPSL1CA()) ≈ 18.0Hz
-    @test default_carrier_loop_filter_bandwidth(GPSL5I()) ≈ 18.0Hz
-    @test default_carrier_loop_filter_bandwidth(GPSL1C_P()) ≈ 1.8Hz
-    @test default_carrier_loop_filter_bandwidth(GalileoE1B()) ≈ 4.5Hz
-    @test default_carrier_loop_filter_bandwidth(GPSL1CA()) isa typeof(1.0Hz)
-    # Code: a flat 1 Hz for every signal.
+    # A flat 18 Hz carrier and 1 Hz code bandwidth for every signal.
     for signal in (GPSL1CA(), GPSL1C_P(), GalileoE1B(), GPSL5I())
+        @test default_carrier_loop_filter_bandwidth(signal) == 18.0Hz
         @test default_code_loop_filter_bandwidth(signal) == 1.0Hz
     end
+    @test default_carrier_loop_filter_bandwidth(GPSL1CA()) isa typeof(1.0Hz)
+end
+
+# The carrier bandwidth is capped by its stability product, not scaled by the
+# block count.
+@testset "carrier loop bandwidth is capped, not scaled, by the integration length" begin
+    bw = 18.0Hz
+    @test effective_carrier_loop_filter_bandwidth(bw, 1ms) == bw
+    @test effective_carrier_loop_filter_bandwidth(bw, 4ms) == bw
+    @test effective_carrier_loop_filter_bandwidth(bw, 5ms) ≈ bw
+    @test effective_carrier_loop_filter_bandwidth(bw, 10ms) ≈ 9.0Hz
+    @test effective_carrier_loop_filter_bandwidth(bw, 20ms) ≈ 4.5Hz
+    for integration_time in (10ms, 20ms, 100ms, 1500ms)
+        @test effective_carrier_loop_filter_bandwidth(bw, integration_time) *
+              integration_time ≈ MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT
+    end
+    # An explicit bandwidth below the cap is used verbatim.
+    @test effective_carrier_loop_filter_bandwidth(2.0Hz, 20ms) == 2.0Hz
+    @test @inferred(effective_carrier_loop_filter_bandwidth(bw, 5000 / 5e6Hz)) isa
+          typeof(1.0Hz)
 end
 
 # The DLL bandwidth is an absolute value, not a per-primary-period reference: a
@@ -40,7 +56,7 @@ end
     for num_blocks in (20, 100, 1500)
         integration_time = num_blocks * l1ca_period
         @test effective_code_loop_filter_bandwidth(bw, integration_time) *
-              integration_time ≈ MAX_LOOP_BANDWIDTH_TIME_PRODUCT
+              integration_time ≈ MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT
     end
 
     # An explicit bandwidth below the cap is used verbatim, at any length.
@@ -69,8 +85,9 @@ end
     )
     expected = filter_loop(
         assisted,
+        # The phase error in cycles, the FLL error in Hz.
         (
-            pll_disc(gpsl1, correlator),
+            pll_disc(gpsl1, correlator) / 2π,
             fll_disc(gpsl1, correlator, previous_prompt, integration_time),
         ),
         integration_time,
@@ -89,7 +106,7 @@ end
         integration_time,
         18.0Hz,
     )
-    expected = filter_loop(plain, pll_disc(gpsl1, correlator), integration_time, 18.0Hz)
+    expected = filter_loop(plain, pll_disc(gpsl1, correlator) / 2π, integration_time, 18.0Hz)
     @test update_plain == expected[1]
     @test filter_plain == expected[2]
     @test update_plain != 0.0Hz
@@ -114,4 +131,35 @@ end
     @test update_code == expected[1]
     @test filter_code == expected[2]
     @test update_code != 0.0Hz
+end
+
+@testset "The carrier loop has the configured noise bandwidth" begin
+    # Closed loop with white phase noise σ_n: the NCO jitter must be
+    # σ² = σ_n² · 2 · BL · T. Fed radians, the loop was ≈5.6× wider.
+    gpsl1 = GPSL1CA()
+    T = 1ms
+    bandwidth = 18.0Hz
+    σ_n = 0.05
+    rng = MersenneTwister(1)
+    loop_filter = ThirdOrderBilinearLF()
+    φ = 0.0  # signal phase minus NCO phase, rad
+    acc = 0.0
+    n = 200_000
+    settle = 1_000
+    for i = 1:n
+        prompt = cis(φ + σ_n * randn(rng))
+        correlator = EarlyPromptLateCorrelator(SVector(prompt, prompt, prompt), 0.5)
+        freq_update, loop_filter = calculate_carrier_frequency_update(
+            gpsl1,
+            loop_filter,
+            correlator,
+            prompt,
+            T,
+            bandwidth,
+        )
+        φ -= 2π * Float64(freq_update * T)
+        i > settle && (acc += φ^2)
+    end
+    effective_bandwidth = acc / (n - settle) / σ_n^2 / (2 * ustrip(s, T))
+    @test 0.85 < effective_bandwidth / ustrip(Hz, bandwidth) < 1.15
 end
