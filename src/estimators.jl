@@ -39,6 +39,23 @@ time since one origin shared by every satellite of the band. A host whose
 correlator restarts its sample count passes that origin's offset as
 `sample_offset` to the constructor that takes a `CorrelatorOutput`; it is added
 to `sample_index` and `fold_end`.
+
+Two fields pick the carrier discriminators, both from the signal's bit buffer as
+it was when the record was correlated (before the fold that may sync it):
+
+  - `wiped_off`: the replica wipes every sign modulation off the prompt
+    ([`is_wiped_off`](@ref)), so the FLL is four-quadrant. `false` by default.
+  - `polarity`: the prompt's sign from the secondary-code sync
+    ([`sync_polarity`](@ref)), so the PLL is four-quadrant; `0` (the default)
+    keeps the Costas PLL.
+
+`previous_prompt` is the previous record's filtered prompt, or zero where the
+FLL has nothing to compare with: the first record, and a record whose length or
+whose `wiped_off` differs from the previous record's. The FLL divides the
+rotation between the two prompts by this record's integration time, which is
+the time between them only for records of one length, and a sign flip between a
+prompt with and one without the wipe-off would read as half a cycle. A record
+with a zero previous prompt gives no FLL reading.
 """
 struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F}
     signal::S
@@ -51,6 +68,8 @@ struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F}
     sampling_frequency::F
     prn::Int
     code_phase::Float64
+    wiped_off::Bool
+    polarity::Int8
 end
 
 LoopRecord(
@@ -64,6 +83,8 @@ LoopRecord(
     sampling_frequency;
     prn::Integer = 0,
     code_phase::Real = NaN,
+    wiped_off::Bool = false,
+    polarity::Integer = 0,
 ) = LoopRecord(
     signal,
     filtered_correlator,
@@ -75,6 +96,8 @@ LoopRecord(
     sampling_frequency,
     Int(prn),
     Float64(code_phase),
+    wiped_off,
+    Int8(polarity),
 )
 
 LoopRecord(
@@ -87,6 +110,8 @@ LoopRecord(
     fold_end = output.sample_index,
     prn::Integer = 0,
     sample_offset::Integer = 0,
+    wiped_off::Bool = false,
+    polarity::Integer = 0,
 ) = LoopRecord(
     signal,
     filtered_correlator,
@@ -98,13 +123,16 @@ LoopRecord(
     sampling_frequency,
     Int(prn),
     output.code_phase,
+    wiped_off,
+    Int8(polarity),
 )
 
 # ── The conventional PLL/DLL ─────────────────────────────────────────────────
 
 """
 Per-satellite state for the conventional PLL and DLL Doppler estimator.
-Holds initial Doppler values and loop filter states.
+Holds initial Doppler values, loop filter states and the carrier loop's
+[`FrequencyLockIndicator`](@ref).
 """
 @kwdef struct SatConventionalPLLAndDLL{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     init_carrier_doppler::typeof(1.0Hz)
@@ -113,6 +141,7 @@ Holds initial Doppler values and loop filter states.
     code_loop_filter::CO = SecondOrderBilinearLF()
     carrier_loop_filter_bandwidth::typeof(1.0Hz) = 18.0Hz
     code_loop_filter_bandwidth::typeof(1.0Hz) = 1.0Hz
+    frequency_lock::FrequencyLockIndicator = FrequencyLockIndicator()
 end
 
 function SatConventionalPLLAndDLL(
@@ -121,6 +150,7 @@ function SatConventionalPLLAndDLL(
     code_loop_filter::Maybe{CO} = nothing,
     carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    frequency_lock::Maybe{FrequencyLockIndicator} = nothing,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     SatConventionalPLLAndDLL{CA,CO}(
         sat_conventional_pll_and_dll.init_carrier_doppler,
@@ -135,6 +165,7 @@ function SatConventionalPLLAndDLL(
         isnothing(code_loop_filter_bandwidth) ?
         sat_conventional_pll_and_dll.code_loop_filter_bandwidth :
         code_loop_filter_bandwidth,
+        something(frequency_lock, sat_conventional_pll_and_dll.frequency_lock),
     )
 end
 
@@ -232,6 +263,7 @@ function init_estimator_state(
         isnothing(estimator.code_loop_filter_bandwidth) ?
         default_code_loop_filter_bandwidth(driver_signal) :
         estimator.code_loop_filter_bandwidth,
+        FrequencyLockIndicator(),
     )
 end
 
@@ -242,8 +274,9 @@ _constructorof(::Type{T}) where {T} = Base.typename(T).wrapper
 """
     reset_estimator_state(estimator, state, carrier_doppler, code_doppler)
 
-Zero the loop-filter integrators and re-seed the state from the converged
-Dopplers, keeping the per-satellite bandwidths.
+Zero the loop-filter integrators, restart the carrier loop's staging on the
+FLL-assisted PLL (see [`FrequencyLockIndicator`](@ref)) and re-seed the state
+from the converged Dopplers, keeping the per-satellite bandwidths.
 """
 function reset_estimator_state(
     ::ConventionalPLLAndDLL,
@@ -258,6 +291,7 @@ function reset_estimator_state(
         _constructorof(typeof(state.code_loop_filter))(),
         state.carrier_loop_filter_bandwidth,
         state.code_loop_filter_bandwidth,
+        FrequencyLockIndicator(),
     )
 end
 
@@ -300,12 +334,19 @@ command acts before the next record.
     record_start = record.sample_index - record.integrated_samples
     _, applied_code = mean_nco_word(words, record_start, record.sample_index)
     filtered_correlator = record.filtered_correlator
-    frequency_error =
-        fll_disc(signal, filtered_correlator, record.previous_prompt, integration_time)
+    frequency_error = fll_disc(
+        signal,
+        filtered_correlator,
+        record.previous_prompt,
+        integration_time;
+        four_quadrant = record.wiped_off,
+    )
     (;
         integration_time,
         carrier_bandwidth = _carrier_bandwidth(state, integration_time),
-        phase_error = _phase_error_in_cycles(pll_disc(signal, filtered_correlator)),
+        phase_error = _phase_error_in_cycles(
+            pll_disc(signal, filtered_correlator; record.polarity),
+        ),
         frequency_error,
         raw_frequency_error = frequency_error,
         code_error = dll_disc(
@@ -332,24 +373,55 @@ end
 @inline _carrier_filter_input(::AbstractLoopFilter, phase_error, frequency_error) =
     phase_error
 
-# The state after one record, with both loop filters stepped.
-@inline _stepped_state(state::SatConventionalPLLAndDLL, carrier_loop_filter, code_loop_filter, center) =
-    SatConventionalPLLAndDLL(state; carrier_loop_filter, code_loop_filter)
+# The state after one record, with both loop filters and the frequency lock
+# indicator stepped.
+@inline _stepped_state(
+    state::SatConventionalPLLAndDLL,
+    carrier_loop_filter,
+    code_loop_filter,
+    center,
+    frequency_lock,
+) = SatConventionalPLLAndDLL(state; carrier_loop_filter, code_loop_filter, frequency_lock)
 
-# One record through a scalar loop: the carrier filter fed its discriminators,
-# the code filter the DLL with its bandwidth capped by its stability product
-# against the record's integration time, and the Dopplers aided.
+# The carrier loop's staging: an FLL-assisted filter is fed the FLL reading and
+# advances the frequency lock indicator until it latches, and is fed zero after,
+# which is exactly the third-order PLL (same state, same coefficients), so the
+# switch is free (Kaplan & Hegarty §5.5; Ward, ION GPS 1998). The indicator reads
+# the raw FLL discriminator, the residual against the replica that ran. Returns
+# the FLL input to feed and the advanced indicator.
+@inline function _staged_frequency_error(state, record::LoopRecord, discriminators)
+    frequency_lock = state.frequency_lock
+    (_uses_fll(state.carrier_loop_filter) && !frequency_lock.locked) ||
+        return zero(discriminators.frequency_error), frequency_lock
+    frequency_lock = _update_frequency_lock(
+        frequency_lock,
+        record.signal,
+        discriminators.raw_frequency_error,
+        record.previous_prompt,
+        discriminators.integration_time,
+    )
+    discriminators.frequency_error, frequency_lock
+end
+
+@inline _uses_fll(::ThirdOrderAssistedBilinearLF) = true
+@inline _uses_fll(::AbstractLoopFilter) = false
+
+# One record through a scalar loop: the carrier filter fed its discriminators
+# (the FLL's until frequency lock), the code filter the DLL with its bandwidth
+# capped by its stability product against the record's integration time, and the
+# Dopplers aided.
 @inline function _step_scalar_loop(estimator, state, record::LoopRecord, words, landing_sample::Int64)
     discriminators = _record_discriminators(estimator, state, record, words, landing_sample)
     integration_time = discriminators.integration_time
     code_bandwidth =
         effective_code_loop_filter_bandwidth(state.code_loop_filter_bandwidth, integration_time)
+    frequency_error, frequency_lock = _staged_frequency_error(state, record, discriminators)
     carrier_freq_update, carrier_loop_filter = filter_loop(
         state.carrier_loop_filter,
         _carrier_filter_input(
             state.carrier_loop_filter,
             discriminators.phase_error,
-            discriminators.frequency_error,
+            frequency_error,
         ),
         integration_time,
         discriminators.carrier_bandwidth,
@@ -367,7 +439,13 @@ end
         carrier_freq_update,
         code_freq_update,
     )
-    _stepped_state(state, carrier_loop_filter, code_loop_filter, discriminators.center),
+    _stepped_state(
+        state,
+        carrier_loop_filter,
+        code_loop_filter,
+        discriminators.center,
+        frequency_lock,
+    ),
     carrier_doppler,
     code_doppler
 end
@@ -436,9 +514,10 @@ end
 
 Per-satellite state of an [`NCOReferencedPLLAndDLL`](@ref): the handover
 Dopplers the loop filters' outputs are offsets from, both filters, their
-bandwidths, and the centre sample of the last record folded (the FLL measures
+bandwidths, the centre sample of the last record folded (the FLL measures
 the mean frequency offset between two prompts' centres, so that is the span its
-replica word is averaged over).
+replica word is averaged over), and the carrier loop's
+[`FrequencyLockIndicator`](@ref).
 """
 struct SatNCOReferencedPLLAndDLL{CA<:ThirdOrderAssistedBilinearLF,CO<:AbstractLoopFilter}
     init_carrier_doppler::typeof(1.0Hz)
@@ -450,6 +529,7 @@ struct SatNCOReferencedPLLAndDLL{CA<:ThirdOrderAssistedBilinearLF,CO<:AbstractLo
     # Device sample at the centre of the last record folded; `NaN` before the
     # first.
     previous_record_center::Float64
+    frequency_lock::FrequencyLockIndicator
 end
 
 function SatNCOReferencedPLLAndDLL(
@@ -457,6 +537,7 @@ function SatNCOReferencedPLLAndDLL(
     carrier_loop_filter::Maybe{CA} = nothing,
     code_loop_filter::Maybe{CO} = nothing,
     previous_record_center::Maybe{Float64} = nothing,
+    frequency_lock::Maybe{FrequencyLockIndicator} = nothing,
 ) where {CA,CO}
     SatNCOReferencedPLLAndDLL{CA,CO}(
         state.init_carrier_doppler,
@@ -466,6 +547,7 @@ function SatNCOReferencedPLLAndDLL(
         state.carrier_loop_filter_bandwidth,
         state.code_loop_filter_bandwidth,
         something(previous_record_center, state.previous_record_center),
+        something(frequency_lock, state.frequency_lock),
     )
 end
 
@@ -489,6 +571,7 @@ function init_estimator_state(
             default_code_loop_filter_bandwidth(driver_signal),
         ),
         NaN,
+        FrequencyLockIndicator(),
     )
 end
 
@@ -506,6 +589,7 @@ function reset_estimator_state(
         state.carrier_loop_filter_bandwidth,
         state.code_loop_filter_bandwidth,
         NaN,
+        FrequencyLockIndicator(),
     )
 end
 
@@ -521,7 +605,9 @@ wrap_half_cycle(phase) = rem(phase, π, RoundNearest)
 # The phase error a record would show `shift` samples later, under the words
 # the NCO will run in between: the mean phase sits at the record's centre, so
 # the ramp is integrated from there. The signal's Doppler is the filter's own
-# estimate, before this record's innovation.
+# estimate, before this record's innovation. The prediction is folded into the
+# range the discriminator reads: ±π/2 for the Costas PLL (`polarity = 0`), ±π for
+# the four-quadrant one.
 @inline function _predict_landing_phase_error(
     phase_error,
     state::SatNCOReferencedPLLAndDLL,
@@ -530,6 +616,7 @@ wrap_half_cycle(phase) = rem(phase, π, RoundNearest)
     shift,
     integration_time,
     sampling_frequency,
+    polarity = 0,
 )
     sampling_freq_hz = Float64(ustrip(Hz, uconvert(Hz, sampling_frequency)))
     carrier_loop_filter = state.carrier_loop_filter
@@ -543,7 +630,8 @@ wrap_half_cycle(phase) = rem(phase, π, RoundNearest)
         ),
     )
     ramp_word = first(mean_nco_word(words, center, center + shift))
-    wrap_half_cycle(phase_error + 2π * shift * (f_hat - ramp_word) / sampling_freq_hz)
+    predicted = phase_error + 2π * shift * (f_hat - ramp_word) / sampling_freq_hz
+    iszero(polarity) ? wrap_half_cycle(predicted) : rem(predicted, 2π, RoundNearest)
 end
 
 """
@@ -590,9 +678,14 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
     # Discriminators against the applied replica. The phase error is that by
     # construction; the frequency error is the mean offset from the replica
     # between the two prompts' centres.
-    phase_error = pll_disc(signal, filtered_correlator)
-    raw_frequency_error =
-        fll_disc(signal, filtered_correlator, record.previous_prompt, integration_time)
+    phase_error = pll_disc(signal, filtered_correlator; record.polarity)
+    raw_frequency_error = fll_disc(
+        signal,
+        filtered_correlator,
+        record.previous_prompt,
+        integration_time;
+        four_quadrant = record.wiped_off,
+    )
     frequency_error = raw_frequency_error
 
     if estimator.predict_landing && shift > 0
@@ -604,6 +697,7 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
             shift,
             integration_time,
             sampling_frequency,
+            record.polarity,
         )
         # The absolute frequency measurement, relative to the word that will be
         # running under the record `shift` samples ahead. `fll_disc` measured
@@ -634,11 +728,13 @@ end
     carrier_loop_filter,
     code_loop_filter,
     center,
+    frequency_lock,
 ) = SatNCOReferencedPLLAndDLL(
     state;
     carrier_loop_filter,
     code_loop_filter,
     previous_record_center = center,
+    frequency_lock,
 )
 
 "The estimator-state type a Doppler estimator produces (for slot typing)."

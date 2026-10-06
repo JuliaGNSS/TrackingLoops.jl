@@ -8,7 +8,9 @@ const LOOP_N = 4000
 
 # The delay a loop tolerates shrinks as its bandwidth grows: at the default 18 Hz
 # the conventional loop holds through 20 records of delay. The delay tests run
-# the loops at 85 Hz, where 6 records make it limit-cycle.
+# the loops at 85 Hz, where 5 records make it limit-cycle. (Once frequency-locked
+# the loops run without the FLL branch, which at 85 Hz costs the NCO-referenced
+# loop its tolerance of a sixth record.)
 const WIDE_LOOP = (; carrier_loop_filter_bandwidth = 85.0Hz)
 
 loop_epl(late, prompt, early) =
@@ -55,7 +57,7 @@ end
     @test all(abs.(referenced[2][900:end] .- 130.0) .< 1.0)
 end
 
-@testset "The NCO-referenced loop holds lock through $d records of delay" for d in 1:6
+@testset "The NCO-referenced loop holds lock through $d records of delay" for d in 1:5
     phases, words = simulate_delayed_loop(NCOReferencedPLLAndDLL(; WIDE_LOOP...), d; steps = 1200)
     @test all(abs.(phases[1000:end]) .< 0.05)
     @test all(abs.(words[1000:end] .- 130.0) .< 0.3)
@@ -70,12 +72,12 @@ end
     @test all(abs.(words[1100:end] .- 130.0) .< 0.3)
 end
 
-@testset "The conventional loop and the negative control limit-cycle at six records of delay" begin
+@testset "The conventional loop and the negative control limit-cycle at five records of delay" begin
     for estimator in (
         ConventionalAssistedPLLAndDLL(; WIDE_LOOP...),
         NCOReferencedPLLAndDLL(; predict_landing = false, WIDE_LOOP...),
     )
-        phases, words = simulate_delayed_loop(estimator, 6; steps = 1200)
+        phases, words = simulate_delayed_loop(estimator, 5; steps = 1200)
         tail = words[600:end] .- 130.0
         @test sqrt(sum(abs2, tail) / length(tail)) > 20
         @test maximum(abs.(phases[600:end])) > 1.0

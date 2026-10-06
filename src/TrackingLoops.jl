@@ -165,6 +165,9 @@ export NumAnts,
     default_code_loop_filter_bandwidth,
     effective_carrier_loop_filter_bandwidth,
     effective_code_loop_filter_bandwidth,
+    frequency_lock_window,
+    frequency_lock_threshold,
+    FrequencyLockIndicator,
     aid_dopplers,
     calculate_carrier_frequency_update,
     calculate_code_frequency_update,
@@ -213,7 +216,9 @@ export NumAnts,
     word_changes_within,
     nco_word_at,
     mean_nco_word,
-    wrap_half_cycle
+    wrap_half_cycle,
+    is_wiped_off,
+    sync_polarity
 
 const Maybe{T} = Union{T,Nothing}
 
