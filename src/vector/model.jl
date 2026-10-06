@@ -549,8 +549,9 @@ end
 # set; they stay in the vector loop and keep getting NCO corrections, exactly like a member
 # out of code lock.
 #
-# Both accumulators are incremented in the same branch of `step_loop`, so the two counts
-# never disagree; the carrier one is checked as well so this stays true if that changes.
+# The carrier count can lag the code count: a record without a previous prompt has no FLL
+# reading and is not accumulated. A member whose only records this cycle had none is
+# withheld as well rather than given a zero frequency residual.
 has_accumulated_discriminators(state::SatVectorPLLAndDLL) =
     !isnothing(_mean_code_discriminator(state)) &&
     !isnothing(_mean_carrier_discriminator(state))

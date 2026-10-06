@@ -134,12 +134,12 @@ end
           nav_code_freq_update +
           expected_carrier_freq_update * get_code_center_frequency_ratio(gpsl1)
     @test state.inner.code_loop_filter == SecondOrderBilinearLF()
-    # The discriminators are accumulated; the FLL one is zero here, with count
-    # one, since there is no previous prompt.
+    # The DLL discriminator is accumulated; the FLL one is not, since there is no
+    # previous prompt to read it against.
     @test state.code_discr_acc == (1, dll_discriminator)
-    @test state.carrier_discr_acc == (1, 0.0Hz)
+    @test state.carrier_discr_acc == (0, 0.0Hz)
     @test TL._mean_code_discriminator(state) == dll_discriminator
-    @test TL._mean_carrier_discriminator(state) == 0.0Hz
+    @test TL._mean_carrier_discriminator(state) === nothing
     # The corrections survive the step untouched.
     @test state.code_freq_update == nav_code_freq_update
     @test state.carrier_freq_update == nav_carrier_freq_update
@@ -166,6 +166,27 @@ end
     state, = step_satellite(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
     @test state.carrier_discr_acc == (2, fll + fll)
     @test TL._mean_carrier_discriminator(state) == (fll + fll) / 2
+end
+
+@testset "The vector loop leaves records without a previous prompt out of the FLL accumulator" begin
+    # Counted, their 0 Hz would bias the mean: three readings of `fll` would
+    # average as 3/4 of it.
+    signal = GPSL1CA()
+    fs = 5e6Hz
+    estimator = VectorPLLAndDLL(GPSL1CA())
+    state = TL._enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
+    accumulators = (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im)
+    first_record = vector_record(signal, accumulators, 5000, fs)
+    record = vector_record(signal, accumulators, 5000, fs; previous_prompt = cis(0.2))
+    fll = fll_disc(signal, record.filtered_correlator, cis(0.2), 5000 / fs)
+    words = FixedNCOWord(100.0, 0.1)
+    state, = step_satellite(estimator, state, first_record, words, NO_LANDING_SAMPLE)
+    for _ = 1:3
+        state, = step_satellite(estimator, state, record, words, NO_LANDING_SAMPLE)
+    end
+    @test state.code_discr_acc[1] == 4
+    @test state.carrier_discr_acc == (3, fll + fll + fll)
+    @test TL._mean_carrier_discriminator(state) ≈ fll
 end
 
 @testset "The vector loop accumulates the FLL discriminator in Hz from a MHz sampling frequency" begin
@@ -222,7 +243,8 @@ end
     # The accumulated FLL is the raw discriminator, before any re-basing onto
     # the landing word, so the prediction does not reach it.
     @test predicted_state.carrier_discr_acc == control_state.carrier_discr_acc
-    @test predicted_state.carrier_discr_acc[1] == 50
+    # The first of the 50 records has no previous prompt and is not counted.
+    @test predicted_state.carrier_discr_acc[1] == 49
 end
 
 @testset "Vector tracking state management" begin

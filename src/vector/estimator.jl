@@ -282,6 +282,13 @@ function _set_vector_corrections(
     )
 end
 
+# A record without a previous prompt (the first after a (re)start, after a
+# pilot's secondary-code sync or a change of record length) has no FLL reading
+# (`fll_disc` reads 0 Hz) and is left out of the accumulator: counted, its 0 Hz
+# would pull the cycle's mean toward zero.
+@inline _accumulated_fll(acc::Tuple, fll_discriminator, previous_prompt::Complex) =
+    iszero(previous_prompt) ? acc : (acc[1] + 1, acc[2] + fll_discriminator)
+
 # Empty both discriminator accumulators, once the filter has read them.
 _reset_discriminator_accumulators(state::SatVectorPLLAndDLL) =
     SatVectorPLLAndDLL(state; code_discr_acc = (0, 0.0), carrier_discr_acc = (0, 0.0Hz))
@@ -324,15 +331,15 @@ end
         )
     code_count, code_sum = state.code_discr_acc
     carrier_count, carrier_sum = state.carrier_discr_acc
-    # A record without a previous prompt (the first after a (re)start) has an
-    # FLL discriminator of 0 Hz and still counts, as in Tracking: the first
-    # cycle's mean is then pulled toward 0 Hz, and the member counts as
-    # measured although it has no real frequency measurement yet.
     SatVectorPLLAndDLL(
         state;
         inner,
         code_discr_acc = (code_count + 1, code_sum + dll_discriminator),
-        carrier_discr_acc = (carrier_count + 1, carrier_sum + fll_discriminator),
+        carrier_discr_acc = _accumulated_fll(
+            state.carrier_discr_acc,
+            fll_discriminator,
+            record.previous_prompt,
+        ),
     ),
     carrier_doppler,
     code_doppler
