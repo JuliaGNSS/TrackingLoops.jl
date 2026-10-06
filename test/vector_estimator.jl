@@ -168,6 +168,23 @@ end
     @test TL._mean_carrier_discriminator(state) == (fll + fll) / 2
 end
 
+@testset "The vector loop accumulates the FLL discriminator in Hz from a MHz sampling frequency" begin
+    # The FLL reading took the sampling frequency's unit, and the `Hz`-typed
+    # accumulator refused it as soon as the satellite was in the vector loop.
+    signal = GPSL1CA()
+    estimator = VectorPLLAndDLL(GPSL1CA())
+    function accumulated(fs)
+        state = TL._enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
+        record = vector_record(signal, (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im), 5000, fs; previous_prompt = cis(0.2))
+        state, = step_satellite(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
+        state.carrier_discr_acc
+    end
+    count, carrier_sum = accumulated(5.0u"MHz")
+    @test count == 1
+    @test carrier_sum != 0.0Hz
+    @test carrier_sum ≈ last(accumulated(5e6Hz))
+end
+
 @testset "The NCO-referenced vector loop keeps its landing prediction" begin
     # In the vector loop, with the delay the prediction has something to do,
     # and without it the NCO-referenced loop is the conventional one.
