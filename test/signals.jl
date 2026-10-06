@@ -93,8 +93,16 @@ function _sig_test_correlator(signal, C)
     @test get_default_correlator(signal) == C(; num_ants = NumAnts(1))
 end
 
+# `carrier` is the default carrier bandwidth as capped for one primary code period.
 function _sig_test_bandwidths(signal, carrier)
-    @test @inferred(default_carrier_loop_filter_bandwidth(signal)) ≈ carrier
+    @test @inferred(default_carrier_loop_filter_bandwidth(signal)) == 18.0Hz
+    primary_period = get_code_length(signal) / get_code_frequency(signal)
+    @test @inferred(
+        effective_carrier_loop_filter_bandwidth(
+            default_carrier_loop_filter_bandwidth(signal),
+            primary_period,
+        )
+    ) ≈ carrier
     @test @inferred(default_code_loop_filter_bandwidth(signal)) ≈ 1.0Hz
 end
 
@@ -112,7 +120,7 @@ end
     signal = GPSL1C_D()
     _sig_test_symbol_is_code_block(signal, 1, UInt8)
     _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
-    _sig_test_bandwidths(signal, 1.8Hz)
+    _sig_test_bandwidths(signal, 9.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
 end
 
@@ -120,7 +128,7 @@ end
     signal = GPSL1C_P()
     _sig_test_overlay_search(signal, 1)
     _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
-    _sig_test_bandwidths(signal, 1.8Hz)
+    _sig_test_bandwidths(signal, 9.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt1800
 end
 
@@ -128,7 +136,7 @@ end
     signal = GPSL2CM()
     _sig_test_symbol_is_code_block(signal, 1, UInt8)
     _sig_test_correlator(signal, EarlyPromptLateCorrelator)
-    _sig_test_bandwidths(signal, 0.9Hz)
+    _sig_test_bandwidths(signal, 4.5Hz)
     # The 1 Hz DLL default is capped to 0.9 Hz at a 20 ms integration.
     @test @inferred(effective_code_loop_filter_bandwidth(default_code_loop_filter_bandwidth(signal), 20ms)) ≈
           0.9Hz
@@ -142,7 +150,7 @@ end
         @test @inferred(detect_bit_or_secondary_code_sync(signal, 1, bits, n)).found == false
     end
     _sig_test_correlator(signal, EarlyPromptLateCorrelator)
-    _sig_test_bandwidths(signal, 0.012Hz)
+    _sig_test_bandwidths(signal, 0.06Hz)
     @test @inferred(effective_code_loop_filter_bandwidth(default_code_loop_filter_bandwidth(signal), 1.5s)) ≈
           0.012Hz
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
@@ -187,7 +195,7 @@ end
                                                                                          (GalileoE1B(), GalileoE1B_BOC11())
     _sig_test_symbol_is_code_block(signal, 1, UInt8)
     _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
-    _sig_test_bandwidths(signal, 4.5Hz)
+    _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
 end
 
@@ -196,7 +204,7 @@ end
     @test get_secondary_code_length(signal) == 25
     _sig_test_secondary_search(signal, 1, UInt32, (0, 11, 24))
     _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
-    _sig_test_bandwidths(signal, 4.5Hz)
+    _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt32
     @test uses_soft_secondary_code_detection(signal) == true
 end
@@ -296,7 +304,7 @@ end
     _sig_test_symbol_is_code_block(signal, 1, UInt8)
     @test get_band_id(signal) === :L1
     _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
-    _sig_test_bandwidths(signal, 1.8Hz)
+    _sig_test_bandwidths(signal, 9.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
     @test uses_soft_secondary_code_detection(signal) == false
     @test uses_soft_bit_edge_detection(signal) == false
@@ -308,7 +316,7 @@ end
     _sig_test_overlay_search(signal, 1)
     @test get_band_id(signal) === :L1
     _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
-    _sig_test_bandwidths(signal, 1.8Hz)
+    _sig_test_bandwidths(signal, 9.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt1800
 end
 

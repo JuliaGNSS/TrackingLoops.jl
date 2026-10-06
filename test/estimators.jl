@@ -6,6 +6,11 @@ const LOOP_SIGNAL = GPSL1CA()
 const LOOP_FS = 4e6Hz
 const LOOP_N = 4000
 
+# The delay a loop tolerates shrinks as its bandwidth grows: at the default 18 Hz
+# the conventional loop holds through 20 records of delay. The delay tests run
+# the loops at 85 Hz, where 6 records make it limit-cycle.
+const WIDE_LOOP = (; carrier_loop_filter_bandwidth = 85.0Hz)
+
 loop_epl(late, prompt, early) =
     EarlyPromptLateCorrelator(SVector{3,ComplexF64}(late, prompt, early), 0.5)
 
@@ -40,26 +45,37 @@ function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, p
 end
 
 @testset "With no delay the NCO-referenced loop is the conventional loop" begin
-    conventional = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(), 0)
-    referenced = simulate_delayed_loop(NCOReferencedPLLAndDLL(), 0)
+    conventional = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(), 0; steps = 1200)
+    referenced = simulate_delayed_loop(NCOReferencedPLLAndDLL(), 0; steps = 1200)
     @test referenced[1] == conventional[1]
     @test referenced[2] == conventional[2]
-    control = simulate_delayed_loop(NCOReferencedPLLAndDLL(; predict_landing = false), 0)
+    control = simulate_delayed_loop(NCOReferencedPLLAndDLL(; predict_landing = false), 0; steps = 1200)
     @test control[2] == conventional[2]
-    @test all(abs.(referenced[1][400:end]) .< 0.2)
-    @test all(abs.(referenced[2][400:end] .- 130.0) .< 1.0)
+    @test all(abs.(referenced[1][900:end]) .< 0.2)
+    @test all(abs.(referenced[2][900:end] .- 130.0) .< 1.0)
 end
 
 @testset "The NCO-referenced loop holds lock through $d records of delay" for d in 1:6
-    phases, words = simulate_delayed_loop(NCOReferencedPLLAndDLL(), d; steps = 1200)
+    phases, words = simulate_delayed_loop(NCOReferencedPLLAndDLL(; WIDE_LOOP...), d; steps = 1200)
     @test all(abs.(phases[1000:end]) .< 0.05)
     @test all(abs.(words[1000:end] .- 130.0) .< 0.3)
-    @test maximum(abs.(phases[100:end])) < 1.0
+    # The pull-in transient stays clear of the ±π/2 edge where the BPSK
+    # discriminator slips.
+    @test maximum(abs.(phases[100:end])) < 1.4
 end
 
-@testset "The conventional loop and the negative control limit-cycle at four records of delay" begin
-    for estimator in (ConventionalAssistedPLLAndDLL(), NCOReferencedPLLAndDLL(; predict_landing = false))
-        phases, words = simulate_delayed_loop(estimator, 4; steps = 1200)
+@testset "The default loop holds lock through six records of delay" begin
+    phases, words = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(), 6; steps = 1200)
+    @test all(abs.(phases[1100:end]) .< 0.05)
+    @test all(abs.(words[1100:end] .- 130.0) .< 0.3)
+end
+
+@testset "The conventional loop and the negative control limit-cycle at six records of delay" begin
+    for estimator in (
+        ConventionalAssistedPLLAndDLL(; WIDE_LOOP...),
+        NCOReferencedPLLAndDLL(; predict_landing = false, WIDE_LOOP...),
+    )
+        phases, words = simulate_delayed_loop(estimator, 6; steps = 1200)
         tail = words[600:end] .- 130.0
         @test sqrt(sum(abs2, tail) / length(tail)) > 20
         @test maximum(abs.(phases[600:end])) > 1.0

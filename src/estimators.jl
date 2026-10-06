@@ -150,10 +150,11 @@ the bandwidth fields configure the loop bandwidths used when seeding new
 satellites. Each bandwidth field is `Maybe{typeof(1.0Hz)}`: a `nothing`
 field (the default) means **auto** — the bandwidth is sized per satellite from
 its estimator-driver signal via [`default_carrier_loop_filter_bandwidth`](@ref)
-/ [`default_code_loop_filter_bandwidth`](@ref). The **carrier** bandwidth is a
-per-primary-code-period reference scaled to `BL/N` at filter time for an
-`N`-block record; the **code** bandwidth is absolute, only capped by
-[`effective_code_loop_filter_bandwidth`](@ref).
+/ [`default_code_loop_filter_bandwidth`](@ref). At filter time both are capped
+against the record's integration time
+([`effective_carrier_loop_filter_bandwidth`](@ref),
+[`effective_code_loop_filter_bandwidth`](@ref)), so a longer coherent
+integration needs no re-tuning.
 """
 struct ConventionalPLLAndDLL{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter} <:
        AbstractDopplerEstimator
@@ -266,9 +267,8 @@ end
 
 One record through the conventional loop: PLL (and FLL, for the assisted
 filter) discriminators against the filtered prompt, the DLL normalised with the
-code word the record ran on, the carrier bandwidth scaled by the blocks the
-record covered, the code bandwidth capped by its stability product, and the
-Dopplers aided. `landing_sample` is ignored: the conventional loop assumes its
+code word the record ran on, both bandwidths capped by their stability products
+against the record's integration time, and the Dopplers aided. `landing_sample` is ignored: the conventional loop assumes its
 command acts before the next record.
 """
 @inline step_loop(
@@ -280,11 +280,11 @@ command acts before the next record.
 ) = _step_scalar_loop(estimator, state, record, words, landing_sample)
 
 # The discriminators of one record, as the loop filters are fed them, and what
-# the step needs around them: the per-record integration time, the carrier
-# bandwidth scaled by the blocks the record covered, and the record's centre
-# sample. Shared by the scalar step and the vector step (`_step_vector_loop`),
-# so the two cannot drift apart. `phase_error` and `frequency_error` are what
-# the scalar loop's carrier filter is fed; `raw_frequency_error` is the FLL
+# the step needs around them: the per-record integration time, the capped
+# carrier bandwidth, and the record's centre sample. Shared by the scalar step
+# and the vector step (`_step_vector_loop`), so the two cannot drift apart.
+# `phase_error` (cycles) and `frequency_error` (Hz) are what the scalar loop's
+# carrier filter is fed; `raw_frequency_error` is the FLL
 # discriminator as measured, against the replica that ran between the two
 # prompts' centres, before any re-basing onto a landing word. The DLL output
 # `code_error` is normalised with the code word the record ran on.
@@ -304,8 +304,8 @@ command acts before the next record.
         fll_disc(signal, filtered_correlator, record.previous_prompt, integration_time)
     (;
         integration_time,
-        carrier_bandwidth = state.carrier_loop_filter_bandwidth / record.integrated_code_blocks,
-        phase_error = pll_disc(signal, filtered_correlator),
+        carrier_bandwidth = _carrier_bandwidth(state, integration_time),
+        phase_error = _phase_error_in_cycles(pll_disc(signal, filtered_correlator)),
         frequency_error,
         raw_frequency_error = frequency_error,
         code_error = dll_disc(
@@ -317,6 +317,13 @@ command acts before the next record.
         center = NaN,
     )
 end
+
+# The carrier bandwidth for a record that integrated for `integration_time`,
+# capped against the time the record actually integrated rather than the
+# intended integration length: records folded after a mid-fold sync, or the
+# truncated first post-sync integration, are still short.
+@inline _carrier_bandwidth(state, integration_time) =
+    effective_carrier_loop_filter_bandwidth(state.carrier_loop_filter_bandwidth, integration_time)
 
 # The carrier filter's input: the FLL-assisted filter takes both discriminators,
 # any other the phase discriminator alone.
@@ -610,10 +617,10 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
 
     (;
         integration_time,
-        # Bandwidths exactly as the conventional loop: carrier scaled by the
-        # blocks the record actually covered.
-        carrier_bandwidth = state.carrier_loop_filter_bandwidth / record.integrated_code_blocks,
-        phase_error,
+        # Bandwidths exactly as the conventional loop.
+        carrier_bandwidth = _carrier_bandwidth(state, integration_time),
+        # Predicted in radians, where `wrap_half_cycle` works; the filter takes cycles.
+        phase_error = _phase_error_in_cycles(phase_error),
         frequency_error,
         raw_frequency_error,
         # The DLL normalises with the code word the replica actually ran on.
