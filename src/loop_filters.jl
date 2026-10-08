@@ -185,6 +185,12 @@ additionally fed the FLL discriminator ([`fll_disc`](@ref)) between
 correction in Hz and the advanced filter. The filter's coefficients assume
 consistent units: fed the phase error in cycles and the FLL error in Hz (cycles
 per second), it outputs a Doppler in Hz.
+
+A standalone step: it does not stage the loop. An FLL-assisted filter is fed
+the two-quadrant FLL discriminator on every call, never dropped at frequency
+lock, and the PLL is the two-quadrant Costas one; the estimators'
+[`step_loop`](@ref) stages the carrier loop (see [Carrier loop staging](@ref))
+and picks four-quadrant discriminators where the record allows.
 """
 function calculate_carrier_frequency_update(
     signal::AbstractGNSSSignal,

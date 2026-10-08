@@ -61,6 +61,12 @@ Hegarty Table 5.6, Pany Table 3.3; Borre et al. quote about 20 Hz), none of
 which scales it with the primary code period: thermal jitter and dynamic
 stress, which set the bandwidth, do not depend on it.
 
+Before Tracking.jl#244 the carrier filter was fed the phase error in radians,
+which made the loop gain 2π too high: a configured 18 Hz behaved like a loop of
+about 100 Hz, and the old default `BL = 0.018 / T` (with `1/N` for `N`
+integrated blocks) was tuned against that gain. Bandwidths carried over from
+then are about 5–6× narrower than the loops they were tuned on.
+
 ### Stability cap
 
 Stability does depend on the loop update interval `Δt`, so at filter time each
