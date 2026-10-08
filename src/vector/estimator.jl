@@ -145,17 +145,17 @@ function SatVectorPLLAndDLL(
     cycle_id::Maybe{Int} = nothing,
 ) where {S}
     SatVectorPLLAndDLL{S}(
-        something(inner, state.inner),
+        isnothing(inner) ? state.inner : inner,
         state.vt_on,
-        something(code_discr_acc, state.code_discr_acc),
-        something(carrier_discr_acc, state.carrier_discr_acc),
+        isnothing(code_discr_acc) ? state.code_discr_acc : code_discr_acc,
+        isnothing(carrier_discr_acc) ? state.carrier_discr_acc : carrier_discr_acc,
         state.code_freq_update,
         state.carrier_freq_update,
         state.code_freq_update_history,
         state.code_update_landing_lead,
         state.slot,
         state.registration,
-        something(cycle_id, state.cycle_id),
+        isnothing(cycle_id) ? state.cycle_id : cycle_id,
     )
 end
 

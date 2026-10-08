@@ -158,9 +158,11 @@ function SatConventionalPLLAndDLL(
     SatConventionalPLLAndDLL{CA,CO}(
         sat_conventional_pll_and_dll.init_carrier_doppler,
         sat_conventional_pll_and_dll.init_code_doppler,
-        isnothing(carrier_loop_filter) ? sat_conventional_pll_and_dll.carrier_loop_filter :
+        isnothing(carrier_loop_filter) ?
+        sat_conventional_pll_and_dll.carrier_loop_filter :
         carrier_loop_filter,
-        isnothing(code_loop_filter) ? sat_conventional_pll_and_dll.code_loop_filter :
+        isnothing(code_loop_filter) ?
+        sat_conventional_pll_and_dll.code_loop_filter :
         code_loop_filter,
         isnothing(carrier_loop_filter_bandwidth) ?
         sat_conventional_pll_and_dll.carrier_loop_filter_bandwidth :
@@ -168,8 +170,12 @@ function SatConventionalPLLAndDLL(
         isnothing(code_loop_filter_bandwidth) ?
         sat_conventional_pll_and_dll.code_loop_filter_bandwidth :
         code_loop_filter_bandwidth,
-        something(frequency_lock, sat_conventional_pll_and_dll.frequency_lock),
-        something(signal_combining_sums, sat_conventional_pll_and_dll.signal_combining_sums),
+        isnothing(frequency_lock) ?
+        sat_conventional_pll_and_dll.frequency_lock :
+        frequency_lock,
+        isnothing(signal_combining_sums) ?
+        sat_conventional_pll_and_dll.signal_combining_sums :
+        signal_combining_sums,
     )
 end
 
@@ -255,10 +261,12 @@ function ConventionalPLLAndDLL(
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     ConventionalPLLAndDLL{CA,CO}(
         isnothing(carrier_loop_filter_bandwidth) ?
-        pll_and_dll.carrier_loop_filter_bandwidth : carrier_loop_filter_bandwidth,
-        isnothing(code_loop_filter_bandwidth) ? pll_and_dll.code_loop_filter_bandwidth :
+        pll_and_dll.carrier_loop_filter_bandwidth :
+        carrier_loop_filter_bandwidth,
+        isnothing(code_loop_filter_bandwidth) ?
+        pll_and_dll.code_loop_filter_bandwidth :
         code_loop_filter_bandwidth,
-        something(combine_signals, pll_and_dll.combine_signals),
+        isnothing(combine_signals) ? pll_and_dll.combine_signals : combine_signals,
     )
 end
 
@@ -704,12 +712,14 @@ function SatNCOReferencedPLLAndDLL(
     SatNCOReferencedPLLAndDLL{CA,CO}(
         state.init_carrier_doppler,
         state.init_code_doppler,
-        something(carrier_loop_filter, state.carrier_loop_filter),
-        something(code_loop_filter, state.code_loop_filter),
+        isnothing(carrier_loop_filter) ? state.carrier_loop_filter : carrier_loop_filter,
+        isnothing(code_loop_filter) ? state.code_loop_filter : code_loop_filter,
         state.carrier_loop_filter_bandwidth,
         state.code_loop_filter_bandwidth,
-        something(previous_record_center, state.previous_record_center),
-        something(frequency_lock, state.frequency_lock),
+        isnothing(previous_record_center) ?
+        state.previous_record_center :
+        previous_record_center,
+        isnothing(frequency_lock) ? state.frequency_lock : frequency_lock,
     )
 end
 
@@ -724,14 +734,12 @@ function init_estimator_state(
         code_doppler,
         ThirdOrderAssistedBilinearLF(),
         _constructorof(CO)(),
-        something(
-            estimator.carrier_loop_filter_bandwidth,
-            default_carrier_loop_filter_bandwidth(driver_signal),
-        ),
-        something(
-            estimator.code_loop_filter_bandwidth,
-            default_code_loop_filter_bandwidth(driver_signal),
-        ),
+        isnothing(estimator.carrier_loop_filter_bandwidth) ?
+        default_carrier_loop_filter_bandwidth(driver_signal) :
+        estimator.carrier_loop_filter_bandwidth,
+        isnothing(estimator.code_loop_filter_bandwidth) ?
+        default_code_loop_filter_bandwidth(driver_signal) :
+        estimator.code_loop_filter_bandwidth,
         NaN,
         FrequencyLockIndicator(),
     )

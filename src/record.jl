@@ -130,7 +130,7 @@ end
 """
     fold_record(signal, prn, bit_buffer, cn0_estimator, post_corr_filter, output,
                 sampling_frequency, noise_density, noise_density_ready,
-                driver_carrier_phase, correlated_pre_sync)
+                driver_carrier_phase_offset, correlated_pre_sync)
         -> (bit_buffer, cn0_estimator, post_corr_filter, prompt, filtered_correlator,
             bit_block_count, integrated_code_blocks, overshoot)
 
@@ -161,7 +161,7 @@ Tracking's per-record advance performs, in the same order.
     sampling_frequency,
     noise_density,
     noise_density_ready::Bool,
-    driver_carrier_phase::Real,
+    driver_carrier_phase_offset::Real,
     correlated_pre_sync::Bool,
 )
     bit_buffer_before = bit_buffer
@@ -185,7 +185,7 @@ Tracking's per-record advance performs, in the same order.
     integrated_code_blocks = max(1, bit_block_count)
     # De-rotate the prompt onto the driver's (real) phase frame before both the
     # sync search and the coherent bit accumulation.
-    bit_prompt = prompt * _carrier_phase_derotation(driver_carrier_phase, signal)
+    bit_prompt = prompt * _carrier_phase_derotation(driver_carrier_phase_offset, signal)
     drop_prompt = _drops_pre_sync_prompt(signal, correlated_pre_sync)
     scalar_noise_density = _reduce_noise_density(noise_density, weights)
     cn0_estimator = _update_cn0_estimator(
@@ -219,7 +219,7 @@ end
 """
     apply_record(state::SignalLoopState, signal, prn, output, sampling_frequency,
                  noise_density, noise_density_ready,
-                 driver_carrier_phase = get_carrier_phase_offset(signal);
+                 driver_carrier_phase_offset = get_carrier_phase_offset(signal);
                  correlated_pre_sync = false)
         -> (state, prompt, filtered_correlator, integrated_code_blocks, overshoot)
 
@@ -231,7 +231,7 @@ buffer dropped sync and restarted its search. Nothing here logs; report
 `overshoot` the way the caller reports things (Tracking.jl warns once per
 satellite).
 
-`driver_carrier_phase` is the carrier-phase offset of the satellite's
+`driver_carrier_phase_offset` is the carrier-phase offset of the satellite's
 estimator-driver signal (`get_carrier_phase_offset`), against which this
 component's bit-buffer prompt is de-rotated. It defaults to the signal's own
 offset — a no-op, right for the driver itself; a passenger component (the data
@@ -245,7 +245,7 @@ half of a pilot/data pair) must be handed the driver's.
     sampling_frequency,
     noise_density,
     noise_density_ready::Bool,
-    driver_carrier_phase::Real = get_carrier_phase_offset(signal);
+    driver_carrier_phase_offset::Real = get_carrier_phase_offset(signal);
     correlated_pre_sync::Bool = false,
 )
     bit_buffer, cn0_estimator, post_corr_filter, prompt, filtered_correlator, _, integrated_code_blocks, overshoot =
@@ -259,7 +259,7 @@ half of a pilot/data pair) must be handed the driver's.
             sampling_frequency,
             noise_density,
             noise_density_ready,
-            driver_carrier_phase,
+            driver_carrier_phase_offset,
             correlated_pre_sync,
         )
     new_state = SignalLoopState(

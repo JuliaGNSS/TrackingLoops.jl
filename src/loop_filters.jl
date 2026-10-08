@@ -242,9 +242,9 @@ end
 
 # De-rotation applied to a component's bit-buffer prompt so its own energy is
 # real again, given the loops lock the driver onto the real axis. The rotation
-# is `cis(driver_carrier_phase − get_carrier_phase_offset(signal))`. For an
+# is `cis(driver_carrier_phase_offset − get_carrier_phase_offset(signal))`. For an
 # in-phase component the difference is 0 and `cis(0) === 1 + 0im`, a
 # bit-identical no-op; a quadrature component (GPS L5 / Galileo E5a I-vs-Q)
 # rotates by `±90°` onto the real axis.
-@inline _carrier_phase_derotation(driver_carrier_phase::Real, signal) =
-    cis(driver_carrier_phase - get_carrier_phase_offset(signal))
+@inline _carrier_phase_derotation(driver_carrier_phase_offset::Real, signal) =
+    cis(driver_carrier_phase_offset - get_carrier_phase_offset(signal))

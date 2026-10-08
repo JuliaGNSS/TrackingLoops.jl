@@ -383,7 +383,7 @@ function VectorNavigation(
     enable_ionospheric_correction::Bool,
     enable_tropospheric_correction::Bool,
 )
-    filter_config = something(config, VectorTracking())
+    filter_config = isnothing(config) ? VectorTracking() : config
     layout = NavFilterLayout(signals)
     model = NavFilterModel(filter_config, layout, uconvert(s, cycle_time))
     n = num_nav_states(filter_config, layout)
