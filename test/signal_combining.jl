@@ -237,6 +237,32 @@ end
     ).inner.carrier_loop_filter == alone_vt.inner.carrier_loop_filter
 end
 
+@testset "A four-quadrant driver reading beyond the two-quadrant range is not combined" begin
+    # A synced pilot driver reads its PLL four-quadrant; beyond ±1/4 cycle a
+    # two-quadrant passenger would fold the error, so its pending PLL sum is left
+    # out of that step, and joins within the range.
+    estimator = ConventionalAssistedPLLAndDLL(; combine_signals = true)
+    state = init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
+    record(phase) = LoopRecord(
+        GPSL5Q(),
+        update_accumulator(get_default_correlator(GPSL5Q()), cis(phase) .* SVector(0.5, 1.0, 0.5)),
+        cis(phase - 0.01),
+        5000,
+        5000,
+        5000,
+        1,
+        5e6Hz;
+        wiped_off = true,
+        polarity = 1,
+    )
+    pending = @set state.signal_combining_sums.pll = SC.WeightedSum(0.001s * 0.1, 0.001s)
+    step(state, phase) = step_loop(estimator, state, record(phase), _NO_WORD, NO_LANDING_SAMPLE)
+    # 2.0 rad, about 0.32 cycle: beyond the range, the driver's own reading.
+    @test step(pending, 2.0)[2] == step(state, 2.0)[2]
+    # 0.2 rad: within it, combined.
+    @test step(pending, 0.2)[2] != step(state, 0.2)[2]
+end
+
 # One passenger record folded and one driver record stepped, the state kept in a
 # `Ref` so the measurement sees only what the two calls allocate (see
 # `allocations.jl` for why the testset's own variables are kept out of it).
@@ -277,4 +303,15 @@ end
             ignore_throw = true,
         ),
     )
+    # The same with the very-early-prompt-late correlator of a BOC signal pair.
+    veml_state = init_estimator_state(estimator, GalileoE1C(), 0.0Hz, 0.0Hz)
+    taps = (0.3, 0.6, 1.0, 0.6, 0.3)
+    veml_passenger = combining_record(GalileoE1B(), cis(0.1), taps; n = 16368, fs = 4.092e6Hz,
+        previous_prompt = cis(0.05))
+    veml_driver = combining_record(GalileoE1C(), cis(0.2), taps; n = 16368, fs = 4.092e6Hz,
+        previous_prompt = cis(0.1))
+    @test get_default_correlator(GalileoE1C()) isa VeryEarlyPromptLateCorrelator
+    veml_ref = Ref(veml_state)
+    fold_and_step!(veml_ref, estimator, veml_passenger, veml_driver, _NO_WORD)
+    @test (@allocated fold_and_step!(veml_ref, estimator, veml_passenger, veml_driver, _NO_WORD)) == 0
 end

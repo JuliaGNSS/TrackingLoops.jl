@@ -110,3 +110,42 @@ end
         @test nav.cycle_id >= 7
     end
 end
+
+@testset "A very-early-prompt-late record folds and steps without allocating" begin
+    # Galileo E1B's default correlator has five taps; its fold, discriminators and
+    # step take other methods than the three-tap ones above.
+    signal = GalileoE1B()
+    fs = 4.092e6Hz
+    density = 1.0e-6 / Hz
+    @test get_default_correlator(signal) isa VeryEarlyPromptLateCorrelator
+    estimator = ConventionalAssistedPLLAndDLL()
+    state_ref = Ref(SignalLoopState(signal))
+    est_ref = Ref(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
+    taps = SVector(0.3, 0.6, 1.0, 0.6, 0.3)
+    function run_veml_records!(state_ref, est_ref, first_k, n)
+        local p, output, previous, filtered, blocks, record, carrier, code
+        st = state_ref[]
+        es = est_ref[]
+        for k = first_k:(first_k+n-1)
+            p = 1000.0 * cis(0.01k)
+            output = CorrelatorOutput(
+                update_accumulator(get_default_correlator(signal), p .* taps),
+                16368,
+                16368k,
+            )
+            previous = st.last_filtered_prompt
+            st, _, filtered, blocks = apply_record(st, signal, 7, output, fs, density, true)
+            record = LoopRecord(signal, filtered, previous, output, blocks, fs)
+            es, carrier, code = step_loop(estimator, es, record, FixedNCOWord(0.0, 0.0),
+                NO_LANDING_SAMPLE)
+        end
+        state_ref[] = st
+        est_ref[] = es
+        nothing
+    end
+    run_veml_records!(state_ref, est_ref, 1, 50)
+    empty!(get_soft_bits(state_ref[]))
+    run_veml_records!(state_ref, est_ref, 51, 1)
+    empty!(get_soft_bits(state_ref[]))
+    @test (@allocated run_veml_records!(state_ref, est_ref, 52, 1)) == 0
+end
