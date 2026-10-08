@@ -55,14 +55,14 @@ const _PLL_ONLY = (pll = true, fll = false, dll = false)
     (own_weight * own + pending.sum) / (own_weight + pending.weight)
 
 # The weighted mean, but only while the driver's own reading lies within `range`,
-# the passengers' two-quadrant range: there a four-quadrant driver reads the error
-# as they do, beyond it they would fold it by half a cycle. A two-quadrant
-# driver's reading never leaves the range.
+# the two-quadrant range: there a four-quadrant driver reads the error as a
+# two-quadrant passenger does, beyond it the passenger would fold it by half a
+# cycle. A two-quadrant driver's reading never leaves the range.
 @inline _gated_mean(own, own_weight, pending::WeightedSum, range) =
     abs(own) < range ? _weighted_mean(own, own_weight, pending) : own
 
-# The two-quadrant discriminators' ranges, which the passengers read and which
-# `_gated_mean` keeps a four-quadrant driver within: ±1/4 cycle for the PLL's
+# The two-quadrant discriminators' ranges, which `_gated_mean` keeps a
+# four-quadrant driver within: ±1/4 cycle for the PLL's
 # `atan(Q / I)`, ±1/(4T) for the FLL's `atan(cross / dot)`.
 const _TWO_QUADRANT_PLL_RANGE = 0.25
 @inline _two_quadrant_fll_range(integration_time) = uconvert(Hz, 1 / (4 * integration_time))
@@ -75,13 +75,41 @@ const _TWO_QUADRANT_PLL_RANGE = 0.25
 @inline _fll_discriminator_weight(signal::AbstractGNSSSignal, integration_time) =
     get_relative_power(signal) * uconvert(s, integration_time)^3
 
+# A passenger record's DLL reading (chips): normalised with the code word the
+# satellite's replica ran on and referred to the driver's code phase by
+# `differential_group_delay_chips`.
+@inline function _passenger_dll_reading(record, words, differential_group_delay_chips)
+    record_start = record.sample_index - record.integrated_samples
+    _, applied_code = mean_nco_word(words, record_start, record.sample_index)
+    dll_disc(
+        record.signal,
+        record.filtered_correlator,
+        applied_code * Hz,
+        record.sampling_frequency,
+    ) + differential_group_delay_chips
+end
+
+# A passenger record's FLL reading (Hz), two- or four-quadrant. The record must
+# have a previous prompt.
+@inline _passenger_fll_reading(record, four_quadrant::Bool) = fll_disc(
+    record.signal,
+    record.filtered_correlator,
+    record.previous_prompt,
+    record.integrated_samples / record.sampling_frequency;
+    four_quadrant,
+)
+
 # One passenger record's weighted discriminators added to `sums`, formed only for
 # the loops it is combined into. Its PLL is read on the driver's carrier phase
-# frame. Its two-quadrant carrier discriminators are blind to a sign flip of a
-# whole record, so data passengers and records correlated before the passenger's
-# own sync count like any other. Its DLL is normalised with the code word the
-# satellite's replica ran on and referred to the driver's code phase by
-# `differential_group_delay_chips` (`NaN`: unknown, not combined).
+# frame. Its PLL and FLL are always two-quadrant, which is blind to a sign flip
+# of a whole record, so data passengers and records correlated before the
+# passenger's own sync count like any other. A four-quadrant driver reading is
+# combined with them only within the two-quadrant range (`_gated_mean`), where
+# both read alike. A four-quadrant passenger reading could not be gated so: a
+# Costas driver locked half a cycle off, or a two-quadrant FLL folding an error
+# beyond its range, still reads within that range. Its DLL
+# (`_passenger_dll_reading`) is combined only where
+# `differential_group_delay_chips` is known (not `NaN`).
 @inline function _add_passenger_discriminators(
     sums::SignalCombiningSums,
     record,
@@ -105,19 +133,12 @@ const _TWO_QUADRANT_PLL_RANGE = 0.25
     fll_weight =
         loops.fll && !iszero(record.previous_prompt) ?
         _fll_discriminator_weight(signal, integration_time) : 0.0s^3
-    fll =
-        iszero(fll_weight) ? 0.0Hz :
-        fll_disc(signal, correlator, record.previous_prompt, integration_time)
+    fll = iszero(fll_weight) ? 0.0Hz : _passenger_fll_reading(record, false)
     dll_weight =
         loops.dll && !isnan(differential_group_delay_chips) ? weight : zero(weight)
-    dll = if iszero(dll_weight)
-        0.0
-    else
-        record_start = record.sample_index - record.integrated_samples
-        _, applied_code = mean_nco_word(words, record_start, record.sample_index)
-        dll_disc(signal, correlator, applied_code * Hz, record.sampling_frequency) +
-        differential_group_delay_chips
-    end
+    dll =
+        iszero(dll_weight) ? 0.0 :
+        _passenger_dll_reading(record, words, differential_group_delay_chips)
     SignalCombiningSums(
         _accumulated(sums.pll, pll, pll_weight),
         _accumulated(sums.fll, fll, fll_weight),

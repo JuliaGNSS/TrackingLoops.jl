@@ -216,7 +216,11 @@ whether to.
     until frequency lock. Into a four-quadrant driver discriminator they are
     combined only while its reading lies within their own two-quadrant range,
     ±1/4 cycle for the PLL and ±1/(4T) for the FLL, where both read the error
-    alike. In simulation (Galileo E1C driving, E1B combined) this lowers the
+    alike. Passengers stay two-quadrant even where their own prompt is wiped
+    off, as the gate reads only the driver: a Costas driver locked half a cycle
+    off, or a two-quadrant driver FLL folding an error beyond its range, still
+    reads within that range, while a four-quadrant passenger would not. In
+    simulation (Galileo E1C driving, E1B combined) this lowers the
     carrier-phase jitter after the sync by about 30 % from 20 to 40 dB-Hz, and
     less at 18 dB-Hz, without adding cycle slips. A passenger's prompt is
     rotated onto the driver's phase frame by the signals' nominal carrier phase

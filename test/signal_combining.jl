@@ -136,6 +136,28 @@ end
           drop_pending_combining(estimator, combined)
 end
 
+@testset "A passenger's FLL reading, two- or four-quadrant" begin
+    signal = GPSL5Q()
+    n = 5000
+    fs = 5e6Hz
+    taps = (0.5, 1.0, 0.5)
+    previous = cis(0.0)
+    T = n / fs
+    # 0.6 rad over one 1 ms record: within the two-quadrant range, both alike.
+    within = combining_record(signal, cis(0.6), taps; n, fs, previous_prompt = previous)
+    @test SC._passenger_fll_reading(within, true) ≈ SC._passenger_fll_reading(within, false)
+    # 2.0 rad: the two-quadrant reading folds it, the four-quadrant one does not.
+    beyond = combining_record(signal, cis(2.0), taps; n, fs, previous_prompt = previous)
+    @test SC._passenger_fll_reading(beyond, true) ≈ uconvert(Hz, 2.0 / (2π * T))
+    @test SC._passenger_fll_reading(beyond, false) ≈ uconvert(Hz, (2.0 - π) / (2π * T))
+    # Combining reads it two-quadrant even on a wiped-off record.
+    wiped = LoopRecord(signal, beyond.filtered_correlator, previous, n, n, n, 1, fs;
+        wiped_off = true, polarity = 1)
+    sums = SC._add_passenger_discriminators(SignalCombiningSums(), wiped, _NO_WORD,
+        SC._ALL_LOOPS, signal, NaN)
+    @test sums.fll.sum / sums.fll.weight ≈ uconvert(Hz, (2.0 - π) / (2π * T))
+end
+
 @testset "Several passengers add up" begin
     estimator = ConventionalAssistedPLLAndDLL(; combine_signals = true)
     state = init_estimator_state(estimator, GPSL1C_P(), 0.0Hz, 0.0Hz)

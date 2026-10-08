@@ -602,9 +602,9 @@ over to its next. `words` are the replica words the satellite ran on.
 
   - `record` is the passenger's own record, its `previous_prompt` following
     [`LoopRecord`](@ref)'s contract for the passenger's own record sequence.
-    Its `wiped_off` and `polarity` are not read: passengers always read the
-    two-quadrant discriminators, and a four-quadrant driver reading is combined
-    with them only within their range.
+    The scalar loops read its two-quadrant discriminators whatever its
+    `wiped_off` and `polarity`, and combine a four-quadrant driver reading
+    with them only within the two-quadrant range.
   - `driver_signal` rotates the passenger's prompt onto the driver's carrier
     phase frame by the nominal carrier phase offsets.
   - `differential_group_delay_chips`, the passenger's group delay minus the
