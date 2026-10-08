@@ -217,13 +217,12 @@ export NumAnts,
     nco_word_at,
     mean_nco_word,
     wrap_half_cycle,
-    is_wiped_off,
-    sync_polarity,
-    WeightedSum,
+    has_wiped_off_prompt,
+    get_sync_polarity,
     SignalCombiningSums,
     combines_signals,
     combine_passenger_record,
-    drop_pending_passengers
+    drop_pending_combining
 
 const Maybe{T} = Union{T,Nothing}
 

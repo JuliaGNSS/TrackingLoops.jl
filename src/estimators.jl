@@ -44,9 +44,9 @@ Two fields pick the carrier discriminators, both from the signal's bit buffer as
 it was when the record was correlated (before the fold that may sync it):
 
   - `wiped_off`: the replica wipes every sign modulation off the prompt
-    ([`is_wiped_off`](@ref)), so the FLL is four-quadrant. `false` by default.
+    ([`has_wiped_off_prompt`](@ref)), so the FLL is four-quadrant. `false` by default.
   - `polarity`: the prompt's sign from the secondary-code sync
-    ([`sync_polarity`](@ref)), so the PLL is four-quadrant; `0` (the default)
+    ([`get_sync_polarity`](@ref)), so the PLL is four-quadrant; `0` (the default)
     keeps the Costas PLL.
 
 `previous_prompt` is the previous record's filtered prompt, or zero where the
@@ -609,15 +609,16 @@ end
 )
 
 """
-    drop_pending_passengers(estimator, state) -> state
+    drop_pending_combining(estimator, state) -> state
 
-`state` without the passengers' pending discriminators, for a host whose
-driver drops its in-flight integration (e.g. at a code-phase snap): the
-passenger records still pending ended before the driver's re-integration
-starts. `state` unchanged for an estimator that does not combine signals.
+`state` without its pending signal-combining sums, the passengers' weighted
+discriminators the driver's next step would combine, for a host whose driver
+drops its in-flight integration (e.g. at a code-phase snap): the passenger
+records still pending ended before the driver's re-integration starts. `state`
+unchanged for an estimator that does not combine signals.
 """
-drop_pending_passengers(::AbstractDopplerEstimator, state) = state
-drop_pending_passengers(::ConventionalPLLAndDLL, state::SatConventionalPLLAndDLL) =
+drop_pending_combining(::AbstractDopplerEstimator, state) = state
+drop_pending_combining(::ConventionalPLLAndDLL, state::SatConventionalPLLAndDLL) =
     SatConventionalPLLAndDLL(state; signal_combining_sums = SignalCombiningSums())
 
 # ── The NCO-referenced (delay-aware) PLL/DLL ─────────────────────────────────

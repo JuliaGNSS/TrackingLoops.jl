@@ -1363,7 +1363,7 @@ function _buffer_find_bit(
     # making `track!` allocate in proportion to the signal length instead of
     # staying allocation-free after warmup. Capturing the plain `Int` keeps
     # `sync` unboxed.
-    sync_polarity = Int(sync.polarity)
+    lock_polarity = Int(sync.polarity)
     for bit_index = num_bits:-1:1     # oldest recovered bit first
         # Apply the lock polarity to the buffered pre-sync bits as well, so
         # they map symbol levels to bit values the same way as every
@@ -1375,7 +1375,7 @@ function _buffer_find_bit(
                 buffer_code_block_index =
                     (bit_index - 1) * num_code_blocks_that_form_a_bit + code_block_index
                 ((code_block_buffer & (one(B) << buffer_code_block_index)) > 0) * 2 - 1
-            end * sync_polarity
+            end * lock_polarity
         # The pre-sync window only stores prompt signs, so `bit_sum` is a
         # ±1-per-block vote count (already polarity-corrected above). Scale it
         # by the sync-time prompt magnitude (the best available amplitude
@@ -1451,21 +1451,23 @@ function reset(bit_buffer::BitBuffer{B}) where {B<:Unsigned}
 end
 
 """
-    is_wiped_off(signal, synced::Bool) -> Bool
+    has_wiped_off_prompt(signal, bit_buffer) -> Bool
 
 Whether the replica wipes every sign modulation off `signal`'s prompt, so that
 consecutive prompts share their sign: a dataless signal, synced to its
-secondary code where it has one. `synced` is whether the bit buffer had found
-the secondary code when the record was correlated, i.e. before the fold that
-detects it. Where this holds, the FLL may be four-quadrant
-(`fll_disc(...; four_quadrant = true)`); pass it as a [`LoopRecord`](@ref)'s
-`wiped_off`.
+secondary code where it has one. Pass the bit buffer as it was when the record
+was correlated, i.e. before the fold that may sync it. Where this holds, the
+FLL may be four-quadrant (`fll_disc(...; four_quadrant = true)`); pass it as a
+[`LoopRecord`](@ref)'s `wiped_off`.
 """
-@inline is_wiped_off(signal::AbstractGNSSSignal, synced::Bool) =
-    iszero(get_data_frequency(signal)) && (get_secondary_code_length(signal) == 1 || synced)
+@inline has_wiped_off_prompt(signal::AbstractGNSSSignal, bit_buffer::BitBuffer) =
+    iszero(get_data_frequency(signal)) && (
+        get_secondary_code_length(signal) == 1 ||
+        has_bit_or_secondary_code_been_found(bit_buffer)
+    )
 
 """
-    sync_polarity(signal, bit_buffer, prn) -> Int8
+    get_sync_polarity(signal, bit_buffer, prn) -> Int8
 
 The polarity of a pilot's prompt according to its secondary-code sync, which
 the four-quadrant PLL reads the prompt with (`pll_disc(...; polarity)`), or `0`
@@ -1481,8 +1483,8 @@ polarity times chip 0. If the Costas loop slipped half a cycle between the sync
 and the switch, the four-quadrant PLL pulls the carrier phase over by half a
 cycle: that is the start of the resolved carrier phase, not a slip within it.
 """
-@inline function sync_polarity(signal::AbstractGNSSSignal, bit_buffer::BitBuffer, prn::Integer)
-    is_wiped_off(signal, bit_buffer.found) && get_secondary_code_length(signal) > 1 ||
+@inline function get_sync_polarity(signal::AbstractGNSSSignal, bit_buffer::BitBuffer, prn::Integer)
+    has_wiped_off_prompt(signal, bit_buffer) && get_secondary_code_length(signal) > 1 ||
         return Int8(0)
     chip0 = GNSSSignals.secondary_value(get_secondary_code(signal), prn, 0)
     Int8(bit_buffer.polarity * sign(chip0))

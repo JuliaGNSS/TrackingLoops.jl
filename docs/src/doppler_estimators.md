@@ -145,11 +145,11 @@ There is no down-staging: the pure PLL stays until
     modulation off the prompt: a dataless signal, synced to its secondary code
     where it has one. The host says so per record, from the bit buffer as it
     was when the record was correlated:
-      * `wiped_off` ([`is_wiped_off`](@ref)) makes the FLL four-quadrant (twice
+      * `wiped_off` ([`has_wiped_off_prompt`](@ref)) makes the FLL four-quadrant (twice
         the pull-in range). It needs no sign, only that consecutive prompts
         share it, so it applies from the start to the pilots without a
         secondary code (GPS L2 CL, Galileo E5a-QP).
-      * `polarity` ([`sync_polarity`](@ref)) makes the PLL four-quadrant
+      * `polarity` ([`get_sync_polarity`](@ref)) makes the PLL four-quadrant
         (linear over ±180°, worth up to 6 dB of threshold), reading the prompt
         with the sign the secondary-code sync found. A short overlay (GPS L5Q's
         20 ms) can sync while the loop is still pulling in, and a Costas slip
@@ -203,7 +203,7 @@ whether to.
     combined into it, and the driver's step starts the sums afresh. Records
     folded after the driver's last one stay pending in the satellite's state
     ([`SignalCombiningSums`](@ref)) for its next; a host that drops the driver's
-    in-flight integration drops them with [`drop_pending_passengers`](@ref).
+    in-flight integration drops them with [`drop_pending_combining`](@ref).
     Where no passenger record is pending, the driver's loops close on its own
     discriminators, bit for bit. Each passenger is assumed to integrate no
     longer than the driver, as a longer record would dominate the one driver

@@ -47,31 +47,31 @@ state_init_carrier_doppler(state::SatVectorPLLAndDLL) = state.inner.init_carrier
 
 @testset "Wiped-off prompts and the sync's sign" begin
     # Data signals never are.
-    @test !is_wiped_off(GPSL1CA(), false)
-    @test !is_wiped_off(GPSL1CA(), true)
+    @test !has_wiped_off_prompt(GPSL1CA(), BitBuffer{UInt32}())
+    @test !has_wiped_off_prompt(GPSL1CA(), setproperties(BitBuffer{UInt32}(), (; found = true)))
     # Pilots with a secondary code once synced to it ...
-    @test !is_wiped_off(GalileoE1C(), false)
-    @test is_wiped_off(GalileoE1C(), true)
-    @test !is_wiped_off(GPSL5Q(), false)
-    @test is_wiped_off(GPSL5Q(), true)
+    @test !has_wiped_off_prompt(GalileoE1C(), BitBuffer{UInt32}())
+    @test has_wiped_off_prompt(GalileoE1C(), setproperties(BitBuffer{UInt32}(), (; found = true)))
+    @test !has_wiped_off_prompt(GPSL5Q(), BitBuffer{UInt32}())
+    @test has_wiped_off_prompt(GPSL5Q(), setproperties(BitBuffer{UInt32}(), (; found = true)))
     # ... and pilots without one from the start.
-    @test is_wiped_off(GalileoE5aQP(), false)
-    @test is_wiped_off(GPSL2CL(), false)
+    @test has_wiped_off_prompt(GalileoE5aQP(), BitBuffer{UInt32}())
+    @test has_wiped_off_prompt(GPSL2CL(), BitBuffer{UInt32}())
 
     # The sync polarity times secondary chip 0, which the pre-sync replica
     # carries on every block: +1 for GPS L5Q, -1 for every Galileo E1C PRN.
     synced(polarity) =
         setproperties(BitBuffer{UInt32}(), (; found = true, polarity = Int8(polarity)))
-    @test @inferred(sync_polarity(GPSL5Q(), synced(1), 1)) === Int8(1)
-    @test sync_polarity(GPSL5Q(), synced(-1), 1) === Int8(-1)
-    @test sync_polarity(GalileoE1C(), synced(1), 1) === Int8(-1)
-    @test sync_polarity(GalileoE1C(), synced(-1), 11) === Int8(1)
+    @test @inferred(get_sync_polarity(GPSL5Q(), synced(1), 1)) === Int8(1)
+    @test get_sync_polarity(GPSL5Q(), synced(-1), 1) === Int8(-1)
+    @test get_sync_polarity(GalileoE1C(), synced(1), 1) === Int8(-1)
+    @test get_sync_polarity(GalileoE1C(), synced(-1), 11) === Int8(1)
     # None where there is no such sync: before it, on data, and on the pilots
     # without a secondary code, which keep the Costas PLL.
-    @test sync_polarity(GalileoE1C(), BitBuffer{UInt32}(), 1) === Int8(0)
-    @test sync_polarity(GPSL5I(), synced(1), 1) === Int8(0)
-    @test sync_polarity(GalileoE5aQP(), synced(1), 1) === Int8(0)
-    @test sync_polarity(GPSL2CL(), BitBuffer{UInt32}(), 1) === Int8(0)
+    @test get_sync_polarity(GalileoE1C(), BitBuffer{UInt32}(), 1) === Int8(0)
+    @test get_sync_polarity(GPSL5I(), synced(1), 1) === Int8(0)
+    @test get_sync_polarity(GalileoE5aQP(), synced(1), 1) === Int8(0)
+    @test get_sync_polarity(GPSL2CL(), BitBuffer{UInt32}(), 1) === Int8(0)
 end
 
 @testset "Frequency lock indicator" begin

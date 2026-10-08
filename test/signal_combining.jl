@@ -43,15 +43,15 @@ end
     @test SC._fll_discriminator_weight(GalileoE1B(), T) ≈ 0.5 * (0.004s)^3
     @test SC._discriminator_weight(GPSL1CA(), T) ≈ 0.7079457843841379 * 0.004s
     # Without passengers the driver's own reading, bit for bit.
-    @test SC._weighted_mean(0.1234567, 0.002s, WeightedSum(0.0s, 0.0s)) === 0.1234567
-    @test SC._weighted_mean(0.1, 0.002s, WeightedSum(0.002s * 0.3, 0.002s)) ≈ 0.2
-    @test SC._weighted_mean(0.1, 0.002s, WeightedSum(0.006s * 0.3, 0.006s)) ≈ 0.25
+    @test SC._weighted_mean(0.1234567, 0.002s, SC.WeightedSum(0.0s, 0.0s)) === 0.1234567
+    @test SC._weighted_mean(0.1, 0.002s, SC.WeightedSum(0.002s * 0.3, 0.002s)) ≈ 0.2
+    @test SC._weighted_mean(0.1, 0.002s, SC.WeightedSum(0.006s * 0.3, 0.006s)) ≈ 0.25
     # The FLL's mean stays in Hz.
-    @test SC._weighted_mean(1.0Hz, 1.0s^3, WeightedSum(3.0Hz * 1.0s^3, 1.0s^3)) === 2.0Hz
+    @test SC._weighted_mean(1.0Hz, 1.0s^3, SC.WeightedSum(3.0Hz * 1.0s^3, 1.0s^3)) === 2.0Hz
     # A four-quadrant driver reading is combined only within the passengers'
     # two-quadrant range.
-    @test SC._gated_mean(0.2, 1.0s, WeightedSum(0.1s, 1.0s), 0.25) ≈ 0.15
-    @test SC._gated_mean(0.3, 1.0s, WeightedSum(0.1s, 1.0s), 0.25) === 0.3
+    @test SC._gated_mean(0.2, 1.0s, SC.WeightedSum(0.1s, 1.0s), 0.25) ≈ 0.15
+    @test SC._gated_mean(0.3, 1.0s, SC.WeightedSum(0.1s, 1.0s), 0.25) === 0.3
 end
 
 @testset "A passenger record's contribution" begin
@@ -130,10 +130,10 @@ end
     @test out_of_vt == sums
 
     # Dropping the pending sums.
-    @test drop_pending_passengers(estimator, combined).signal_combining_sums ===
+    @test drop_pending_combining(estimator, combined).signal_combining_sums ===
           SignalCombiningSums()
-    @test drop_pending_passengers(vector, SatVectorPLLAndDLL(vector_state; inner = combined)).inner ==
-          drop_pending_passengers(estimator, combined)
+    @test drop_pending_combining(vector, SatVectorPLLAndDLL(vector_state; inner = combined)).inner ==
+          drop_pending_combining(estimator, combined)
 end
 
 @testset "Several passengers add up" begin
@@ -171,8 +171,8 @@ end
     step(state) = step_loop(estimator, state, driver, _NO_WORD, NO_LANDING_SAMPLE)
     w = 0.5 * 0.004s
     with_sums(pll, fll, dll) = @set state.signal_combining_sums = SignalCombiningSums(pll, fll, dll)
-    no_pll = WeightedSum(0.0s, 0.0s)
-    no_fll = WeightedSum(0.0Hz * 0.0s^3, 0.0s^3)
+    no_pll = SC.WeightedSum(0.0s, 0.0s)
+    no_fll = SC.WeightedSum(0.0Hz * 0.0s^3, 0.0s^3)
 
     # No passenger pending: exactly the loop without combining.
     alone = step_loop(alone_estimator, state, driver, _NO_WORD, NO_LANDING_SAMPLE)
@@ -180,15 +180,15 @@ end
 
     # The DLL reads the weighted mean of the driver's and the passengers'.
     own_dll = dll_disc(GalileoE1C(), driver.filtered_correlator, 0.0Hz, fs)
-    stepped, = step(with_sums(no_pll, no_fll, WeightedSum(3w * 0.05, 3w)))
+    stepped, = step(with_sums(no_pll, no_fll, SC.WeightedSum(3w * 0.05, 3w)))
     expected = last(filter_loop(SecondOrderBilinearLF(), (own_dll + 3 * 0.05) / 4, T, 1.0Hz))
     @test getfield(stepped.code_loop_filter, 1) ≈ getfield(expected, 1)
     # The sums are consumed.
     @test stepped.signal_combining_sums === SignalCombiningSums()
 
     # The PLL and FLL take theirs too.
-    @test step(with_sums(WeightedSum(w * 0.01, w), no_fll, no_pll))[2] != alone[2]
-    fll_pending = WeightedSum(w * (0.004s)^2 * 7.0Hz, w * (0.004s)^2)
+    @test step(with_sums(SC.WeightedSum(w * 0.01, w), no_fll, no_pll))[2] != alone[2]
+    fll_pending = SC.WeightedSum(w * (0.004s)^2 * 7.0Hz, w * (0.004s)^2)
     @test step(with_sums(no_pll, fll_pending, no_pll))[2] != alone[2]
     # Not into an FLL that is no longer formed.
     locked = @set state.frequency_lock = FrequencyLockIndicator(0.0Hz * 0.0s, 0.0s, true)
@@ -200,9 +200,9 @@ end
     vector = VectorPLLAndDLL(GalileoE1B(); inner = estimator)
     vt = SC._enable_vector_tracking(init_estimator_state(vector, GalileoE1C(), 0.0Hz, 0.0Hz))
     mixed = SignalCombiningSums(
-        WeightedSum(w * 0.01, w),
+        SC.WeightedSum(w * 0.01, w),
         fll_pending,
-        WeightedSum(w * 0.05, w),
+        SC.WeightedSum(w * 0.05, w),
     )
     vt_step(state) = step_satellite(vector, state, driver, _NO_WORD, NO_LANDING_SAMPLE)
     combined_vt, combined_carrier, = vt_step(@set vt.inner.signal_combining_sums = mixed)
@@ -211,7 +211,7 @@ end
     @test combined_vt.code_discr_acc == alone_vt.code_discr_acc
     @test combined_vt.carrier_discr_acc == alone_vt.carrier_discr_acc
     @test first(
-        vt_step(@set vt.inner.signal_combining_sums = SignalCombiningSums(no_pll, fll_pending, WeightedSum(w * 0.05, w))),
+        vt_step(@set vt.inner.signal_combining_sums = SignalCombiningSums(no_pll, fll_pending, SC.WeightedSum(w * 0.05, w))),
     ).inner.carrier_loop_filter == alone_vt.inner.carrier_loop_filter
 end
 

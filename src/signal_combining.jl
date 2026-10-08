@@ -7,13 +7,9 @@
 # afresh. See "Signal combining" in the manual.
 # ─────────────────────────────────────────────────────────────────────────────
 
-"""
-    WeightedSum(sum, weight)
-
-One loop's weighted sum of passenger discriminators and its summed weights.
-The weight of a record is its signal's ICD power share times its integration
-time, cubed for the FLL, whose noise variance falls with the cube.
-"""
+# One loop's weighted sum of passenger discriminators and its summed weights.
+# The weight of a record is its signal's ICD power share times its integration
+# time, cubed for the FLL, whose noise variance falls with the cube.
 struct WeightedSum{S,W}
     sum::S
     weight::W
@@ -27,7 +23,7 @@ end
     SignalCombiningSums()
 
 The passengers' weighted discriminators pending for the driver's next record,
-one [`WeightedSum`](@ref) per loop, held in the per-satellite state of an
+one weighted sum per loop, held in the per-satellite state of an
 estimator that combines signals:
 
   - `pll`: PLL discriminators in cycles, weighted in s;
