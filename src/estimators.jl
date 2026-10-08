@@ -350,26 +350,31 @@ command acts before the next record.
 # carrier filter is fed; `raw_frequency_error` is the FLL
 # discriminator as measured, against the replica that ran between the two
 # prompts' centres, before any re-basing onto a landing word. The DLL output
-# `code_error` is normalised with the code word the record ran on.
+# `code_error` is normalised with the code word the record ran on. The FLL
+# discriminator is read only where it is used (`fll`): both frequency errors are
+# zero otherwise.
 @inline function _record_discriminators(
     ::ConventionalPLLAndDLL,
     state::SatConventionalPLLAndDLL,
     record::LoopRecord,
     words,
     landing_sample::Int64,
+    fll::Bool,
 )
     signal = record.signal
     integration_time = record.integrated_samples / record.sampling_frequency
     record_start = record.sample_index - record.integrated_samples
     _, applied_code = mean_nco_word(words, record_start, record.sample_index)
     filtered_correlator = record.filtered_correlator
-    frequency_error = fll_disc(
-        signal,
-        filtered_correlator,
-        record.previous_prompt,
-        integration_time;
-        four_quadrant = record.wiped_off,
-    )
+    frequency_error =
+        fll ?
+        fll_disc(
+            signal,
+            filtered_correlator,
+            record.previous_prompt,
+            integration_time;
+            four_quadrant = record.wiped_off,
+        ) : 0.0Hz
     (;
         integration_time,
         carrier_bandwidth = _carrier_bandwidth(state, integration_time),
@@ -424,8 +429,7 @@ end
 # the FLL input to feed and the advanced indicator.
 @inline function _staged_frequency_error(state, record::LoopRecord, discriminators)
     frequency_lock = state.frequency_lock
-    (_uses_fll(state.carrier_loop_filter) && !frequency_lock.locked) ||
-        return zero(discriminators.frequency_error), frequency_lock
+    _fll_in_use(state) || return zero(discriminators.frequency_error), frequency_lock
     frequency_lock = _update_frequency_lock(
         frequency_lock,
         record.signal,
@@ -449,6 +453,10 @@ end
 @inline _uses_fll(::ThirdOrderAssistedBilinearLF) = true
 @inline _uses_fll(::AbstractLoopFilter) = false
 
+# Whether the scalar loop reads the FLL discriminator: an FLL-assisted filter
+# until frequency lock.
+@inline _fll_in_use(state) = _uses_fll(state.carrier_loop_filter) && !state.frequency_lock.locked
+
 # One record through a scalar loop: the carrier filter fed its discriminators
 # (the FLL's until frequency lock), the code filter the DLL with its bandwidth
 # capped by its stability product against the record's integration time, and the
@@ -457,7 +465,7 @@ end
     discriminators = _with_passengers(
         state,
         record,
-        _record_discriminators(estimator, state, record, words, landing_sample),
+        _record_discriminators(estimator, state, record, words, landing_sample, _fll_in_use(state)),
         _ALL_LOOPS,
     )
     integration_time = discriminators.integration_time
@@ -569,7 +577,7 @@ end
 # is formed.
 @inline _scalar_loops_to_combine(state::SatConventionalPLLAndDLL) = (
     pll = true,
-    fll = _uses_fll(state.carrier_loop_filter) && !state.frequency_lock.locked,
+    fll = _fll_in_use(state),
     dll = true,
 )
 
@@ -812,6 +820,7 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
     record::LoopRecord,
     words,
     landing_sample::Int64,
+    fll::Bool,
 )
     signal = record.signal
     sampling_frequency = record.sampling_frequency
@@ -834,13 +843,15 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
     # construction; the frequency error is the mean offset from the replica
     # between the two prompts' centres.
     phase_error = pll_disc(signal, filtered_correlator; record.polarity)
-    raw_frequency_error = fll_disc(
-        signal,
-        filtered_correlator,
-        record.previous_prompt,
-        integration_time;
-        four_quadrant = record.wiped_off,
-    )
+    raw_frequency_error =
+        fll ?
+        fll_disc(
+            signal,
+            filtered_correlator,
+            record.previous_prompt,
+            integration_time;
+            four_quadrant = record.wiped_off,
+        ) : 0.0Hz
     frequency_error = raw_frequency_error
 
     if estimator.predict_landing && shift > 0
@@ -857,11 +868,14 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
         # The absolute frequency measurement, relative to the word that will be
         # running under the record `shift` samples ahead. `fll_disc` measured
         # against the word that ran between the two prompts' centres.
-        fll_word =
-            isnan(previous_center) ? applied_carrier :
-            first(mean_nco_word(words, previous_center, center))
-        landing_word = first(mean_nco_word(words, record_start + shift, record_end + shift))
-        frequency_error += (fll_word - landing_word) * Hz
+        if fll
+            fll_word =
+                isnan(previous_center) ? applied_carrier :
+                first(mean_nco_word(words, previous_center, center))
+            landing_word =
+                first(mean_nco_word(words, record_start + shift, record_end + shift))
+            frequency_error += (fll_word - landing_word) * Hz
+        end
     end
 
     (;

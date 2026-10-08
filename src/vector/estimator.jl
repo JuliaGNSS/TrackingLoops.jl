@@ -364,11 +364,11 @@ end
 )
     # The navigation filter owns the code loop and the FLL branch, so passengers
     # are combined into the PLL only. The DLL and FLL readings accumulated for the
-    # filter stay the driver's own.
+    # filter stay the driver's own; the FLL's is always read, for the filter.
     discriminators = _with_passengers(
         state,
         record,
-        _record_discriminators(estimator, state, record, words, landing_sample),
+        _record_discriminators(estimator, state, record, words, landing_sample, true),
         _PLL_ONLY,
     )
     carrier_filter_output, carrier_loop_filter = filter_loop(
