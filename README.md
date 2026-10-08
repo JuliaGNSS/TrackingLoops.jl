@@ -78,11 +78,13 @@ state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  
 loop = SignalLoopState(signal)              # bit buffer, C/N₀ estimator, prompt filter
 
 # For every correlator record `output::CorrelatorOutput` the correlator produced:
-previous_prompt = loop.last_filtered_prompt   # read before `apply_record` replaces it
-loop, prompt, filtered, blocks, overshoot =
+folded, prompt, filtered, blocks, overshoot =
     apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready)
 overshoot && @warn "record crossed a navigation-bit boundary; bit sync restarted"
-record = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs)
+# Built from the state before the fold: the previous prompt the FLL may compare
+# with, and the wipe-off and polarity the record was correlated with.
+record = LoopRecord(loop, signal, filtered, output, blocks, fs; prn)
+loop = folded
 state, carrier_doppler, code_doppler =
     step_loop(estimator, state, record, FixedNCOWord(carrier_hz, code_hz), NO_LANDING_SAMPLE)
 # program the next replica with carrier_doppler and code_doppler
@@ -102,8 +104,8 @@ on the `CorrelatorOutput`) and share one time grid (`sample_offset`):
 estimator = VectorPLLAndDLL(GPSL1CA(), GalileoE1B())   # inner = ConventionalAssistedPLLAndDLL()
 state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  # one per satellite
 
-# For every record, as above, but naming the satellite:
-record = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs; prn, sample_offset)
+# For every record, as above, on a time grid shared by all satellites:
+record = LoopRecord(loop, signal, filtered, output, blocks, fs; prn, sample_offset)
 state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words, landing_sample)
 
 navigation_solution(estimator)   # the latest PVTSolution
