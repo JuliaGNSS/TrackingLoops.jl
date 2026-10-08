@@ -32,7 +32,7 @@ function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, p
         w, _ = nco_word_at(timeline, a)
         mean_phase = phase + π * (f_true - w) * dt
         phase += 2π * (f_true - w) * dt
-        push!(phases, wrap_half_cycle(mean_phase))
+        push!(phases, 2π * wrap_half_cycle(mean_phase / 2π))
         push!(words, w)
         p = cis(mean_phase)
         output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, b)

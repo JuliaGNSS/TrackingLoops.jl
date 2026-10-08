@@ -102,11 +102,9 @@ const _TWO_QUADRANT_PLL_RANGE = 0.25
     derotation = _carrier_phase_derotation(get_carrier_phase_offset(driver_signal), signal)
     pll =
         iszero(pll_weight) ? 0.0 :
-        _phase_error_in_cycles(
-            pll_disc(
-                signal,
-                update_accumulator(correlator, get_accumulators(correlator) .* derotation),
-            ),
+        pll_disc(
+            signal,
+            update_accumulator(correlator, get_accumulators(correlator) .* derotation),
         )
     fll_weight =
         loops.fll && !iszero(record.previous_prompt) ?

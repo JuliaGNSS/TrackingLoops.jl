@@ -373,9 +373,7 @@ command acts before the next record.
     (;
         integration_time,
         carrier_bandwidth = _carrier_bandwidth(state, integration_time),
-        phase_error = _phase_error_in_cycles(
-            pll_disc(signal, filtered_correlator; record.polarity),
-        ),
+        phase_error = pll_disc(signal, filtered_correlator; record.polarity),
         frequency_error,
         raw_frequency_error = frequency_error,
         code_error = dll_disc(
@@ -628,9 +626,9 @@ the device NCO instead of to the word the filter last computed:
     DLL is normalised with the applied code word.
  2. **The correction is sized for the moment it lands.** The filter is stepped
     with the discriminators *predicted at the landing sample of the new
-    command*: the measured phase error advanced by `2π ∫ (f̂ − w(τ)) dτ` over the
-    words already scheduled at the NCO, and the frequency measurement taken
-    relative to the word that will be running there.
+    command*: the measured phase error (cycles) advanced by `∫ (f̂ − w(τ)) dτ`
+    over the words already scheduled at the NCO, and the frequency measurement
+    taken relative to the word that will be running there.
 
 With zero delay both steps are the identity and the estimator *is* the
 conventional loop, so the software receiver's noise performance is inherited
@@ -752,18 +750,19 @@ end
 """
     wrap_half_cycle(phase)
 
-Fold a carrier-phase error (in radians) into `[−π/2, π/2]`, the range a
-BPSK prompt — and therefore [`pll_disc`](@ref) — can tell the phase in, since
-a data bit flip turns the prompt by π. Exact for any phase already inside it.
+Fold a carrier-phase error in cycles into `[−1/4, 1/4]`, the range a BPSK
+prompt — and therefore the Costas [`pll_disc`](@ref) — can tell the phase in,
+since a data bit flip turns the prompt by half a cycle. Exact for any phase
+already inside it.
 """
-wrap_half_cycle(phase) = rem(phase, π, RoundNearest)
+wrap_half_cycle(phase) = rem(phase, 0.5, RoundNearest)
 
 # The phase error a record would show `shift` samples later, under the words
 # the NCO will run in between: the mean phase sits at the record's centre, so
 # the ramp is integrated from there. The signal's Doppler is the filter's own
-# estimate, before this record's innovation. The prediction is folded into the
-# range the discriminator reads: ±π/2 for the Costas PLL (`polarity = 0`), ±π for
-# the four-quadrant one.
+# estimate, before this record's innovation. In cycles, as `pll_disc` reads
+# it, and folded into the range it reads: ±1/4 cycle for the Costas PLL
+# (`polarity = 0`), ±1/2 cycle for the four-quadrant one.
 @inline function _predict_landing_phase_error(
     phase_error,
     state::SatNCOReferencedPLLAndDLL,
@@ -786,8 +785,8 @@ wrap_half_cycle(phase) = rem(phase, π, RoundNearest)
         ),
     )
     ramp_word = first(mean_nco_word(words, center, center + shift))
-    predicted = phase_error + 2π * shift * (f_hat - ramp_word) / sampling_freq_hz
-    iszero(polarity) ? wrap_half_cycle(predicted) : rem(predicted, 2π, RoundNearest)
+    predicted = phase_error + shift * (f_hat - ramp_word) / sampling_freq_hz
+    iszero(polarity) ? wrap_half_cycle(predicted) : rem(predicted, 1.0, RoundNearest)
 end
 
 """
@@ -869,8 +868,7 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
         integration_time,
         # Bandwidths exactly as the conventional loop.
         carrier_bandwidth = _carrier_bandwidth(state, integration_time),
-        # Predicted in radians, where `wrap_half_cycle` works; the filter takes cycles.
-        phase_error = _phase_error_in_cycles(phase_error),
+        phase_error,
         frequency_error,
         raw_frequency_error,
         # The DLL normalises with the code word the replica actually ran on.

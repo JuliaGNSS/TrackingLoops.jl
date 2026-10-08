@@ -119,24 +119,26 @@ end
 """
 $(SIGNATURES)
 
-Calculates the carrier phase error in radians. With the prompt's sign unknown,
-`polarity = 0` (the default), it is the two-quadrant Costas discriminator
-`atan(Q / I)`: it reads a prompt and its negation alike, so a data bit or
-secondary-code chip flipping the prompt's sign does not disturb it, at the price
-of a range of only ±π/2. Given the prompt's sign as `polarity` (±1), it is the
-four-quadrant discriminator `atan(Q, I)` of the prompt times `polarity`, over
-±π, which is worth up to 6 dB of tracking threshold. A wrong `polarity` reads as
-a phase error of π, so pass ±1 only where the prompt's sign is known: a dataless
-signal, synced to its secondary code where it has one.
+Calculates the carrier phase error in cycles, the unit the carrier loop filter
+takes alongside the FLL's Hz (see [`calculate_carrier_frequency_update`](@ref)).
+With the prompt's sign unknown, `polarity = 0` (the default), it is the
+two-quadrant Costas discriminator `atan(Q / I) / 2π`: it reads a prompt and its
+negation alike, so a data bit or secondary-code chip flipping the prompt's sign
+does not disturb it, at the price of a range of only ±1/4 cycle. Given the
+prompt's sign as `polarity` (±1), it is the four-quadrant discriminator
+`atan(Q, I) / 2π` of the prompt times `polarity`, over ±1/2 cycle, which is
+worth up to 6 dB of tracking threshold. A wrong `polarity` reads as a phase
+error of half a cycle, so pass ±1 only where the prompt's sign is known: a
+dataless signal, synced to its secondary code where it has one.
 
 See: Kaplan & Hegarty, "Understanding GPS: Principles and Applications", 2nd ed.,
 Tables 5.2 and 5.3.
 """
 function pll_disc(signal::AbstractGNSSSignal, correlator; polarity::Real = 0)
     p = get_prompt(correlator)
-    iszero(polarity) && return atan(imag(p) / real(p))
+    iszero(polarity) && return atan(imag(p) / real(p)) / 2π
     q = polarity * p
-    atan(imag(q), real(q))
+    atan(imag(q), real(q)) / 2π
 end
 
 """

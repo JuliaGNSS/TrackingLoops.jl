@@ -199,13 +199,14 @@ end
 end
 
 @testset "NCO-referenced landing prediction keeps the four-quadrant range" begin
-    # A phase error past π/2 stays past it under a known polarity, and is folded
-    # by the Costas range without one.
+    # A phase error past a quarter cycle (in cycles, as `pll_disc` reads it) stays
+    # past it under a known polarity, and is folded by the Costas range without
+    # one.
     estimator = NCOReferencedPLLAndDLL()
     state = init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
     words = FixedNCOWord(0.0, 0.0)
     predict(polarity) = TrackingLoops._predict_landing_phase_error(
-        2.5,
+        0.4,
         state,
         words,
         2500.0,
@@ -214,9 +215,9 @@ end
         5e6Hz,
         polarity,
     )
-    @test predict(1) ≈ 2.5
-    @test predict(-1) ≈ 2.5
-    @test predict(0) ≈ 2.5 - π
+    @test predict(1) ≈ 0.4
+    @test predict(-1) ≈ 0.4
+    @test predict(0) ≈ 0.4 - 0.5
 end
 
 @testset "Vector loop: FLL-assisted, four-quadrant from the sync" begin

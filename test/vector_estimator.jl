@@ -117,7 +117,7 @@ end
         SVector(accumulators...) ./ num_samples,
     )
     integration_time = num_samples / sampling_frequency
-    pll_discriminator = pll_disc(gpsl1, normalized_correlator) / 2π  # cycles
+    pll_discriminator = pll_disc(gpsl1, normalized_correlator)  # cycles
     dll_discriminator = dll_disc(gpsl1, normalized_correlator, init_code_doppler, sampling_frequency)
     # The FLL branch is driven by the vector loop's carrier update.
     expected_carrier_freq_update, _ = filter_loop(
