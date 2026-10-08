@@ -456,6 +456,7 @@ struct VTMember
     wavelength::Float64    # m
     code_frequency::Float64 # Hz
     available::Bool        # usable as a measurement this cycle (in code lock)
+    rate_available::Bool   # its FLL accumulated a reading this cycle (the rate row)
     time::Float64          # corrected transmit time (own system's time of week, s)
     # The same instant expressed on the GPS Time count: `time` minus the system's
     # defined scale offset (0 for GPST/GST, −14 s for BDT — a BDT second-of-week reads
@@ -503,7 +504,7 @@ const MAX_LANDING_LEAD_CYCLES = 2.5
 # Mean DLL discriminator (chips) over the last filter interval, advanced to the epoch by
 # `code_phase_advance`. `dll_disc`'s sense is reversed relative to its own observable,
 # hence the negated mean. Zero when nothing was accumulated (see
-# `has_accumulated_discriminators`).
+# `has_accumulated_code_discriminator`).
 function accumulated_code_discriminator(state::SatVectorPLLAndDLL, T)
     mean = _mean_code_discriminator(state)
     isnothing(mean) ? 0.0 : -mean + code_phase_advance(state, T)
@@ -538,22 +539,24 @@ function accumulated_carrier_discriminator(state::SatVectorPLLAndDLL)
     isnothing(mean) ? 0.0 : ustrip(Hz, mean)
 end
 
-# Whether a member accumulated any discriminator at all this cycle. The means are
-# `nothing` while their accumulator count is zero, which is what a cycle without a single
-# fully integrated correlator dump for this satellite looks like (a member admitted at the
-# very end of a cycle, or one whose samples were starved). The `accumulated_*` helpers
-# substitute a zero there, and a zero discriminator is not a missing measurement to the
-# navigation filter — it is a *confidently zero* residual carrying the full measurement
-# weight of `R`, which would pull the state towards the current NCO instead of leaving it
-# to coast. Members without an accumulation are therefore withheld from the measurement
-# set; they stay in the vector loop and keep getting NCO corrections, exactly like a member
-# out of code lock.
+# Whether a member accumulated a discriminator this cycle. The means are `nothing` while
+# their accumulator count is zero, which is what a cycle without a single fully integrated
+# correlator dump for this satellite looks like (a member admitted at the very end of a
+# cycle, or one whose samples were starved). The `accumulated_*` helpers substitute a zero
+# there, and a zero discriminator is not a missing measurement to the navigation filter —
+# it is a *confidently zero* residual carrying the full measurement weight of `R`, which
+# would pull the state towards the current NCO instead of leaving it to coast. Members
+# without a code accumulation are therefore withheld from the measurement set; they stay
+# in the vector loop and keep getting NCO corrections, exactly like a member out of code
+# lock.
 #
 # The carrier count can lag the code count: a record without a previous prompt has no FLL
-# reading and is not accumulated. A member whose only records this cycle had none is
-# withheld as well rather than given a zero frequency residual.
-has_accumulated_discriminators(state::SatVectorPLLAndDLL) =
-    !isnothing(_mean_code_discriminator(state)) &&
+# reading and is not accumulated. A member whose only records this cycle had none keeps
+# its pseudorange row and is withheld from the rate rows only, rather than given a zero
+# frequency residual.
+has_accumulated_code_discriminator(state::SatVectorPLLAndDLL) =
+    !isnothing(_mean_code_discriminator(state))
+has_accumulated_carrier_discriminator(state::SatVectorPLLAndDLL) =
     !isnothing(_mean_carrier_discriminator(state))
 
 # Linear carrier-to-noise density (Hz) floored to 1, from a CN0 estimate in
@@ -678,8 +681,9 @@ end
 end
 
 # The measurement model `h!(y, x)` of one update, over the candidates' buffers: their
-# pseudoranges (`calc_ρ_hat!`), then their pseudorange rates when fused, then one row per
-# hub constraint, the broadcast offset between two clock states. A callable struct rather
+# pseudoranges (`calc_ρ_hat!`), then the pseudorange rates of the candidates in
+# `rate_rows` (positions among the candidates; empty unless the rates are fused), then one
+# row per hub constraint, the broadcast offset between two clock states. A callable struct rather
 # than a closure, so the update compiles to one concrete method and allocates nothing.
 struct VTMeasurementModel
     idxs::NavFilterIndices
@@ -688,7 +692,7 @@ struct VTMeasurementModel
     velocities::Vector{SVector{3,Float64}}
     clock_drifts::Vector{Float64}
     columns::BiasColumns
-    use_rates::Bool
+    rate_rows::Vector{Int}
     constraints::Vector{Tuple{Int,Int,Float64}}
 end
 
@@ -698,10 +702,10 @@ function (model::VTMeasurementModel)(y, x)
     position_and_bias_vector!(model.ξ, x, idxs)
     calc_ρ_hat!(y, model.positions, model.ξ, model.columns)
     offset = num_sats
-    if model.use_rates
+    if !isempty(model.rate_rows)
         pos, vel, clock_drift = nav_filter_states(x, idxs)
-        for j = 1:num_sats
-            y[num_sats+j] = predict_pseudorange_rate(
+        for (i, j) in enumerate(model.rate_rows)
+            y[num_sats+i] = predict_pseudorange_rate(
                 pos,
                 vel,
                 clock_drift,
@@ -710,7 +714,7 @@ function (model::VTMeasurementModel)(y, x)
                 model.clock_drifts[j],
             )
         end
-        offset += num_sats
+        offset += length(model.rate_rows)
     end
     for (i, (state, hub_state, _)) in enumerate(model.constraints)
         y[offset+i] = x[idxs.clock_biases[state]] - x[idxs.clock_biases[hub_state]]

@@ -23,6 +23,7 @@ function _test_member(;
     ifb_index = 0,
     signal = GPSL1CA(),
     available = true,
+    rate_available = true,
     time = 0.0,
     sat_position = SVector(2.6e7, 0.0, 0.0),
     sat_velocity = SVector(0.0, 0.0, 0.0),
@@ -51,6 +52,7 @@ function _test_member(;
         c / ustrip(Hz, get_center_frequency(signal)),
         code_frequency,
         available,
+        rate_available,
         time,
         # The same instant on the GPS Time count: differs from `time` by the
         # signal's defined scale offset (0 for GPST/GST, −14 s for BDT).
@@ -373,16 +375,25 @@ end
     constraints = [(2, 1, -0.3)]
     velocities = [SVector(-1000.0, 0.0, 0.0), SVector(0.0, 0.0, 0.0)]
     h! = TL.VTMeasurementModel(idxs, zeros(length(ξ)), positions, velocities, [0.0, 0.0],
-        bias_columns, true, constraints)
+        bias_columns, [1, 2], constraints)
     y = zeros(5)
     h!(y, x)
     @test y[1:2] == psr
     @test y[3] ≈ 1000.0 atol = 1e-6
     @test y[4] ≈ 0.0 atol = 1e-9
     @test y[5] == 200.0 - 100.0
+    # A candidate without an FLL reading this cycle has no rate row: the rows that
+    # remain are the others', and the hub row follows them.
+    h_partial! = TL.VTMeasurementModel(idxs, zeros(length(ξ)), positions, velocities, [0.0, 0.0],
+        bias_columns, [2], constraints)
+    y = zeros(4)
+    h_partial!(y, x)
+    @test y[1:2] == psr
+    @test y[3] ≈ 0.0 atol = 1e-9
+    @test y[4] == 200.0 - 100.0
     # Without the rates the hub row follows the pseudoranges directly.
     h_vdll! = TL.VTMeasurementModel(idxs, zeros(length(ξ)), positions, velocities, [0.0, 0.0],
-        bias_columns, false, constraints)
+        bias_columns, Int[], constraints)
     y = zeros(3)
     h_vdll!(y, x)
     @test y == [psr; 100.0]
@@ -913,16 +924,21 @@ end
     end
 end
 
-@testset "A cycle without an accumulated discriminator withholds the member" begin
+@testset "A cycle without an accumulated discriminator withholds its measurement" begin
     # The `accumulated_*` helpers substitute a zero when nothing was accumulated, which the
     # navigation filter cannot distinguish from a genuine zero residual measured at full
-    # weight. `has_accumulated_discriminators` is the guard that keeps such a member out of
-    # the measurement set.
+    # weight. `has_accumulated_code_discriminator` keeps such a member out of the
+    # measurement set, `has_accumulated_carrier_discriminator` out of the rate rows only.
     base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
     accumulated = SatVectorPLLAndDLL(base; code_discr_acc = (3, 0.06), carrier_discr_acc = (3, 6.0Hz))
     nothing_accumulated = SatVectorPLLAndDLL(base; code_discr_acc = (0, 0.0), carrier_discr_acc = (0, 0.0Hz))
-    @test TL.has_accumulated_discriminators(accumulated)
-    @test !TL.has_accumulated_discriminators(nothing_accumulated)
+    code_only = SatVectorPLLAndDLL(base; code_discr_acc = (3, 0.06), carrier_discr_acc = (0, 0.0Hz))
+    @test TL.has_accumulated_code_discriminator(accumulated)
+    @test TL.has_accumulated_carrier_discriminator(accumulated)
+    @test !TL.has_accumulated_code_discriminator(nothing_accumulated)
+    @test !TL.has_accumulated_carrier_discriminator(nothing_accumulated)
+    @test TL.has_accumulated_code_discriminator(code_only)
+    @test !TL.has_accumulated_carrier_discriminator(code_only)
     # The zero the helpers would otherwise hand to the filter is indistinguishable from a
     # measured zero — which is exactly why the guard is needed rather than the fallback.
     @test TL.accumulated_carrier_discriminator(nothing_accumulated) == 0.0

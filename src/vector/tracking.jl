@@ -235,6 +235,8 @@ mutable struct VTBuffers{SB<:Tuple}
     members::Vector{VTMember}
     active::Vector{Bool}
     candidates::Vector{Int}
+    # Positions among the candidates of those whose rate is fused.
+    rate_rows::Vector{Int}
     delays::Vector{Float64}
     measured_pseudoranges::Vector{Float64}
     predicted_pseudoranges::Vector{Float64}
@@ -277,6 +279,7 @@ function VTBuffers(states::Tuple, num_states, layout::NavFilterLayout, max_membe
         _capacity_vector(SatelliteMeasurement, max_members),
         _capacity_vector(VTMember, max_members),
         _capacity_vector(Bool, max_members),
+        _capacity_vector(Int, max_members),
         _capacity_vector(Int, max_members),
         _capacity_vector(Float64, max_members),
         _capacity_vector(Float64, max_members),
@@ -699,7 +702,8 @@ function _collect_members!(j, group, g, buffer, vt, T)
                 chip_length,
                 wavelength,
                 code_frequency,
-                sat.in_lock && has_accumulated_discriminators(state),
+                sat.in_lock && has_accumulated_code_discriminator(state),
+                has_accumulated_carrier_discriminator(state),
                 row.time,
                 row.time - row.count_offset_to_gpst,
                 row.position,
@@ -823,7 +827,14 @@ function _measurement_update!(vt::VectorNavigation, T)
         buffers.candidate_clock_drifts[k] = members[j].sat_clock_drift
     end
     vt_bias_columns!(buffers.candidate_columns, members, candidates)
-    num_rate_rows = use_rates ? num_sats : 0
+    # The rates of the candidates whose FLL accumulated a reading this cycle.
+    rate_rows = empty!(buffers.rate_rows)
+    if use_rates
+        for (k, j) in enumerate(candidates)
+            members[j].rate_available && push!(rate_rows, k)
+        end
+    end
+    num_rate_rows = length(rate_rows)
     num_measurements = num_sats + num_rate_rows + length(constraints)
     update = _measurement_buffers!(buffers, length(vt.x), num_measurements)
     z = update.z
@@ -832,11 +843,12 @@ function _measurement_update!(vt::VectorNavigation, T)
         member = members[j]
         z[k] = measured[j] + member.code_discriminator * member.chip_length
         R[k, k] = pseudorange_noise_variance(member, T)
-        if use_rates
-            z[num_sats+k] =
-                member.pseudorange_rate + member.carrier_discriminator * member.wavelength
-            R[num_sats+k, num_sats+k] = pseudorange_rate_noise_variance(member, T)
-        end
+    end
+    for (i, k) in enumerate(rate_rows)
+        member = members[candidates[k]]
+        z[num_sats+i] =
+            member.pseudorange_rate + member.carrier_discriminator * member.wavelength
+        R[num_sats+i, num_sats+i] = pseudorange_rate_noise_variance(member, T)
     end
     # Each clock collapse rides along as one extra measurement row, appended after the
     # satellite rows.
@@ -852,7 +864,7 @@ function _measurement_update!(vt::VectorNavigation, T)
         buffers.candidate_velocities,
         buffers.candidate_clock_drifts,
         buffers.candidate_columns,
-        use_rates,
+        rate_rows,
         constraints,
     )
     measurement_update!(update.intermediate, vt.x, vt.P, z, h!, R)
