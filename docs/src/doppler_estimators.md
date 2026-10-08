@@ -148,9 +148,14 @@ There is no down-staging: the pure PLL stays until
         with the sign the secondary-code sync found. A short overlay (GPS L5Q's
         20 ms) can sync while the loop is still pulling in, and a Costas slip
         after it makes the switch a half-cycle jump of the carrier phase: the
-        start of the resolved phase, not part of a continuous one. The pilots
-        without a secondary code have no sync to take a sign from and keep the
-        Costas PLL.
+        start of the resolved phase, not part of a continuous one.
+      * The pilots without a secondary code (GPS L2 CL, Galileo E5a-QP) keep
+        the Costas PLL. That is a choice, not a necessity: their prompt keeps
+        its sign too, so the PLL could turn four-quadrant with the sign the
+        Costas loop holds. But without a sync that sign is arbitrary, so the
+        switch would leave the carrier phase unresolved, and it would have to
+        be taken off a single noisy prompt; the wider range alone was not
+        considered worth that.
 
     Data signals stay on the two-quadrant (Costas) discriminators. A record
     whose `wiped_off` differs from the previous one's must come without a
