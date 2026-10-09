@@ -138,12 +138,14 @@ share the driver's code rate and carrier frequency.
 ## Staging and discriminators under vector tracking
 
 A satellite's carrier loop stages as the scalar loop does only while it is out
-of the vector loop: `inner` runs FLL-assisted until frequency lock (see
-[`FrequencyLockIndicator`](@ref)) and then as a PLL alone. In the vector loop
-the FLL branch carries the navigation filter's carrier correction, so it is
-never dropped there, and the frequency lock indicator is left as it is. A
-satellite the filter takes over keeps `inner`'s state; one it releases re-seeds
-`inner` from the Dopplers its replica runs at, which restarts the staging.
+of the vector loop: `inner` runs FLL-assisted at the wide bandwidth until
+phase lock, then as a PLL alone, narrowed once lock has held (see
+[`CarrierLoopStage`](@ref)). In the vector loop the FLL branch carries the
+navigation filter's carrier correction, so it is never dropped there, the PLL
+runs at the narrow bandwidth, and the stage and the phase-lock indicator are left
+as they are. A satellite the filter takes over keeps `inner`'s state; one it
+releases re-seeds `inner` from the Dopplers its replica runs at, which restarts
+the staging.
 
 The discriminators are the record's in both modes. Where the record's
 `polarity` (see [`LoopRecord`](@ref)) says the replica wipes off every sign

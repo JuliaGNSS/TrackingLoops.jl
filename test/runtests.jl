@@ -1,9 +1,18 @@
 using Test
 using TrackingLoops
+# Internal, used by the bandwidth tests.
+using TrackingLoops: MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT
 using GNSSSignals
 using StaticArrays
 using Unitful
 using Unitful: Hz, dBHz, s, ms, @u_str
+
+# The wide carrier bandwidth as capped for a record of `integration_time`.
+wide_cap(bandwidth, integration_time) = TrackingLoops._capped_bandwidth(
+    bandwidth,
+    integration_time,
+    TrackingLoops._MAX_WIDE_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT,
+)
 using AllocCheck
 using LinearAlgebra: norm
 using TrackingLoopFilters: ThirdOrderAssistedBilinearLF, SecondOrderBilinearLF

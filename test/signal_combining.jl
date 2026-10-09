@@ -117,9 +117,9 @@ end
         ).signal_combining_sums
     @test iszero(partial.fll.weight) && iszero(partial.dll.weight) && partial.pll.weight > 0s
 
-    # No FLL once it is no longer formed: after frequency lock, or without an
+    # No FLL once it is no longer formed: after the FLL drop, or without an
     # FLL-assisted carrier filter.
-    locked = @set state.frequency_lock = FrequencyLockIndicator(0.0Hz * 0.0s, 0.0s, true)
+    locked = @set state.staging.stage = WIDE_PLL
     @test iszero(
         fold_passenger_record(estimator, locked, record, _NO_WORD; driver_signal = GPSL5Q()).signal_combining_sums.fll.weight,
     )
@@ -241,7 +241,7 @@ end
     fll_pending = SC.WeightedSum(w * (0.004s)^2 * 7.0Hz, w * (0.004s)^2)
     @test step(with_sums(no_pll, fll_pending, no_pll))[2] != alone[2]
     # Not into an FLL that is no longer formed.
-    locked = @set state.frequency_lock = FrequencyLockIndicator(0.0Hz * 0.0s, 0.0s, true)
+    locked = @set state.staging.stage = WIDE_PLL
     @test step(@set locked.signal_combining_sums = pending(no_pll, fll_pending, no_pll))[2] ==
           step(locked)[2]
 

@@ -201,8 +201,10 @@ end
 
 """
 Per-satellite state for the conventional PLL and DLL Doppler estimator.
-Holds initial Doppler values, loop filter states, the carrier loop's
-[`FrequencyLockIndicator`](@ref) and the passengers' pending
+Holds initial Doppler values, loop filter states, their
+[`LoopBandwidths`](@ref TrackingLoops.LoopBandwidths), the carrier loop's
+[`CarrierLoopStaging`](@ref TrackingLoops.CarrierLoopStaging) (its
+[`CarrierLoopStage`](@ref) and phase-lock indicator) and the passengers' pending
 [`SignalCombiningSums`](@ref).
 """
 @kwdef struct SatConventionalPLLAndDLL{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
@@ -210,9 +212,8 @@ Holds initial Doppler values, loop filter states, the carrier loop's
     init_code_doppler::typeof(1.0Hz)
     carrier_loop_filter::CA = ThirdOrderBilinearLF()
     code_loop_filter::CO = SecondOrderBilinearLF()
-    carrier_loop_filter_bandwidth::typeof(1.0Hz) = 18.0Hz
-    code_loop_filter_bandwidth::typeof(1.0Hz) = 1.0Hz
-    frequency_lock::FrequencyLockIndicator = FrequencyLockIndicator()
+    bandwidths::LoopBandwidths = LoopBandwidths()
+    staging::CarrierLoopStaging = CarrierLoopStaging(carrier_loop_filter)
     signal_combining_sums::SignalCombiningSums = SignalCombiningSums()
 end
 
@@ -220,32 +221,19 @@ function SatConventionalPLLAndDLL(
     sat_conventional_pll_and_dll::SatConventionalPLLAndDLL{CA,CO};
     carrier_loop_filter::Maybe{CA} = nothing,
     code_loop_filter::Maybe{CO} = nothing,
-    carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    frequency_lock::Maybe{FrequencyLockIndicator} = nothing,
+    bandwidths::Maybe{LoopBandwidths} = nothing,
+    staging::Maybe{CarrierLoopStaging} = nothing,
     signal_combining_sums::Maybe{SignalCombiningSums} = nothing,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
+    state = sat_conventional_pll_and_dll
     SatConventionalPLLAndDLL{CA,CO}(
-        sat_conventional_pll_and_dll.init_carrier_doppler,
-        sat_conventional_pll_and_dll.init_code_doppler,
-        isnothing(carrier_loop_filter) ?
-        sat_conventional_pll_and_dll.carrier_loop_filter :
-        carrier_loop_filter,
-        isnothing(code_loop_filter) ?
-        sat_conventional_pll_and_dll.code_loop_filter :
-        code_loop_filter,
-        isnothing(carrier_loop_filter_bandwidth) ?
-        sat_conventional_pll_and_dll.carrier_loop_filter_bandwidth :
-        carrier_loop_filter_bandwidth,
-        isnothing(code_loop_filter_bandwidth) ?
-        sat_conventional_pll_and_dll.code_loop_filter_bandwidth :
-        code_loop_filter_bandwidth,
-        isnothing(frequency_lock) ?
-        sat_conventional_pll_and_dll.frequency_lock :
-        frequency_lock,
-        isnothing(signal_combining_sums) ?
-        sat_conventional_pll_and_dll.signal_combining_sums :
-        signal_combining_sums,
+        state.init_carrier_doppler,
+        state.init_code_doppler,
+        something(carrier_loop_filter, state.carrier_loop_filter),
+        something(code_loop_filter, state.code_loop_filter),
+        something(bandwidths, state.bandwidths),
+        something(staging, state.staging),
+        something(signal_combining_sums, state.signal_combining_sums),
     )
 end
 
@@ -258,14 +246,18 @@ estimator. Configuration-only — per-satellite state is a
 
 Type parameters `CA` and `CO` select the carrier and code loop filter types;
 the bandwidth fields configure the loop bandwidths used when seeding new
-satellites. Each bandwidth field is `Maybe{typeof(1.0Hz)}`: a `nothing`
-field (the default) means **auto** — the bandwidth is sized per satellite from
-its estimator-driver signal via [`default_carrier_loop_filter_bandwidth`](@ref)
-/ [`default_code_loop_filter_bandwidth`](@ref). At filter time both are capped
-against the record's integration time
-([`effective_carrier_loop_filter_bandwidth`](@ref),
-[`effective_code_loop_filter_bandwidth`](@ref)), so a longer coherent
-integration needs no re-tuning.
+satellites: the wide carrier bandwidth, the code bandwidth, the tracking
+carrier bandwidth the loop narrows to once phase lock has held and the FLL path's
+bandwidth (see [`CarrierLoopStage`](@ref)). Each bandwidth field is
+`Maybe{typeof(1.0Hz)}`: a `nothing` field (the default) means **auto** — the
+bandwidth is sized per satellite from its estimator-driver signal via
+[`default_wide_carrier_loop_filter_bandwidth`](@ref),
+[`default_code_loop_filter_bandwidth`](@ref),
+[`default_narrow_carrier_loop_filter_bandwidth`](@ref) and
+[`default_fll_assist_loop_filter_bandwidth`](@ref). At filter time each is
+capped against the record's integration time (see [Loop-filter bandwidths](@ref);
+the code bandwidth by [`effective_code_loop_filter_bandwidth`](@ref)), so a
+longer coherent integration needs no re-tuning.
 
 `combine_signals = true` combines the discriminators of a satellite's other
 signals, the passengers, into the loops of the signal whose records
@@ -280,21 +272,27 @@ Make the longest-integrating signal (typically the pilot) the driver.
 """
 struct ConventionalPLLAndDLL{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter} <:
        AbstractDopplerEstimator
-    carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
+    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
+    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
+    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
     combine_signals::Bool
 end
 
 function ConventionalPLLAndDLL(
     ::Type{CA} = ThirdOrderBilinearLF,
     ::Type{CO} = SecondOrderBilinearLF;
-    carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     combine_signals::Bool = false,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     ConventionalPLLAndDLL{CA,CO}(
-        carrier_loop_filter_bandwidth,
+        wide_carrier_loop_filter_bandwidth,
         code_loop_filter_bandwidth,
+        narrow_carrier_loop_filter_bandwidth,
+        fll_assist_loop_filter_bandwidth,
         combine_signals,
     )
 end
@@ -304,20 +302,26 @@ $(SIGNATURES)
 
 Create a ConventionalPLLAndDLL with FLL-assisted carrier tracking: a
 `ThirdOrderAssistedBilinearLF` carrier loop filter combining the PLL and FLL
-discriminators. Bandwidths default to `nothing` (auto) and signal combining to
-off, see [`ConventionalPLLAndDLL`](@ref).
+discriminators, with the FLL path at its own bandwidth until the carrier
+Doppler has converged (see [`CarrierLoopStage`](@ref)). Bandwidths default to
+`nothing` (auto) and signal combining to off, see
+[`ConventionalPLLAndDLL`](@ref).
 """
 function ConventionalAssistedPLLAndDLL(
     ::Type{CO} = SecondOrderBilinearLF;
-    carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     combine_signals::Bool = false,
 ) where {CO<:AbstractLoopFilter}
     ConventionalPLLAndDLL(
         ThirdOrderAssistedBilinearLF,
         CO;
-        carrier_loop_filter_bandwidth,
+        wide_carrier_loop_filter_bandwidth,
         code_loop_filter_bandwidth,
+        narrow_carrier_loop_filter_bandwidth,
+        fll_assist_loop_filter_bandwidth,
         combine_signals,
     )
 end
@@ -325,17 +329,25 @@ end
 # Kwarg-update constructor for tweaking the configuration in place.
 function ConventionalPLLAndDLL(
     pll_and_dll::ConventionalPLLAndDLL{CA,CO};
-    carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     combine_signals::Maybe{Bool} = nothing,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     ConventionalPLLAndDLL{CA,CO}(
-        isnothing(carrier_loop_filter_bandwidth) ?
-        pll_and_dll.carrier_loop_filter_bandwidth :
-        carrier_loop_filter_bandwidth,
+        isnothing(wide_carrier_loop_filter_bandwidth) ?
+        pll_and_dll.wide_carrier_loop_filter_bandwidth :
+        wide_carrier_loop_filter_bandwidth,
         isnothing(code_loop_filter_bandwidth) ?
         pll_and_dll.code_loop_filter_bandwidth :
         code_loop_filter_bandwidth,
+        isnothing(narrow_carrier_loop_filter_bandwidth) ?
+        pll_and_dll.narrow_carrier_loop_filter_bandwidth :
+        narrow_carrier_loop_filter_bandwidth,
+        isnothing(fll_assist_loop_filter_bandwidth) ?
+        pll_and_dll.fll_assist_loop_filter_bandwidth :
+        fll_assist_loop_filter_bandwidth,
         isnothing(combine_signals) ? pll_and_dll.combine_signals : combine_signals,
     )
 end
@@ -356,18 +368,14 @@ function init_estimator_state(
     carrier_doppler,
     code_doppler,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
+    carrier_loop_filter = _constructorof(CA)()
     SatConventionalPLLAndDLL(
         carrier_doppler,
         code_doppler,
-        _constructorof(CA)(),
+        carrier_loop_filter,
         _constructorof(CO)(),
-        isnothing(estimator.carrier_loop_filter_bandwidth) ?
-        default_carrier_loop_filter_bandwidth(driver_signal) :
-        estimator.carrier_loop_filter_bandwidth,
-        isnothing(estimator.code_loop_filter_bandwidth) ?
-        default_code_loop_filter_bandwidth(driver_signal) :
-        estimator.code_loop_filter_bandwidth,
-        FrequencyLockIndicator(),
+        _resolve_bandwidths(estimator, driver_signal),
+        CarrierLoopStaging(carrier_loop_filter),
         SignalCombiningSums(),
     )
 end
@@ -379,10 +387,10 @@ _constructorof(::Type{T}) where {T} = Base.typename(T).wrapper
 """
     reset_estimator_state(estimator, state, carrier_doppler, code_doppler)
 
-Zero the loop-filter integrators, restart the carrier loop's staging on the
-FLL-assisted PLL (see [`FrequencyLockIndicator`](@ref)), drop pending passenger
-discriminators and re-seed the state from the converged Dopplers, keeping the
-per-satellite bandwidths.
+Zero the loop-filter integrators, restart the carrier loop's staging (see
+[`CarrierLoopStage`](@ref)) with a fresh phase-lock indicator, drop
+pending passenger discriminators and re-seed the state from the converged
+Dopplers, keeping the per-satellite bandwidths.
 """
 function reset_estimator_state(
     ::ConventionalPLLAndDLL,
@@ -390,14 +398,14 @@ function reset_estimator_state(
     carrier_doppler,
     code_doppler,
 )
+    carrier_loop_filter = _constructorof(typeof(state.carrier_loop_filter))()
     SatConventionalPLLAndDLL(
         carrier_doppler,
         code_doppler,
-        _constructorof(typeof(state.carrier_loop_filter))(),
+        carrier_loop_filter,
         _constructorof(typeof(state.code_loop_filter))(),
-        state.carrier_loop_filter_bandwidth,
-        state.code_loop_filter_bandwidth,
-        FrequencyLockIndicator(),
+        state.bandwidths,
+        CarrierLoopStaging(carrier_loop_filter),
         SignalCombiningSums(),
     )
 end
@@ -407,11 +415,12 @@ end
         -> (state, carrier_doppler, code_doppler)
 
 One record through the conventional loop: PLL (and FLL, for the assisted
-filter) discriminators against the filtered prompt, the DLL normalised with the
-code word the record ran on, both bandwidths capped by their stability products
-against the record's integration time, and the Dopplers aided. `landing_sample`
-is ignored: the conventional loop assumes its command acts before the next
-record.
+filter, until the carrier Doppler has converged) discriminators against the
+filtered prompt, the DLL normalised with the code word the record ran on, the
+bandwidths of the record's [`CarrierLoopStage`](@ref) capped by their stability
+products against the record's integration time, the phase-lock indicator
+advanced and the Dopplers aided. `landing_sample` is ignored: the conventional loop assumes
+its command acts before the next record.
 """
 @inline step_loop(
     estimator::ConventionalPLLAndDLL,
@@ -456,7 +465,12 @@ record.
         ) : 0.0Hz
     (;
         integration_time,
-        carrier_bandwidth = _carrier_bandwidth(state, integration_time),
+        carrier_bandwidth = _carrier_bandwidth(
+            state.bandwidths,
+            state.staging.stage,
+            integration_time,
+        ),
+        fll_assist_bandwidth = _fll_assist_bandwidth(state.bandwidths, integration_time),
         phase_error = pll_disc(signal, filtered_correlator; record.polarity),
         frequency_error,
         raw_frequency_error = frequency_error,
@@ -470,13 +484,6 @@ record.
     )
 end
 
-# The carrier bandwidth for a record that integrated for `integration_time`,
-# capped against the time the record actually integrated rather than the
-# intended integration length: records folded after a mid-fold sync, or the
-# truncated first post-sync integration, are still short.
-@inline _carrier_bandwidth(state, integration_time) =
-    effective_carrier_loop_filter_bandwidth(state.carrier_loop_filter_bandwidth, integration_time)
-
 # The carrier filter's input: the FLL-assisted filter takes both discriminators,
 # any other the phase discriminator alone.
 @inline _carrier_filter_input(::ThirdOrderAssistedBilinearLF, phase_error, frequency_error) =
@@ -484,39 +491,66 @@ end
 @inline _carrier_filter_input(::AbstractLoopFilter, phase_error, frequency_error) =
     phase_error
 
-# The state after one record, with both loop filters and the frequency lock
-# indicator stepped.
+# The carrier filter's bandwidth: the FLL-assisted filter takes the PLL and the
+# FLL path's bandwidth as a pair, any other the PLL's alone.
+@inline _carrier_filter_bandwidth(::ThirdOrderAssistedBilinearLF, discriminators) =
+    (discriminators.carrier_bandwidth, discriminators.fll_assist_bandwidth)
+@inline _carrier_filter_bandwidth(::AbstractLoopFilter, discriminators) =
+    discriminators.carrier_bandwidth
+
+# The state after one record, with both loop filters and the carrier loop's
+# `staging` stepped.
 @inline _stepped_state(
     state::SatConventionalPLLAndDLL,
     carrier_loop_filter,
     code_loop_filter,
     center,
-    frequency_lock,
+    staging::CarrierLoopStaging,
 ) = SatConventionalPLLAndDLL(
     state;
     carrier_loop_filter,
     code_loop_filter,
-    frequency_lock,
+    staging,
     signal_combining_sums = SignalCombiningSums(),
 )
 
-# The carrier loop's staging: an FLL-assisted filter is fed the FLL reading and
-# advances the frequency lock indicator until it latches, and is fed zero after,
-# which is exactly the third-order PLL (same state, same coefficients), so the
-# switch is free (Kaplan & Hegarty §5.5; Ward, ION GPS 1998). The indicator reads
-# the raw FLL discriminator, the residual against the replica that ran. Returns
-# the FLL input to feed and the advanced indicator.
-@inline function _staged_frequency_error(state, record::LoopRecord, discriminators)
-    frequency_lock = state.frequency_lock
-    _fll_in_use(state) || return zero(discriminators.frequency_error), frequency_lock
-    frequency_lock = _update_frequency_lock(
-        frequency_lock,
+# The carrier loop's staging (see `CarrierLoopStage`). The FLL-assisted filter is
+# fed the FLL reading while FLL-assisted and zero after, which is exactly the
+# third-order PLL (same state, same coefficients), so dropping the FLL is free
+# (Kaplan & Hegarty §5.5; Ward, ION GPS 1998). The record's driver prompt advances
+# the phase-lock indicator, and how long it has read lock moves the stage on for
+# the next record: phase lock ends the FLL-assisted stage, as the carrier
+# Doppler has converged once the phase is locked, and phase lock held on, counted
+# afresh from there, narrows the loop. Returns the FLL input to feed and the
+# stepped staging.
+@inline function _staged_carrier_loop(
+    staging::CarrierLoopStaging,
+    carrier_loop_filter,
+    record::LoopRecord,
+    discriminators,
+)
+    integration_time = discriminators.integration_time
+    phase_lock = _update_phase_lock(
+        staging.phase_lock,
+        get_prompt(record.filtered_correlator),
+        integration_time,
         record.signal,
-        discriminators.raw_frequency_error,
-        record.previous_prompt,
-        discriminators.integration_time,
     )
-    discriminators.frequency_error, frequency_lock
+    stage = staging.stage
+    frequency_error =
+        _fll_in_use(carrier_loop_filter, staging) ? discriminators.frequency_error :
+        zero(discriminators.frequency_error)
+    if stage == FLL_ASSISTED_PLL && (
+        !_uses_fll(carrier_loop_filter) ||
+        _held(phase_lock.hold, _FLL_DROP_TIME_CONSTANTS, integration_time)
+    )
+        stage = WIDE_PLL
+        phase_lock = _restart_hold(phase_lock)
+    elseif stage == WIDE_PLL &&
+           _held(phase_lock.hold, _NARROWING_TIME_CONSTANTS, integration_time)
+        stage = NARROW_PLL
+    end
+    frequency_error, CarrierLoopStaging(stage, phase_lock)
 end
 
 # The driver's discriminators with the passengers' pending ones, for a state that
@@ -532,14 +566,16 @@ end
 @inline _uses_fll(::ThirdOrderAssistedBilinearLF) = true
 @inline _uses_fll(::AbstractLoopFilter) = false
 
-# Whether the scalar loop reads the FLL discriminator: an FLL-assisted filter
-# until frequency lock.
-@inline _fll_in_use(state) = _uses_fll(state.carrier_loop_filter) && !state.frequency_lock.locked
+# Whether the scalar loop reads the FLL discriminator: an FLL-assisted filter in
+# its FLL-assisted stage.
+@inline _fll_in_use(carrier_loop_filter, staging::CarrierLoopStaging) =
+    _uses_fll(carrier_loop_filter) && staging.stage == FLL_ASSISTED_PLL
+@inline _fll_in_use(state) = _fll_in_use(state.carrier_loop_filter, state.staging)
 
 # One record through a scalar loop: the carrier filter fed its discriminators
-# (the FLL's until frequency lock), the code filter the DLL with its bandwidth
-# capped by its stability product against the record's integration time, and the
-# Dopplers aided.
+# (the FLL's while FLL-assisted) at its stage's bandwidths, the code filter the
+# DLL with its bandwidth capped by its stability product against the record's
+# integration time, the staging stepped and the Dopplers aided.
 @inline function _step_scalar_loop(estimator, state, record::LoopRecord, words, landing_sample::Int64)
     discriminators = _with_passengers(
         state,
@@ -549,8 +585,9 @@ end
     )
     integration_time = discriminators.integration_time
     code_bandwidth =
-        effective_code_loop_filter_bandwidth(state.code_loop_filter_bandwidth, integration_time)
-    frequency_error, frequency_lock = _staged_frequency_error(state, record, discriminators)
+        effective_code_loop_filter_bandwidth(state.bandwidths.code, integration_time)
+    frequency_error, staging =
+        _staged_carrier_loop(state.staging, state.carrier_loop_filter, record, discriminators)
     carrier_freq_update, carrier_loop_filter = filter_loop(
         state.carrier_loop_filter,
         _carrier_filter_input(
@@ -559,7 +596,7 @@ end
             frequency_error,
         ),
         integration_time,
-        discriminators.carrier_bandwidth,
+        _carrier_filter_bandwidth(state.carrier_loop_filter, discriminators),
     )
     code_freq_update, code_loop_filter = filter_loop(
         state.code_loop_filter,
@@ -579,7 +616,7 @@ end
         carrier_loop_filter,
         code_loop_filter,
         discriminators.center,
-        frequency_lock,
+        staging,
     ),
     carrier_doppler,
     code_doppler
@@ -632,7 +669,7 @@ satellite ran on.
     driver's in chips, refers its DLL discriminator to the driver's code phase;
     `NaN` (unknown) leaves the passenger out of the code loop.
 
-The FLL is combined only while it is formed, before frequency lock. An
+The FLL is combined only while it is formed, in the FLL-assisted stage. An
 estimator that takes no passenger records ([`takes_passenger_records`](@ref))
 returns `state` unchanged. See [Signal combining](@ref) and
 [Host contract](@ref).
@@ -695,8 +732,10 @@ end
 # ── The NCO-referenced (delay-aware) PLL/DLL ─────────────────────────────────
 
 """
-    NCOReferencedPLLAndDLL(; carrier_loop_filter_bandwidth = nothing,
+    NCOReferencedPLLAndDLL(; wide_carrier_loop_filter_bandwidth = nothing,
                              code_loop_filter_bandwidth = nothing,
+                             narrow_carrier_loop_filter_bandwidth = nothing,
+                             fll_assist_loop_filter_bandwidth = nothing,
                              predict_landing = true)
 
 FLL-assisted PLL and DLL Doppler estimator for a replica whose NCO words are
@@ -704,8 +743,18 @@ applied with a known delay — the hardware-correlator receiver's default.
 
 It is the [`ConventionalAssistedPLLAndDLL`](@ref) — the same third-order
 assisted bilinear carrier filter, the same second-order code filter, the same
-gains and the same bandwidth defaults — with its loop internals referenced to
-the device NCO instead of to the word the filter last computed:
+gains and the same staging ([`CarrierLoopStage`](@ref)) — with its loop
+internals referenced to the device NCO instead of to the word the filter last
+computed. Its one different default is the wide carrier bandwidth: the
+narrow bandwidth ([`default_narrow_carrier_loop_filter_bandwidth`](@ref),
+18 Hz) instead of the conventional loop's 50 Hz
+([`default_wide_carrier_loop_filter_bandwidth`](@ref), which it does not read, so
+a method of it for a signal type does not widen this loop), because a loop's tolerance of
+command delay shrinks as its bandwidth grows (at 50 Hz it holds through seven
+records of delay, at 18 Hz through thirteen). Its staging still drops
+the FLL at phase lock and narrows once lock has held: to the same 18 Hz,
+but under the tighter narrow cap (0.04/T against 0.09/T), so from 18 to
+10 Hz on 4 ms records and from 9 to 4 Hz on 10 ms ones.
 
  1. **Every record is attributed to the word that ran under it.** The phase
     discriminator is measured against the applied replica by construction; the
@@ -719,8 +768,9 @@ the device NCO instead of to the word the filter last computed:
     taken relative to the word that will be running there.
 
 With zero delay both steps are the identity and the estimator *is* the
-conventional loop, so the software receiver's noise performance is inherited
-rather than re-tuned.
+conventional loop at the same bandwidths (the defaults differ in the wide
+one), so the software receiver's noise performance is inherited rather than
+re-tuned.
 
 Step 1 is not specific to this estimator: the conventional
 [`step_loop`](@ref) reads the applied code word from `words` too, and both
@@ -733,20 +783,26 @@ control**, which fails exactly like the conventional loop at a few epochs of
 delay.
 """
 struct NCOReferencedPLLAndDLL{CO<:AbstractLoopFilter} <: AbstractDopplerEstimator
-    carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
+    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
+    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
+    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
     predict_landing::Bool
 end
 
 function NCOReferencedPLLAndDLL(
     ::Type{CO} = SecondOrderBilinearLF;
-    carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     predict_landing::Bool = true,
 ) where {CO<:AbstractLoopFilter}
     NCOReferencedPLLAndDLL{CO}(
-        carrier_loop_filter_bandwidth,
+        wide_carrier_loop_filter_bandwidth,
         code_loop_filter_bandwidth,
+        narrow_carrier_loop_filter_bandwidth,
+        fll_assist_loop_filter_bandwidth,
         predict_landing,
     )
 end
@@ -756,22 +812,21 @@ end
 
 Per-satellite state of an [`NCOReferencedPLLAndDLL`](@ref): the handover
 Dopplers the loop filters' outputs are offsets from, both filters, their
-bandwidths, the centre sample of the last record folded (the FLL measures
-the mean frequency offset between two prompts' centres, so that is the span its
-replica word is averaged over), and the carrier loop's
-[`FrequencyLockIndicator`](@ref).
+[`LoopBandwidths`](@ref TrackingLoops.LoopBandwidths), the centre sample of the
+last record folded (the FLL measures the mean frequency offset between two prompts'
+centres, so that is the span its replica word is averaged over), and the carrier
+loop's [`CarrierLoopStaging`](@ref TrackingLoops.CarrierLoopStaging).
 """
 struct SatNCOReferencedPLLAndDLL{CA<:ThirdOrderAssistedBilinearLF,CO<:AbstractLoopFilter}
     init_carrier_doppler::typeof(1.0Hz)
     init_code_doppler::typeof(1.0Hz)
     carrier_loop_filter::CA
     code_loop_filter::CO
-    carrier_loop_filter_bandwidth::typeof(1.0Hz)
-    code_loop_filter_bandwidth::typeof(1.0Hz)
+    bandwidths::LoopBandwidths
     # Device sample at the centre of the last record folded; `NaN` before the
     # first.
     previous_record_center::Float64
-    frequency_lock::FrequencyLockIndicator
+    staging::CarrierLoopStaging
 end
 
 function SatNCOReferencedPLLAndDLL(
@@ -779,19 +834,16 @@ function SatNCOReferencedPLLAndDLL(
     carrier_loop_filter::Maybe{CA} = nothing,
     code_loop_filter::Maybe{CO} = nothing,
     previous_record_center::Maybe{Float64} = nothing,
-    frequency_lock::Maybe{FrequencyLockIndicator} = nothing,
+    staging::Maybe{CarrierLoopStaging} = nothing,
 ) where {CA,CO}
     SatNCOReferencedPLLAndDLL{CA,CO}(
         state.init_carrier_doppler,
         state.init_code_doppler,
-        isnothing(carrier_loop_filter) ? state.carrier_loop_filter : carrier_loop_filter,
-        isnothing(code_loop_filter) ? state.code_loop_filter : code_loop_filter,
-        state.carrier_loop_filter_bandwidth,
-        state.code_loop_filter_bandwidth,
-        isnothing(previous_record_center) ?
-        state.previous_record_center :
-        previous_record_center,
-        isnothing(frequency_lock) ? state.frequency_lock : frequency_lock,
+        something(carrier_loop_filter, state.carrier_loop_filter),
+        something(code_loop_filter, state.code_loop_filter),
+        state.bandwidths,
+        something(previous_record_center, state.previous_record_center),
+        something(staging, state.staging),
     )
 end
 
@@ -806,14 +858,14 @@ function init_estimator_state(
         code_doppler,
         ThirdOrderAssistedBilinearLF(),
         _constructorof(CO)(),
-        isnothing(estimator.carrier_loop_filter_bandwidth) ?
-        default_carrier_loop_filter_bandwidth(driver_signal) :
-        estimator.carrier_loop_filter_bandwidth,
-        isnothing(estimator.code_loop_filter_bandwidth) ?
-        default_code_loop_filter_bandwidth(driver_signal) :
-        estimator.code_loop_filter_bandwidth,
+        # The narrow default for the wide bandwidth too: see `NCOReferencedPLLAndDLL`.
+        _resolve_bandwidths(
+            estimator,
+            driver_signal;
+            wide_default = default_narrow_carrier_loop_filter_bandwidth(driver_signal),
+        ),
         NaN,
-        FrequencyLockIndicator(),
+        CarrierLoopStaging(ThirdOrderAssistedBilinearLF()),
     )
 end
 
@@ -828,10 +880,9 @@ function reset_estimator_state(
         code_doppler,
         _constructorof(typeof(state.carrier_loop_filter))(),
         _constructorof(typeof(state.code_loop_filter))(),
-        state.carrier_loop_filter_bandwidth,
-        state.code_loop_filter_bandwidth,
+        state.bandwidths,
         NaN,
-        FrequencyLockIndicator(),
+        CarrierLoopStaging(ThirdOrderAssistedBilinearLF()),
     )
 end
 
@@ -961,7 +1012,12 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
     (;
         integration_time,
         # Bandwidths exactly as the conventional loop.
-        carrier_bandwidth = _carrier_bandwidth(state, integration_time),
+        carrier_bandwidth = _carrier_bandwidth(
+            state.bandwidths,
+            state.staging.stage,
+            integration_time,
+        ),
+        fll_assist_bandwidth = _fll_assist_bandwidth(state.bandwidths, integration_time),
         phase_error,
         frequency_error,
         raw_frequency_error,
@@ -976,14 +1032,39 @@ end
     carrier_loop_filter,
     code_loop_filter,
     center,
-    frequency_lock,
+    staging::CarrierLoopStaging,
 ) = SatNCOReferencedPLLAndDLL(
     state;
     carrier_loop_filter,
     code_loop_filter,
     previous_record_center = center,
-    frequency_lock,
+    staging,
 )
+
+"""
+    carrier_loop_stage(state) -> CarrierLoopStage
+
+The [`CarrierLoopStage`](@ref) of a scalar estimator's per-satellite state (the
+inner loop's for a [`SatVectorPLLAndDLL`](@ref)).
+"""
+carrier_loop_stage(state::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndDLL}) =
+    carrier_loop_stage(state.staging)
+
+"""
+    phase_lock_indicator(state) -> Float64
+
+The latest phase-lock indicator of a scalar estimator's per-satellite state (the
+inner loop's for a [`SatVectorPLLAndDLL`](@ref)): `⟨I² − Q²⟩ / A²`, an estimate
+of `cos 2φ` from exponential averages over 0.1 s (at least 25 records) of the
+driver's prompt, normalised by the signal power `A²` estimated from the
+prompt's moments: 1 in phase lock, 0 for a uniformly spinning phase, the same
+at any C/N₀. `NaN` until the averages span that time. The carrier-loop staging
+reads it against [`phase_lock_indicator_threshold`](@ref) (see
+[`CarrierLoopStage`](@ref)); for a receiver's own lock decisions, smooth it over
+the receiver's own horizon rather than act on single readings.
+"""
+phase_lock_indicator(state::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndDLL}) =
+    phase_lock_indicator(state.staging)
 
 "The estimator-state type a Doppler estimator produces (for slot typing)."
 estimator_state_type(estimator::AbstractDopplerEstimator, driver_signal::AbstractGNSSSignal) =

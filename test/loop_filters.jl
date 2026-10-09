@@ -13,30 +13,30 @@ using Random: MersenneTwister
 end
 
 @testset "Default loop bandwidths" begin
-    # A flat 18 Hz carrier and 1 Hz code bandwidth for every signal.
+    # A flat 50 Hz pull-in, 18 Hz tracking and 5 Hz FLL carrier and 1 Hz code bandwidth for every signal.
     for signal in (GPSL1CA(), GPSL1C_P(), GalileoE1B(), GPSL5I())
-        @test default_carrier_loop_filter_bandwidth(signal) == 18.0Hz
+        @test default_wide_carrier_loop_filter_bandwidth(signal) == 50.0Hz
         @test default_code_loop_filter_bandwidth(signal) == 1.0Hz
     end
-    @test default_carrier_loop_filter_bandwidth(GPSL1CA()) isa typeof(1.0Hz)
+    @test default_wide_carrier_loop_filter_bandwidth(GPSL1CA()) isa typeof(1.0Hz)
 end
 
 # The carrier bandwidth is capped by its stability product, not scaled by the
 # block count.
 @testset "carrier loop bandwidth is capped, not scaled, by the integration length" begin
     bw = 18.0Hz
-    @test effective_carrier_loop_filter_bandwidth(bw, 1ms) == bw
-    @test effective_carrier_loop_filter_bandwidth(bw, 4ms) == bw
-    @test effective_carrier_loop_filter_bandwidth(bw, 5ms) ≈ bw
-    @test effective_carrier_loop_filter_bandwidth(bw, 10ms) ≈ 9.0Hz
-    @test effective_carrier_loop_filter_bandwidth(bw, 20ms) ≈ 4.5Hz
+    @test wide_cap(bw, 1ms) == bw
+    @test wide_cap(bw, 4ms) == bw
+    @test wide_cap(bw, 5ms) ≈ bw
+    @test wide_cap(bw, 10ms) ≈ 9.0Hz
+    @test wide_cap(bw, 20ms) ≈ 4.5Hz
     for integration_time in (10ms, 20ms, 100ms, 1500ms)
-        @test effective_carrier_loop_filter_bandwidth(bw, integration_time) *
-              integration_time ≈ MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT
+        @test wide_cap(bw, integration_time) *
+              integration_time ≈ TrackingLoops._MAX_WIDE_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT
     end
     # An explicit bandwidth below the cap is used verbatim.
-    @test effective_carrier_loop_filter_bandwidth(2.0Hz, 20ms) == 2.0Hz
-    @test @inferred(effective_carrier_loop_filter_bandwidth(bw, 5000 / 5e6Hz)) isa
+    @test wide_cap(2.0Hz, 20ms) == 2.0Hz
+    @test @inferred(wide_cap(bw, 5000 / 5e6Hz)) isa
           typeof(1.0Hz)
 end
 
@@ -83,18 +83,23 @@ end
         integration_time,
         18.0Hz,
     )
-    expected = filter_loop(
-        assisted,
-        # The phase error in cycles, the FLL error in Hz.
-        (
-            pll_disc(gpsl1, correlator),
-            fll_disc(gpsl1, correlator, previous_prompt, integration_time),
-        ),
-        integration_time,
-        18.0Hz,
+    # Its FLL path at the signal's FLL-assist default, as `step_loop` runs it.
+    discriminators = (
+        pll_disc(gpsl1, correlator),
+        fll_disc(gpsl1, correlator, previous_prompt, integration_time),
     )
+    fll_assist = TrackingLoops._capped_bandwidth(
+        default_fll_assist_loop_filter_bandwidth(gpsl1),
+        integration_time,
+        TrackingLoops._MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT,
+    )
+    # The phase error in cycles, the FLL error in Hz.
+    expected = filter_loop(assisted, discriminators, integration_time, (18.0Hz, fll_assist))
     @test update_assisted == expected[1]
     @test filter_assisted == expected[2]
+    explicit, = calculate_carrier_frequency_update(gpsl1, assisted, correlator, previous_prompt,
+        integration_time, 18.0Hz; fll_assist_loop_bandwidth = 2.0Hz)
+    @test explicit == filter_loop(assisted, discriminators, integration_time, (18.0Hz, 2.0Hz))[1]
 
     # Any other loop filter: the PLL discriminator alone.
     plain = SecondOrderBilinearLF()

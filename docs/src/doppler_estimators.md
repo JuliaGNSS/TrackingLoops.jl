@@ -22,10 +22,11 @@ for "at the end of each record".
   in Tracking.jl.
 - [`NCOReferencedPLLAndDLL`](@ref) — stays stable when the correction it
   computes only takes effect several records later, as it does with a hardware
-  NCO. With a fixed word and no landing sample it is the conventional loop.
+  NCO. With a fixed word and no landing sample it is the conventional loop at
+  the same bandwidths.
 
-The bandwidth rules ([`default_carrier_loop_filter_bandwidth`](@ref),
-[`effective_carrier_loop_filter_bandwidth`](@ref), …) keep the loops stable for a
+The bandwidth rules ([`default_wide_carrier_loop_filter_bandwidth`](@ref),
+[`effective_code_loop_filter_bandwidth`](@ref), …) keep the loops stable for a
 given integration time, and the integration-length rules
 ([`calc_num_code_blocks_to_integrate`](@ref), …) say how long a signal may be
 integrated coherently once its bit or secondary code has been found.
@@ -52,14 +53,24 @@ Private = false
 
 ## Loop-filter bandwidths
 
-The carrier bandwidth defaults to a flat 18 Hz and the code bandwidth to a flat
-1 Hz for every signal. Both are one-sided noise bandwidths `BL` in the sense of
-Kaplan & Hegarty, so they plug into the usual PLL jitter and dynamic-stress
-formulas: the carrier filter is fed the phase error in cycles and the FLL error
-in Hz. 18 Hz is the third-order PLL bandwidth of the literature (Kaplan &
-Hegarty Table 5.6, Pany Table 3.3; Borre et al. quote about 20 Hz), none of
-which scales it with the primary code period: thermal jitter and dynamic
-stress, which set the bandwidth, do not depend on it.
+The carrier loop has three bandwidths, one per role in its staging (see
+[Carrier loop staging](@ref)): a flat 50 Hz pull-in PLL bandwidth
+([`default_wide_carrier_loop_filter_bandwidth`](@ref)), a flat 18 Hz tracking PLL
+bandwidth the loop narrows to once phase lock has held
+([`default_narrow_carrier_loop_filter_bandwidth`](@ref)) and a flat 5 Hz FLL
+bandwidth for the FLL path of the FLL-assisted filter
+([`default_fll_assist_loop_filter_bandwidth`](@ref)). The code bandwidth defaults
+to a flat 1 Hz. All are one-sided noise bandwidths `BL` in the sense of Kaplan &
+Hegarty, so they plug into the usual PLL jitter and dynamic-stress formulas: the
+carrier filter is fed the phase error in cycles and the FLL error in Hz, and it
+takes the PLL and the FLL bandwidth as a pair (`ω₀f = BL_FLL / 0.53`), so the
+FLL path is no longer tied to the PLL's. 18 Hz is the third-order PLL bandwidth
+of the literature (Kaplan & Hegarty Table 5.6, Pany Table 3.3; Borre et al.
+quote about 20 Hz). The 50 Hz wide bandwidth reaches phase lock about as fast
+as Tracking v8's loop, whose PLL ran about 5.6× wider than configured, and 5 Hz
+is the FLL bandwidth that pulls a handover error of up to a quarter of the
+two-quadrant FLL range in without being the 1 ms loop's noise source (a
+sample-level simulation study, single signals at 25–45 dB-Hz).
 
 Before Tracking.jl#244 the carrier filter was fed the phase error in radians,
 which made the loop gain 2π too high: a configured 18 Hz behaved like a loop of
@@ -70,14 +81,15 @@ then are about 5–6× narrower than the loops they were tuned on.
 ### Stability cap
 
 Stability does depend on the loop update interval `Δt`, so at filter time each
-bandwidth is capped against the record's actual integration time
-([`effective_carrier_loop_filter_bandwidth`](@ref),
-[`effective_code_loop_filter_bandwidth`](@ref)). An explicit bandwidth is
-capped the same way; the cap only ever narrows a loop.
+bandwidth is capped against the record's actual integration time (for the code
+loop by [`effective_code_loop_filter_bandwidth`](@ref)). An explicit bandwidth
+is capped the same way; the cap only ever narrows a loop.
 
 ```julia
-BL_carrier = min(BL_carrier_configured, 0.09  / Δt)
-BL_code    = min(BL_code_configured,    0.018 / Δt)
+BL_carrier  = min(BL_carrier_configured,  0.09  / Δt)   # pull-in
+BL_tracking = min(BL_tracking_configured, 0.04  / Δt)   # after phase lock
+BL_FLL      = min(BL_FLL_configured,      0.02  / Δt)
+BL_code     = min(BL_code_configured,     0.018 / Δt)
 ```
 
 The default FLL-assisted third-order carrier filter diverges at `BL · Δt ≈ 0.4`
@@ -94,14 +106,14 @@ with about 4× stability margin. It is the product of Kaplan & Hegarty's
 third-order design example (18 Hz at 5 ms) and matches GNSS-SDR's narrow
 post-sync bandwidths (5 Hz at 20 ms). The resulting defaults:
 
-| Integration | Signals                                                   | Carrier BL |  Code BL |
-|-------------|-----------------------------------------------------------|-----------:|---------:|
-| 1 ms        | GPS L1 C/A, GPS L5, Galileo E5a, …                        |      18 Hz |     1 Hz |
-| 2 ms        | Galileo E5a-QP                                            |      18 Hz |     1 Hz |
-| 4 ms        | Galileo E1B / E1C                                         |      18 Hz |     1 Hz |
-| 10 ms       | GPS L1C-D / L1C-P, BeiDou B1C; GPS L5I synced at 10 ms    |       9 Hz |     1 Hz |
-| 20 ms       | GPS L2 CM; GPS L1 C/A, L5Q, Galileo E5a-I synced at 20 ms |     4.5 Hz |   0.9 Hz |
-| 1.5 s       | GPS L2 CL                                                 |    0.06 Hz | 0.012 Hz |
+| Integration | Signals                                                   |    Wide BL |   Narrow BL | FLL-assist BL |  Code BL |
+|-------------|-----------------------------------------------------------|-----------:|------------:|--------------:|---------:|
+| 1 ms        | GPS L1 C/A, GPS L5, Galileo E5a, …                        |      50 Hz |       18 Hz |     5 Hz |     1 Hz |
+| 2 ms        | Galileo E5a-QP                                            |      45 Hz |       18 Hz |     5 Hz |     1 Hz |
+| 4 ms        | Galileo E1B / E1C                                         |    22.5 Hz |       10 Hz |     5 Hz |     1 Hz |
+| 10 ms       | GPS L1C-D / L1C-P, BeiDou B1C; GPS L5I synced at 10 ms    |       9 Hz |        4 Hz |     2 Hz |     1 Hz |
+| 20 ms       | GPS L2 CM; GPS L1 C/A, L5Q, Galileo E5a-I synced at 20 ms |     4.5 Hz |        2 Hz |     1 Hz |   0.9 Hz |
+| 1.5 s       | GPS L2 CL                                                 |    0.06 Hz |    0.027 Hz |  0.013 Hz | 0.012 Hz |
 
 The code cap of 0.018 is conservative for the second-order code filter, which
 destabilizes only around `BL · Δt ≈ 0.4` (S. A. Stephens and J. B. Thomas,
@@ -120,27 +132,47 @@ Private = false
 
 The FLL-assisted scalar loops ([`ConventionalAssistedPLLAndDLL`](@ref),
 [`NCOReferencedPLLAndDLL`](@ref), and the inner loop of
-[`VectorPLLAndDLL`](@ref) out of the vector loop) start as an FLL-assisted PLL
-and drop the FLL once the frequency has converged, along Kaplan & Hegarty's
+[`VectorPLLAndDLL`](@ref) out of the vector loop) run through three stages, a
+[`CarrierLoopStage`](@ref) in the per-satellite state, along Kaplan & Hegarty's
 closure sequence (§5.3, §5.5): "apply the error inputs from both discriminators
 as an FLL-assisted PLL until phase lock is achieved, then convert to pure PLL".
-There is no down-staging: the pure PLL stays until
-[`reset_estimator_state`](@ref) restarts the staging.
+There is no down-staging: the stages only advance until
+[`reset_estimator_state`](@ref) restarts them.
 
-  - **Frequency lock** is declared once the mean FLL discriminator, the
-    residual frequency error, stays below [`frequency_lock_threshold`](@ref)
-    (3 Hz, at most 1/(16T) on long records, a quarter of the two-quadrant FLL's
-    range) over a [`frequency_lock_window`](@ref) (0.5 s, at least four
-    records). The window mean is the phase advance across the window over its
-    length, so its noise falls with the window length rather than with each
-    record's SNR. Both are overridable per signal type. Kaplan & Hegarty's
-    phase lock indicator (§5.11.2), specified unnormalised for 20 ms updates,
-    never declares lock at 1 ms and 30 dB-Hz, which would leave the noisy FLL
-    branch in. The indicator, a [`FrequencyLockIndicator`](@ref), is part of
-    the per-satellite state.
+  - **FLL-assisted PLL** (`FLL_ASSISTED_PLL`) at the wide bandwidth, with the
+    FLL path at its own bandwidth, until the phase-lock indicator has read lock
+    for one time constant of its averages without a break: the carrier is in
+    phase lock, so its Doppler has converged.
+  - **Wide pure PLL** (`WIDE_PLL`) at the wide bandwidth, until the phase-lock
+    indicator has read lock for four more time constants without a break,
+    counted from the end of the FLL-assisted stage. Dropping the FLL and
+    narrowing are separate steps: narrowing while the loop still settles from
+    the FLL's last correction loses lock.
+  - **Narrow pure PLL** (`NARROW_PLL`) at the narrow bandwidth.
+
+The **phase-lock indicator** ([`phase_lock_indicator`](@ref)), part of the
+per-satellite state and advanced by every driver record, is `⟨I² − Q²⟩ / A²`,
+an estimate of `cos 2φ`, from exponential averages of the prompt, updated every
+record, over a time constant of 0.1 s and at least 25 records (0.25 s for 10 ms
+records). It is normalised by the signal power `A²` averaged alike and estimated
+from the prompt's moments as `√(2 M₂² − M₄)`, so it reads the same at any C/N₀:
+unlike `⟨I² − Q²⟩ / ⟨I² + Q²⟩` it does not read low at low C/N₀ when the loop is
+locked. Its threshold, [`phase_lock_indicator_threshold`](@ref TrackingLoops.phase_lock_indicator_threshold)
+(0.5, an RMS phase error of about 30°), is overridable per signal type; a
+receiver may read the indicator for its own lock decisions.
+
+A separate frequency-lock indicator, `Re ⟨(Pₖ P̄ₖ₋ₗ)²⟩ / A⁴` over prompts 10 ms
+apart, was tried to drop the FLL as soon as the Doppler converged. In a
+sample-level simulation (GPS L1 C/A, L5Q, Galileo E1C, GPS L1C-P at 27.5–45
+dB-Hz) dropping on phase lock staged as well or better: the same lock rate and
+jitter, the FLL dropped with far less residual Doppler at low C/N₀ (p90 1–8 Hz
+against 6–23 Hz), and no aliases, which the frequency indicator reads every
+50 Hz within the 1 ms FLL range. Only on 10 ms records did the FLL drop about
+0.3 s later.
+
   - **The pure PLL** is the FLL-assisted filter with a zero FLL input, which is
     exactly the third-order PLL `ThirdOrderBilinearLF` (same state, same
-    coefficients), so the switch costs nothing and leaves no transient.
+    coefficients), so dropping the FLL costs nothing and leaves no transient.
   - **Four-quadrant discriminators** apply where the replica wipes every sign
     modulation off the prompt and the sign is known: a pilot synced to its
     secondary code. The host passes that sign per record as `polarity`
@@ -166,15 +198,18 @@ There is no down-staging: the pure PLL stays until
     previous prompt (see [`LoopRecord`](@ref)), so the four-quadrant FLL never
     compares across the sync.
 
-With a carrier filter other than the FLL-assisted one the loop is a PLL from the
-start and runs no frequency lock indicator. In the vector loop the FLL branch
-carries the navigation filter's carrier correction, so it is not staged; its
-discriminators follow `polarity` as in the scalar loop.
+With a carrier filter other than the FLL-assisted one the loop starts at the
+wide pure PLL. In the vector loop the FLL branch carries the navigation filter's
+carrier correction, so it is not staged: it runs at the narrow bandwidth with
+the FLL slot tied to it, and its discriminators follow `polarity` as in the
+scalar loop.
 
-Dropping the FLL makes a loop less tolerant of NCO delay: at 85 Hz the
-NCO-referenced loop holds through five records of delay instead of six. At the
-default 18 Hz both the conventional and the NCO-referenced loop hold through
-about twenty.
+A wider loop is less tolerant of NCO delay. At the default 50 Hz wide
+bandwidth the conventional loop holds through three records of delay; at 50 Hz
+the NCO-referenced loop would hold through seven. The NCO-referenced loop, meant
+for hardware correlators whose commands land records later, therefore defaults
+its wide bandwidth to the 18 Hz narrow bandwidth, where it holds through
+thirteen.
 
 ## Signal combining
 
@@ -215,7 +250,7 @@ before the driver record it ends within, and asks
     which are blind to a sign flip of a whole record, so data passengers and
     records correlated before a passenger's own sync are combined like any
     other. They are combined into a carrier loop while it is formed, the FLL
-    until frequency lock. Into a four-quadrant driver discriminator they are
+    in the FLL-assisted stage. Into a four-quadrant driver discriminator they are
     combined only while its reading lies within their own two-quadrant range,
     ±1/4 cycle for the PLL and ±1/(4T) for the FLL, where both read the error
     alike. Passengers stay two-quadrant even where their own prompt is wiped

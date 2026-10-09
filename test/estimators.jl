@@ -6,12 +6,21 @@ const LOOP_SIGNAL = GPSL1CA()
 const LOOP_FS = 4e6Hz
 const LOOP_N = 4000
 
-# The delay a loop tolerates shrinks as its bandwidth grows: at the default 18 Hz
-# the conventional loop holds through 20 records of delay. The delay tests run
-# the loops at 85 Hz, where 5 records make it limit-cycle. (Once frequency-locked
-# the loops run without the FLL branch, which at 85 Hz costs the NCO-referenced
-# loop its tolerance of a sixth record.)
-const WIDE_LOOP = (; carrier_loop_filter_bandwidth = 85.0Hz)
+# The delay a loop tolerates shrinks as its bandwidth grows: at the default 50 Hz
+# wide bandwidth the conventional loop holds through 3 records of delay (at 5 it
+# locks onto the 1/(2T) alias), the NCO-referenced loop at 50 Hz through 7 — so
+# its default wide bandwidth stays at the 18 Hz narrow bandwidth, where it
+# holds through 13 (the conventional loop at 18 Hz through 20).
+
+# The conventional loop at the NCO-referenced loop's default wide bandwidth,
+# for the tests that compare the two arithmetically.
+const MATCHED = (; wide_carrier_loop_filter_bandwidth = 18.0Hz)
+# The delay tests run the loops at 85 Hz, where 5 records make the conventional
+# loop limit-cycle. (Once phase-locked the loops run without the FLL branch,
+# which at 85 Hz costs the NCO-referenced loop its tolerance of a sixth record.)
+# The loops narrow to the narrow bandwidth after phase lock, so the steady state
+# is checked once that transient has settled.
+const WIDE_LOOP = (; wide_carrier_loop_filter_bandwidth = 85.0Hz)
 
 loop_epl(late, prompt, early) =
     EarlyPromptLateCorrelator(SVector{3,ComplexF64}(late, prompt, early), 0.5)
@@ -47,7 +56,7 @@ function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, p
 end
 
 @testset "With no delay the NCO-referenced loop is the conventional loop" begin
-    conventional = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(), 0; steps = 1200)
+    conventional = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(; MATCHED...), 0; steps = 1200)
     referenced = simulate_delayed_loop(NCOReferencedPLLAndDLL(), 0; steps = 1200)
     @test referenced[1] == conventional[1]
     @test referenced[2] == conventional[2]
@@ -58,18 +67,24 @@ end
 end
 
 @testset "The NCO-referenced loop holds lock through $d records of delay" for d in 1:5
-    phases, words = simulate_delayed_loop(NCOReferencedPLLAndDLL(; WIDE_LOOP...), d; steps = 1200)
-    @test all(abs.(phases[1000:end]) .< 0.05)
-    @test all(abs.(words[1000:end] .- 130.0) .< 0.3)
+    phases, words = simulate_delayed_loop(NCOReferencedPLLAndDLL(; WIDE_LOOP...), d; steps = 2500)
+    @test all(abs.(phases[2200:end]) .< 0.05)
+    @test all(abs.(words[2200:end] .- 130.0) .< 0.3)
     # The pull-in transient stays clear of the ±π/2 edge where the BPSK
     # discriminator slips.
     @test maximum(abs.(phases[100:end])) < 1.4
 end
 
-@testset "The default loop holds lock through six records of delay" begin
-    phases, words = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(), 6; steps = 1200)
-    @test all(abs.(phases[1100:end]) .< 0.05)
-    @test all(abs.(words[1100:end] .- 130.0) .< 0.3)
+@testset "The default loops hold lock through their delays" begin
+    for (estimator, d) in (
+        (ConventionalAssistedPLLAndDLL(), 3),
+        (NCOReferencedPLLAndDLL(; wide_carrier_loop_filter_bandwidth = 50.0Hz), 7),
+        (NCOReferencedPLLAndDLL(), 13),
+    )
+        phases, words = simulate_delayed_loop(estimator, d; steps = 2500)
+        @test all(abs.(phases[2200:end]) .< 0.05)
+        @test all(abs.(words[2200:end] .- 130.0) .< 0.3)
+    end
 end
 
 @testset "The conventional loop and the negative control limit-cycle at five records of delay" begin
@@ -89,17 +104,17 @@ end
     state = init_estimator_state(estimator, GPSL1CA(), 1234.0Hz, 0.8Hz)
     @test state isa SatNCOReferencedPLLAndDLL
     @test state.init_carrier_doppler == 1234.0Hz
-    @test state.carrier_loop_filter_bandwidth == 18.0Hz
+    @test state.bandwidths.wide_carrier == 18.0Hz
     @test isnan(state.previous_record_center)
-    narrow = NCOReferencedPLLAndDLL(; carrier_loop_filter_bandwidth = 12.0Hz)
-    @test init_estimator_state(narrow, GPSL1CA(), 0.0Hz, 0.0Hz).carrier_loop_filter_bandwidth == 12.0Hz
+    narrow = NCOReferencedPLLAndDLL(; wide_carrier_loop_filter_bandwidth = 12.0Hz)
+    @test init_estimator_state(narrow, GPSL1CA(), 0.0Hz, 0.0Hz).bandwidths.wide_carrier == 12.0Hz
     reset_state = reset_estimator_state(narrow, init_estimator_state(narrow, GPSL1CA(), 0.0Hz, 0.0Hz), 50.0Hz, 0.03Hz)
     @test reset_state.init_carrier_doppler == 50.0Hz
-    @test reset_state.carrier_loop_filter_bandwidth == 12.0Hz
+    @test reset_state.bandwidths.wide_carrier == 12.0Hz
     @test reset_state.carrier_loop_filter.x1 == 0.0Hz
     conv = init_estimator_state(ConventionalAssistedPLLAndDLL(), GalileoE1B(), 0.0Hz, 0.0Hz)
     @test conv isa SatConventionalPLLAndDLL
-    @test conv.carrier_loop_filter_bandwidth == default_carrier_loop_filter_bandwidth(GalileoE1B())
+    @test conv.bandwidths.wide_carrier == default_wide_carrier_loop_filter_bandwidth(GalileoE1B())
     @test estimator_state_type(ConventionalAssistedPLLAndDLL(), GPSL1CA()) === typeof(conv)
 end
 
@@ -107,7 +122,7 @@ end
     # The software receiver's path: one fixed word per chunk and no landing
     # sample, so the prediction branch is never entered.
     signal = LOOP_SIGNAL
-    conventional = ConventionalAssistedPLLAndDLL()
+    conventional = ConventionalAssistedPLLAndDLL(; MATCHED...)
     referenced = NCOReferencedPLLAndDLL()
     conv_state = init_estimator_state(conventional, signal, 100.0Hz, 0.1Hz)
     ref_state = init_estimator_state(referenced, signal, 100.0Hz, 0.1Hz)
@@ -128,7 +143,7 @@ end
 end
 
 @testset "The negative control is the conventional loop at any delay" for d in (2, 4)
-    conventional = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(), d; steps = 300)
+    conventional = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(; MATCHED...), d; steps = 300)
     control = simulate_delayed_loop(NCOReferencedPLLAndDLL(; predict_landing = false), d; steps = 300)
     @test control == conventional
 end
@@ -146,8 +161,8 @@ end
     @test reset.init_code_doppler == 0.02Hz
     @test reset.carrier_loop_filter == ThirdOrderAssistedBilinearLF()
     @test reset.code_loop_filter == SecondOrderBilinearLF()
-    @test reset.carrier_loop_filter_bandwidth == state.carrier_loop_filter_bandwidth
-    @test reset.code_loop_filter_bandwidth == 0.5Hz
+    @test reset.bandwidths == state.bandwidths
+    @test reset.bandwidths.code == 0.5Hz
 end
 
 @testset "$(nameof(typeof(estimator))) is driven through the estimator interface alone" for estimator in (

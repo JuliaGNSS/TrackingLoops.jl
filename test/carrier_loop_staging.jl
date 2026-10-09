@@ -1,13 +1,15 @@
-# The carrier loop's staging: FLL-assisted until frequency lock, a pure PLL
+# The carrier loop's staging: FLL-assisted until the phase-lock indicator reads
+# lock, a wide pure PLL until it has held lock for longer, a narrow pure PLL
 # after, and four-quadrant discriminators on a wiped-off prompt. Ported from
 # Tracking.jl's `test/carrier_loop_staging.jl`; the end-to-end tracking tests
 # stay there.
 
 using TrackingLoopFilters: ThirdOrderAssistedBilinearLF, ThirdOrderBilinearLF
 using Accessors: @set, setproperties
+using Random: Xoshiro
+using Statistics: mean, median
 
 _staging_correlator(p) = EarlyPromptLateCorrelator(SVector(p / 2, p, p / 2), 0.5)
-_locked() = FrequencyLockIndicator(0.0Hz * 0.0s, 0.0s, true)
 
 # One 1 ms GPS L5Q record through `estimator`'s loop at a fixed zero replica
 # word; returns the carrier update and the new state.
@@ -61,69 +63,99 @@ state_init_carrier_doppler(state::SatVectorPLLAndDLL) = state.inner.init_carrier
     @test get_sync_polarity(GPSL2CL(), BitBuffer{UInt32}(), 1) === Int8(0)
 end
 
-@testset "Frequency lock indicator" begin
-    update = TrackingLoops._update_frequency_lock
-    signal = GPSL5Q()
-    T = 1 / 1000Hz
-    # Records until lock is declared, for a constant FLL reading.
-    function records_to_lock(fll; integration_time = T, max_records = 10_000)
-        indicator = FrequencyLockIndicator()
-        for n = 1:max_records
-            indicator = @inferred update(indicator, signal, fll, cis(0.0), integration_time)
-            indicator.locked && return n
-        end
-        nothing
-    end
-    # Decided at the end of each 0.5 s window.
-    @test records_to_lock(1.0Hz) in 499:501
-    @test records_to_lock(-2.9Hz) in 499:501
-    @test records_to_lock(1.0Hz; integration_time = 1 / 50Hz) in 24:26
-    @test isnothing(records_to_lock(3.5Hz))
-    @test isnothing(records_to_lock(-3.5Hz))
+@testset "Phase-lock indicator time constant and threshold" begin
+    @test TrackingLoops._phase_lock_time_constant(1ms) == 0.1s
+    @test TrackingLoops._phase_lock_time_constant(4ms) == 0.1s
+    @test TrackingLoops._phase_lock_time_constant(10ms) == 0.25s
+    @test TrackingLoops._phase_lock_time_constant(20ms) == 0.5s
+    @test phase_lock_indicator_threshold(GPSL5Q(), 1ms) == 0.5
+end
 
-    # On long records the window spans at least four of them, and the threshold
-    # shrinks to a quarter of the FLL's ±1/(4T) range, which 3 Hz would exceed:
-    # GPS L2 CL's 1.5 s records read at most 0.17 Hz.
-    @test frequency_lock_window(signal, T) == 0.5s
-    @test frequency_lock_threshold(signal, T) == 3.0Hz
-    @test frequency_lock_window(GPSL2CL(), 1.5s) == 6.0s
-    @test frequency_lock_threshold(GPSL2CL(), 1.5s) ≈ 1 / 24 * 1Hz
-    @test isnothing(records_to_lock(0.1Hz; integration_time = 1.5s, max_records = 100))
-    @test records_to_lock(0.03Hz; integration_time = 1.5s) == 4
-
-    # It is the window mean that counts: noise around zero averages out, a
-    # residual error does not.
-    function after_window(fll)
-        indicator = FrequencyLockIndicator()
-        for k = 1:500
-            indicator = update(indicator, signal, fll(k) * 1Hz, cis(0.0), T)
+@testset "Phase-lock indicator" begin
+    update(indicator, prompt, T) =
+        TrackingLoops._update_phase_lock(indicator, prompt, T, GPSL5Q())
+    T = 1ms
+    # The indicator after `n` records of the prompts `prompt(k)`.
+    function indicator_after(prompt, n; T = T)
+        indicator = TrackingLoops.PhaseLockIndicator()
+        for k = 1:n
+            indicator = @inferred update(indicator, prompt(k), T)
         end
         indicator
     end
-    @test after_window(k -> isodd(k) ? 20.0 : -20.0).locked
-    @test after_window(k -> isodd(k) ? 24.0 : -16.0) === FrequencyLockIndicator()
+    @test isnan(phase_lock_indicator(TrackingLoops.PhaseLockIndicator()))
+    # Nothing until the averages span the 0.1 s time constant: 100 records.
+    @test isnan(phase_lock_indicator(indicator_after(k -> cis(0.1), 99)))
+    @test !isnan(phase_lock_indicator(indicator_after(k -> cis(0.1), 100)))
 
-    # A record without a previous prompt has no FLL reading, and lock latches.
-    @test update(FrequencyLockIndicator(), signal, 0.0Hz, 0.0im, T) ===
-          FrequencyLockIndicator()
-    @test update(_locked(), signal, 10.0Hz, cis(0.0), T) === _locked()
+    # A clean prompt at a fixed phase: cos 2φ.
+    locked = indicator_after(k -> 3.0 * cis(0.1), 110)
+    @test phase_lock_indicator(locked) ≈ cos(0.2)
+    # Data bits and secondary-code chips flip the prompt's sign: it is blind to it.
+    flips = indicator_after(k -> (isodd(k ÷ 7) ? -3.0 : 3.0) * cis(0.1), 200)
+    @test phase_lock_indicator(flips) ≈ cos(0.2)
+    # A spinning phase reads about zero.
+    spinning = indicator_after(k -> cis(2π * 20.0 * k * 1e-3), 200)
+    @test abs(phase_lock_indicator(spinning)) < 0.05
+
+    # Normalised by the averaged signal power, it reads the phase, not the SNR: at
+    # 0 dB per record a locked loop's median reading stays near 1, where
+    # Σ(I² − Q²) / Σ(I² + Q²) reads 1/2. Single readings scatter widely at that SNR
+    # (a small power estimate inflates them), which the hold absorbs.
+    rng = Xoshiro(1)
+    indicator = TrackingLoops.PhaseLockIndicator()
+    readings = Float64[]
+    ratio = 0.0
+    power = 0.0
+    for k = 1:50_000
+        p = 1.0 + (randn(rng) + im * randn(rng)) / sqrt(2)
+        indicator = update(indicator, p, T)
+        ratio += real(p)^2 - imag(p)^2
+        power += abs2(p)
+        k % 100 == 0 && k > 100 && push!(readings, phase_lock_indicator(indicator))
+    end
+    @test median(readings) ≈ 1.0 atol = 0.1
+    @test ratio / power ≈ 0.5 atol = 0.02
+
+    # A record of another length restarts the averages; the sample-rounding jitter
+    # of a record's length does not.
+    longer = update(locked, 20.0 * cis(0.1), 20ms)
+    @test longer.num_records == 1 && isnan(phase_lock_indicator(longer))
+    @test update(locked, cis(0.1), 1.0002ms).num_records == locked.num_records + 1
+
+    # The hold runs from the first reading at or above the threshold, and breaks at
+    # the first below it: the 100th record of a locked prompt is its first reading.
+    @test indicator_after(k -> 3.0 * cis(0.1), 100).hold == 1ms
+    @test locked.hold ≈ 11ms
+    @test update(locked, 3.0 * cis(0.1), T).hold ≈ 12ms
+    @test spinning.hold == 0.0s
+    @test TrackingLoops.PhaseLockIndicator().hold == 0.0s
+    # A record of another length restarts the averages and so the hold.
+    @test longer.hold == 0.0s
+    # Restarting the hold keeps the averages.
+    restarted = TrackingLoops._restart_hold(locked)
+    @test restarted.hold == 0.0s
+    @test phase_lock_indicator(restarted) == phase_lock_indicator(locked)
+    @test TrackingLoops._held(100ms, 1, T) && !TrackingLoops._held(99ms, 1, T)
 end
 
-@testset "Frequency-locked FLL-assisted filter is the pure PLL, with $(nameof(typeof(assisted_estimator)))" for assisted_estimator in
+@testset "The wide stage of the FLL-assisted filter is the pure PLL, with $(nameof(typeof(assisted_estimator)))" for assisted_estimator in
                                                                                                                 (
     ConventionalAssistedPLLAndDLL(),
     NCOReferencedPLLAndDLL(),
 )
-    plain_estimator = ConventionalPLLAndDLL()
-    locked(estimator) = TrackingLoops._stepped_state(
-        init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz),
-        nothing,
-        nothing,
-        NaN,
-        _locked(),
+    # The plain PLL at the assisted loop's own wide bandwidth (the
+    # NCO-referenced loop's default is narrower).
+    plain_estimator = ConventionalPLLAndDLL(;
+        wide_carrier_loop_filter_bandwidth = init_estimator_state(assisted_estimator, GPSL5Q(), 0.0Hz, 0.0Hz).bandwidths.wide_carrier,
     )
-    assisted = locked(assisted_estimator)
-    plain = locked(plain_estimator)
+    @test carrier_loop_stage(init_estimator_state(plain_estimator, GPSL5Q(), 0.0Hz, 0.0Hz)) == WIDE_PLL
+    @test carrier_loop_stage(init_estimator_state(assisted_estimator, GPSL5Q(), 0.0Hz, 0.0Hz)) ==
+          FLL_ASSISTED_PLL
+    wide(estimator) = @set init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz).staging.stage =
+        WIDE_PLL
+    assisted = wide(assisted_estimator)
+    plain = wide(plain_estimator)
     previous_prompt = cis(0.0)
     for k = 1:20
         prompt = cis(0.3 * sin(k))
@@ -135,18 +167,42 @@ end
     @test assisted.carrier_loop_filter.x1 == plain.carrier_loop_filter.x1
     @test assisted.carrier_loop_filter.x2 == plain.carrier_loop_filter.x2
 
-    # Before lock the FLL branch reads the FLL discriminator.
-    unlocked = init_estimator_state(assisted_estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
-    with_fll, _ = staging_step(assisted_estimator, unlocked, cis(0.3), cis(0.0))
-    without_fll, _ = staging_step(assisted_estimator, unlocked, cis(0.3), 0.0im)
+    # While FLL-assisted the FLL branch reads the FLL discriminator, at the FLL's
+    # own bandwidth.
+    assisting = init_estimator_state(assisted_estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
+    with_fll, _ = staging_step(assisted_estimator, assisting, cis(0.3), cis(0.0))
+    without_fll, _ = staging_step(assisted_estimator, assisting, cis(0.3), 0.0im)
     @test with_fll != without_fll
+    wider_fll = @set assisting.bandwidths.fll_assist = 10.0Hz
+    @test staging_step(assisted_estimator, wider_fll, cis(0.3), cis(0.0))[1] != with_fll
+    no_fll = @set assisting.bandwidths.fll_assist = 0.0Hz
+    @test staging_step(assisted_estimator, no_fll, cis(0.3), cis(0.0))[1] == without_fll
 
     # Resetting restarts the staging.
-    @test reset_estimator_state(assisted_estimator, assisted, 0.0Hz, 0.0Hz).frequency_lock ===
-          FrequencyLockIndicator()
+    reset = reset_estimator_state(assisted_estimator, assisted, 0.0Hz, 0.0Hz)
+    @test carrier_loop_stage(reset) == FLL_ASSISTED_PLL
+    @test reset.staging.phase_lock === TrackingLoops.PhaseLockIndicator()
+    @test reset.staging.phase_lock.hold == 0.0s
 end
 
-@testset "Scalar loop: four-quadrant PLL from the sync, FLL dropped at frequency lock" begin
+@testset "The stage sets the carrier bandwidth" begin
+    estimator = ConventionalAssistedPLLAndDLL()
+    state = init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
+    bandwidth(state, T) =
+        TrackingLoops._carrier_bandwidth(state.bandwidths, carrier_loop_stage(state), T)
+    @test bandwidth(state, 1ms) == 50.0Hz
+    @test bandwidth(state, 4ms) ≈ 22.5Hz
+    @test bandwidth(state, 10ms) ≈ 9.0Hz
+    @test bandwidth((@set state.staging.stage = WIDE_PLL), 1ms) == 50.0Hz
+    narrow = @set state.staging.stage = NARROW_PLL
+    @test bandwidth(narrow, 1ms) == 18.0Hz
+    @test bandwidth(narrow, 4ms) ≈ 10.0Hz
+    @test bandwidth(narrow, 10ms) ≈ 4.0Hz
+    @test TrackingLoops._fll_assist_bandwidth(state.bandwidths, 1ms) == 5.0Hz
+    @test TrackingLoops._fll_assist_bandwidth(state.bandwidths, 10ms) ≈ 2.0Hz
+end
+
+@testset "Scalar loop: staged on phase lock, four-quadrant from the sync" begin
     # A closed loop on a synced pilot's prompt, locked half a cycle off, which
     # the sync's sign of -1 accounts for.
     integration_time = 1 / 1000Hz
@@ -157,18 +213,28 @@ end
     previous_prompt = 0.0im
     max_error = 0.0
     freq_update = 0.0Hz
+    stages = CarrierLoopStage[]
     for k = 1:3000
         prompt = -cis(φ)
         freq_update, state = staging_step(estimator, state, prompt, previous_prompt, -1)
-        state.frequency_lock.locked &&
+        push!(stages, carrier_loop_stage(state))
+        carrier_loop_stage(state) == NARROW_PLL &&
             (max_error = max(max_error, abs(rem2pi(φ, RoundNearest))))
         previous_prompt = prompt
         φ += 2π * Float64((true_doppler - freq_update) * integration_time)
     end
-    @test state.frequency_lock.locked
+    # The FLL dropped once the phase-lock indicator, reading from record 100 on,
+    # has held lock for 0.1 s; the loop narrowed once it has held for another
+    # 0.4 s from there.
+    first_wide = findfirst(==(WIDE_PLL), stages)
+    first_narrow = findfirst(==(NARROW_PLL), stages)
+    @test first_wide == 199
+    @test first_narrow == 599
+    @test carrier_loop_stage(state) == NARROW_PLL
+    @test phase_lock_indicator(state) > 0.99
     @test max_error < 0.2
     @test abs(rem2pi(φ, RoundNearest)) < 0.01
-    # Pure PLL from lock on: the FLL branch adds nothing to the frequency state.
+    # Pure PLL from the FLL drop on: the FLL branch adds nothing.
     @test freq_update ≈ true_doppler atol = 0.01Hz
 
     # The Costas PLL locks half a cycle off on the same prompt, and without the
@@ -219,16 +285,18 @@ end
     _, with_flips = staging_step(estimator, vt_state, cis(2π / 3), cis(0.0), 0)
     @test TrackingLoops._mean_carrier_discriminator(wiped_off) ≈ (333 + 1 / 3) * 1Hz
     @test TrackingLoops._mean_carrier_discriminator(with_flips) ≈ -(166 + 2 / 3) * 1Hz
-    # No frequency lock indicator in the vector loop: it stays FLL-assisted.
+    # Not staged in the vector loop: it stays FLL-assisted.
     for _ = 1:2000
         _, vt_state = staging_step(estimator, vt_state, cis(0.01), cis(0.0))
     end
-    @test vt_state.inner.frequency_lock === FrequencyLockIndicator()
+    @test carrier_loop_stage(vt_state) == FLL_ASSISTED_PLL
+    @test vt_state.inner.staging.phase_lock === TrackingLoops.PhaseLockIndicator()
 
     # Out of the vector loop it stages like the scalar loop.
     fallback = @set vt_state.vt_on = false
     for _ = 1:1500
         _, fallback = staging_step(estimator, fallback, cis(0.01), cis(0.0))
     end
-    @test fallback.inner.frequency_lock.locked
+    @test carrier_loop_stage(fallback) == NARROW_PLL
+    @test phase_lock_indicator(fallback) ≈ cos(0.02)
 end

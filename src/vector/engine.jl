@@ -597,18 +597,14 @@ _own_cn0_dbhz(held_cn0_dbhz, cn0_estimator, integration_time) =
 _refilling(cn0_estimator::MomentsCN0Estimator) =
     length(cn0_estimator) < length(get_prompt_buffer(cn0_estimator))
 
-# Relative change of a signal's record length that restarts its C/N₀ estimate: the
-# moment estimator would mix prompts of two noise scales and divide them by one
-# integration time. Well below the factor between two lengths (1 to 20 ms at bit sync).
-const _CN0_RECORD_LENGTH_CHANGE = 0.25
-
 # A signal's C/N₀ estimate for a record of `integration_time` after one of
 # `previous_integration_time`: unchanged at about the same length; otherwise restarted,
-# with the estimate before the change held until the restarted one has refilled
+# as the moment estimator would mix prompts of two noise scales under one integration
+# time, with the estimate before the change held until the restarted one has refilled
 # (a few prompts read as an arbitrarily high C/N₀). Returns `(held, estimator)`.
 function _restart_cn0(held_cn0_dbhz, cn0_estimator, previous_integration_time, integration_time)
-    abs(integration_time - previous_integration_time) >
-    _CN0_RECORD_LENGTH_CHANGE * integration_time || return held_cn0_dbhz, cn0_estimator
+    _record_length_changed(previous_integration_time, integration_time) ||
+        return held_cn0_dbhz, cn0_estimator
     held =
         iszero(length(cn0_estimator)) ? NaN :
         _own_cn0_dbhz(held_cn0_dbhz, cn0_estimator, previous_integration_time)

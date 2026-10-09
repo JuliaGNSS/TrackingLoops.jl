@@ -69,12 +69,13 @@ While a satellite is in the vector loop:
 The carrier loop's staging and discriminators follow the satellite's mode:
 
   - Out of the vector loop `inner` stages its carrier loop as it does on its own
-    (see [`FrequencyLockIndicator`](@ref)): FLL-assisted until frequency lock,
-    then the PLL alone. In the vector loop the FLL branch carries the filter's
-    carrier correction, so it is never dropped and the indicator is left as it
-    is. A satellite the filter releases re-seeds `inner` from the replica's
-    Dopplers, which restarts the staging; one it takes over keeps `inner`'s
-    state.
+    (see [`CarrierLoopStage`](@ref)): FLL-assisted at the wide bandwidth until
+    phase lock, then the PLL alone, narrowed once lock has held. In the vector
+    loop the FLL branch carries the filter's carrier correction, so it is never
+    dropped, the PLL runs at the narrow bandwidth, and the stage and phase-lock
+    indicator are left as they are. A satellite the filter releases re-seeds
+    `inner` from the replica's Dopplers, which restarts the staging; one it
+    takes over keeps `inner`'s state.
   - The discriminators are the record's in either mode: four-quadrant where its
     `polarity` says the prompt is wiped off (a pilot synced to its secondary
     code), two-quadrant otherwise. The PLL reads them in the vector loop too,
@@ -510,11 +511,13 @@ end
         _record_discriminators(estimator, state, record, words, landing_sample, true),
         _PLL_ONLY,
     )
+    # Not staged: the vector loop runs the carrier filter at the narrow
+    # bandwidth, its FLL slot tied to it as before the bandwidths were separated.
     carrier_filter_output, carrier_loop_filter = filter_loop(
         state.carrier_loop_filter,
         (discriminators.phase_error, carrier_freq_update),
         discriminators.integration_time,
-        discriminators.carrier_bandwidth,
+        _narrow_carrier_bandwidth(state.bandwidths, discriminators.integration_time),
     )
     carrier_doppler, code_doppler = aid_dopplers(
         record.signal,
@@ -524,13 +527,13 @@ end
         code_freq_update,
     )
     # Not staged: the FLL slot carries the navigation filter's carrier update, and
-    # the frequency lock indicator is left as it is.
+    # the stage and the phase-lock indicator are left as they are.
     _stepped_state(
         state,
         carrier_loop_filter,
         state.code_loop_filter,
         discriminators.center,
-        state.frequency_lock,
+        state.staging,
     ),
     carrier_doppler,
     code_doppler,
@@ -546,3 +549,6 @@ combines_signals(estimator::VectorPLLAndDLL) = estimator.combine_signals
 takes_passenger_records(estimator::VectorPLLAndDLL) =
     combines_signals(estimator) ||
     any(group -> !_drives_data_signal(group), estimator.navigation.groups)
+
+carrier_loop_stage(state::SatVectorPLLAndDLL) = carrier_loop_stage(state.inner)
+phase_lock_indicator(state::SatVectorPLLAndDLL) = phase_lock_indicator(state.inner)
