@@ -7,7 +7,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    SignalLoopState(signal; num_prompts_for_cn0_estimation = 100, cn0_estimator, post_corr_filter)
+    SignalLoopState(signal; num_prompts_for_cn0_estimation = 100, cn0_estimator,
+                    post_corr_filter)
 
 The per-record state of one signal component on a satellite: its bit buffer,
 C/N₀ estimator, post-correlation filter, the last filtered prompt (which the
@@ -43,7 +44,10 @@ function SignalLoopState(
     # the signal's detector uses, so the first record after an arm — and every
     # re-arm and bit-clock restart, which zero them in place — allocates nothing.
     if uses_soft_bit_edge_detection(signal)
-        _seed_phase_accumulators!(bit_buffer.phase_acc, _calc_num_code_blocks_that_form_a_bit(signal))
+        _seed_phase_accumulators!(
+            bit_buffer.phase_acc,
+            _calc_num_code_blocks_that_form_a_bit(signal),
+        )
     elseif uses_soft_secondary_code_detection(signal)
         _seed_phase_accumulators!(bit_buffer.phase_acc, get_secondary_code_length(signal))
     end
@@ -105,7 +109,12 @@ end
 
 # `get_sync_polarity` of a record correlated with `bit_buffer`'s state, or with the
 # pre-sync replica if `correlated_pre_sync`, which leaves the secondary code on.
-@inline _correlated_polarity(signal, bit_buffer::BitBuffer, prn, correlated_pre_sync::Bool) =
+@inline _correlated_polarity(
+    signal,
+    bit_buffer::BitBuffer,
+    prn,
+    correlated_pre_sync::Bool,
+) =
     _drops_pre_sync_prompt(signal, correlated_pre_sync) ? Int8(0) :
     get_sync_polarity(signal, bit_buffer, prn)
 
@@ -209,12 +218,19 @@ Tracking's per-record advance performs, in the same order.
         noise_density_ready,
         output.integrated_samples / sampling_frequency,
     )
-    bit_buffer =
-        _advance_bit_buffer(signal, prn, bit_buffer, bit_block_count, bit_prompt, correlated_pre_sync)
+    bit_buffer = _advance_bit_buffer(
+        signal,
+        prn,
+        bit_buffer,
+        bit_block_count,
+        bit_prompt,
+        correlated_pre_sync,
+    )
     # A post-sync record that carried the accumulator past the bit boundary
     # made `buffer` drop sync and restart the search: report it, so the caller
     # can say so (a receiver logs, a loop process publishes a status event).
-    overshoot = has_bit_or_secondary_code_been_found(bit_buffer_before) &&
+    overshoot =
+        has_bit_or_secondary_code_been_found(bit_buffer_before) &&
         !has_bit_or_secondary_code_been_found(bit_buffer)
     return bit_buffer,
     cn0_estimator,
@@ -259,20 +275,26 @@ half of a pilot/data pair) must be handed the driver's.
     driver_carrier_phase_offset::Real = get_carrier_phase_offset(signal);
     correlated_pre_sync::Bool = false,
 )
-    bit_buffer, cn0_estimator, post_corr_filter, prompt, filtered_correlator, _, integrated_code_blocks, overshoot =
-        fold_record(
-            signal,
-            prn,
-            state.bit_buffer,
-            state.cn0_estimator,
-            state.post_corr_filter,
-            output,
-            sampling_frequency,
-            noise_density,
-            noise_density_ready,
-            driver_carrier_phase_offset,
-            correlated_pre_sync,
-        )
+    bit_buffer,
+    cn0_estimator,
+    post_corr_filter,
+    prompt,
+    filtered_correlator,
+    _,
+    integrated_code_blocks,
+    overshoot = fold_record(
+        signal,
+        prn,
+        state.bit_buffer,
+        state.cn0_estimator,
+        state.post_corr_filter,
+        output,
+        sampling_frequency,
+        noise_density,
+        noise_density_ready,
+        driver_carrier_phase_offset,
+        correlated_pre_sync,
+    )
     new_state = SignalLoopState(
         bit_buffer,
         cn0_estimator,

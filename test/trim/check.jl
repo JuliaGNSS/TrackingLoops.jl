@@ -18,7 +18,11 @@ build = mktempdir()
 run(`$juliac --output-exe vector_tracking_app --project $(@__DIR__) --bundle $build
     --trim=safe --experimental $app`)
 
-executable = joinpath(build, "bin", Sys.iswindows() ? "vector_tracking_app.exe" : "vector_tracking_app")
+executable = joinpath(
+    build,
+    "bin",
+    Sys.iswindows() ? "vector_tracking_app.exe" : "vector_tracking_app",
+)
 trimmed = read(`$executable`, String)
 regular = read(`$(Base.julia_cmd()) --project=$(@__DIR__) $app`, String)
 
@@ -27,5 +31,7 @@ if trimmed != regular
     println("\nThe regular session printed instead:\n", regular)
     error("the trimmed executable's output differs from the regular session's")
 end
-println("Trimmed executable ($(filesize(executable) ÷ 1024) KiB) matches the regular ",
-    "session on all $(count(==('\n'), trimmed)) reported cycles.")
+println(
+    "Trimmed executable ($(filesize(executable) ÷ 1024) KiB) matches the regular ",
+    "session on all $(count(==('\n'), trimmed)) reported cycles.",
+)

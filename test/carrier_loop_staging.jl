@@ -13,13 +13,7 @@ _staging_correlator(p) = EarlyPromptLateCorrelator(SVector(p / 2, p, p / 2), 0.5
 
 # One 1 ms GPS L5Q record through `estimator`'s loop at a fixed zero replica
 # word; returns the carrier update and the new state.
-function staging_step(
-    estimator,
-    state,
-    prompt,
-    previous_prompt,
-    polarity = 0,
-)
+function staging_step(estimator, state, prompt, previous_prompt, polarity = 0)
     record = LoopRecord(
         GPSL5Q(),
         _staging_correlator(prompt),
@@ -33,13 +27,8 @@ function staging_step(
     )
     # `step_satellite` (from `vector_estimator.jl`) is `step_loop` but for the
     # vector estimator, whose own loop it runs without the navigation engine.
-    state, carrier_doppler, _ = step_satellite(
-        estimator,
-        state,
-        record,
-        FixedNCOWord(0.0, 0.0),
-        NO_LANDING_SAMPLE,
-    )
+    state, carrier_doppler, _ =
+        step_satellite(estimator, state, record, FixedNCOWord(0.0, 0.0), NO_LANDING_SAMPLE)
     carrier_doppler - state_init_carrier_doppler(state), state
 end
 state_init_carrier_doppler(state) = state.init_carrier_doppler
@@ -139,27 +128,37 @@ end
     @test TrackingLoops._held(100ms, 1, T) && !TrackingLoops._held(99ms, 1, T)
 end
 
-@testset "The wide stage of the FLL-assisted filter is the pure PLL, with $(nameof(typeof(assisted_estimator)))" for assisted_estimator in
-                                                                                                                (
-    ConventionalAssistedPLLAndDLL(),
-    NCOReferencedPLLAndDLL(),
-)
+const _ASSISTED = (ConventionalAssistedPLLAndDLL(), NCOReferencedPLLAndDLL())
+
+# The wide stage of the FLL-assisted filter is the pure PLL.
+@testset "The wide stage is the pure PLL, $(nameof(typeof(e)))" for e in _ASSISTED
+    assisted_estimator = e
     # The plain PLL at the assisted loop's own wide bandwidth (the
     # NCO-referenced loop's default is narrower).
     plain_estimator = ConventionalPLLAndDLL(;
-        wide_carrier_loop_filter_bandwidth = init_estimator_state(assisted_estimator, GPSL5Q(), 0.0Hz, 0.0Hz).bandwidths.wide_carrier,
+        wide_carrier_loop_filter_bandwidth = init_estimator_state(
+            assisted_estimator,
+            GPSL5Q(),
+            0.0Hz,
+            0.0Hz,
+        ).bandwidths.wide_carrier,
     )
-    @test carrier_loop_stage(init_estimator_state(plain_estimator, GPSL5Q(), 0.0Hz, 0.0Hz)) == WIDE_PLL
-    @test carrier_loop_stage(init_estimator_state(assisted_estimator, GPSL5Q(), 0.0Hz, 0.0Hz)) ==
-          FLL_ASSISTED_PLL
-    wide(estimator) = @set init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz).staging.stage =
-        WIDE_PLL
+    @test carrier_loop_stage(
+        init_estimator_state(plain_estimator, GPSL5Q(), 0.0Hz, 0.0Hz),
+    ) == WIDE_PLL
+    @test carrier_loop_stage(
+        init_estimator_state(assisted_estimator, GPSL5Q(), 0.0Hz, 0.0Hz),
+    ) == FLL_ASSISTED_PLL
+    wide(estimator) =
+        @set init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz).staging.stage =
+            WIDE_PLL
     assisted = wide(assisted_estimator)
     plain = wide(plain_estimator)
     previous_prompt = cis(0.0)
     for k = 1:20
         prompt = cis(0.3 * sin(k))
-        assisted_update, assisted = staging_step(assisted_estimator, assisted, prompt, previous_prompt)
+        assisted_update, assisted =
+            staging_step(assisted_estimator, assisted, prompt, previous_prompt)
         plain_update, plain = staging_step(plain_estimator, plain, prompt, previous_prompt)
         @test assisted_update == plain_update
         previous_prompt = prompt

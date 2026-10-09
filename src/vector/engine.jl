@@ -68,13 +68,15 @@ function VectorTrackingSettings(;
             "vector loop too; build `inner` without it",
         ),
     )
-    combine_signals && !(inner isa ConventionalPLLAndDLL) && throw(
-        ArgumentError(
-            "$(nameof(typeof(inner))) steps a phase error predicted to the landing " *
-            "sample, which passenger records are not, so it cannot combine signals; " *
-            "use `ConventionalAssistedPLLAndDLL()` as the inner estimator",
-        ),
-    )
+    combine_signals &&
+        !(inner isa ConventionalPLLAndDLL) &&
+        throw(
+            ArgumentError(
+                "$(nameof(typeof(inner))) steps a phase error predicted to the landing " *
+                "sample, which passenger records are not, so it cannot combine signals; " *
+                "use `ConventionalAssistedPLLAndDLL()` as the inner estimator",
+            ),
+        )
     max_satellites_per_signal >= 1 ||
         throw(ArgumentError("`max_satellites_per_signal` must be at least 1"))
     T = Float64(ustrip(s, cycle_time)) * s
@@ -176,7 +178,8 @@ _group_signal_types(group::VTSlotGroup) =
 # A ranging signal on its own, or a satellite's signals with the driver first.
 _signal_group(signal::AbstractGNSSSignal) = (signal,)
 function _signal_group(signals::Tuple)
-    isempty(signals) || all(signal -> signal isa AbstractGNSSSignal, signals) ||
+    isempty(signals) ||
+        all(signal -> signal isa AbstractGNSSSignal, signals) ||
         throw(ArgumentError("a signal group lists signals, the driver first"))
     isempty(signals) && throw(ArgumentError("a signal group needs at least its driver"))
     signals
@@ -196,18 +199,19 @@ function _check_signal_group(signals::Tuple)
         ),
     )
     all(signal -> get_code_frequency(signal) == get_code_frequency(driver), signals) &&
-        all(signal -> get_center_frequency(signal) == get_center_frequency(driver), signals) ||
+    all(signal -> get_center_frequency(signal) == get_center_frequency(driver), signals) ||
         throw(
             ArgumentError(
                 "the signals of a group share the driver's code rate and carrier: " *
-                "list signals of one band and chip rate, such as a pilot and its data component",
+                "list signals of one band and chip rate, such as a pilot and its " *
+                "data component",
             ),
         )
     any(signal -> !iszero(get_data_frequency(signal)), signals) || throw(
         ArgumentError(
-            "vector tracking decodes the navigation data of the driver, or of a passenger " *
-            "for a dataless driver; $(nameof(typeof(driver))) carries none: list its data " *
-            "component with it, e.g. `(GalileoE1C(), GalileoE1B())`",
+            "vector tracking decodes the navigation data of the driver, or of a " *
+            "passenger for a dataless driver; $(nameof(typeof(driver))) carries none: " *
+            "list its data component with it, e.g. `(GalileoE1C(), GalileoE1B())`",
         ),
     )
     nothing
@@ -257,13 +261,12 @@ weights the satellite's measurements and decides its lock by; without it
     record::LoopRecord,
     words,
     landing_sample,
-) =
-    throw(
-        ArgumentError(
-            "this vector-tracking estimator was not built for " *
-            "$(nameof(typeof(record.signal))); list it among its signals",
-        ),
-    )
+) = throw(
+    ArgumentError(
+        "this vector-tracking estimator was not built for " *
+        "$(nameof(typeof(record.signal))); list it among its signals",
+    ),
+)
 @inline function _step_vector_record(
     estimator,
     nav,
@@ -311,7 +314,8 @@ function _step_vector_record(
     if _run_cycle_if_due!(nav, record)
         state = _take_up_cycle(nav, group, slot, state, record, words, landing)
     end
-    state, carrier_doppler, code_doppler = _step_satellite(estimator, state, record, words, landing_sample)
+    state, carrier_doppler, code_doppler =
+        _step_satellite(estimator, state, record, words, landing_sample)
     _advance_slot!(group, slot, record, words)
     state, carrier_doppler, code_doppler
 end
@@ -339,7 +343,13 @@ end
 # it has none, or the one it had was given away. A satellite seen before — the same PRN,
 # re-acquired — gets its old slot back, with the decoded data the decoder keeps; any
 # other takes a free slot, and only when none is free does the group grow.
-function _register!(nav::VectorNavigation, group::VTSlotGroup, g::Int, state::SatVectorPLLAndDLL, record::LoopRecord)
+function _register!(
+    nav::VectorNavigation,
+    group::VTSlotGroup,
+    g::Int,
+    state::SatVectorPLLAndDLL,
+    record::LoopRecord,
+)
     slots = group.slots
     index = state.slot
     if 1 <= index <= length(slots)
@@ -348,7 +358,9 @@ function _register!(nav::VectorNavigation, group::VTSlotGroup, g::Int, state::Sa
     end
     prn = record.prn
     prn > 0 || throw(
-        ArgumentError("vector tracking needs to know the satellite: set the record's `prn`"),
+        ArgumentError(
+            "vector tracking needs to know the satellite: set the record's `prn`",
+        ),
     )
     index = _find_slot(slots, prn)
     if index == 0
@@ -379,9 +391,16 @@ end
 # estimator start over in the vectors they own, and the decoder restarts its sync —
 # keeping the decoded data for the satellite that held the slot before, rebuilt for
 # another one.
-function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, record::LoopRecord)
+function _reset_slot!(
+    nav::VectorNavigation,
+    slot::VTSlot,
+    prn::Int,
+    state,
+    record::LoopRecord,
+)
     slot.running_decoder =
-        slot.prn == prn && slot.registration > 0 ? reset_decoder_state!(slot.running_decoder) :
+        slot.prn == prn && slot.registration > 0 ?
+        reset_decoder_state!(slot.running_decoder) :
         _rebind_decoder(slot.running_decoder, prn)
     slot.prn = prn
     slot.occupied = true
@@ -402,7 +421,8 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     for (i, passenger) in enumerate(slot.passengers)
         slot.passengers[i] = VTPassenger(_reset_cn0_estimator(passenger.cn0_estimator))
     end
-    slot.last_integration_time = uconvert(s, record.integrated_samples / record.sampling_frequency)
+    slot.last_integration_time =
+        uconvert(s, record.integrated_samples / record.sampling_frequency)
     slot.chips_since_epoch = 0.0
     if nav.pending_epoch == typemin(Int)
         nav.pending_epoch = _epoch_at_or_after(nav, slot.last_end_time)
@@ -461,12 +481,14 @@ function _take_up_cycle(
         state = _enable_vector_tracking(state)
     elseif !in_loop && state.vt_on
         carrier_doppler, code_doppler = mean_nco_word(words, landing, landing)
-        state = _release_from_vector_tracking(state, carrier_doppler * Hz, code_doppler * Hz)
+        state =
+            _release_from_vector_tracking(state, carrier_doppler * Hz, code_doppler * Hz)
     end
     if in_loop && slot.correction_cycle == id
         code_update, carrier_update, lead =
             _correction_at_landing(nav, group, slot, record, words, landing)
-        state = _set_vector_corrections(state, code_update * Hz, carrier_update * Hz, lead * s)
+        state =
+            _set_vector_corrections(state, code_update * Hz, carrier_update * Hz, lead * s)
     end
     SatVectorPLLAndDLL(state; cycle_id = id)
 end
@@ -494,7 +516,8 @@ function _correction_at_landing(
     code_frequency = ustrip(Hz, get_code_frequency(group.signal))
     _, code_word = mean_nco_word(words, slot.last_end_sample, landing)
     chips =
-        slot.chips_since_epoch + (landing - slot.last_end_sample) / fs * (code_frequency + code_word)
+        slot.chips_since_epoch +
+        (landing - slot.last_end_sample) / fs * (code_frequency + code_word)
     carrier_doppler, _ = mean_nco_word(words, landing, landing)
     code_update, carrier_update =
         _member_corrections(nav, slot, slot.member_index, lead, chips, carrier_doppler)
@@ -524,13 +547,15 @@ function _snapshot_epoch!(
     # This satellite is past the pending epoch, and so is every other that could still
     # snapshot it: the records resumed after a gap, so the epochs move on to where they
     # are.
-    if nav.num_snapshots == 0 && start_time > epoch_time &&
+    if nav.num_snapshots == 0 &&
+       start_time > epoch_time &&
        !_fold_slot_groups(_can_reach_epoch, false, nav.groups, nav, epoch_time, end_time)
         nav.pending_epoch = _epoch_at_or_after(nav, start_time)
         epoch_time = _epoch_time(nav, nav.pending_epoch)
     end
-    slot.snapshot_epoch < nav.pending_epoch && slot.first_epoch <= nav.pending_epoch &&
-        start_time <= epoch_time < end_time || return state
+    slot.snapshot_epoch < nav.pending_epoch &&
+    slot.first_epoch <= nav.pending_epoch &&
+    start_time <= epoch_time < end_time || return state
     code_frequency = ustrip(Hz, get_code_frequency(group.signal))
     epoch_sample = epoch_time * fs
     _, code_word = mean_nco_word(words, slot.last_end_sample, epoch_sample)
@@ -602,7 +627,12 @@ _refilling(cn0_estimator::MomentsCN0Estimator) =
 # as the moment estimator would mix prompts of two noise scales under one integration
 # time, with the estimate before the change held until the restarted one has refilled
 # (a few prompts read as an arbitrarily high C/N₀). Returns `(held, estimator)`.
-function _restart_cn0(held_cn0_dbhz, cn0_estimator, previous_integration_time, integration_time)
+function _restart_cn0(
+    held_cn0_dbhz,
+    cn0_estimator,
+    previous_integration_time,
+    integration_time,
+)
     _record_length_changed(previous_integration_time, integration_time) ||
         return held_cn0_dbhz, cn0_estimator
     held =
@@ -617,8 +647,11 @@ end
 function _can_reach_epoch(acc, group::VTSlotGroup, nav::VectorNavigation, epoch_time, now)
     acc && return true
     for slot in group.slots
-        slot.occupied && !_is_stale(nav, slot, now) && slot.first_epoch <= nav.pending_epoch &&
-            slot.last_end_time <= epoch_time && return true
+        slot.occupied &&
+            !_is_stale(nav, slot, now) &&
+            slot.first_epoch <= nav.pending_epoch &&
+            slot.last_end_time <= epoch_time &&
+            return true
     end
     false
 end
@@ -677,7 +710,8 @@ function _all_snapshotted(ready, group::VTSlotGroup, nav::VectorNavigation, now)
     ready || return false
     for slot in group.slots
         slot.occupied && !_is_stale(nav, slot, now) || continue
-        slot.snapshot_epoch == nav.pending_epoch || slot.first_epoch > nav.pending_epoch ||
+        slot.snapshot_epoch == nav.pending_epoch ||
+            slot.first_epoch > nav.pending_epoch ||
             return false
     end
     true
@@ -723,7 +757,8 @@ function _navigation_cycle!(nav::VectorNavigation, now)
     buffers = nav.buffers
     epoch = nav.pending_epoch
     cycle_time =
-        nav.cycle_epoch == typemin(Int) ? nav.cycle_time : (epoch - nav.cycle_epoch) * nav.cycle_time
+        nav.cycle_epoch == typemin(Int) ? nav.cycle_time :
+        (epoch - nav.cycle_epoch) * nav.cycle_time
     nav.cycle_id += 1
     dropped = _fold_slot_groups(_prepare_slots!, false, groups, nav, now)
     enabled = released = fell_back = false
@@ -907,13 +942,18 @@ end
     ),
 )
 @inline _driver_group(groups::Tuple, driver_signal::S) where {S} =
-    first(groups).signal isa S ? first(groups) : _driver_group(Base.tail(groups), driver_signal)
+    first(groups).signal isa S ? first(groups) :
+    _driver_group(Base.tail(groups), driver_signal)
 
 # A passenger record into the satellite's slot: the data signal's bit clock and
 # decoder, and what the passenger's variances are built from. Returns the
 # passenger's index, or 0 before the satellite's first driver record, when it has no
 # slot yet.
-function _fold_passenger_record!(group::VTSlotGroup, state::SatVectorPLLAndDLL, record::LoopRecord)
+function _fold_passenger_record!(
+    group::VTSlotGroup,
+    state::SatVectorPLLAndDLL,
+    record::LoopRecord,
+)
     index = _passenger_index(group.passengers, record.signal, 1)
     index == 0 && throw(
         ArgumentError(
@@ -959,7 +999,11 @@ end
 # combining, the filter's rate measurement is no loop's discriminator: it is read in
 # the vector loop only, where the replica follows the filter and the frequency error
 # stays far inside the two-quadrant range, so both forms read alike.
-@inline function _passenger_readings(record::LoopRecord, words, differential_group_delay_chips)
+@inline function _passenger_readings(
+    record::LoopRecord,
+    words,
+    differential_group_delay_chips,
+)
     dll =
         isnan(differential_group_delay_chips) ? nothing :
         _passenger_dll_reading(record, words, differential_group_delay_chips)

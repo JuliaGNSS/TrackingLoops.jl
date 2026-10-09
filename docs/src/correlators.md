@@ -17,7 +17,11 @@ correlator into one; subtype [`AbstractPostCorrFilter`](@ref) for beamforming.
 
 ```@autodocs
 Modules = [TrackingLoops]
-Pages = ["correlators/correlator.jl", "correlators/early_prompt_late.jl", "correlators/very_early_prompt_late.jl"]
+Pages = [
+    "correlators/correlator.jl",
+    "correlators/early_prompt_late.jl",
+    "correlators/very_early_prompt_late.jl",
+]
 Private = false
 ```
 

@@ -25,7 +25,14 @@ const WIDE_LOOP = (; wide_carrier_loop_filter_bandwidth = 85.0Hz)
 loop_epl(late, prompt, early) =
     EarlyPromptLateCorrelator(SVector{3,ComplexF64}(late, prompt, early), 0.5)
 
-function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, phi0 = 0.8, steps = 600)
+function simulate_delayed_loop(
+    estimator,
+    d;
+    f_true = 130.0,
+    handover = 100.0,
+    phi0 = 0.8,
+    steps = 600,
+)
     code_doppler = handover * Hz * get_code_center_frequency_ratio(LOOP_SIGNAL)
     state = init_estimator_state(estimator, LOOP_SIGNAL, handover * Hz, code_doppler)
     timeline = NCOTimeline()
@@ -35,7 +42,7 @@ function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, p
     phases = Float64[]
     words = Float64[]
     previous_prompt = complex(0.0, 0.0)
-    for k = 0:steps-1
+    for k = 0:(steps-1)
         a = k * LOOP_N
         b = a + LOOP_N
         w, _ = nco_word_at(timeline, a)
@@ -46,7 +53,15 @@ function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, p
         p = cis(mean_phase)
         output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, b)
         landing = Int64(b + d * LOOP_N)
-        record = LoopRecord(LOOP_SIGNAL, output.correlator, previous_prompt, output, 1, LOOP_FS; prn = 1)
+        record = LoopRecord(
+            LOOP_SIGNAL,
+            output.correlator,
+            previous_prompt,
+            output,
+            1,
+            LOOP_FS;
+            prn = 1,
+        )
         state, carrier, code = step_loop(estimator, state, record, timeline, landing)
         previous_prompt = p
         schedule_word!(timeline, landing, ustrip(Hz, carrier), ustrip(Hz, code))
@@ -56,18 +71,24 @@ function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, p
 end
 
 @testset "With no delay the NCO-referenced loop is the conventional loop" begin
-    conventional = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(; MATCHED...), 0; steps = 1200)
+    conventional =
+        simulate_delayed_loop(ConventionalAssistedPLLAndDLL(; MATCHED...), 0; steps = 1200)
     referenced = simulate_delayed_loop(NCOReferencedPLLAndDLL(), 0; steps = 1200)
     @test referenced[1] == conventional[1]
     @test referenced[2] == conventional[2]
-    control = simulate_delayed_loop(NCOReferencedPLLAndDLL(; predict_landing = false), 0; steps = 1200)
+    control = simulate_delayed_loop(
+        NCOReferencedPLLAndDLL(; predict_landing = false),
+        0;
+        steps = 1200,
+    )
     @test control[2] == conventional[2]
     @test all(abs.(referenced[1][900:end]) .< 0.2)
     @test all(abs.(referenced[2][900:end] .- 130.0) .< 1.0)
 end
 
-@testset "The NCO-referenced loop holds lock through $d records of delay" for d in 1:5
-    phases, words = simulate_delayed_loop(NCOReferencedPLLAndDLL(; WIDE_LOOP...), d; steps = 2500)
+@testset "The NCO-referenced loop holds lock through $d records of delay" for d = 1:5
+    phases, words =
+        simulate_delayed_loop(NCOReferencedPLLAndDLL(; WIDE_LOOP...), d; steps = 2500)
     @test all(abs.(phases[2200:end]) .< 0.05)
     @test all(abs.(words[2200:end] .- 130.0) .< 0.3)
     # The pull-in transient stays clear of the ±π/2 edge where the BPSK
@@ -87,7 +108,7 @@ end
     end
 end
 
-@testset "The conventional loop and the negative control limit-cycle at five records of delay" begin
+@testset "The conventional loop and the control limit-cycle at five records of delay" begin
     for estimator in (
         ConventionalAssistedPLLAndDLL(; WIDE_LOOP...),
         NCOReferencedPLLAndDLL(; predict_landing = false, WIDE_LOOP...),
@@ -107,14 +128,21 @@ end
     @test state.bandwidths.wide_carrier == 18.0Hz
     @test isnan(state.previous_record_center)
     narrow = NCOReferencedPLLAndDLL(; wide_carrier_loop_filter_bandwidth = 12.0Hz)
-    @test init_estimator_state(narrow, GPSL1CA(), 0.0Hz, 0.0Hz).bandwidths.wide_carrier == 12.0Hz
-    reset_state = reset_estimator_state(narrow, init_estimator_state(narrow, GPSL1CA(), 0.0Hz, 0.0Hz), 50.0Hz, 0.03Hz)
+    @test init_estimator_state(narrow, GPSL1CA(), 0.0Hz, 0.0Hz).bandwidths.wide_carrier ==
+          12.0Hz
+    reset_state = reset_estimator_state(
+        narrow,
+        init_estimator_state(narrow, GPSL1CA(), 0.0Hz, 0.0Hz),
+        50.0Hz,
+        0.03Hz,
+    )
     @test reset_state.init_carrier_doppler == 50.0Hz
     @test reset_state.bandwidths.wide_carrier == 12.0Hz
     @test reset_state.carrier_loop_filter.x1 == 0.0Hz
     conv = init_estimator_state(ConventionalAssistedPLLAndDLL(), GalileoE1B(), 0.0Hz, 0.0Hz)
     @test conv isa SatConventionalPLLAndDLL
-    @test conv.bandwidths.wide_carrier == default_wide_carrier_loop_filter_bandwidth(GalileoE1B())
+    @test conv.bandwidths.wide_carrier ==
+          default_wide_carrier_loop_filter_bandwidth(GalileoE1B())
     @test estimator_state_type(ConventionalAssistedPLLAndDLL(), GPSL1CA()) === typeof(conv)
 end
 
@@ -133,8 +161,10 @@ end
         output = CorrelatorOutput(loop_epl(0.45p, p, 0.55p), LOOP_N, LOOP_N * k)
         record = LoopRecord(signal, output.correlator, previous_prompt, output, 1, LOOP_FS)
         words = FixedNCOWord(carrier, code)
-        conv_state, conv_carrier, conv_code = step_loop(conventional, conv_state, record, words, NO_LANDING_SAMPLE)
-        ref_state, ref_carrier, ref_code = step_loop(referenced, ref_state, record, words, NO_LANDING_SAMPLE)
+        conv_state, conv_carrier, conv_code =
+            step_loop(conventional, conv_state, record, words, NO_LANDING_SAMPLE)
+        ref_state, ref_carrier, ref_code =
+            step_loop(referenced, ref_state, record, words, NO_LANDING_SAMPLE)
         @test ref_carrier == conv_carrier
         @test ref_code == conv_code
         carrier, code = ustrip(Hz, conv_carrier), ustrip(Hz, conv_code)
@@ -143,8 +173,13 @@ end
 end
 
 @testset "The negative control is the conventional loop at any delay" for d in (2, 4)
-    conventional = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(; MATCHED...), d; steps = 300)
-    control = simulate_delayed_loop(NCOReferencedPLLAndDLL(; predict_landing = false), d; steps = 300)
+    conventional =
+        simulate_delayed_loop(ConventionalAssistedPLLAndDLL(; MATCHED...), d; steps = 300)
+    control = simulate_delayed_loop(
+        NCOReferencedPLLAndDLL(; predict_landing = false),
+        d;
+        steps = 300,
+    )
     @test control == conventional
 end
 
@@ -165,25 +200,42 @@ end
     @test reset.bandwidths.code == 0.5Hz
 end
 
-@testset "$(nameof(typeof(estimator))) is driven through the estimator interface alone" for estimator in (
+const _INTERFACES = (
     ConventionalAssistedPLLAndDLL(),
     NCOReferencedPLLAndDLL(),
     VectorPLLAndDLL(LOOP_SIGNAL),
     VectorPLLAndDLL(LOOP_SIGNAL; inner = NCOReferencedPLLAndDLL()),
 )
+
+@testset "$(nameof(typeof(e))) runs through the interface alone" for e in _INTERFACES
+    estimator = e
     # What a host calls, and nothing else: build, step a record, reset.
     state = init_estimator_state(estimator, LOOP_SIGNAL, 100.0Hz, 0.0Hz)
     @test state isa estimator_state_type(estimator, LOOP_SIGNAL)
     output = CorrelatorOutput(loop_epl(0.5, 1.0, 0.5), LOOP_N, LOOP_N)
     # The record names its satellite, which the vector loop's navigation engine needs.
-    record = LoopRecord(LOOP_SIGNAL, output.correlator, complex(0.0, 0.0), output, 1, LOOP_FS; prn = 5)
-    stepped, carrier_doppler, code_doppler =
-        @inferred step_loop(estimator, state, record, FixedNCOWord(100.0, 0.0), NO_LANDING_SAMPLE)
+    record = LoopRecord(
+        LOOP_SIGNAL,
+        output.correlator,
+        complex(0.0, 0.0),
+        output,
+        1,
+        LOOP_FS;
+        prn = 5,
+    )
+    stepped, carrier_doppler, code_doppler = @inferred step_loop(
+        estimator,
+        state,
+        record,
+        FixedNCOWord(100.0, 0.0),
+        NO_LANDING_SAMPLE,
+    )
     @test stepped isa typeof(state)
     @test carrier_doppler isa typeof(1.0Hz)
     @test code_doppler isa typeof(1.0Hz)
-    @test @inferred(reset_estimator_state(estimator, stepped, carrier_doppler, code_doppler)) isa
-          typeof(state)
+    @test @inferred(
+        reset_estimator_state(estimator, stepped, carrier_doppler, code_doppler)
+    ) isa typeof(state)
     # What it knows of the navigation solution: nothing, for a scalar loop.
     if estimator isa VectorPLLAndDLL
         @test navigation_cycle(estimator) isa Int

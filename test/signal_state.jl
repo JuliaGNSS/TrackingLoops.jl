@@ -6,7 +6,15 @@ function synced_l1ca_state(; kwargs...)
     state = SignalLoopState(signal; kwargs...)
     for k = 1:200
         p = 2000.0 * (isodd(div(k - 1, 20)) ? -1.0 : 1.0)
-        state, = apply_record(state, signal, 7, CorrelatorOutput(epl(p), 4000, 4000k), 4e6Hz, 1e-6 / Hz, true)
+        state, = apply_record(
+            state,
+            signal,
+            7,
+            CorrelatorOutput(epl(p), 4000, 4000k),
+            4e6Hz,
+            1e-6 / Hz,
+            true,
+        )
     end
     @test has_bit_or_secondary_code_been_found(state)
     state
@@ -21,7 +29,8 @@ end
     for k = 1:7
         output = CorrelatorOutput(epl(2000.0), 12_000, 800_000 + 12_000k)
         was_synced = has_bit_or_secondary_code_been_found(state)
-        state, _, _, _, overshoot = @test_logs apply_record(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true)
+        state, _, _, _, overshoot =
+            @test_logs apply_record(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true)
         push!(reports, overshoot)
         @test overshoot == (was_synced && !has_bit_or_secondary_code_been_found(state))
         overshoot && break
@@ -40,14 +49,26 @@ end
     state = SignalLoopState(signal)
     for k = 1:100
         p = 2000.0 * code[mod1(k + 7, 25)]
-        state, _, _, blocks = apply_record(state, signal, 11, CorrelatorOutput(epl(p), n, n * k), 4.092e6Hz, 1e-6 / Hz, true)
+        state, _, _, blocks = apply_record(
+            state,
+            signal,
+            11,
+            CorrelatorOutput(epl(p), n, n * k),
+            4.092e6Hz,
+            1e-6 / Hz,
+            true,
+        )
         @test blocks == 1
     end
     @test has_bit_or_secondary_code_been_found(state)
 end
 
 @testset "Re-arming a channel forgets the previous satellite" begin
-    for cn0_estimator in (NWPRCN0Estimator(; num_records = 20), MomentsCN0Estimator(20), NoiseRefCN0Estimator(; num_records = 20))
+    for cn0_estimator in (
+        NWPRCN0Estimator(; num_records = 20),
+        MomentsCN0Estimator(20),
+        NoiseRefCN0Estimator(; num_records = 20),
+    )
         state = synced_l1ca_state(; cn0_estimator)
         fresh = reset_signal_state(state)
         @test !has_bit_or_secondary_code_been_found(fresh)

@@ -41,8 +41,7 @@ using GNSSDecoder:
     is_decoding_completed_for_positioning,
     is_sat_healthy
 using Geodesy: ECEF, ENUfromECEF, wgs84
-using KalmanFilters:
-    KFTUIntermediate, UKFMUIntermediate, measurement_update!, time_update!
+using KalmanFilters: KFTUIntermediate, UKFMUIntermediate, measurement_update!, time_update!
 using LinearAlgebra: LinearAlgebra, dot, mul!, cholesky!, issuccess, Symmetric
 using PositionVelocityTime:
     PositionVelocityTime,

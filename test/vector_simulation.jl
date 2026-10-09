@@ -49,12 +49,14 @@ function fixture_decoders(signal::GPSL1CA)
     [state.decoder for state in states], states
 end
 function fixture_decoders(signal::GalileoE1B)
-    states = _precompile_states(signal, _PRECOMPILE_GALILEO_E1B_STATES, identity, GalileoE1B())
+    states =
+        _precompile_states(signal, _PRECOMPILE_GALILEO_E1B_STATES, identity, GalileoE1B())
     [state.decoder for state in states], states
 end
 # GPS L2CM on the GPS L1 C/A fixture satellites, with CNAV data carrying their ephemerides.
 function fixture_decoders(signal::GPSL2CM)
-    states = _precompile_states(signal, _PRECOMPILE_GPS_L1CA_STATES, _precompile_cnav, GPSL1CA())
+    states =
+        _precompile_states(signal, _PRECOMPILE_GPS_L1CA_STATES, _precompile_cnav, GPSL1CA())
     [state.decoder for state in states], states
 end
 
@@ -87,7 +89,8 @@ const NO_ATMOSPHERE = SimAtmosphere(false, nothing, 1)
 function sim_atmosphere(signals, fixtures, state, t)
     row = satellite_measurement(state, 2021)
     correction = select_ionospheric_correction(
-        map((signal, f) -> SignalGroup(signal, last(f)), signals, fixtures))
+        map((signal, f) -> SignalGroup(signal, last(f)), signals, fixtures),
+    )
     SimAtmosphere(true, correction, day_of_year(row.system_start_time, row.week, t))
 end
 
@@ -127,8 +130,16 @@ end
 function atmospheric_delay(sat::SimSat, r, position, t)
     sat.atmosphere.enabled || return 0.0
     rows = [(; position, center_frequency = sat.center_frequency)]
-    only(predict_atmospheric_delays([r[1], r[2], r[3], 0.0], rows,
-        sat.atmosphere.correction, t, sat.atmosphere.doy, true))
+    only(
+        predict_atmospheric_delays(
+            [r[1], r[2], r[3], 0.0],
+            rows,
+            sat.atmosphere.correction,
+            t,
+            sat.atmosphere.doy,
+            true,
+        ),
+    )
 end
 
 # The satellite state of a replica at uncorrected transmit time `u`.
@@ -138,7 +149,12 @@ function replica_satellite_state(sat::SimSat, u)
     num_bits = floor(Int, elapsed * rate)
     decoder = GNSSDecoderState(sat.decoder; num_bits_after_valid_syncro_sequence = num_bits)
     code_phase = (elapsed - num_bits / rate) * sat.code_frequency
-    SatelliteState(; decoder, system = sat.signal, code_phase, carrier_doppler = sat.carrier_doppler * Hz)
+    SatelliteState(;
+        decoder,
+        system = sat.signal,
+        code_phase,
+        carrier_doppler = sat.carrier_doppler * Hz,
+    )
 end
 
 # The true corrected transmit time, satellite position, velocity and clock drift for
@@ -158,7 +174,9 @@ function true_transmit(sat::SimSat, truth::SimTruth, t)
         t_t = t - (ρ[1] + delay) / TrackingLoops.SPEED_OF_LIGHT
     end
     sat.transmit_time = t_t
-    t_t, SVector{3,Float64}(position), SVector{3,Float64}(velocity),
+    t_t,
+    SVector{3,Float64}(position),
+    SVector{3,Float64}(velocity),
     calc_satellite_clock_drift(sat.decoder, t_t)
 end
 
@@ -178,22 +196,72 @@ end
 
 # A channel locked onto the truth at receiver time `t`: the replica on the true
 # transmit time, carrier phase and Dopplers.
-function SimSat(signal, decoder, estimator, truth::SimTruth, t; range_bias = 0.0,
-        atmosphere = NO_ATMOSPHERE, stream = nothing, cn0_dbhz = Inf, seed = decoder.prn)
+function SimSat(
+    signal,
+    decoder,
+    estimator,
+    truth::SimTruth,
+    t;
+    range_bias = 0.0,
+    atmosphere = NO_ATMOSPHERE,
+    stream = nothing,
+    cn0_dbhz = Inf,
+    seed = decoder.prn,
+)
     base_tow = Float64(get_time_of_week(decoder))
     code_frequency = Float64(ustrip(Hz, get_code_frequency(signal)))
     center_frequency = Float64(ustrip(Hz, get_center_frequency(signal)))
     ratio = get_code_center_frequency_ratio(signal)
     noise_std = isinf(cn0_dbhz) ? 0.0 : sqrt(1 / (2 * 10^(cn0_dbhz / 10) * 1e-3))
-    probe = SimSat(signal, decoder, base_tow, code_frequency, center_frequency,
-        nothing, 0.0, 0.0, 0.0, 0.0, complex(0.0), t - 0.075, true, 1.0, NCOTimeline(),
-        range_bias, atmosphere, stream, noise_std, Xoshiro(seed), 0)
+    probe = SimSat(
+        signal,
+        decoder,
+        base_tow,
+        code_frequency,
+        center_frequency,
+        nothing,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        complex(0.0),
+        t - 0.075,
+        true,
+        1.0,
+        NCOTimeline(),
+        range_bias,
+        atmosphere,
+        stream,
+        noise_std,
+        Xoshiro(seed),
+        0,
+    )
     t_t, = true_transmit(probe, truth, t)
     doppler = true_doppler(probe, truth, t)
     state = init_estimator_state(estimator, signal, doppler * Hz, doppler * ratio * Hz)
-    sat = SimSat(signal, decoder, base_tow, code_frequency, center_frequency, state,
-        t_t, 0.0, doppler, doppler * ratio, complex(0.0), t_t, true, 1.0, NCOTimeline(),
-        range_bias, atmosphere, stream, noise_std, Xoshiro(seed), 0)
+    sat = SimSat(
+        signal,
+        decoder,
+        base_tow,
+        code_frequency,
+        center_frequency,
+        state,
+        t_t,
+        0.0,
+        doppler,
+        doppler * ratio,
+        complex(0.0),
+        t_t,
+        true,
+        1.0,
+        NCOTimeline(),
+        range_bias,
+        atmosphere,
+        stream,
+        noise_std,
+        Xoshiro(seed),
+        0,
+    )
     sat.replica_time = uncorrected_time(sat, t_t)
     reset_timeline!(sat.timeline, doppler, doppler * ratio)
     sat
@@ -235,8 +303,12 @@ function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_inde
     code_error = (u_true - u_replica) * sat.code_frequency
     mean_phase = sat.phase_error + (f_true - carrier) * dt / 2
     correlator_template = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0, 0, 0), 0.5)
-    d = TrackingLoops.get_early_late_sample_spacing(correlator_template, SIM_FS, get_code_frequency(sat.signal)) *
-        sat.code_frequency / fs
+    d =
+        TrackingLoops.get_early_late_sample_spacing(
+            correlator_template,
+            SIM_FS,
+            get_code_frequency(sat.signal),
+        ) * sat.code_frequency / fs
     bit = isnothing(sat.stream) ? true : lnav_bit(sat.stream, floor(Int, u_true * 50))
     amplitude = sat.in_view ? (bit ? sat.amplitude : -sat.amplitude) : 0.0
     rotation = cis(2π * mean_phase)
@@ -245,46 +317,95 @@ function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_inde
     floor_ = sat.in_view ? 0.0 : 1e-3
     σ = sat.noise_std * sqrt(1e-3 / dt)
     noise() = σ == 0 ? 0.0im : σ * complex(randn(sat.rng), randn(sat.rng))
-    prompt = amplitude * triangle(code_error) * rotation + floor_ * cis(1e3 * t_end) + noise()
-    early = amplitude * triangle(code_error - d / 2) * rotation + floor_ * cis(2e3 * t_end) + noise()
-    late = amplitude * triangle(code_error + d / 2) * rotation + floor_ * cis(3e3 * t_end) + noise()
+    prompt =
+        amplitude * triangle(code_error) * rotation + floor_ * cis(1e3 * t_end) + noise()
+    early =
+        amplitude * triangle(code_error - d / 2) * rotation +
+        floor_ * cis(2e3 * t_end) +
+        noise()
+    late =
+        amplitude * triangle(code_error + d / 2) * rotation +
+        floor_ * cis(3e3 * t_end) +
+        noise()
     correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(late, prompt, early), 0.5)
     correlator, prompt, code_error, f_true, carrier, code
 end
 
 # The replica moved on by a record, and the new words commanded.
-function advance_replica!(sat::SimSat, f_true, carrier, code, dt, new_carrier, new_code,
-        record_start, sample_index, landing_sample)
+function advance_replica!(
+    sat::SimSat,
+    f_true,
+    carrier,
+    code,
+    dt,
+    new_carrier,
+    new_code,
+    record_start,
+    sample_index,
+    landing_sample,
+)
     sat.phase_error += (f_true - carrier) * dt
     sat.replica_time += dt * (1 + code / sat.code_frequency)
     if landing_sample == NO_LANDING_SAMPLE
         sat.carrier_doppler = ustrip(Hz, new_carrier)
         sat.code_doppler = ustrip(Hz, new_code)
     else
-        schedule_word!(sat.timeline, landing_sample, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
+        schedule_word!(
+            sat.timeline,
+            landing_sample,
+            ustrip(Hz, new_carrier),
+            ustrip(Hz, new_code),
+        )
         promote_words!(sat.timeline, record_start)
         sat.carrier_doppler, sat.code_doppler = nco_word_at(sat.timeline, sample_index)
     end
 end
 
 sim_words(sat::SimSat, landing_sample) =
-    landing_sample == NO_LANDING_SAMPLE ? FixedNCOWord(sat.carrier_doppler, sat.code_doppler) : sat.timeline
+    landing_sample == NO_LANDING_SAMPLE ?
+    FixedNCOWord(sat.carrier_doppler, sat.code_doppler) : sat.timeline
 
 # One record of `num_samples` samples ending at device sample `sample_index` (receiver
 # time `t_end`), through the satellite's own loop alone — the per-record step of the
 # vector loop, with the navigation engine filled by hand at the epochs
 # (`fill_slot!`). Returns the code error.
-function simulate_record!(sat::SimSat, estimator, truth, t_end, num_samples, sample_index, landing_sample)
+function simulate_record!(
+    sat::SimSat,
+    estimator,
+    truth,
+    t_end,
+    num_samples,
+    sample_index,
+    landing_sample,
+)
     words = sim_words(sat, landing_sample)
     correlator, prompt, code_error, f_true, carrier, code =
         simulate_correlator(sat, truth, t_end, num_samples, sample_index, words)
-    record = LoopRecord(sat.signal, correlator, sat.previous_prompt, num_samples,
-        sample_index, sample_index, 1, SIM_FS)
+    record = LoopRecord(
+        sat.signal,
+        correlator,
+        sat.previous_prompt,
+        num_samples,
+        sample_index,
+        sample_index,
+        1,
+        SIM_FS,
+    )
     sat.state, new_carrier, new_code =
         TrackingLoops._step_satellite(estimator, sat.state, record, words, landing_sample)
     sat.previous_prompt = prompt
-    advance_replica!(sat, f_true, carrier, code, num_samples / ustrip(Hz, SIM_FS),
-        new_carrier, new_code, sample_index - num_samples, sample_index, landing_sample)
+    advance_replica!(
+        sat,
+        f_true,
+        carrier,
+        code,
+        num_samples / ustrip(Hz, SIM_FS),
+        new_carrier,
+        new_code,
+        sample_index - num_samples,
+        sample_index,
+        landing_sample,
+    )
     code_error
 end
 
@@ -296,7 +417,14 @@ end
 
 # Fill the slot of a channel at the cycle epoch (device sample `epoch_sample`), as the
 # satellite's snapshot would: the replica at the epoch, from the fixture decoder.
-function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_lock = sat.in_view)
+function fill_slot!(
+    slot,
+    sat::SimSat,
+    epoch_sample,
+    landing_sample,
+    nav;
+    in_lock = sat.in_view,
+)
     fs = ustrip(Hz, SIM_FS)
     epoch_state = replica_satellite_state(sat, sat.replica_time)
     slot.occupied = true
@@ -304,7 +432,8 @@ function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_loc
     slot.estimator_state = sat.state
     sat.state = TrackingLoops._reset_discriminator_accumulators(sat.state)
     slot.code_phase = epoch_state.code_phase
-    carrier, code = mean_nco_word(sim_words(sat, landing_sample), epoch_sample, epoch_sample)
+    carrier, code =
+        mean_nco_word(sim_words(sat, landing_sample), epoch_sample, epoch_sample)
     slot.carrier_doppler = carrier * Hz
     slot.code_doppler = code * Hz
     slot.cn0_dbhz = 45.0
@@ -358,7 +487,8 @@ per_signal(n::Tuple, signals) = n
 per_signal(n, signals) = map(_ -> n, signals)
 
 # The record length of a signal: one code period, in milliseconds.
-record_ms(signal) = round(Int, 1000 * get_code_length(signal) / ustrip(Hz, get_code_frequency(signal)))
+record_ms(signal) =
+    round(Int, 1000 * get_code_length(signal) / ustrip(Hz, get_code_frequency(signal)))
 
 function SimReceiver(;
     signals = (GPSL1CA(),),
@@ -377,16 +507,42 @@ function SimReceiver(;
     gps_states = last(fixture_decoders(GPSL1CA()))
     fix = calc_pvt(SignalGroup(GPSL1CA(), gps_states); approximate_year = 2021)
     t0 = maximum(maximum(calc_corrected_time, last(f)) for f in fixtures) + 0.075
-    truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0, truth_kw...)
-    delays = atmosphere ? sim_atmosphere(signals, fixtures, first(gps_states), t0) : NO_ATMOSPHERE
-    estimator = VectorPLLAndDLL(signals...; inner, config, approximate_year = 2021,
+    truth = SimTruth(;
+        position = SVector(fix.position.x, fix.position.y, fix.position.z),
+        t0,
+        truth_kw...,
+    )
+    delays =
+        atmosphere ? sim_atmosphere(signals, fixtures, first(gps_states), t0) :
+        NO_ATMOSPHERE
+    estimator = VectorPLLAndDLL(
+        signals...;
+        inner,
+        config,
+        approximate_year = 2021,
         cycle_time = nominal_records * 1.0ms,
         enable_ionospheric_correction = correct_atmosphere,
-        enable_tropospheric_correction = correct_atmosphere)
+        enable_tropospheric_correction = correct_atmosphere,
+    )
     nav = estimator.navigation
-    channels = map(signals, fixtures, per_signal(num_sats, signals), range_biases) do signal, (decoders, _), n, range_bias
+    channels = map(
+        signals,
+        fixtures,
+        per_signal(num_sats, signals),
+        range_biases,
+    ) do signal, (decoders, _), n, range_bias
         n = min(n, length(decoders))
-        [SimSat(signal, decoders[i], estimator, truth, t0; range_bias, atmosphere = delays) for i = 1:n]
+        [
+            SimSat(
+                signal,
+                decoders[i],
+                estimator,
+                truth,
+                t0;
+                range_bias,
+                atmosphere = delays,
+            ) for i = 1:n
+        ]
     end
     # Every channel holds the slot of its index, registered as its first record would.
     for (group, sats) in zip(nav.groups, channels), (i, sat) in enumerate(sats)
@@ -399,7 +555,14 @@ function SimReceiver(;
         slot.estimator_state = sat.state
         slot.decoder = sat.decoder
     end
-    SimReceiver(channels, estimator, truth, records_per_cycle, nominal_records, delay_records)
+    SimReceiver(
+        channels,
+        estimator,
+        truth,
+        records_per_cycle,
+        nominal_records,
+        delay_records,
+    )
 end
 
 const SAMPLES_PER_MS = 4000
@@ -408,26 +571,52 @@ sim_time(receiver, sample) = receiver.truth.t0 + sample / ustrip(Hz, SIM_FS)
 
 # A record standing in for the one a satellite takes a cycle up on: only its sampling
 # frequency is read.
-take_up_record(sat::SimSat, sample) =
-    LoopRecord(sat.signal, EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0, 1, 0), 0.5),
-        complex(0.0), SAMPLES_PER_MS, sample, sample, 1, SIM_FS)
+take_up_record(sat::SimSat, sample) = LoopRecord(
+    sat.signal,
+    EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0, 1, 0), 0.5),
+    complex(0.0),
+    SAMPLES_PER_MS,
+    sample,
+    sample,
+    1,
+    SIM_FS,
+)
 
 # The cycle at device sample `sample` (an epoch), and every satellite taking it up, the
 # corrections sized for where its command lands — or, with `ignore_delay`, as if it
 # landed at the epoch.
 function run_cycle!(receiver::SimReceiver, sample, fill!; ignore_delay = false)
     nav = receiver.vt
-    landing = receiver.delay_ms == 0 ? Int64(sample) : Int64(sample + receiver.delay_ms * SAMPLES_PER_MS)
+    landing =
+        receiver.delay_ms == 0 ? Int64(sample) :
+        Int64(sample + receiver.delay_ms * SAMPLES_PER_MS)
     sized_for = ignore_delay ? Int64(sample) : landing
     nav.pending_epoch = round(Int, sample / (receiver.nominal_ms * SAMPLES_PER_MS))
-    for (channels, group) in zip(receiver.channels, receiver.groups), (i, sat) in enumerate(channels)
-        fill!(group.slots[i], sat, sample, receiver.delay_ms == 0 ? NO_LANDING_SAMPLE : landing, nav)
+    for (channels, group) in zip(receiver.channels, receiver.groups),
+        (i, sat) in enumerate(channels)
+
+        fill!(
+            group.slots[i],
+            sat,
+            sample,
+            receiver.delay_ms == 0 ? NO_LANDING_SAMPLE : landing,
+            nav,
+        )
     end
     TrackingLoops._navigation_cycle!(nav, sample / ustrip(Hz, SIM_FS))
-    for (channels, group) in zip(receiver.channels, receiver.groups), (i, sat) in enumerate(channels)
+    for (channels, group) in zip(receiver.channels, receiver.groups),
+        (i, sat) in enumerate(channels)
+
         words = receiver.delay_ms == 0 ? sim_words(sat, NO_LANDING_SAMPLE) : sat.timeline
-        sat.state = TrackingLoops._take_up_cycle(nav, group, group.slots[i], sat.state,
-            take_up_record(sat, sample), words, sized_for)
+        sat.state = TrackingLoops._take_up_cycle(
+            nav,
+            group,
+            group.slots[i],
+            sat.state,
+            take_up_record(sat, sample),
+            words,
+            sized_for,
+        )
     end
     nav.pvt, nav.status
 end
@@ -458,15 +647,23 @@ function run_simulation!(
         end
         for k = 1:receiver.cycle_ms
             sample_index = sample + k * SAMPLES_PER_MS
-            landing = receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
+            landing =
+                receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
                 Int64(sample_index + receiver.delay_ms * SAMPLES_PER_MS)
             c = 0
             for channels in receiver.channels, sat in channels
                 c += 1
                 n = record_ms(sat.signal)
                 k % n == 0 || continue
-                code_errors[c] = simulate_record!(sat, receiver.estimator, receiver.truth,
-                    sim_time(receiver, sample_index), n * SAMPLES_PER_MS, sample_index, landing)
+                code_errors[c] = simulate_record!(
+                    sat,
+                    receiver.estimator,
+                    receiver.truth,
+                    sim_time(receiver, sample_index),
+                    n * SAMPLES_PER_MS,
+                    sample_index,
+                    landing,
+                )
             end
             # A diverged loop ends the run: the replica has left the signal.
             all(e -> abs(e) < 1, code_errors) || return results, sample, true
@@ -475,18 +672,34 @@ function run_simulation!(
         pvt, status = run_cycle!(receiver, sample, fill!; ignore_delay)
         # The solution's containers are reused by the next cycle, so what is read later
         # is copied out now.
-        push!(results, (; pvt, status, code_errors, time = sim_time(receiver, sample),
-            reasons = [slot.release_reason for (group, channels) in zip(receiver.groups, receiver.channels)
-                       for slot in channel_slots(group, channels)],
-            measured = collect(keys(pvt.sats)),
-            max_rate_residual = maximum(v -> abs(v.rate_residual), values(pvt.sats); init = 0.0u"m/s")))
+        push!(
+            results,
+            (;
+                pvt,
+                status,
+                code_errors,
+                time = sim_time(receiver, sample),
+                reasons = [
+                    slot.release_reason for
+                    (group, channels) in zip(receiver.groups, receiver.channels) for
+                    slot in channel_slots(group, channels)
+                ],
+                measured = collect(keys(pvt.sats)),
+                max_rate_residual = maximum(
+                    v -> abs(v.rate_residual),
+                    values(pvt.sats);
+                    init = 0.0u"m/s",
+                ),
+            ),
+        )
     end
     results, sample, false
 end
 
-position_error(receiver, result) =
-    norm(SVector(result.pvt.position.x, result.pvt.position.y, result.pvt.position.z) -
-         truth_position(receiver.truth, result.time))
+position_error(receiver, result) = norm(
+    SVector(result.pvt.position.x, result.pvt.position.y, result.pvt.position.z) -
+    truth_position(receiver.truth, result.time),
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # The pipeline: GPS L1 C/A satellites broadcasting their fixture ephemerides as real
@@ -524,16 +737,40 @@ function PipelineReceiver(;
     decoders, states = fixture_decoders(GPSL1CA())
     fix = calc_pvt(SignalGroup(GPSL1CA(), states); approximate_year = 2021)
     t0 = next_subframe1_start(maximum(calc_corrected_time, states)) - lead
-    truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0)
-    estimator = VectorPLLAndDLL(GPSL1CA(); inner, config, approximate_year = 2021,
-        enable_ionospheric_correction = false, enable_tropospheric_correction = false,
-        estimator_kw...)
-    sats = [SimSat(GPSL1CA(), decoder, estimator, truth, t0; cn0_dbhz,
-        stream = LNAVStream(decoder.data)) for decoder in decoders[1:min(num_sats, end)]]
+    truth =
+        SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0)
+    estimator = VectorPLLAndDLL(
+        GPSL1CA();
+        inner,
+        config,
+        approximate_year = 2021,
+        enable_ionospheric_correction = false,
+        enable_tropospheric_correction = false,
+        estimator_kw...,
+    )
+    sats = [
+        SimSat(
+            GPSL1CA(),
+            decoder,
+            estimator,
+            truth,
+            t0;
+            cn0_dbhz,
+            stream = LNAVStream(decoder.data),
+        ) for decoder in decoders[1:min(num_sats, end)]
+    ]
     for sat in sats
         sat.next_end_sample = next_block_end(sat, 0)
     end
-    PipelineReceiver(sats, estimator, truth, delay_records, zeros(Int, length(sats)), Ref(false), Ref(0))
+    PipelineReceiver(
+        sats,
+        estimator,
+        truth,
+        delay_records,
+        zeros(Int, length(sats)),
+        Ref(false),
+        Ref(0),
+    )
 end
 
 # The device sample the replica completes its current code period at, for a record
@@ -551,24 +788,60 @@ end
 function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample)
     sample_index = sat.next_end_sample
     num_samples = sample_index - start_sample
-    landing = receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
+    landing =
+        receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
         Int64(sample_index + receiver.delay_ms * SAMPLES_PER_MS)
     words = sim_words(sat, landing)
-    correlator, prompt, code_error, f_true, carrier, code =
-        simulate_correlator(sat, receiver.truth, sim_time(receiver, sample_index), num_samples, sample_index, words)
+    correlator, prompt, code_error, f_true, carrier, code = simulate_correlator(
+        sat,
+        receiver.truth,
+        sim_time(receiver, sample_index),
+        num_samples,
+        sample_index,
+        words,
+    )
     dt = num_samples / ustrip(Hz, SIM_FS)
-    code_phase = mod((sat.replica_time + dt * (1 + code / sat.code_frequency)) * sat.code_frequency,
-        get_code_length(sat.signal))
-    record = LoopRecord(sat.signal, correlator, sat.previous_prompt, num_samples,
-        sample_index, sample_index, 1, SIM_FS; prn = sat.decoder.prn, code_phase)
+    code_phase = mod(
+        (sat.replica_time + dt * (1 + code / sat.code_frequency)) * sat.code_frequency,
+        get_code_length(sat.signal),
+    )
+    record = LoopRecord(
+        sat.signal,
+        correlator,
+        sat.previous_prompt,
+        num_samples,
+        sample_index,
+        sample_index,
+        1,
+        SIM_FS;
+        prn = sat.decoder.prn,
+        code_phase,
+    )
     sat.state, new_carrier, new_code = if receiver.measuring[]
-        step_measured!(receiver.allocated, receiver.estimator, sat.state, record, words, landing)
+        step_measured!(
+            receiver.allocated,
+            receiver.estimator,
+            sat.state,
+            record,
+            words,
+            landing,
+        )
     else
         step_loop(receiver.estimator, sat.state, record, words, landing)
     end
     sat.previous_prompt = prompt
-    advance_replica!(sat, f_true, carrier, code, dt, new_carrier, new_code,
-        start_sample, sample_index, landing)
+    advance_replica!(
+        sat,
+        f_true,
+        carrier,
+        code,
+        dt,
+        new_carrier,
+        new_code,
+        start_sample,
+        sample_index,
+        landing,
+    )
     sat.next_end_sample = next_block_end(sat, sample_index)
     code_error
 end
@@ -586,9 +859,16 @@ end
 # (seconds since the start), and `fade(t, i)` their signal amplitudes. Returns the
 # result of every cycle the estimator ran, the sample reached, and whether a replica
 # left its signal.
-function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
-        outage = (t, i) -> false, fade = (t, i) -> 1.0, on_tick = sample -> nothing,
-        record! = pipeline_record!, driver_signal = GPSL1CA())
+function run_pipeline!(
+    receiver::PipelineReceiver,
+    duration;
+    start_sample = 0,
+    outage = (t, i) -> false,
+    fade = (t, i) -> 1.0,
+    on_tick = sample -> nothing,
+    record! = pipeline_record!,
+    driver_signal = GPSL1CA(),
+)
     results = []
     nav = receiver.vt
     sample = start_sample
@@ -612,10 +892,21 @@ function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
         if nav.cycle_id != last_cycle
             last_cycle = nav.cycle_id
             pvt = nav.pvt
-            push!(results, (; pvt = deepcopy(pvt), status = nav.status, code_errors = copy(code_errors),
-                time = receiver.truth.t0 + TrackingLoops._epoch_time(nav, nav.cycle_epoch),
-                measured = collect(keys(pvt.sats)),
-                reasons = [release_reason(receiver.estimator, driver_signal, sat.decoder.prn) for sat in receiver.sats]))
+            push!(
+                results,
+                (;
+                    pvt = deepcopy(pvt),
+                    status = nav.status,
+                    code_errors = copy(code_errors),
+                    time = receiver.truth.t0 +
+                           TrackingLoops._epoch_time(nav, nav.cycle_epoch),
+                    measured = collect(keys(pvt.sats)),
+                    reasons = [
+                        release_reason(receiver.estimator, driver_signal, sat.decoder.prn)
+                        for sat in receiver.sats
+                    ],
+                ),
+            )
         end
     end
     results, sample, false

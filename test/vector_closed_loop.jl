@@ -46,8 +46,11 @@ end
     # cycles on a filter built for 100 ms, under a TCXO's 600 m/s of clock drift. A
     # process model kept at 100 ms would mispredict the clock by drift · 100 ms = 60 m
     # every cycle.
-    rx = SimReceiver(; records_per_cycle = 200, nominal_records = 100,
-        truth_kw = (; clock_drift = 600.0))
+    rx = SimReceiver(;
+        records_per_cycle = 200,
+        nominal_records = 100,
+        truth_kw = (; clock_drift = 600.0),
+    )
     results, _, diverged = run_simulation!(rx, 60)
     @test !diverged
     @test rx.vt.model.integration_time ≈ 200.0ms
@@ -83,15 +86,18 @@ end
     _, sample, _ = run_simulation!(rx, 19)
     # The receiver flags every satellite out of lock (and so not ready for a scalar
     # solve), while the signals stay: nothing can be measured.
-    unlocked!(slot, sat, epoch, landing, nav) =
-        (fill_slot!(slot, sat, epoch, landing, nav; in_lock = false); slot.pvt_ready = false)
-    results, sample, diverged = run_simulation!(rx, 105; start_sample = sample, fill! = unlocked!)
+    unlocked!(slot, sat, epoch, landing, nav) = (
+        fill_slot!(slot, sat, epoch, landing, nav; in_lock = false);
+        slot.pvt_ready = false
+    )
+    results, sample, diverged =
+        run_simulation!(rx, 105; start_sample = sample, fill! = unlocked!)
     @test !diverged
     timers = [r.status.time_with_insufficient_meas for r in results]
     # Strictly beyond the ten-second timeout: the 101st unsolvable cycle.
     fallback = findfirst(r -> r.status.fell_back, results)
     @test fallback == 101
-    @test all(r -> r.status.running, results[1:fallback-1])
+    @test all(r -> r.status.running, results[1:(fallback-1)])
     @test timers[fallback] > 10.0s
     @test timers[fallback-1] ≈ 10.0s
     @test results[fallback].status.released
@@ -105,7 +111,7 @@ end
     @test all(sat -> !sat.state.vt_on && sat.state.code_freq_update == 0.0Hz, rx.sats)
     @test all(sat -> sat.state.code_discr_acc == (0, 0.0), rx.sats)
     # Not ready, no satellite enters the scalar solve, so nothing re-seeds…
-    @test all(r -> !r.status.running && !r.status.enabled, results[fallback+1:end])
+    @test all(r -> !r.status.running && !r.status.enabled, results[(fallback+1):end])
     # …until the receiver flags them in lock again: the first scalar fix seeds vector
     # tracking anew, from scalar loops that kept tracking.
     results, _, diverged = run_simulation!(rx, 20; start_sample = sample)
@@ -129,7 +135,8 @@ end
     # Both constellations share the receiver clock, so their inter-system bias is the
     # broadcast offset between the two time scales: nanoseconds, a metre at most.
     @test abs(pvt.inter_system_biases[GST()]) < 3.0u"m"
-    @test count(key -> first(key) === :GalileoE1B, results[end].measured) == length(rx.channels[2])
+    @test count(key -> first(key) === :GalileoE1B, results[end].measured) ==
+          length(rx.channels[2])
 end
 
 @testset "Seeded from a high-DOP fix, the filter reports the uncertainty it has" begin
@@ -165,7 +172,11 @@ end
     # code correction inside the second half of the cycle, a 25 ms one after the next
     # epoch: both branches of the mid-cycle advance.
     run(delay; kw...) = begin
-        rx = SimReceiver(; inner = NCOReferencedPLLAndDLL(), records_per_cycle = 20, delay_records = delay)
+        rx = SimReceiver(;
+            inner = NCOReferencedPLLAndDLL(),
+            records_per_cycle = 20,
+            delay_records = delay,
+        )
         results, _, diverged = run_simulation!(rx, 1000; kw...)
         rx, results, diverged
     end
@@ -222,7 +233,8 @@ end
     ifb = results[end].pvt.inter_frequency_biases[:L2]
     @test ifb.reference == :L1
     @test abs(ifb.value - 4.0u"m") < 0.05u"m"
-    @test count(key -> first(key) === :GPSL2CM, results[end].measured) == length(rx.channels[2])
+    @test count(key -> first(key) === :GPSL2CM, results[end].measured) ==
+          length(rx.channels[2])
 end
 
 @testset "A scarce constellation's clock collapses onto GPS through the GGTO" begin

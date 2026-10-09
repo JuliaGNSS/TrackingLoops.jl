@@ -85,14 +85,18 @@ consumer of `get_filtered_prompts` does not, so the window is taken
 from the navigation-bit grid in [`CN0UpdateContext`](@ref) — that is the whole
 reason this estimator lives here rather than on top of the prompt stream:
 
-| signal state                                            | narrowband window                                                      |
-|:------------------------------------------------------- |:---------------------------------------------------------------------- |
-| bit / secondary sync found, data-bearing signal         | `num_narrowband_code_blocks`, tiling the navigation bit from its start |
-| bit / secondary sync found, pilot (no data)             | `num_narrowband_code_blocks` (no bit grid to respect)                  |
-| sync not found yet, data-bearing without secondary code | `num_presync_narrowband_code_blocks`, unaligned                        |
-| sync not found yet, signal with a secondary code        | none — the unknown overlay flips sign every code block                 |
-| one symbol per code block (GPS L1C-D, Galileo E1B)      | none — no coherent window longer than one record exists                |
-| record at least as long as its own window               | none — a one-record window has `NBP == WBP` by construction            |
+  - bit / secondary sync found, data-bearing signal: `num_narrowband_code_blocks`,
+    tiling the navigation bit from its start;
+  - bit / secondary sync found, pilot (no data): `num_narrowband_code_blocks` (no
+    bit grid to respect);
+  - sync not found yet, data-bearing without secondary code:
+    `num_presync_narrowband_code_blocks`, unaligned;
+  - sync not found yet, signal with a secondary code: none — the unknown overlay
+    flips sign every code block;
+  - one symbol per code block (GPS L1C-D, Galileo E1B): none — no coherent window
+    longer than one record exists;
+  - record at least as long as its own window: none — a one-record window has
+    `NBP == WBP` by construction.
 
 The pre-sync window matters more than it may look: the CFAR bit-edge detector
 needs seconds to lock at 35 dB-Hz and does not lock at all below ~30 dB-Hz, so

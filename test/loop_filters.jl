@@ -13,7 +13,8 @@ using Random: MersenneTwister
 end
 
 @testset "Default loop bandwidths" begin
-    # A flat 50 Hz pull-in, 18 Hz tracking and 5 Hz FLL carrier and 1 Hz code bandwidth for every signal.
+    # A flat 50 Hz pull-in, 18 Hz tracking and 5 Hz FLL carrier and 1 Hz code bandwidth for
+    # every signal.
     for signal in (GPSL1CA(), GPSL1C_P(), GalileoE1B(), GPSL5I())
         @test default_wide_carrier_loop_filter_bandwidth(signal) == 50.0Hz
         @test default_code_loop_filter_bandwidth(signal) == 1.0Hz
@@ -31,13 +32,12 @@ end
     @test wide_cap(bw, 10ms) ≈ 9.0Hz
     @test wide_cap(bw, 20ms) ≈ 4.5Hz
     for integration_time in (10ms, 20ms, 100ms, 1500ms)
-        @test wide_cap(bw, integration_time) *
-              integration_time ≈ TrackingLoops._MAX_WIDE_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT
+        @test wide_cap(bw, integration_time) * integration_time ≈
+              TrackingLoops._MAX_WIDE_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT
     end
     # An explicit bandwidth below the cap is used verbatim.
     @test wide_cap(2.0Hz, 20ms) == 2.0Hz
-    @test @inferred(wide_cap(bw, 5000 / 5e6Hz)) isa
-          typeof(1.0Hz)
+    @test @inferred(wide_cap(bw, 5000 / 5e6Hz)) isa typeof(1.0Hz)
 end
 
 # The DLL bandwidth is an absolute value, not a per-primary-period reference: a
@@ -63,14 +63,12 @@ end
     @test effective_code_loop_filter_bandwidth(0.25Hz, 20 * l1ca_period) == 0.25Hz
 end
 
-@testset "Carrier and code frequency updates run the discriminators through the filter" begin
+@testset "Carrier and code frequency updates run the discriminators through a filter" begin
     gpsl1 = GPSL1CA()
     sampling_frequency = 5e6Hz
     integration_time = 1ms
-    correlator = EarlyPromptLateCorrelator(
-        SVector(1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im),
-        0.5,
-    )
+    correlator =
+        EarlyPromptLateCorrelator(SVector(1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im), 0.5)
     previous_prompt = 1900.0 + 50im
 
     # FLL-assisted third-order PLL: fed the (PLL, FLL) discriminator pair.
@@ -97,9 +95,17 @@ end
     expected = filter_loop(assisted, discriminators, integration_time, (18.0Hz, fll_assist))
     @test update_assisted == expected[1]
     @test filter_assisted == expected[2]
-    explicit, = calculate_carrier_frequency_update(gpsl1, assisted, correlator, previous_prompt,
-        integration_time, 18.0Hz; fll_assist_loop_bandwidth = 2.0Hz)
-    @test explicit == filter_loop(assisted, discriminators, integration_time, (18.0Hz, 2.0Hz))[1]
+    explicit, = calculate_carrier_frequency_update(
+        gpsl1,
+        assisted,
+        correlator,
+        previous_prompt,
+        integration_time,
+        18.0Hz;
+        fll_assist_loop_bandwidth = 2.0Hz,
+    )
+    @test explicit ==
+          filter_loop(assisted, discriminators, integration_time, (18.0Hz, 2.0Hz))[1]
 
     # Any other loop filter: the PLL discriminator alone.
     plain = SecondOrderBilinearLF()

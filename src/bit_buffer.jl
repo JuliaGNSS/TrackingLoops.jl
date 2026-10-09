@@ -298,18 +298,20 @@ true hypothesis's bins vary only with thermal noise and slow drift — exactly t
 run-to-run spread the test must compare the gap against. The peak is accepted
 only when it beats the runner-up by a margin significant under that spread:
 
-    z_score = energy_gap / standard_error   ≥   t⁻¹(1 - false_alarm_probability/(period - 1);  ν = peak_bin_count − 1)
+    z_score = energy_gap / standard_error
+            ≥ t⁻¹(1 - false_alarm_probability/(period - 1);  ν = peak_bin_count − 1)
 
 where the standard error combines the peak's per-bin energy variance over the
 peak and runner-up bin counts, `false_alarm_probability = 1 - confidence` is
 Bonferroni-split over the `period - 1` competing hypotheses, and the quantile is
-the Student-t inverse-CDF `_t_quantile` at a nominal `ν = peak_bin_count − 1` d.o.f. — a small-sample penalty for dividing by a variance estimated over
-that few bins, not a claim that `z_score` is exactly Student-t (the per-bin
-energies are χ² and the hypotheses correlated; see `_t_quantile`). A real
-peak has a structural gap that dwarfs the thermal bin-to-bin spread, so `z_score`
-grows like the square root of the bin count and crosses the threshold sooner at
-high C/N₀ and later in noise — the detector self-paces — while a drift-only
-asymmetry keeps `z_score` bounded and never locks.
+the Student-t inverse-CDF `_t_quantile` at a nominal `ν = peak_bin_count − 1`
+d.o.f. — a small-sample penalty for dividing by a variance estimated over that
+few bins, not a claim that `z_score` is exactly Student-t (the per-bin energies
+are χ² and the hypotheses correlated; see `_t_quantile`). A real peak has a
+structural gap that dwarfs the thermal bin-to-bin spread, so `z_score` grows
+like the square root of the bin count and crosses the threshold sooner at high
+C/N₀ and later in noise — the detector self-paces — while a drift-only asymmetry
+keeps `z_score` bounded and never locks.
 """
 @inline function _cfar_decide(
     mean_bin_energy::AbstractVector{Float64},
@@ -717,11 +719,11 @@ end
 """
 $(SIGNATURES)
 
-Reference for `_detect_secondary_code_sync`: return the signal's
-secondary / overlay code for `prn`, packed into the buffer type `B` in
-the same newest-first order the prompt buffer fills — bit `i` holds
-secondary chip `N - 1 - i`, so that when the most recent `N` blocks span
-exactly one period ending on its last chip, `received & mask == reference` (see `_secondary_code_search`).
+Reference for `_detect_secondary_code_sync`: return the signal's secondary /
+overlay code for `prn`, packed into the buffer type `B` in the same newest-first
+order the prompt buffer fills — bit `i` holds secondary chip `N - 1 - i`, so
+that when the most recent `N` blocks span exactly one period ending on its last
+chip, `received & mask == reference` (see `_secondary_code_search`).
 
 The single generic method below covers every signal GNSSSignals defines; it
 stays a `function` others can specialize only for a signal whose overlay is
@@ -1234,7 +1236,8 @@ function _buffer_find_bit(
 ) where {B<:Unsigned}
     if (integrated_code_blocks != 1)
         error(
-            "The number code blocks must be equal to 1 if bit or secondary code hasn't been found yet.",
+            "The number code blocks must be equal to 1 if bit or secondary code " *
+            "hasn't been found yet.",
         )
     end
     code_block_buffer = (bit_buffer.code_block_buffer << 1) + B(real(prompt) > 0)
@@ -1469,10 +1472,14 @@ polarity times chip 0. If the Costas loop slipped half a cycle between the sync
 and the switch, the four-quadrant PLL pulls the carrier phase over by half a
 cycle: that is the start of the resolved carrier phase, not a slip within it.
 """
-@inline function get_sync_polarity(signal::AbstractGNSSSignal, bit_buffer::BitBuffer, prn::Integer)
+@inline function get_sync_polarity(
+    signal::AbstractGNSSSignal,
+    bit_buffer::BitBuffer,
+    prn::Integer,
+)
     iszero(get_data_frequency(signal)) &&
-        get_secondary_code_length(signal) > 1 &&
-        has_bit_or_secondary_code_been_found(bit_buffer) || return Int8(0)
+    get_secondary_code_length(signal) > 1 &&
+    has_bit_or_secondary_code_been_found(bit_buffer) || return Int8(0)
     chip0 = GNSSSignals.secondary_value(get_secondary_code(signal), prn, 0)
     Int8(bit_buffer.polarity * sign(chip0))
 end

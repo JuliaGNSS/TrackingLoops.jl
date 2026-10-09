@@ -25,11 +25,17 @@
         for k = first_k:(first_k+n-1)
             sgn = isodd(div(k - 1, 20)) ? -1.0 : 1.0
             p = 2000.0 * sgn * cis(0.01)
-            output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
+            output = CorrelatorOutput(
+                EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5),
+                4000,
+                4000k,
+            )
             previous = st.last_filtered_prompt
-            st, prompt, filtered, blocks = apply_record(st, signal, 7, output, fs, density, true)
+            st, prompt, filtered, blocks =
+                apply_record(st, signal, 7, output, fs, density, true)
             record = LoopRecord(signal, filtered, previous, output, blocks, fs)
-            es, carrier, code = step_loop(estimator, es, record, timeline, Int64(4000k + 8000))
+            es, carrier, code =
+                step_loop(estimator, es, record, timeline, Int64(4000k + 8000))
             schedule_word!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
             promote_words!(timeline, 4000k - 4000)
         end
@@ -48,18 +54,59 @@
     state = state_ref[]
     est_state = est_ref[]
 
-    output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000)
+    output = CorrelatorOutput(
+        EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5),
+        4000,
+        4000,
+    )
     record = LoopRecord(signal, output.correlator, complex(0.0, 0.0), output, 1, fs)
-    step_sig = Tuple{typeof(estimator),typeof(est_state),typeof(record),typeof(timeline),Int64}
+    step_sig =
+        Tuple{typeof(estimator),typeof(est_state),typeof(record),typeof(timeline),Int64}
     @test isempty(AllocCheck.check_allocs(step_loop, step_sig; ignore_throw = true))
     conv = ConventionalAssistedPLLAndDLL()
     conv_state = init_estimator_state(conv, signal, 100.0Hz, 0.1Hz)
-    @test isempty(AllocCheck.check_allocs(step_loop, Tuple{typeof(conv),typeof(conv_state),typeof(record),FixedNCOWord,Int64}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(mean_nco_word, Tuple{NCOTimeline,Int64,Int64}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(schedule_word!, Tuple{NCOTimeline,Int64,Float64,Float64}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(promote_words!, Tuple{NCOTimeline,Int64}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(pll_disc, Tuple{typeof(signal),typeof(output.correlator)}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(dll_disc, Tuple{typeof(signal),typeof(output.correlator),typeof(0.1Hz),typeof(fs)}; ignore_throw = true))
+    @test isempty(
+        AllocCheck.check_allocs(
+            step_loop,
+            Tuple{typeof(conv),typeof(conv_state),typeof(record),FixedNCOWord,Int64};
+            ignore_throw = true,
+        ),
+    )
+    @test isempty(
+        AllocCheck.check_allocs(
+            mean_nco_word,
+            Tuple{NCOTimeline,Int64,Int64};
+            ignore_throw = true,
+        ),
+    )
+    @test isempty(
+        AllocCheck.check_allocs(
+            schedule_word!,
+            Tuple{NCOTimeline,Int64,Float64,Float64};
+            ignore_throw = true,
+        ),
+    )
+    @test isempty(
+        AllocCheck.check_allocs(
+            promote_words!,
+            Tuple{NCOTimeline,Int64};
+            ignore_throw = true,
+        ),
+    )
+    @test isempty(
+        AllocCheck.check_allocs(
+            pll_disc,
+            Tuple{typeof(signal),typeof(output.correlator)};
+            ignore_throw = true,
+        ),
+    )
+    @test isempty(
+        AllocCheck.check_allocs(
+            dll_disc,
+            Tuple{typeof(signal),typeof(output.correlator),typeof(0.1Hz),typeof(fs)};
+            ignore_throw = true,
+        ),
+    )
 end
 
 @testset "The vector loop's per-record path is allocation-free" begin
@@ -68,7 +115,12 @@ end
     for inner in (ConventionalAssistedPLLAndDLL(), NCOReferencedPLLAndDLL())
         estimator = VectorPLLAndDLL(signal; inner)
         state = init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz)
-        output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000, 0.0)
+        output = CorrelatorOutput(
+            EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5),
+            4000,
+            4000,
+            0.0,
+        )
         record = LoopRecord(signal, output.correlator, cis(0.1), output, 1, fs; prn = 3)
         nav = estimator.navigation
         group = first(nav.groups)
@@ -79,10 +131,27 @@ end
         # through. The run below measures the whole record.
         for words_type in (FixedNCOWord, NCOTimeline)
             sig = Tuple{typeof(estimator),typeof(state),typeof(record),words_type,Int64}
-            @test isempty(AllocCheck.check_allocs(TrackingLoops._step_satellite, sig; ignore_throw = true))
-            @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_epoch!,
-                Tuple{typeof(nav),typeof(group),typeof(slot),typeof(state),typeof(record),words_type};
-                ignore_throw = true))
+            @test isempty(
+                AllocCheck.check_allocs(
+                    TrackingLoops._step_satellite,
+                    sig;
+                    ignore_throw = true,
+                ),
+            )
+            @test isempty(
+                AllocCheck.check_allocs(
+                    TrackingLoops._snapshot_epoch!,
+                    Tuple{
+                        typeof(nav),
+                        typeof(group),
+                        typeof(slot),
+                        typeof(state),
+                        typeof(record),
+                        words_type,
+                    };
+                    ignore_throw = true,
+                ),
+            )
         end
         # A run through the whole estimator, the state kept in a `Ref`: the satellite
         # registers, syncs to nothing and the engine cycles every 100 ms.
@@ -94,10 +163,21 @@ end
             previous = complex(0.0, 0.0)
             for k = first_k:(first_k+n-1)
                 p = cis(0.01k) * (isodd(k ÷ 20) ? 1 : -1)
-                out = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k, 0.0)
+                out = CorrelatorOutput(
+                    EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5),
+                    4000,
+                    4000k,
+                    0.0,
+                )
                 rec = LoopRecord(signal, out.correlator, previous, out, 1, fs; prn = 3)
-                st, carrier, code = step_loop(estimator, st, rec, timeline, Int64(4000k + 8000))
-                schedule_word!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
+                st, carrier, code =
+                    step_loop(estimator, st, rec, timeline, Int64(4000k + 8000))
+                schedule_word!(
+                    timeline,
+                    4000k + 8000,
+                    ustrip(Hz, carrier),
+                    ustrip(Hz, code),
+                )
                 promote_words!(timeline, 4000k - 4000)
                 previous = p
             end
@@ -106,12 +186,13 @@ end
         end
         state_ref = Ref(state)
         run_vector_records!(state_ref, estimator, timeline, 1, 400)
-        @test (@allocated run_vector_records!(state_ref, estimator, timeline, 401, 400)) == 0
+        @test (@allocated run_vector_records!(state_ref, estimator, timeline, 401, 400)) ==
+              0
         @test nav.cycle_id >= 7
     end
 end
 
-@testset "A very-early-prompt-late record runs through the vector loop without allocating" begin
+@testset "A very-early-prompt-late record runs through the vector loop alloc-free" begin
     # Its tap spacing and DLL variance factor are read per record by the engine.
     signal = GalileoE1B()
     fs = 4.092e6Hz
@@ -131,7 +212,8 @@ end
                 0.0,
             )
             rec = LoopRecord(signal, out.correlator, cis(0.01(k - 1)), out, 1, fs; prn = 3)
-            st, carrier, code = step_loop(estimator, st, rec, timeline, Int64(16368k + 32736))
+            st, carrier, code =
+                step_loop(estimator, st, rec, timeline, Int64(16368k + 32736))
             schedule_word!(timeline, 16368k + 32736, ustrip(Hz, carrier), ustrip(Hz, code))
             promote_words!(timeline, 16368k - 16368)
         end
@@ -168,8 +250,8 @@ end
             previous = st.last_filtered_prompt
             st, _, filtered, blocks = apply_record(st, signal, 7, output, fs, density, true)
             record = LoopRecord(signal, filtered, previous, output, blocks, fs)
-            es, carrier, code = step_loop(estimator, es, record, FixedNCOWord(0.0, 0.0),
-                NO_LANDING_SAMPLE)
+            es, carrier, code =
+                step_loop(estimator, es, record, FixedNCOWord(0.0, 0.0), NO_LANDING_SAMPLE)
         end
         state_ref[] = st
         est_ref[] = es

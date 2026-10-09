@@ -301,7 +301,11 @@ end
     estimator = NoiseRefCN0Estimator()
     # No density and no T: named as the missing *source*, the root cause.
     err_both = try
-        update(estimator, complex(1.0, 0.0), CN0UpdateContext(GPSL1CA(), BitBuffer{UInt64}(), 1))
+        update(
+            estimator,
+            complex(1.0, 0.0),
+            CN0UpdateContext(GPSL1CA(), BitBuffer{UInt64}(), 1),
+        )
         nothing
     catch e
         e
@@ -396,7 +400,8 @@ end
             prompts = cn0_prompts(10^3.0 * 1e-3, 400, rng)     # a true 30 dB-Hz
 
             nwpr = cn0_fold(NWPRCN0Estimator(), prompts, context)
-            reference = cn0_fold(NoiseRefCN0Estimator(; num_records = 400), prompts, context)
+            reference =
+                cn0_fold(NoiseRefCN0Estimator(; num_records = 400), prompts, context)
             @test Base.length(nwpr) == 0
             @test estimate_cn0(nwpr, CN0_T) ==
                   estimate_cn0(get_fallback_cn0_estimator(nwpr), CN0_T)
@@ -419,8 +424,8 @@ end
     @test NWPRCN0Estimator(GPSL1C_P()).num_narrowband_code_blocks == 2
     @test NWPRCN0Estimator(GPSL1CA(); num_records = 40).num_records == 40
     # An explicit window still wins, and other keywords are forwarded.
-    @test NWPRCN0Estimator(GPSL1C_P(); num_narrowband_code_blocks = 7).num_narrowband_code_blocks ==
-          7
+    explicit = NWPRCN0Estimator(GPSL1C_P(); num_narrowband_code_blocks = 7)
+    @test explicit.num_narrowband_code_blocks == 7
     @test NWPRCN0Estimator(GPSL1CA(); fallback = NoCN0Estimator()).fallback isa
           NoCN0Estimator
 end
@@ -491,8 +496,9 @@ end
     prompts(cn0, n, seed) =
         (isnothing(cn0) ? 0.0 : sqrt(10^(cn0 / 10) * 1e-3)) .+
         randn(Xoshiro(seed), ComplexF64, n)
-    moments(cn0, seed) =
-        cn0_db(estimate_cn0(cn0_fold(MomentsCN0Estimator(100), prompts(cn0, 100, seed)), 1ms))
+    moments(cn0, seed) = cn0_db(
+        estimate_cn0(cn0_fold(MomentsCN0Estimator(100), prompts(cn0, 100, seed)), 1ms),
+    )
     nwpr(cn0, seed) = cn0_db(
         estimate_cn0(
             cn0_fold(
@@ -719,12 +725,18 @@ function cn0_comparison_sweep(cn0, trials)
     M = 5
     for t = 1:trials
         prompts = cn0_prompts(λ, 100, rng)
-        nwpr_estimator = cn0_fold(NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = M), prompts)
+        nwpr_estimator = cn0_fold(
+            NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = M),
+            prompts,
+        )
         nwpr[t] = 10^(cn0_db(estimate_cn0(nwpr_estimator, CN0_T)) / 10) * 1e-3
-        ref_estimator = cn0_fold(NoiseRefCN0Estimator(; num_records = 100), prompts, context)
+        ref_estimator =
+            cn0_fold(NoiseRefCN0Estimator(; num_records = 100), prompts, context)
         noise_ref[t] = mean(ref_estimator.buffered_cn0) * 1e-3
         # Coherent reference: `M` records summed is one `M`-times-longer record.
-        coherent[t] = mean((abs2(sum(@view prompts[(w-1)*M+1:w*M])) - M) / M^2 for w = 1:div(100, M))
+        coherent[t] = mean(
+            (abs2(sum(@view prompts[((w-1)*M+1):(w*M)])) - M) / M^2 for w = 1:div(100, M)
+        )
     end
     stats(estimates) = begin
         usable = filter(x -> isfinite(x) && !iszero(x), estimates)

@@ -86,8 +86,11 @@ function schedule_word!(timeline::NCOTimeline, sample, carrier_doppler_hz, code_
         end
         count -= 1
     end
-    @inbounds words[count+1] =
-        ScheduledNCOWord(Int64(sample), Float64(carrier_doppler_hz), Float64(code_doppler_hz))
+    @inbounds words[count+1] = ScheduledNCOWord(
+        Int64(sample),
+        Float64(carrier_doppler_hz),
+        Float64(code_doppler_hz),
+    )
     timeline.count = count + 1
     timeline
 end
@@ -218,5 +221,6 @@ struct FixedNCOWord
     code_doppler::Float64
 end
 
-mean_nco_word(word::FixedNCOWord, a::Real, b::Real) = word.carrier_doppler, word.code_doppler
+mean_nco_word(word::FixedNCOWord, a::Real, b::Real) =
+    word.carrier_doppler, word.code_doppler
 nco_word_at(word::FixedNCOWord, sample) = word.carrier_doppler, word.code_doppler

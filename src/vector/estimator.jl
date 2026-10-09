@@ -28,13 +28,13 @@ signals of one band its signal group, the driver first, as the host steps it,
 e.g. `(GalileoE1C(), GalileoE1B())`. A host that keeps its satellites' signal
 groups itself, such as Tracking.jl's `TrackState`, builds
 [`VectorTrackingSettings`](@ref) with the same keywords instead and binds them
-with [`with_signal_groups`](@ref), so the groups are listed once. It does the whole pipeline inside
-[`step_loop`](@ref), from what the records carry: every satellite stepped with
-this estimator shares one navigation engine, which syncs to the navigation
-bits, decodes them, estimates the C/N₀, solves the scalar PVT, seeds the
-navigation filter from its first fix and from then on runs one filter cycle
-every `cycle_time`, taking satellites over and handing them back. A host needs
-no vector-specific code: it builds the satellites' states with
+with [`with_signal_groups`](@ref), so the groups are listed once. It does the
+whole pipeline inside [`step_loop`](@ref), from what the records carry: every
+satellite stepped with this estimator shares one navigation engine, which syncs
+to the navigation bits, decodes them, estimates the C/N₀, solves the scalar PVT,
+seeds the navigation filter from its first fix and from then on runs one filter
+cycle every `cycle_time`, taking satellites over and handing them back. A host
+needs no vector-specific code: it builds the satellites' states with
 [`init_estimator_state`](@ref) and steps them like any other loop's. Read the
 results with [`navigation_solution`](@ref), [`navigation_status`](@ref),
 [`release_reason`](@ref), [`member_sats`](@ref), [`position_uncertainty`](@ref)
@@ -90,20 +90,21 @@ carries any, its data signal: the driver, or for a dataless pilot driver its
 data passenger, whose records then run the satellite's bit clock and decoder.
 The signals of a group share the driver's code rate and carrier frequency.
 
-With `combine_signals = true` the passengers are combined with the driver
-(see [Signal combining](@ref)): out of the vector loop by `inner`, in it into
-the PLL, and their DLL and raw FLL readings into the navigation filter's code
-and rate measurements. A passenger's readings join the cycle of the driver record
+With `combine_signals = true` the passengers are combined with the driver (see
+[Signal combining](@ref)): out of the vector loop by `inner`, in it into the
+PLL, and their DLL and raw FLL readings into the navigation filter's code and
+rate measurements. A passenger's readings join the cycle of the driver record
 they end within, and the filter fuses every signal's cycle mean weighted by its
 inverse variance, built from that signal's own C/N₀ estimate, coherent
-integration time and tap spacing (taken at its latest record length). A passenger's DLL readings
-join only where its group delay relative to the driver is given. The setting is
-the vector loop's own, as for [`ConventionalPLLAndDLL`](@ref) the scalar loop's,
-and covers its scalar fallback too: the vector loop folds the passengers into
-`inner`'s state itself, so `inner` is built without `combine_signals`
-(an `inner` with it throws an `ArgumentError`). An
-[`NCOReferencedPLLAndDLL`](@ref) `inner` cannot combine: it steps a phase error
-predicted to the landing sample, which passenger records are not.
+integration time and tap spacing (taken at its latest record length). A
+passenger's DLL readings join only where its group delay relative to the driver
+is given. The setting is the vector loop's own, as for
+[`ConventionalPLLAndDLL`](@ref) the scalar loop's, and covers its scalar
+fallback too: the vector loop folds the passengers into `inner`'s state itself,
+so `inner` is built without `combine_signals` (an `inner` with it throws an
+`ArgumentError`). An [`NCOReferencedPLLAndDLL`](@ref) `inner` cannot combine: it
+steps a phase error predicted to the landing sample, which passenger records are
+not.
 
 Each satellite picks up the corrections of the latest cycle on its next record,
 sized for where they land: at `landing_sample`, or at the record's end under
@@ -286,7 +287,8 @@ _registered(state::SatVectorPLLAndDLL{S,P}, slot::Int, registration::Int) where 
     )
 
 """
-    init_estimator_state(estimator::VectorPLLAndDLL, driver_signal, carrier_doppler, code_doppler)
+    init_estimator_state(estimator::VectorPLLAndDLL, driver_signal, carrier_doppler,
+                         code_doppler)
 
 The inner loop's state with the vector interface empty: out of the vector
 loop, nothing accumulated, no corrections. The satellite joins the navigation
@@ -314,12 +316,12 @@ init_estimator_state(
     reset_estimator_state(estimator::VectorPLLAndDLL, state, carrier_doppler, code_doppler)
 
 Re-seed the inner loop from the converged Dopplers, zero the accumulators (the
-passengers' readings too) and stop applying the corrections, keeping `vt_on` and the satellite's place in the
-navigation engine. The corrections must leave the NCO words with the re-seed:
-the converged Dopplers already contain the last correction, so keeping it
-would apply it twice. The replica is still steered by it, though, so the
-correction history and its landing lead, which the next code measurement is
-moved to the epoch with, are kept.
+passengers' readings too) and stop applying the corrections, keeping `vt_on` and
+the satellite's place in the navigation engine. The corrections must leave the
+NCO words with the re-seed: the converged Dopplers already contain the last
+correction, so keeping it would apply it twice. The replica is still steered by
+it, though, so the correction history and its landing lead, which the next code
+measurement is moved to the epoch with, are kept.
 """
 reset_estimator_state(
     estimator::VectorPLLAndDLL,
@@ -360,15 +362,14 @@ _enable_vector_tracking(state::SatVectorPLLAndDLL) =
 
 # Hand the satellite back to its inner scalar loop, with the accumulators and
 # corrections zeroed so a later re-enable never runs on stale values.
-_disable_vector_tracking(state::SatVectorPLLAndDLL) =
-    SatVectorPLLAndDLL(
-        state.inner,
-        false,
-        state.passenger_readings,
-        state.slot,
-        state.registration,
-        state.cycle_id,
-    )
+_disable_vector_tracking(state::SatVectorPLLAndDLL) = SatVectorPLLAndDLL(
+    state.inner,
+    false,
+    state.passenger_readings,
+    state.slot,
+    state.registration,
+    state.cycle_id,
+)
 
 # `_disable_vector_tracking` with the inner loop re-seeded from the Dopplers the
 # replica runs at — what `reset_estimator_state` does — so the scalar loop takes over

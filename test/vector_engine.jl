@@ -2,12 +2,29 @@
 # snapshot of a satellite at an epoch, registration and the slots, staleness.
 using GNSSDecoder: GNSSDecoderState
 
-engine_correlator(p = 1.0 + 0.0im) = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
+engine_correlator(p = 1.0 + 0.0im) =
+    EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
 
 # A record of `n` samples ending at `sample_index` on the 4 MHz grid.
-engine_record(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0 + 0.0im, signal = GPSL1CA()) =
-    LoopRecord(signal, engine_correlator(p), complex(0.0), n, sample_index, sample_index, 1, 4e6Hz;
-        prn, code_phase)
+engine_record(
+    prn,
+    sample_index;
+    n = 4000,
+    code_phase = 0.0,
+    p = 1.0 + 0.0im,
+    signal = GPSL1CA(),
+) = LoopRecord(
+    signal,
+    engine_correlator(p),
+    complex(0.0),
+    n,
+    sample_index,
+    sample_index,
+    1,
+    4e6Hz;
+    prn,
+    code_phase,
+)
 
 @testset "The navigation epochs are the multiples of the cycle time" begin
     nav = VectorPLLAndDLL(GPSL1CA()).navigation
@@ -44,13 +61,15 @@ end
     # over and restarts its bit clock; the old state, of an older registration,
     # registers anew.
     reacquired = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
-    reacquired, = step_loop(estimator, reacquired, engine_record(7, 12_000), words, NO_LANDING_SAMPLE)
+    reacquired, =
+        step_loop(estimator, reacquired, engine_record(7, 12_000), words, NO_LANDING_SAMPLE)
     @test reacquired.slot == 1 && reacquired.registration == 3
     @test slot.registration == 3
     @test isnothing(slot.running_decoder.num_bits_after_valid_syncro_sequence)
     # A third satellite finds no free slot and grows the group.
     third = init_estimator_state(estimator, GPSL1CA(), 10.0Hz, 0.0Hz)
-    third, = step_loop(estimator, third, engine_record(11, 12_000), words, NO_LANDING_SAMPLE)
+    third, =
+        step_loop(estimator, third, engine_record(11, 12_000), words, NO_LANDING_SAMPLE)
     @test third.slot == 3 && length(group.slots) == 3
 end
 
@@ -59,7 +78,10 @@ end
     nav = VectorPLLAndDLL(signal).navigation
     group = nav.groups[1]
     slot = group.slots[1]
-    decoder = GNSSDecoderState(GNSSDecoderState(signal, 3); num_bits_after_valid_syncro_sequence = 10)
+    decoder = GNSSDecoderState(
+        GNSSDecoderState(signal, 3);
+        num_bits_after_valid_syncro_sequence = 10,
+    )
     code_frequency = 1.023e6
     fs = 4e6
     function snapshot(blocks, fraction, end_sample, epoch_sample; code_doppler = 0.0)
@@ -69,8 +91,17 @@ end
         slot.first_epoch = 0
         slot.snapshot_epoch = typemin(Int)
         slot.running_decoder = decoder
-        slot.bit_buffer = TL.BitBuffer{UInt64}(UInt64(0), 0, true, 0, Int8(1), complex(0.0), blocks,
-            slot.bit_buffer.soft_bits, slot.bit_buffer.phase_acc)
+        slot.bit_buffer = TL.BitBuffer{UInt64}(
+            UInt64(0),
+            0,
+            true,
+            0,
+            Int8(1),
+            complex(0.0),
+            blocks,
+            slot.bit_buffer.soft_bits,
+            slot.bit_buffer.phase_acc,
+        )
         slot.data_last_code_phase_fraction = fraction
         slot.last_end_sample = end_sample
         slot.last_end_time = end_sample / fs
@@ -79,7 +110,14 @@ end
         slot.data_last_end_time = end_sample / fs
         state = group.prototype
         record = engine_record(3, epoch_sample + 4000)
-        TL._snapshot_epoch!(nav, group, slot, state, record, FixedNCOWord(0.0, code_doppler))
+        TL._snapshot_epoch!(
+            nav,
+            group,
+            slot,
+            state,
+            record,
+            FixedNCOWord(0.0, code_doppler),
+        )
         slot.decoder.num_bits_after_valid_syncro_sequence, slot.code_phase
     end
     # The epoch (sample 400 000) lies 1000 samples past the last record end: five
@@ -110,7 +148,14 @@ end
     slot.snapshot_epoch = typemin(Int)
     slot.last_end_sample = 300_000
     slot.last_end_time = 300_000 / fs
-    TL._snapshot_epoch!(nav, group, slot, group.prototype, engine_record(3, 304_000), FixedNCOWord(0.0, 0.0))
+    TL._snapshot_epoch!(
+        nav,
+        group,
+        slot,
+        group.prototype,
+        engine_record(3, 304_000),
+        FixedNCOWord(0.0, 0.0),
+    )
     @test nav.num_snapshots == 0
 end
 
@@ -150,16 +195,34 @@ end
     states = [init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz) for _ = 1:3]
     prns = (3, 5, 7)
     for k = 1:99, i = 1:3
-        states[i], = step_loop(estimator, states[i], engine_record(prns[i], 4000k), words, NO_LANDING_SAMPLE)
+        states[i], = step_loop(
+            estimator,
+            states[i],
+            engine_record(prns[i], 4000k),
+            words,
+            NO_LANDING_SAMPLE,
+        )
     end
     # The first epoch is at sample 0, the start of the first records; the next at 0.1 s.
     @test nav.cycle_id == 1 && nav.cycle_epoch == 0
     for i = 1:2
-        states[i], = step_loop(estimator, states[i], engine_record(prns[i], 400_000 + 4000), words, NO_LANDING_SAMPLE)
+        states[i], = step_loop(
+            estimator,
+            states[i],
+            engine_record(prns[i], 400_000 + 4000),
+            words,
+            NO_LANDING_SAMPLE,
+        )
         @test nav.cycle_id == 1
         @test nav.num_snapshots == i
     end
-    states[3], = step_loop(estimator, states[3], engine_record(prns[3], 400_000 + 4000), words, NO_LANDING_SAMPLE)
+    states[3], = step_loop(
+        estimator,
+        states[3],
+        engine_record(prns[3], 400_000 + 4000),
+        words,
+        NO_LANDING_SAMPLE,
+    )
     @test nav.cycle_id == 2 && nav.cycle_epoch == 1 && nav.pending_epoch == 2
     # The last one took its cycle up on the spot; the others do on their next record.
     @test states[3].cycle_id == 2
@@ -167,11 +230,23 @@ end
     # A satellite that falls behind holds the cycle up until the others are past the
     # epoch after: then the overdue cycle runs without it.
     for k = 102:300, i = 1:2
-        states[i], = step_loop(estimator, states[i], engine_record(prns[i], 4000k), words, NO_LANDING_SAMPLE)
+        states[i], = step_loop(
+            estimator,
+            states[i],
+            engine_record(prns[i], 4000k),
+            words,
+            NO_LANDING_SAMPLE,
+        )
     end
     @test nav.cycle_id == 2
     @test nav.num_snapshots == 2
-    states[1], = step_loop(estimator, states[1], engine_record(prns[1], 4000 * 301), words, NO_LANDING_SAMPLE)
+    states[1], = step_loop(
+        estimator,
+        states[1],
+        engine_record(prns[1], 4000 * 301),
+        words,
+        NO_LANDING_SAMPLE,
+    )
     @test nav.cycle_id == 3 && nav.cycle_epoch == 2
     @test !nav.groups[1].slots[3].active
 end

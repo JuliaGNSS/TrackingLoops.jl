@@ -148,8 +148,7 @@ end
         loops.fll && !iszero(record.previous_prompt) ?
         _fll_discriminator_weight(signal, integration_time) : 0.0s^3
     fll = iszero(fll_weight) ? 0.0Hz : _passenger_fll_reading(record, false)
-    dll_weight =
-        loops.dll && !isnan(differential_group_delay_chips) ? weight : zero(weight)
+    dll_weight = loops.dll && !isnan(differential_group_delay_chips) ? weight : zero(weight)
     dll =
         iszero(dll_weight) ? 0.0 :
         _passenger_dll_reading(record, words, differential_group_delay_chips)

@@ -1,9 +1,12 @@
 @testset "Correlator initial accumulators" begin
-    @test @inferred(TrackingLoops.get_initial_accumulator(NumAnts(1), NumAccumulators(3))) isa
-          SVector{3,ComplexF64}
-    @test @inferred(TrackingLoops.get_initial_accumulator(NumAnts(4), NumAccumulators(3))) isa
-          SVector{3,SVector{4,ComplexF64}}
-    @test @inferred(TrackingLoops.get_initial_accumulator(NumAnts(1), 3)) isa Vector{ComplexF64}
+    @test @inferred(
+        TrackingLoops.get_initial_accumulator(NumAnts(1), NumAccumulators(3))
+    ) isa SVector{3,ComplexF64}
+    @test @inferred(
+        TrackingLoops.get_initial_accumulator(NumAnts(4), NumAccumulators(3))
+    ) isa SVector{3,SVector{4,ComplexF64}}
+    @test @inferred(TrackingLoops.get_initial_accumulator(NumAnts(1), 3)) isa
+          Vector{ComplexF64}
     @test @inferred(TrackingLoops.get_initial_accumulator(NumAnts(4), 3)) isa
           Vector{SVector{4,ComplexF64}}
 end
@@ -29,7 +32,8 @@ end
     @test get_num_ants(correlator) == 2
     @test TrackingLoops._num_ants_val(correlator) === NumAnts(2)
 
-    correlator = EarlyPromptLateCorrelator(SVector(1.0 + 0.0im, 2.0 + 0.0im, 3.0 + 0.0im), 0.5)
+    correlator =
+        EarlyPromptLateCorrelator(SVector(1.0 + 0.0im, 2.0 + 0.0im, 3.0 + 0.0im), 0.5)
     @test @inferred(get_early(correlator)) == 3.0
     @test @inferred(get_prompt(correlator)) == 2.0
     @test @inferred(get_late(correlator)) == 1.0
@@ -127,7 +131,8 @@ end
 end
 
 @testset "is_zero correlator" begin
-    zero_corr = EarlyPromptLateCorrelator(SVector(0.0 + 0.0im, 0.0 + 0.0im, 0.0 + 0.0im), 0.5)
+    zero_corr =
+        EarlyPromptLateCorrelator(SVector(0.0 + 0.0im, 0.0 + 0.0im, 0.0 + 0.0im), 0.5)
     @test TrackingLoops.is_zero(zero_corr)
     nonzero_corr =
         EarlyPromptLateCorrelator(SVector(0.0 + 0.0im, 1.0 + 0.0im, 0.0 + 0.0im), 0.5)
@@ -152,8 +157,10 @@ end
         0.5,
     )
 
-    correlator =
-        @inferred EarlyPromptLateCorrelator(SVector(1.0 + 0.0im, 1.0 + 0.0im, 1.0 + 0.0im), 0.5)
+    correlator = @inferred EarlyPromptLateCorrelator(
+        SVector(1.0 + 0.0im, 1.0 + 0.0im, 1.0 + 0.0im),
+        0.5,
+    )
     @test @inferred(zero(correlator)) ==
           EarlyPromptLateCorrelator(SVector(0.0 + 0.0im, 0.0 + 0.0im, 0.0 + 0.0im), 0.5)
 
@@ -182,13 +189,16 @@ end
     @test filtered_correlator ==
           EarlyPromptLateCorrelator(SVector(1.0 + 1.0im, 2.0 + 0.0im, 1.0 + 3.0im), 0.5)
 
-    correlator =
-        @inferred EarlyPromptLateCorrelator(SVector(1.0 + 0.0im, 1.0 + 0.0im, 1.0 + 0.0im), 0.5)
+    correlator = @inferred EarlyPromptLateCorrelator(
+        SVector(1.0 + 0.0im, 1.0 + 0.0im, 1.0 + 0.0im),
+        0.5,
+    )
     filtered_correlator = @inferred TrackingLoops.apply(x -> 2 * x, correlator)
     @test filtered_correlator ==
           EarlyPromptLateCorrelator(SVector(2.0 + 0.0im, 2.0 + 0.0im, 2.0 + 0.0im), 0.5)
 
-    vepl = VeryEarlyPromptLateCorrelator(SVector(ntuple(k -> complex(k, 0.0), 5)), 0.15, 0.6)
+    vepl =
+        VeryEarlyPromptLateCorrelator(SVector(ntuple(k -> complex(k, 0.0), 5)), 0.15, 0.6)
     @test get_accumulators(TrackingLoops.apply(x -> 2 * x, vepl)) ==
           SVector(ntuple(k -> complex(2k, 0.0), 5))
 end
@@ -196,7 +206,8 @@ end
 @testset "Early late sample spacing" begin
     code_frequency = get_code_frequency(GPSL1CA())
     two_ants = SVector(1.0 + 0.0im, 1.0 + 0.0im)
-    correlator = @inferred EarlyPromptLateCorrelator(SVector(two_ants, two_ants, two_ants), 0.5)
+    correlator =
+        @inferred EarlyPromptLateCorrelator(SVector(two_ants, two_ants, two_ants), 0.5)
     @test get_early_late_sample_spacing(correlator, 2e6Hz, code_frequency) == 2
     @test get_early_late_sample_spacing(correlator, 4e6Hz, code_frequency) == 4
 
@@ -209,8 +220,10 @@ end
 end
 
 @testset "Normalize correlator" begin
-    correlator =
-        @inferred EarlyPromptLateCorrelator(SVector(1.0 + 0.0im, 1.0 + 0.0im, 1.0 + 0.0im), 0.5)
+    correlator = @inferred EarlyPromptLateCorrelator(
+        SVector(1.0 + 0.0im, 1.0 + 0.0im, 1.0 + 0.0im),
+        0.5,
+    )
     @test @inferred(normalize(correlator, 10)) ==
           EarlyPromptLateCorrelator(SVector(0.1 + 0.0im, 0.1 + 0.0im, 0.1 + 0.0im), 0.5)
 
@@ -256,7 +269,8 @@ end
 end
 
 @testset "CorrelatorOutput carries the raw correlator" begin
-    correlator = EarlyPromptLateCorrelator(SVector(1.0 + 0.0im, 2.0 + 0.0im, 3.0 + 0.0im), 0.5)
+    correlator =
+        EarlyPromptLateCorrelator(SVector(1.0 + 0.0im, 2.0 + 0.0im, 3.0 + 0.0im), 0.5)
     output = CorrelatorOutput(correlator, 4000, 8000)
     @test output.correlator === correlator
     @test output.integrated_samples == 4000

@@ -93,33 +93,33 @@ share the driver's code rate and carrier frequency.
   filter ranges on the driver, and reports the satellite by it.
 - **Combining** (`combine_signals = true`, the vector loop's own switch, as
   `ConventionalPLLAndDLL`'s is the scalar loop's; it covers the scalar fallback
-  too, so `inner` is built without it). Out of the vector loop the passengers are
-  combined as in the scalar loops ([Signal combining](@ref)); in it, into the
-  PLL. The code and rate measurements the filter owns take every signal's DLL
-  and raw FLL readings. A passenger's readings wait for the driver's next record
-  and join its cycle, as the scalar loops combine them into that record: a
-  reading moves by at most one driver record across an epoch. Each signal's
+  too, so `inner` is built without it). Out of the vector loop the passengers
+  are combined as in the scalar loops ([Signal combining](@ref)); in it, into
+  the PLL. The code and rate measurements the filter owns take every signal's
+  DLL and raw FLL readings. A passenger's readings wait for the driver's next
+  record and join its cycle, as the scalar loops combine them into that record:
+  a reading moves by at most one driver record across an epoch. Each signal's
   cycle mean is weighted by its inverse variance, built from that signal's own
   C/N₀, coherent integration time and tap spacing, and from the span its
   readings cover that cycle, so a signal with readings for part of a cycle only
   weighs that much less. The fused variance is the inverse of the summed
   weights. The variances take every reading of a cycle at the signal's latest
   coherent integration time: in the one cycle where a signal's records change
-  length (at bit sync, say) they are off by up to the ratio of the two lengths. Only the thermal noise averages
-  down: the orbit, clock and atmosphere are common to every signal of a
-  satellite. The code variance follows the BPSK early-minus-late model; for a
-  signal tracked with the very-early-prompt-late correlator (Galileo E1, the
-  BOC(1,1) family) it is scaled by 0.4, a first-order correction from a
-  simulation of its discriminator (0.36 for CBOC, 0.43 for BOC(1,1)). At a low
-  C/N₀ · T_coh the model overstates every signal's variance alike, as the
-  normalised discriminators saturate. A passenger's DLL
+  length (at bit sync, say) they are off by up to the ratio of the two lengths.
+  Only the thermal noise averages down: the orbit, clock and atmosphere are
+  common to every signal of a satellite. The code variance follows the BPSK
+  early-minus-late model; for a signal tracked with the very-early-prompt-late
+  correlator (Galileo E1, the BOC(1,1) family) it is scaled by 0.4, a
+  first-order correction from a simulation of its discriminator (0.36 for CBOC,
+  0.43 for BOC(1,1)). At a low C/N₀ · T_coh the model overstates every signal's
+  variance alike, as the normalised discriminators saturate. A passenger's DLL
   readings are taken only where its group delay relative to the driver is given
-  (`differential_group_delay_chips`), referred to the driver's code phase by
-  it. A passenger's FLL readings are read four-quadrant where its record has a
-  polarity. A member with no code reading of any signal in a
-  cycle is withheld from it, one with no rate reading from its rate row only.
-  Without `combine_signals` the filter reads the driver's readings alone, and
-  the passengers' records only decode the bits where the driver carries none.
+  (`differential_group_delay_chips`), referred to the driver's code phase by it.
+  A passenger's FLL readings are read four-quadrant where its record has a
+  polarity. A member with no code reading of any signal in a cycle is withheld
+  from it, one with no rate reading from its rate row only. Without
+  `combine_signals` the filter reads the driver's readings alone, and the
+  passengers' records only decode the bits where the driver carries none.
 - **Two weightings, by design.** Whatever closes a carrier loop on the combined
   readings — the scalar fallback out of the vector loop, and the PLL aiding in
   it — weights them by the ICD power split, exactly as the scalar loops do
@@ -147,19 +147,19 @@ as they are. A satellite the filter takes over keeps `inner`'s state; one it
 releases re-seeds `inner` from the Dopplers its replica runs at, which restarts
 the staging.
 
-The discriminators are the record's in both modes. Where the record's
-`polarity` (see [`LoopRecord`](@ref)) says the replica wipes off every sign
-modulation of its prompt (a pilot synced to its secondary code), the PLL and the
-FLL read four-quadrant, otherwise two-quadrant. In the vector loop the PLL still
-closes on that reading, and the raw FLL reading accumulated for the filter is
-four-quadrant on such a record, so a pilot's rate measurement has the ±1/(2T) range rather than ±1/(4T).
-A record without a previous prompt has no FLL reading and is left out of the
-cycle's rate measurement; a cycle without any FLL reading withholds the
-satellite's rate row and keeps its pseudorange row. Passengers combined into the
-PLL read it two-quadrant, and only while the driver's own reading lies within
-that range ([Signal combining](@ref)); the FLL readings the filter fuses are
-the passengers' own, four-quadrant where the record has a polarity, as the
-driver's.
+The discriminators are the record's in both modes. Where the record's `polarity`
+(see [`LoopRecord`](@ref)) says the replica wipes off every sign modulation of
+its prompt (a pilot synced to its secondary code), the PLL and the FLL read
+four-quadrant, otherwise two-quadrant. In the vector loop the PLL still closes
+on that reading, and the raw FLL reading accumulated for the filter is
+four-quadrant on such a record, so a pilot's rate measurement has the ±1/(2T)
+range rather than ±1/(4T). A record without a previous prompt has no FLL reading
+and is left out of the cycle's rate measurement; a cycle without any FLL reading
+withholds the satellite's rate row and keeps its pseudorange row. Passengers
+combined into the PLL read it two-quadrant, and only while the driver's own
+reading lies within that range ([Signal combining](@ref)); the FLL readings the
+filter fuses are the passengers' own, four-quadrant where the record has a
+polarity, as the driver's.
 
 ## What the records must carry
 

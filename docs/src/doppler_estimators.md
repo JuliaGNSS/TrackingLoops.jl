@@ -7,7 +7,8 @@ created with [`init_estimator_state`](@ref). Every estimator is stepped with the
 same call,
 
 ```julia
-state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words, landing_sample)
+state, carrier_doppler, code_doppler =
+    step_loop(estimator, state, record, words, landing_sample)
 ```
 
 where `record` is a [`LoopRecord`](@ref), `words` is the replica frequency the
@@ -106,14 +107,16 @@ with about 4× stability margin. It is the product of Kaplan & Hegarty's
 third-order design example (18 Hz at 5 ms) and matches GNSS-SDR's narrow
 post-sync bandwidths (5 Hz at 20 ms). The resulting defaults:
 
-| Integration | Signals                                                   |    Wide BL |   Narrow BL | FLL-assist BL |  Code BL |
-|-------------|-----------------------------------------------------------|-----------:|------------:|--------------:|---------:|
-| 1 ms        | GPS L1 C/A, GPS L5, Galileo E5a, …                        |      50 Hz |       18 Hz |     5 Hz |     1 Hz |
-| 2 ms        | Galileo E5a-QP                                            |      45 Hz |       18 Hz |     5 Hz |     1 Hz |
-| 4 ms        | Galileo E1B / E1C                                         |    22.5 Hz |       10 Hz |     5 Hz |     1 Hz |
-| 10 ms       | GPS L1C-D / L1C-P, BeiDou B1C; GPS L5I synced at 10 ms    |       9 Hz |        4 Hz |     2 Hz |     1 Hz |
-| 20 ms       | GPS L2 CM; GPS L1 C/A, L5Q, Galileo E5a-I synced at 20 ms |     4.5 Hz |        2 Hz |     1 Hz |   0.9 Hz |
-| 1.5 s       | GPS L2 CL                                                 |    0.06 Hz |    0.027 Hz |  0.013 Hz | 0.012 Hz |
+`BL` in Hz:
+
+| Records | Signals                                  |  Wide | Narrow | FLL-assist |  Code |
+|---------|------------------------------------------|------:|-------:|-----------:|------:|
+| 1 ms    | GPS L1 C/A, GPS L5, Galileo E5a, …       |    50 |     18 |          5 |     1 |
+| 2 ms    | Galileo E5a-QP                           |    45 |     18 |          5 |     1 |
+| 4 ms    | Galileo E1B / E1C                        |  22.5 |     10 |          5 |     1 |
+| 10 ms   | GPS L1C, BeiDou B1C; L5I synced at 10 ms |     9 |      4 |          2 |     1 |
+| 20 ms   | GPS L2 CM; L1 C/A, L5Q, E5a-I synced     |   4.5 |      2 |          1 |   0.9 |
+| 1.5 s   | GPS L2 CL                                |  0.06 |  0.027 |      0.013 | 0.012 |
 
 The code cap of 0.018 is conservative for the second-order code filter, which
 destabilizes only around `BL · Δt ≈ 0.4` (S. A. Stephens and J. B. Thomas,
@@ -157,7 +160,8 @@ record, over a time constant of 0.1 s and at least 25 records (0.25 s for 10 ms
 records). It is normalised by the signal power `A²` averaged alike and estimated
 from the prompt's moments as `√(2 M₂² − M₄)`, so it reads the same at any C/N₀:
 unlike `⟨I² − Q²⟩ / ⟨I² + Q²⟩` it does not read low at low C/N₀ when the loop is
-locked. Its threshold, [`phase_lock_indicator_threshold`](@ref TrackingLoops.phase_lock_indicator_threshold)
+locked. Its threshold,
+[`phase_lock_indicator_threshold`](@ref TrackingLoops.phase_lock_indicator_threshold)
 (0.5, an RMS phase error of about 30°), is overridable per signal type; a
 receiver may read the indicator for its own lock decisions.
 

@@ -71,8 +71,18 @@ mutable struct SatelliteReport{D}
     release_reason::VTReleaseReason
 end
 
-SatelliteReport(decoder) =
-    SatelliteReport(0, false, decoder, false, nothing, NaN, false, false, false, VT_NOT_RELEASED)
+SatelliteReport(decoder) = SatelliteReport(
+    0,
+    false,
+    decoder,
+    false,
+    nothing,
+    NaN,
+    false,
+    false,
+    false,
+    VT_NOT_RELEASED,
+)
 
 # What the navigation engine keeps of one passenger signal of a satellite for the
 # filter's measurements: its own C/N₀ estimator, coherent integration time and tap
@@ -214,7 +224,10 @@ function VTSlot(
         -1,
         -1,
         0,
-        [VTPassenger(MomentsCN0Estimator(num_prompts_for_cn0_estimation)) for _ = 1:num_passengers],
+        [
+            VTPassenger(MomentsCN0Estimator(num_prompts_for_cn0_estimation)) for
+            _ = 1:num_passengers
+        ],
         SatelliteReport(decoder),
     )
 end
@@ -241,7 +254,8 @@ function VTSlotGroup(signals::Tuple, prototype::SatVectorPLLAndDLL, capacity, nu
     driver, passengers = first(signals), Base.tail(signals)
     data_signal = signals[findfirst(signal -> !iszero(get_data_frequency(signal)), signals)]
     slots = [
-        VTSlot(data_signal, length(passengers), 1, prototype, num_prompts) for _ = 1:capacity
+        VTSlot(data_signal, length(passengers), 1, prototype, num_prompts) for
+        _ = 1:capacity
     ]
     VTSlotGroup(
         driver,
@@ -373,11 +387,21 @@ function VTBuffers(states::Tuple, num_states, layout::NavFilterLayout, max_membe
         _capacity_vector(typeof(1.0m), max_members),
         _capacity_vector(typeof(1.0m / s), max_members),
         _capacity_vector(SVector{3,Float64}, max_members),
-        BiasColumns(_capacity_vector(Int, max_members), num_clocks, _capacity_vector(Int, max_members), num_ifbs),
+        BiasColumns(
+            _capacity_vector(Int, max_members),
+            num_clocks,
+            _capacity_vector(Int, max_members),
+            num_ifbs,
+        ),
         _capacity_vector(SVector{3,Float64}, max_members),
         _capacity_vector(SVector{3,Float64}, max_members),
         _capacity_vector(Float64, max_members),
-        BiasColumns(_capacity_vector(Int, max_members), num_clocks, _capacity_vector(Int, max_members), num_ifbs),
+        BiasColumns(
+            _capacity_vector(Int, max_members),
+            num_clocks,
+            _capacity_vector(Int, max_members),
+            num_ifbs,
+        ),
         zeros(num_lsq),
         zeros(num_lsq),
         zeros(num_lsq),
@@ -527,7 +551,8 @@ _satellite_state_buffer(group::VTSlotGroup{S,P,C,<:VTSlot{D}}) where {S,P,C,D} =
 The navigation filter's own 1σ uncertainty (m) of the 3-D position. Meaningful
 once the filter has been seeded.
 """
-position_uncertainty(estimator::VectorPLLAndDLL) = position_uncertainty(estimator.navigation)
+position_uncertainty(estimator::VectorPLLAndDLL) =
+    position_uncertainty(estimator.navigation)
 
 """
     clock_uncertainty(estimator::VectorPLLAndDLL)
@@ -567,7 +592,11 @@ function navigation_epoch(estimator::VectorPLLAndDLL)
     nav.cycle_epoch == typemin(Int) ? nothing : nav.cycle_epoch * nav.cycle_time
 end
 
-function satellite_report(estimator::VectorPLLAndDLL, signal::AbstractGNSSSignal, prn::Integer)
+function satellite_report(
+    estimator::VectorPLLAndDLL,
+    signal::AbstractGNSSSignal,
+    prn::Integer,
+)
     nav = estimator.navigation
     _satellite_report(nav, nav.groups, signal, Int(prn))
 end
@@ -584,7 +613,8 @@ function _satellite_report(nav, groups::Tuple, signal::S, prn) where {S}
         report.decoder = slot.running_decoder
         report.bit_synced = slot.bit_buffer.found
         report.epoch =
-            slot.snapshot_epoch == typemin(Int) ? nothing : slot.snapshot_epoch * nav.cycle_time
+            slot.snapshot_epoch == typemin(Int) ? nothing :
+            slot.snapshot_epoch * nav.cycle_time
         report.cn0_dbhz = slot.cn0_dbhz
         report.in_lock = slot.in_lock
         report.pvt_ready = slot.pvt_ready
@@ -611,7 +641,11 @@ member_sats(estimator::VectorPLLAndDLL) = estimator.navigation.member_sats
 Whether and why the latest navigation cycle released satellite `prn` of
 `signal` from the vector loop.
 """
-function release_reason(estimator::VectorPLLAndDLL, signal::AbstractGNSSSignal, prn::Integer)
+function release_reason(
+    estimator::VectorPLLAndDLL,
+    signal::AbstractGNSSSignal,
+    prn::Integer,
+)
     _release_reason(estimator.navigation.groups, signal, Int(prn))
 end
 
@@ -848,7 +882,13 @@ end
 # member with no code reading of any signal is withheld from the update, one with no
 # rate reading of any signal from its rate row only. Without passenger readings the
 # measurements are the driver's own, bit for bit.
-function _member_measurements(sat::VTSlot, state::SatVectorPLLAndDLL, T, chip_length, wavelength)
+function _member_measurements(
+    sat::VTSlot,
+    state::SatVectorPLLAndDLL,
+    T,
+    chip_length,
+    wavelength,
+)
     cn0 = linear_cn0_floor(sat.cn0_dbhz)
     coherent_integration_time = ustrip(s, sat.coherent_integration_time)
     code_variance =
@@ -979,7 +1019,9 @@ function _measure_pseudoranges!(vt::VectorNavigation, ionospheric_correction, re
             delays,
             buffers.ξ,
             rows,
-            IonosphericModel(vt.enable_ionospheric_correction ? ionospheric_correction : nothing),
+            IonosphericModel(
+                vt.enable_ionospheric_correction ? ionospheric_correction : nothing,
+            ),
             reference_tow,
             doy,
             vt.enable_tropospheric_correction,
@@ -989,7 +1031,8 @@ function _measure_pseudoranges!(vt::VectorNavigation, ionospheric_correction, re
     end
     measured = resize!(buffers.measured_pseudoranges, num_members)
     for j in eachindex(members)
-        measured[j] = pseudorange_from_tows(reference_tow, members[j].time_gpst_count) - delays[j]
+        measured[j] =
+            pseudorange_from_tows(reference_tow, members[j].time_gpst_count) - delays[j]
     end
     measured
 end
@@ -1136,7 +1179,14 @@ end
 # range error (the TOW-based, atmosphere-corrected range, no discriminator term), the
 # carrier correction the rate error against the replica's own Doppler at landing,
 # `carrier_doppler` (Hz; no FLL term). Returns both in Hz.
-function _member_corrections(vt::VectorNavigation, sat::VTSlot, j, τ, chips, carrier_doppler)
+function _member_corrections(
+    vt::VectorNavigation,
+    sat::VTSlot,
+    j,
+    τ,
+    chips,
+    carrier_doppler,
+)
     member = vt.buffers.members[j]
     predicted_pseudorange, predicted_rate, measured_pseudorange =
         _predict_at_landing(vt, sat, member, j, ustrip(s, vt.reference_time), τ, chips)
@@ -1147,14 +1197,23 @@ function _member_corrections(vt::VectorNavigation, sat::VTSlot, j, τ, chips, ca
         member.code_frequency,
         vt.cycle_integration_time,
     )
-    carrier_update = nco_carrier_correction(predicted_rate, measured_rate, member.wavelength)
+    carrier_update =
+        nco_carrier_correction(predicted_rate, measured_rate, member.wavelength)
     code_update, carrier_update
 end
 
 # The predicted pseudorange and rate of member `j` where its command lands, `τ` after
 # the epoch and `chips` on from the epoch's code phase, at the state propagated there,
 # and the pseudorange its replica realises there.
-function _predict_at_landing(vt::VectorNavigation, sat::VTSlot, member::VTMember, j, reference_tow, τ, chips)
+function _predict_at_landing(
+    vt::VectorNavigation,
+    sat::VTSlot,
+    member::VTMember,
+    j,
+    reference_tow,
+    τ,
+    chips,
+)
     buffers = vt.buffers
     idxs = vt.model.idxs
     landing_time = member.time + chips / member.code_frequency
@@ -1192,7 +1251,15 @@ end
 
 # Release the members of this group whose `active` flag equals `which`, for `reason`.
 # Returns whether any was released.
-function _release_members!(released, group, g, buffer, vt, which::Bool, reason::VTReleaseReason)
+function _release_members!(
+    released,
+    group,
+    g,
+    buffer,
+    vt,
+    which::Bool,
+    reason::VTReleaseReason,
+)
     buffers = vt.buffers
     for (j, member) in enumerate(buffers.members)
         member.group == g && buffers.active[j] == which || continue
@@ -1385,8 +1452,12 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
     # large-but-explained innovation the Kalman update would have absorbed (e.g. the first
     # measurements of a not-yet-observed constellation).
     if !isempty(candidates)
-        observability =
-            assess_bias_observability!(buffers.observability, vt.layout, members, candidates)
+        observability = assess_bias_observability!(
+            buffers.observability,
+            vt.layout,
+            members,
+            candidates,
+        )
         _measurement_update!(vt, T)
     end
     num_included = length(candidates)
@@ -1430,7 +1501,8 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
     # Fall back to scalar tracking when the filter has coasted too long or no members
     # remain; otherwise close every member's loops with fresh corrections toward the
     # updated solution.
-    fell_back = time_with_insufficient_meas > config.insufficient_meas_timeout || num_active == 0
+    fell_back =
+        time_with_insufficient_meas > config.insufficient_meas_timeout || num_active == 0
     if fell_back
         released = _fold_groups(
             _release_members!,
@@ -1512,17 +1584,14 @@ function _write_solution!(vt::VectorNavigation, groups)
         )
         num_columns = 3 + columns.num_clock_biases + columns.num_ifb
         if size(buffers.design_matrix, 1) < length(included)
-            buffers.design_matrix = zeros(2 * length(included), size(buffers.design_matrix, 2))
+            buffers.design_matrix =
+                zeros(2 * length(included), size(buffers.design_matrix, 2))
         end
         H = view(buffers.design_matrix, 1:length(included), 1:num_columns)
         position_and_bias_vector!(buffers.ξ, x, idxs)
         calc_H!(H, buffers.candidate_positions, buffers.ξ, columns)
-        candidate = calc_DOP!(
-            buffers.normal_matrices[num_columns],
-            H,
-            position,
-            primary_column,
-        )
+        candidate =
+            calc_DOP!(buffers.normal_matrices[num_columns], H, position, primary_column)
         candidate.GDOP < 0 || (dop = candidate)
     end
 
@@ -1550,7 +1619,8 @@ function _write_solution!(vt::VectorNavigation, groups)
         index == vt.primary_clock_index && continue
         _is_measured(member -> member.clock_bias_index == index, members, included) ||
             continue
-        inter_system_biases[time_system] = (x[idxs.clock_biases[index]] - primary_clock_bias) * m
+        inter_system_biases[time_system] =
+            (x[idxs.clock_biases[index]] - primary_clock_bias) * m
     end
     inter_frequency_biases = solution.inter_frequency_biases
     for (index, band) in enumerate(layout.extra_bands)
@@ -1591,4 +1661,3 @@ _member_info(buffers::VTBuffers, j) = SatInfo(
     buffers.residuals[j],
     buffers.rate_residuals[j],
 )
-

@@ -73,8 +73,8 @@ are one chip or more: the envelope is zero at both, so the slope is undefined. T
 correlator's constructor rejects such shifts already; this catches preferred shifts
 just below one chip that a coarse sampling rate rounds up to it.
 
-Raw discriminator form from:
-https://gnss-sdr.org/docs/sp-blocks/tracking/#implementation-galileo_e1_dll_pll_veml_tracking
+Raw discriminator form from GNSS-SDR's Galileo E1 DLL/PLL VEML tracking:
+<https://gnss-sdr.org/docs/sp-blocks/tracking/#implementation-galileo_e1_dll_pll_veml_tracking>
 """
 function dll_disc(
     signal::AbstractGNSSSignal,

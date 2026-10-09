@@ -383,21 +383,21 @@ function aid_dopplers(
 end
 
 """
-    calculate_carrier_frequency_update(signal, carrier_loop_filter, correlator, previous_prompt, integration_time, loop_bandwidth;
+    calculate_carrier_frequency_update(signal, carrier_loop_filter, correlator,
+                                       previous_prompt, integration_time, loop_bandwidth;
                                        fll_assist_loop_bandwidth)
         -> (carrier_freq_update, carrier_loop_filter)
 
 One carrier-loop step: the PLL discriminator ([`pll_disc`](@ref)) of
-`correlator`, in cycles, filtered by `carrier_loop_filter` at
-`loop_bandwidth`. An FLL-assisted filter (`ThirdOrderAssistedBilinearLF`) is
-additionally fed the FLL discriminator ([`fll_disc`](@ref)) between
-`previous_prompt` and this record's prompt, its FLL path at
-`fll_assist_loop_bandwidth`: by default the signal's
-[`default_fll_assist_loop_filter_bandwidth`](@ref) capped against
-`integration_time`, as [`step_loop`](@ref) runs it. Other filters ignore it. Returns the carrier-frequency
-correction in Hz and the advanced filter. The filter's coefficients assume
-consistent units: fed the phase error in cycles and the FLL error in Hz (cycles
-per second), it outputs a Doppler in Hz.
+`correlator`, in cycles, filtered by `carrier_loop_filter` at `loop_bandwidth`.
+An FLL-assisted filter (`ThirdOrderAssistedBilinearLF`) is additionally fed the
+FLL discriminator ([`fll_disc`](@ref)) between `previous_prompt` and this
+record's prompt, its FLL path at `fll_assist_loop_bandwidth`: by default the
+signal's [`default_fll_assist_loop_filter_bandwidth`](@ref) capped against
+`integration_time`, as [`step_loop`](@ref) runs it. Other filters ignore it.
+Returns the carrier-frequency correction in Hz and the advanced filter. The
+filter's coefficients assume consistent units: fed the phase error in cycles and
+the FLL error in Hz (cycles per second), it outputs a Doppler in Hz.
 
 A standalone step: it does not stage the loop. An FLL-assisted filter is fed
 the two-quadrant FLL discriminator on every call, never dropped at phase
@@ -442,7 +442,8 @@ function calculate_carrier_frequency_update(
 end
 
 """
-    calculate_code_frequency_update(signal, code_loop_filter, correlator, code_doppler, sampling_frequency, integration_time, loop_bandwidth)
+    calculate_code_frequency_update(signal, code_loop_filter, correlator, code_doppler,
+                                    sampling_frequency, integration_time, loop_bandwidth)
         -> (code_freq_update, code_loop_filter)
 
 One code-loop step: the DLL discriminator ([`dll_disc`](@ref)) of

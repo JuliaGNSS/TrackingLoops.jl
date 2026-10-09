@@ -6,7 +6,8 @@
 # The conventional FLL-assisted PLL/DLL and the delay-aware NCO-referenced loop
 # share one signature:
 #
-#     step_loop(estimator, state, record, words, landing_sample) -> (state, carrier_doppler, code_doppler)
+#     step_loop(estimator, state, record, words, landing_sample)
+#         -> (state, carrier_doppler, code_doppler)
 #
 # `words` answers `mean_nco_word(words, a, b)` for the replica word over a span
 # — a `FixedNCOWord` for a software correlator, the channel's `NCOTimeline` for
@@ -181,7 +182,8 @@ function LoopRecord(
 )
     polarity = _correlated_polarity(signal, loop.bit_buffer, prn, correlated_pre_sync)
     chains =
-        integrated_code_blocks == loop.last_num_code_blocks && polarity == loop.last_polarity
+        integrated_code_blocks == loop.last_num_code_blocks &&
+        polarity == loop.last_polarity
     LoopRecord(
         signal,
         filtered_correlator,
@@ -337,17 +339,14 @@ function ConventionalPLLAndDLL(
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     ConventionalPLLAndDLL{CA,CO}(
         isnothing(wide_carrier_loop_filter_bandwidth) ?
-        pll_and_dll.wide_carrier_loop_filter_bandwidth :
-        wide_carrier_loop_filter_bandwidth,
-        isnothing(code_loop_filter_bandwidth) ?
-        pll_and_dll.code_loop_filter_bandwidth :
+        pll_and_dll.wide_carrier_loop_filter_bandwidth : wide_carrier_loop_filter_bandwidth,
+        isnothing(code_loop_filter_bandwidth) ? pll_and_dll.code_loop_filter_bandwidth :
         code_loop_filter_bandwidth,
         isnothing(narrow_carrier_loop_filter_bandwidth) ?
         pll_and_dll.narrow_carrier_loop_filter_bandwidth :
         narrow_carrier_loop_filter_bandwidth,
         isnothing(fll_assist_loop_filter_bandwidth) ?
-        pll_and_dll.fll_assist_loop_filter_bandwidth :
-        fll_assist_loop_filter_bandwidth,
+        pll_and_dll.fll_assist_loop_filter_bandwidth : fll_assist_loop_filter_bandwidth,
         isnothing(combine_signals) ? pll_and_dll.combine_signals : combine_signals,
     )
 end
@@ -411,7 +410,8 @@ function reset_estimator_state(
 end
 
 """
-    step_loop(estimator::ConventionalPLLAndDLL, state, record::LoopRecord, words, landing_sample)
+    step_loop(estimator::ConventionalPLLAndDLL, state, record::LoopRecord, words,
+              landing_sample)
         -> (state, carrier_doppler, code_doppler)
 
 One record through the conventional loop: PLL (and FLL, for the assisted
@@ -486,8 +486,11 @@ end
 
 # The carrier filter's input: the FLL-assisted filter takes both discriminators,
 # any other the phase discriminator alone.
-@inline _carrier_filter_input(::ThirdOrderAssistedBilinearLF, phase_error, frequency_error) =
-    (phase_error, frequency_error)
+@inline _carrier_filter_input(
+    ::ThirdOrderAssistedBilinearLF,
+    phase_error,
+    frequency_error,
+) = (phase_error, frequency_error)
 @inline _carrier_filter_input(::AbstractLoopFilter, phase_error, frequency_error) =
     phase_error
 
@@ -576,18 +579,35 @@ end
 # (the FLL's while FLL-assisted) at its stage's bandwidths, the code filter the
 # DLL with its bandwidth capped by its stability product against the record's
 # integration time, the staging stepped and the Dopplers aided.
-@inline function _step_scalar_loop(estimator, state, record::LoopRecord, words, landing_sample::Int64)
+@inline function _step_scalar_loop(
+    estimator,
+    state,
+    record::LoopRecord,
+    words,
+    landing_sample::Int64,
+)
     discriminators = _with_passengers(
         state,
         record,
-        _record_discriminators(estimator, state, record, words, landing_sample, _fll_in_use(state)),
+        _record_discriminators(
+            estimator,
+            state,
+            record,
+            words,
+            landing_sample,
+            _fll_in_use(state),
+        ),
         _ALL_LOOPS,
     )
     integration_time = discriminators.integration_time
     code_bandwidth =
         effective_code_loop_filter_bandwidth(state.bandwidths.code, integration_time)
-    frequency_error, staging =
-        _staged_carrier_loop(state.staging, state.carrier_loop_filter, record, discriminators)
+    frequency_error, staging = _staged_carrier_loop(
+        state.staging,
+        state.carrier_loop_filter,
+        record,
+        discriminators,
+    )
     carrier_freq_update, carrier_loop_filter = filter_loop(
         state.carrier_loop_filter,
         _carrier_filter_input(
@@ -704,11 +724,8 @@ end
 
 # The scalar loops passengers are combined into: all, but the FLL only while it
 # is formed.
-@inline _scalar_loops_to_combine(state::SatConventionalPLLAndDLL) = (
-    pll = true,
-    fll = _fll_in_use(state),
-    dll = true,
-)
+@inline _scalar_loops_to_combine(state::SatConventionalPLLAndDLL) =
+    (pll = true, fll = _fll_in_use(state), dll = true)
 
 @inline _with_passenger_record(
     state::SatConventionalPLLAndDLL,
@@ -929,7 +946,8 @@ wrap_half_cycle(phase) = rem(phase, 0.5, RoundNearest)
 end
 
 """
-    step_loop(estimator::NCOReferencedPLLAndDLL, state, record::LoopRecord, words, landing_sample)
+    step_loop(estimator::NCOReferencedPLLAndDLL, state, record::LoopRecord, words,
+              landing_sample)
         -> (state, carrier_doppler, code_doppler)
 
 One record through the NCO-referenced loop. `words` gives the replica words
@@ -1022,7 +1040,12 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
         frequency_error,
         raw_frequency_error,
         # The DLL normalises with the code word the replica actually ran on.
-        code_error = dll_disc(signal, filtered_correlator, applied_code * Hz, sampling_frequency),
+        code_error = dll_disc(
+            signal,
+            filtered_correlator,
+            applied_code * Hz,
+            sampling_frequency,
+        ),
         center,
     )
 end
@@ -1067,8 +1090,10 @@ phase_lock_indicator(state::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAn
     phase_lock_indicator(state.staging)
 
 "The estimator-state type a Doppler estimator produces (for slot typing)."
-estimator_state_type(estimator::AbstractDopplerEstimator, driver_signal::AbstractGNSSSignal) =
-    typeof(init_estimator_state(estimator, driver_signal, 0.0Hz, 0.0Hz))
+estimator_state_type(
+    estimator::AbstractDopplerEstimator,
+    driver_signal::AbstractGNSSSignal,
+) = typeof(init_estimator_state(estimator, driver_signal, 0.0Hz, 0.0Hz))
 
 # ── What an estimator knows of the navigation solution ───────────────────────
 

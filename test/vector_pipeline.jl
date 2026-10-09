@@ -6,7 +6,10 @@
 pipeline_errors(receiver, results) = maximum(r -> position_error(receiver, r), results)
 pipeline_code_errors(results) = maximum(r -> maximum(abs, r.code_errors), results)
 pipeline_velocity_errors(receiver, results) = maximum(results) do r
-    norm(SVector(r.pvt.velocity.x, r.pvt.velocity.y, r.pvt.velocity.z) - receiver.truth.velocity)
+    norm(
+        SVector(r.pvt.velocity.x, r.pvt.velocity.y, r.pvt.velocity.z) -
+        receiver.truth.velocity,
+    )
 end
 pipeline_slots(receiver) = receiver.vt.groups[1].slots[1:length(receiver.sats)]
 
@@ -49,11 +52,11 @@ end
     end
     seed = findfirst(r -> r.status.enabled, results)
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
-    @test all(r -> !r.status.running && isempty(r.measured), results[1:seed-1])
+    @test all(r -> !r.status.running && isempty(r.measured), results[1:(seed-1)])
     @test position_error(rx, results[seed]) < 10.0
     # Then the filter has every satellite: the solution near the truth, each replica
     # on its signal.
-    tail = results[seed+50:end]
+    tail = results[(seed+50):end]
     @test all(r -> r.status.running && r.status.num_members == length(rx.sats), tail)
     @test all(r -> length(r.measured) == length(rx.sats), tail)
     @test all(r -> all(==(VT_NOT_RELEASED), r.reasons), tail)
@@ -100,7 +103,7 @@ end
     @test !diverged
     seed = findfirst(r -> r.status.enabled, results)
     @test seed !== nothing
-    tail = results[seed+50:end]
+    tail = results[(seed+50):end]
     @test all(r -> r.status.running, tail)
     @test pipeline_errors(rx, tail) < 0.3
     @test pipeline_velocity_errors(rx, tail) < 0.2
@@ -137,8 +140,11 @@ end
     # below the 35 dB-Hz lock threshold: two measured are too few, so the loop falls back
     # to scalar tracking, whose loops keep the faded signals, and seeds anew from the
     # first scalar fix once they are back above it.
-    rx = PipelineReceiver(; num_sats = 8, config = VectorTracking(; insufficient_meas_timeout = 1.0s),
-        estimator_kw = (; lock_cn0_threshold = 35dBHz))
+    rx = PipelineReceiver(;
+        num_sats = 8,
+        config = VectorTracking(; insufficient_meas_timeout = 1.0s),
+        estimator_kw = (; lock_cn0_threshold = 35dBHz),
+    )
     results, start, diverged = run_pipeline!(rx, 30.0)
     @test !diverged && results[end].status.running
     t_start = start / 4e6
@@ -160,7 +166,11 @@ end
     # A 20 ms navigation cycle and the NCO-referenced inner loop, the commands landing
     # 15 ms after the record that computed them: each satellite sizes its corrections
     # for its own landing.
-    kw = (; num_sats = 8, inner = NCOReferencedPLLAndDLL(), estimator_kw = (; cycle_time = 20ms))
+    kw = (;
+        num_sats = 8,
+        inner = NCOReferencedPLLAndDLL(),
+        estimator_kw = (; cycle_time = 20ms),
+    )
     rx0 = PipelineReceiver(; kw...)
     results0, _, diverged0 = run_pipeline!(rx0, 33.0)
     @test !diverged0
@@ -169,13 +179,16 @@ end
     @test !diverged
     seed = findfirst(r -> r.status.enabled, results)
     @test seed !== nothing
-    tail = results[seed+250:end]
-    tail0 = results0[findfirst(r -> r.status.enabled, results0)+250:end]
+    tail = results[(seed+250):end]
+    tail0 = results0[(findfirst(r->r.status.enabled, results0)+250):end]
     @test all(r -> r.status.running, tail)
     @test pipeline_errors(rx, tail) < 2 * pipeline_errors(rx0, tail0) + 0.5
     @test pipeline_code_errors(tail) < 2 * pipeline_code_errors(tail0) + 0.01
     # The lead is the delay plus the wait for the next record after the cycle.
-    @test all(sat -> 0.015 <= ustrip(s, sat.state.code_update_landing_lead) <= 0.018, rx.sats)
+    @test all(
+        sat -> 0.015 <= ustrip(s, sat.state.code_update_landing_lead) <= 0.018,
+        rx.sats,
+    )
 end
 
 @testset "A dropped satellite frees its slot for the next" begin
@@ -195,14 +208,22 @@ end
     @test !gone_slot.occupied
     @test !satellite_report(rx.estimator, GPSL1CA(), gone.decoder.prn).tracked
     @test any(r -> r.status.released, results)
-    @test release_reason(rx.estimator, GPSL1CA(), gone.decoder.prn) in (VT_INELIGIBLE, VT_NOT_RELEASED)
-    @test all(r -> r.status.num_members == 7, results[end-2:end])
+    @test release_reason(rx.estimator, GPSL1CA(), gone.decoder.prn) in
+          (VT_INELIGIBLE, VT_NOT_RELEASED)
+    @test all(r -> r.status.num_members == 7, results[(end-2):end])
     # A satellite never seen before takes the free slot: no slot is added, and its
     # decoder starts from nothing.
     decoders, _ = fixture_decoders(GPSL1CA())
     newcomer_decoder = decoders[9]
-    newcomer = SimSat(GPSL1CA(), newcomer_decoder, rx.estimator, rx.truth, sim_time(rx, sample);
-        cn0_dbhz = 45.0, stream = LNAVStream(newcomer_decoder.data))
+    newcomer = SimSat(
+        GPSL1CA(),
+        newcomer_decoder,
+        rx.estimator,
+        rx.truth,
+        sim_time(rx, sample);
+        cn0_dbhz = 45.0,
+        stream = LNAVStream(newcomer_decoder.data),
+    )
     newcomer.next_end_sample = next_block_end(newcomer, sample)
     push!(rx.sats, newcomer)
     push!(rx.last_ends, sample)
@@ -220,8 +241,15 @@ end
     @test rx.allocated[] == 0
     @test all(r -> r.status.running, results)
     # With every slot taken, one more satellite grows the group.
-    another = SimSat(GPSL1CA(), gone.decoder, rx.estimator, rx.truth, sim_time(rx, sample);
-        cn0_dbhz = 45.0, stream = gone.stream)
+    another = SimSat(
+        GPSL1CA(),
+        gone.decoder,
+        rx.estimator,
+        rx.truth,
+        sim_time(rx, sample);
+        cn0_dbhz = 45.0,
+        stream = gone.stream,
+    )
     another.next_end_sample = next_block_end(another, sample)
     push!(rx.sats, another)
     push!(rx.last_ends, sample)
@@ -247,8 +275,15 @@ end
     @test !slot.occupied
     # Re-acquired: a fresh state on the same PRN, which registers on its old slot.
     registrations = nav.registrations
-    reacquired = SimSat(GPSL1CA(), lost.decoder, rx.estimator, rx.truth, sim_time(rx, sample);
-        cn0_dbhz = 45.0, stream = lost.stream)
+    reacquired = SimSat(
+        GPSL1CA(),
+        lost.decoder,
+        rx.estimator,
+        rx.truth,
+        sim_time(rx, sample);
+        cn0_dbhz = 45.0,
+        stream = lost.stream,
+    )
     reacquired.next_end_sample = next_block_end(reacquired, sample)
     push!(rx.sats, reacquired)
     push!(rx.last_ends, sample)

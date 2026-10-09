@@ -74,8 +74,11 @@ struct CorrelatorOutput{C<:AbstractCorrelator}
     code_phase::Float64
 end
 
-CorrelatorOutput(correlator::AbstractCorrelator, integrated_samples::Integer, sample_index::Integer) =
-    CorrelatorOutput(correlator, Int(integrated_samples), Int(sample_index), NaN)
+CorrelatorOutput(
+    correlator::AbstractCorrelator,
+    integrated_samples::Integer,
+    sample_index::Integer,
+) = CorrelatorOutput(correlator, Int(integrated_samples), Int(sample_index), NaN)
 
 type_for_num_ants(num_ants::NumAnts{1}) = ComplexF64
 type_for_num_ants(num_ants::NumAnts{N}) where {N} = SVector{N,ComplexF64}

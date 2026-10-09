@@ -26,9 +26,17 @@ end
 # arguments' types, which leaves the call dynamic.
 function report(io, cycle, pvt, status)
     print(io, "cycle ", cycle, ":")
-    for x in (pvt.position.x, pvt.position.y, pvt.position.z, pvt.velocity.x,
-        pvt.velocity.y, pvt.velocity.z, ustrip(pvt.time_correction),
-        status.position_std.val, status.time_with_insufficient_meas.val)
+    for x in (
+        pvt.position.x,
+        pvt.position.y,
+        pvt.position.z,
+        pvt.velocity.x,
+        pvt.velocity.y,
+        pvt.velocity.z,
+        ustrip(pvt.time_correction),
+        status.position_std.val,
+        status.time_with_insufficient_meas.val,
+    )
         print(io, " ", x)
     end
     print(io, " ", length(pvt.sats))
@@ -54,7 +62,8 @@ function (@main)(args::Vector{String})::Cint
         if nav.cycle_id != last_cycle
             last_cycle = nav.cycle_id
             status = nav.status
-            (status.enabled || last_cycle % 20 == 0) && report(io, last_cycle, nav.pvt, status)
+            (status.enabled || last_cycle % 20 == 0) &&
+                report(io, last_cycle, nav.pvt, status)
         end
     end
     return 0

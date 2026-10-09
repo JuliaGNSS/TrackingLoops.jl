@@ -10,7 +10,10 @@ using Geodesy: ENUfromECEF, wgs84
     @test length(nav.groups) == 2
     @test nav.groups[1].signal isa GPSL1CA
     @test all(group -> length(group.slots) == 4, nav.groups)
-    @test all(group -> all(slot -> !slot.occupied && slot.registration == 0, group.slots), nav.groups)
+    @test all(
+        group -> all(slot -> !slot.occupied && slot.registration == 0, group.slots),
+        nav.groups,
+    )
     @test nav.cycle_time == 0.1s
     @test nav.lock_cn0_threshold == 30.0
     @test navigation_status(estimator) == VTStatus()
@@ -22,7 +25,8 @@ using Geodesy: ENUfromECEF, wgs84
     @test (state.slot, state.registration, state.cycle_id) == (0, 0, -1)
     @test !state.vt_on
     @test VectorPLLAndDLL(GPSL1CA(); cycle_time = 20ms).navigation.cycle_time == 0.02s
-    @test VectorPLLAndDLL(GPSL1CA(); lock_cn0_threshold = 35dBHz).navigation.lock_cn0_threshold == 35.0
+    threshold = VectorPLLAndDLL(GPSL1CA(); lock_cn0_threshold = 35dBHz)
+    @test threshold.navigation.lock_cn0_threshold == 35.0
     @test !VectorPLLAndDLL(GPSL1CA(); config = nothing).navigation.enabled
 end
 
@@ -37,8 +41,9 @@ end
     @test TrackingLoops.combines_signals(bound)
     @test takes_passenger_records(bound)
     # As if built with its signals.
-    @test typeof(bound) ==
-          typeof(VectorPLLAndDLL((GalileoE1C(), GalileoE1B()), GPSL1CA(); combine_signals = true))
+    @test typeof(bound) == typeof(
+        VectorPLLAndDLL((GalileoE1C(), GalileoE1B()), GPSL1CA(); combine_signals = true),
+    )
     # A bound estimator serves any subset of its groups, in any order, the passengers
     # of a group in any order too ...
     @test with_signal_groups(bound, (GalileoE1C(), GalileoE1B()), GPSL1CA()) === bound
@@ -76,10 +81,20 @@ end
     correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
     output = CorrelatorOutput(correlator, 4000, 4000, 0.0)
     words = FixedNCOWord(100.0, 0.1)
-    @test_throws ArgumentError step_loop(estimator, state,
-        LoopRecord(GPSL1CA(), correlator, complex(0.0), output, 1, 4e6Hz), words, NO_LANDING_SAMPLE)
-    @test_throws ArgumentError step_loop(estimator, state,
-        LoopRecord(GalileoE1B(), correlator, complex(0.0), output, 1, 4e6Hz; prn = 3), words, NO_LANDING_SAMPLE)
+    @test_throws ArgumentError step_loop(
+        estimator,
+        state,
+        LoopRecord(GPSL1CA(), correlator, complex(0.0), output, 1, 4e6Hz),
+        words,
+        NO_LANDING_SAMPLE,
+    )
+    @test_throws ArgumentError step_loop(
+        estimator,
+        state,
+        LoopRecord(GalileoE1B(), correlator, complex(0.0), output, 1, 4e6Hz; prn = 3),
+        words,
+        NO_LANDING_SAMPLE,
+    )
 end
 
 @testset "Without a configuration only the scalar PVT is solved" begin
@@ -133,7 +148,8 @@ end
     for sat in rx.sats
         sat.in_view = true
     end
-    fill_unready!(v, sat, epoch, landing, nav) = (fill_slot!(v, sat, epoch, landing, nav); v.pvt_ready = false)
+    fill_unready!(v, sat, epoch, landing, nav) =
+        (fill_slot!(v, sat, epoch, landing, nav); v.pvt_ready = false)
     results, _, _ = run_simulation!(rx, 2; fill! = fill_unready!)
     @test all(r -> !r.status.running && !r.status.enabled, results)
     @test all(sat -> !sat.state.vt_on, rx.sats)
@@ -150,33 +166,55 @@ end
     # The corrections the cycle left, recomputed from the updated state the way
     # GNSSReceiver computed them: all members at once, from the epoch's rows.
     ξ = TL.position_and_bias_vector(vt.x, idxs)
-    predicted = calc_ρ_hat!(zeros(length(members)), [m.sat_position for m in members], ξ,
-        TL.vt_bias_columns(members, vt.layout))
+    predicted = calc_ρ_hat!(
+        zeros(length(members)),
+        [m.sat_position for m in members],
+        ξ,
+        TL.vt_bias_columns(members, vt.layout),
+    )
     user_pos, user_vel, user_drift = TL.nav_filter_states(vt.x, idxs)
     for (j, member) in enumerate(members)
         sat = rx.sats[member.slot]
         slot = rx.group.slots[member.slot]
         @test slot.member_index == j
-        measured = TL.pseudorange_from_tows(ustrip(s, vt.reference_time), member.time_gpst_count) -
-                   buffers.delays[j]
-        rate = TL.predict_pseudorange_rate(user_pos, user_vel, user_drift,
-            member.sat_position, member.sat_velocity, member.sat_clock_drift)
+        measured =
+            TL.pseudorange_from_tows(ustrip(s, vt.reference_time), member.time_gpst_count) -
+            buffers.delays[j]
+        rate = TL.predict_pseudorange_rate(
+            user_pos,
+            user_vel,
+            user_drift,
+            member.sat_position,
+            member.sat_velocity,
+            member.sat_clock_drift,
+        )
         # The measurement the last update fused against the one the corrections use.
         @test measured === buffers.measured_pseudoranges[j]
         # The satellite took the corrections up where its command lands, at the epoch:
         # the range from the orbit evaluated there is the epoch's.
-        @test sat.state.code_freq_update ≈
-              TL.nco_code_correction(predicted[j], measured, member.code_frequency, T) * Hz atol = 1e-6Hz
+        code_correction =
+            TL.nco_code_correction(predicted[j], measured, member.code_frequency, T) * Hz
+        @test sat.state.code_freq_update ≈ code_correction atol = 1e-6Hz
         @test sat.state.carrier_freq_update ≈
-              TL.nco_carrier_correction(buffers.predicted_pseudorange_rates[j],
-                  member.pseudorange_rate, member.wavelength) * Hz atol = 1e-6Hz
+              TL.nco_carrier_correction(
+            buffers.predicted_pseudorange_rates[j],
+            member.pseudorange_rate,
+            member.wavelength,
+        ) * Hz atol = 1e-6Hz
         @test buffers.predicted_pseudorange_rates[j] ≈ rate atol = 1e-9
         @test sat.state.code_update_landing_lead == 0.0s
         # The accumulators were emptied at the epoch's snapshot.
         @test sat.state.code_discr_acc == (0, 0.0)
         # Taken up once: a second take-up changes nothing.
-        @test TL._take_up_cycle(vt, rx.group, slot, sat.state, take_up_record(sat, 0),
-            sim_words(sat, NO_LANDING_SAMPLE), Int64(0)) === sat.state
+        @test TL._take_up_cycle(
+            vt,
+            rx.group,
+            slot,
+            sat.state,
+            take_up_record(sat, 0),
+            sim_words(sat, NO_LANDING_SAMPLE),
+            Int64(0),
+        ) === sat.state
     end
 end
 
@@ -195,14 +233,27 @@ end
     @test at_epoch[1] ≈ ustrip(Hz, sat.state.code_freq_update) atol = 1e-9
     # 20 ms on, under the same words: the range has moved on with the replica, so the
     # code correction barely changes, and the lead is the 20 ms.
-    later = TL._correction_at_landing(vt, rx.group, slot, record, words, Int64(sample + 80_000))
+    later =
+        TL._correction_at_landing(vt, rx.group, slot, record, words, Int64(sample + 80_000))
     @test later[3] ≈ 0.02
     @test later[1] ≈ at_epoch[1] atol = 0.05
     # It must land within 2.5 cycles of the epoch.
-    @test_throws ArgumentError TL._correction_at_landing(vt, rx.group, slot, record, words,
-        Int64(sample + 1_100_000))
-    @test_throws ArgumentError TL._correction_at_landing(vt, rx.group, slot, record, words,
-        Int64(sample - 4000))
+    @test_throws ArgumentError TL._correction_at_landing(
+        vt,
+        rx.group,
+        slot,
+        record,
+        words,
+        Int64(sample + 1_100_000),
+    )
+    @test_throws ArgumentError TL._correction_at_landing(
+        vt,
+        rx.group,
+        slot,
+        record,
+        words,
+        Int64(sample - 4000),
+    )
 end
 
 @testset "The solution of a running cycle" begin
@@ -220,7 +271,9 @@ end
     @test keys(member_sats(rx.estimator)) == keys(pvt.sats)
     @test isempty(pvt.inter_system_biases)
     @test position_error(rx, result) < 0.5
-    @test norm(SVector(pvt.velocity.x, pvt.velocity.y, pvt.velocity.z) - rx.truth.velocity) < 0.05
+    @test norm(
+        SVector(pvt.velocity.x, pvt.velocity.y, pvt.velocity.z) - rx.truth.velocity,
+    ) < 0.05
     @test 0.0u"m" < result.status.position_std < 10.0u"m"
     @test result.status.clock_std > 0.0u"m"
     # The filter's clock drift is reported as the relative drift.
@@ -270,15 +323,20 @@ end
     @test sat.state.inner.init_code_doppler == sat.code_doppler * Hz
     @test results[1].status.num_members == length(rx.sats) - 1
     @test !haskey(member_sats(rx.estimator), (:GPSL1CA, dropped.prn))
-    @test all(v.release_reason == VT_NOT_RELEASED for v in channel_slots(rx.group, rx.sats) if v !== dropped)
+    @test all(
+        v.release_reason == VT_NOT_RELEASED for
+        v in channel_slots(rx.group, rx.sats) if v !== dropped
+    )
 end
 
 @testset "A member that missed the epoch sits the cycle out" begin
     rx = SimReceiver()
     _, sample, _ = run_simulation!(rx, 5)
     late = rx.group.slots[3]
-    miss!(v, sat, epoch, landing, nav) =
-        (fill_slot!(v, sat, epoch, landing, nav); v === late && (v.snapshot_epoch = typemin(Int)))
+    miss!(v, sat, epoch, landing, nav) = (
+        fill_slot!(v, sat, epoch, landing, nav);
+        v === late && (v.snapshot_epoch = typemin(Int))
+    )
     results, _, _ = run_simulation!(rx, 1; fill! = miss!, start_sample = sample)
     # Not stale, so not dropped: it keeps its place and its corrections, without new ones.
     @test late.occupied
@@ -294,8 +352,14 @@ end
     rx = SimReceiver()
     _, sample, _ = run_simulation!(rx, 3)
     # Three satellites in lock are too few for position and clock.
-    starve!(v, sat, epoch, landing, nav) =
-        (fill_slot!(v, sat, epoch, landing, nav); v.in_lock = v.prn in (rx.sats[1].decoder.prn, rx.sats[2].decoder.prn, rx.sats[3].decoder.prn))
+    starve!(v, sat, epoch, landing, nav) = (
+        fill_slot!(v, sat, epoch, landing, nav);
+        v.in_lock = v.prn in (
+            rx.sats[1].decoder.prn,
+            rx.sats[2].decoder.prn,
+            rx.sats[3].decoder.prn,
+        )
+    )
     results, sample, _ = run_simulation!(rx, 3; fill! = starve!, start_sample = sample)
     @test [r.status.time_with_insufficient_meas for r in results] ≈ [0.1, 0.2, 0.3] .* s
     @test all(r -> r.status.running, results)
@@ -306,7 +370,11 @@ end
 @testset "A released satellite takes over from the replica at landing" begin
     # Under an NCO delay the words committed until the landing are the vector loop's,
     # so the scalar loop re-seeds from the replica there, not from the epoch's.
-    rx = SimReceiver(; inner = NCOReferencedPLLAndDLL(), records_per_cycle = 20, delay_records = 15)
+    rx = SimReceiver(;
+        inner = NCOReferencedPLLAndDLL(),
+        records_per_cycle = 20,
+        delay_records = 15,
+    )
     _, sample, diverged = run_simulation!(rx, 20)
     @test !diverged
     dropped = rx.group.slots[2]
@@ -352,8 +420,10 @@ end
 @testset "Biases are reported only for what was measured" begin
     rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()))
     # No Galileo satellite in lock: its clock coasts and is not reported.
-    gps_only!(v, sat, epoch, landing, nav) =
-        (fill_slot!(v, sat, epoch, landing, nav); sat.signal isa GalileoE1B && (v.in_lock = false))
+    gps_only!(v, sat, epoch, landing, nav) = (
+        fill_slot!(v, sat, epoch, landing, nav);
+        sat.signal isa GalileoE1B && (v.in_lock = false)
+    )
     results, sample, _ = run_simulation!(rx, 10; fill! = gps_only!)
     @test results[end].status.running
     @test !haskey(results[end].pvt.inter_system_biases, GST())
@@ -399,8 +469,14 @@ end
     @test !rx.sats[1].state.vt_on
     @test status.num_members == length(rx.sats) - 1
     # The others start over in the loop, with nothing stale accumulated.
-    @test all(sat -> sat.state.vt_on && sat.state.code_discr_acc == (0, 0.0), rx.sats[2:end])
-    @test all(slot -> slot.restart_cycle == rx.vt.cycle_id, channel_slots(rx.group, rx.sats)[2:end])
+    @test all(
+        sat -> sat.state.vt_on && sat.state.code_discr_acc == (0, 0.0),
+        rx.sats[2:end],
+    )
+    @test all(
+        slot -> slot.restart_cycle == rx.vt.cycle_id,
+        channel_slots(rx.group, rx.sats)[2:end],
+    )
 end
 
 @testset "The measurement-buffer cache grows without undefined slots" begin

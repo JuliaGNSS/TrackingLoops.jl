@@ -13,7 +13,10 @@ const LNAV_PREAMBLE = 0b10001011
 function lnav_field(value, scale, num_bits; signed = false)
     value = something(value)
     count = round(Int64, value / scale)
-    @assert isapprox(count * scale, value; rtol = 1e-12, atol = abs(scale) * 1e-6) "$value is no multiple of $scale"
+    @assert(
+        isapprox(count * scale, value; rtol = 1e-12, atol = abs(scale) * 1e-6),
+        "$value is no multiple of $scale",
+    )
     if signed
         @assert -(Int64(1) << (num_bits - 1)) <= count < Int64(1) << (num_bits - 1)
         count = mod(count, Int64(1) << num_bits)
@@ -29,7 +32,9 @@ function lnav_word(fields...)
     word = UInt32(0)
     used = 0
     for (field, num_bits) in fields
-        word = (word << num_bits) | (UInt32(something(field)) & ((UInt32(1) << num_bits) - UInt32(1)))
+        word =
+            (word << num_bits) |
+            (UInt32(something(field)) & ((UInt32(1) << num_bits) - UInt32(1)))
         used += num_bits
     end
     @assert used <= 24
@@ -42,12 +47,24 @@ lnav_bit(data, n) = (data >> (24 - n)) & UInt32(1) == 1
 # last two transmitted bits (Table 20-XIV).
 function lnav_parity(data, D29, D30)
     d(n) = lnav_bit(data, n)
-    D25 = D29 ⊻ d(1) ⊻ d(2) ⊻ d(3) ⊻ d(5) ⊻ d(6) ⊻ d(10) ⊻ d(11) ⊻ d(12) ⊻ d(13) ⊻ d(14) ⊻ d(17) ⊻ d(18) ⊻ d(20) ⊻ d(23)
-    D26 = D30 ⊻ d(2) ⊻ d(3) ⊻ d(4) ⊻ d(6) ⊻ d(7) ⊻ d(11) ⊻ d(12) ⊻ d(13) ⊻ d(14) ⊻ d(15) ⊻ d(18) ⊻ d(19) ⊻ d(21) ⊻ d(24)
-    D27 = D29 ⊻ d(1) ⊻ d(3) ⊻ d(4) ⊻ d(5) ⊻ d(7) ⊻ d(8) ⊻ d(12) ⊻ d(13) ⊻ d(14) ⊻ d(15) ⊻ d(16) ⊻ d(19) ⊻ d(20) ⊻ d(22)
-    D28 = D30 ⊻ d(2) ⊻ d(4) ⊻ d(5) ⊻ d(6) ⊻ d(8) ⊻ d(9) ⊻ d(13) ⊻ d(14) ⊻ d(15) ⊻ d(16) ⊻ d(17) ⊻ d(20) ⊻ d(21) ⊻ d(23)
-    D29_ = D30 ⊻ d(1) ⊻ d(3) ⊻ d(5) ⊻ d(6) ⊻ d(7) ⊻ d(9) ⊻ d(10) ⊻ d(14) ⊻ d(15) ⊻ d(16) ⊻ d(17) ⊻ d(18) ⊻ d(21) ⊻ d(22) ⊻ d(24)
-    D30_ = D29 ⊻ d(3) ⊻ d(5) ⊻ d(6) ⊻ d(8) ⊻ d(9) ⊻ d(10) ⊻ d(11) ⊻ d(13) ⊻ d(15) ⊻ d(19) ⊻ d(22) ⊻ d(23) ⊻ d(24)
+    D25 =
+        D29 ⊻ d(1) ⊻ d(2) ⊻ d(3) ⊻ d(5) ⊻ d(6) ⊻ d(10) ⊻ d(11) ⊻ d(12) ⊻ d(13) ⊻ d(14) ⊻
+        d(17) ⊻ d(18) ⊻ d(20) ⊻ d(23)
+    D26 =
+        D30 ⊻ d(2) ⊻ d(3) ⊻ d(4) ⊻ d(6) ⊻ d(7) ⊻ d(11) ⊻ d(12) ⊻ d(13) ⊻ d(14) ⊻ d(15) ⊻
+        d(18) ⊻ d(19) ⊻ d(21) ⊻ d(24)
+    D27 =
+        D29 ⊻ d(1) ⊻ d(3) ⊻ d(4) ⊻ d(5) ⊻ d(7) ⊻ d(8) ⊻ d(12) ⊻ d(13) ⊻ d(14) ⊻ d(15) ⊻
+        d(16) ⊻ d(19) ⊻ d(20) ⊻ d(22)
+    D28 =
+        D30 ⊻ d(2) ⊻ d(4) ⊻ d(5) ⊻ d(6) ⊻ d(8) ⊻ d(9) ⊻ d(13) ⊻ d(14) ⊻ d(15) ⊻ d(16) ⊻
+        d(17) ⊻ d(20) ⊻ d(21) ⊻ d(23)
+    D29_ =
+        D30 ⊻ d(1) ⊻ d(3) ⊻ d(5) ⊻ d(6) ⊻ d(7) ⊻ d(9) ⊻ d(10) ⊻ d(14) ⊻ d(15) ⊻ d(16) ⊻
+        d(17) ⊻ d(18) ⊻ d(21) ⊻ d(22) ⊻ d(24)
+    D30_ =
+        D29 ⊻ d(3) ⊻ d(5) ⊻ d(6) ⊻ d(8) ⊻ d(9) ⊻ d(10) ⊻ d(11) ⊻ d(13) ⊻ d(15) ⊻ d(19) ⊻
+        d(22) ⊻ d(23) ⊻ d(24)
     (D25, D26, D27, D28, D29_, D30_)
 end
 
@@ -59,7 +76,7 @@ function lnav_subframe_bits(words)
     for (index, data) in enumerate(words)
         if index == 2 || index == 10
             data &= ~UInt32(0b11)
-            for t in UInt32(0):UInt32(3)
+            for t = UInt32(0):UInt32(3)
                 parity = lnav_parity(data | t, D29, D30)
                 if !parity[5] && !parity[6]
                     data |= t
@@ -96,15 +113,22 @@ function lnav_subframe_words(data::GPSL1CAData, tow, subframe_id)
         words = (
             tlm,
             how,
-            lnav_word((mod(data.WN, 1024), 10), (something(data.code_on_L2, 1), 2),
-                (data.URA_index, 4), (data.sv_health, 6), (iodc >> 8, 2)),
+            lnav_word(
+                (mod(data.WN, 1024), 10),
+                (something(data.code_on_L2, 1), 2),
+                (data.URA_index, 4),
+                (data.sv_health, 6),
+                (iodc >> 8, 2),
+            ),
             lnav_word((something(data.L2_P_data_flag, false), 1)),
             lnav_word(),
             lnav_word(),
             lnav_word((0, 16), (lnav_field(data.T_GD, 2.0^-31, 8; signed = true), 8)),
             lnav_word((iodc & 0xff, 8), (lnav_field(data.t_0c, 16, 16), 16)),
-            lnav_word((lnav_field(data.a_f2, 2.0^-55, 8; signed = true), 8),
-                (lnav_field(data.a_f1, 2.0^-43, 16; signed = true), 16)),
+            lnav_word(
+                (lnav_field(data.a_f2, 2.0^-55, 8; signed = true), 8),
+                (lnav_field(data.a_f1, 2.0^-43, 16; signed = true), 16),
+            ),
             lnav_word((lnav_field(data.a_f0, 2.0^-31, 22; signed = true), 22)),
         )
     elseif subframe_id == 2
@@ -114,15 +138,30 @@ function lnav_subframe_words(data::GPSL1CAData, tow, subframe_id)
         words = (
             tlm,
             how,
-            lnav_word((data.IODE_Sub_2, 8), (lnav_field(data.C_rs, 2.0^-5, 16; signed = true), 16)),
-            lnav_word((lnav_field(data.Δn, PI_GPS * 2.0^-43, 16; signed = true), 16), (M_0 >> 24, 8)),
+            lnav_word(
+                (data.IODE_Sub_2, 8),
+                (lnav_field(data.C_rs, 2.0^-5, 16; signed = true), 16),
+            ),
+            lnav_word(
+                (lnav_field(data.Δn, PI_GPS * 2.0^-43, 16; signed = true), 16),
+                (M_0 >> 24, 8),
+            ),
             lnav_word((M_0 & 0xffffff, 24)),
-            lnav_word((lnav_field(data.C_uc, 2.0^-29, 16; signed = true), 16), (e >> 24, 8)),
+            lnav_word(
+                (lnav_field(data.C_uc, 2.0^-29, 16; signed = true), 16),
+                (e >> 24, 8),
+            ),
             lnav_word((e & 0xffffff, 24)),
-            lnav_word((lnav_field(data.C_us, 2.0^-29, 16; signed = true), 16), (sqrt_A >> 24, 8)),
+            lnav_word(
+                (lnav_field(data.C_us, 2.0^-29, 16; signed = true), 16),
+                (sqrt_A >> 24, 8),
+            ),
             lnav_word((sqrt_A & 0xffffff, 24)),
-            lnav_word((lnav_field(data.t_0e, 16, 16), 16), (something(data.fit_interval, false), 1),
-                (div(something(data.AODO, 0), 900), 5)),
+            lnav_word(
+                (lnav_field(data.t_0e, 16, 16), 16),
+                (something(data.fit_interval, false), 1),
+                (div(something(data.AODO, 0), 900), 5),
+            ),
         )
     elseif subframe_id == 3
         Ω_0 = lnav_field(data.Ω_0, PI_GPS * 2.0^-31, 32; signed = true)
@@ -131,14 +170,23 @@ function lnav_subframe_words(data::GPSL1CAData, tow, subframe_id)
         words = (
             tlm,
             how,
-            lnav_word((lnav_field(data.C_ic, 2.0^-29, 16; signed = true), 16), (Ω_0 >> 24, 8)),
+            lnav_word(
+                (lnav_field(data.C_ic, 2.0^-29, 16; signed = true), 16),
+                (Ω_0 >> 24, 8),
+            ),
             lnav_word((Ω_0 & 0xffffff, 24)),
-            lnav_word((lnav_field(data.C_is, 2.0^-29, 16; signed = true), 16), (i_0 >> 24, 8)),
+            lnav_word(
+                (lnav_field(data.C_is, 2.0^-29, 16; signed = true), 16),
+                (i_0 >> 24, 8),
+            ),
             lnav_word((i_0 & 0xffffff, 24)),
             lnav_word((lnav_field(data.C_rc, 2.0^-5, 16; signed = true), 16), (ω >> 24, 8)),
             lnav_word((ω & 0xffffff, 24)),
             lnav_word((lnav_field(data.Ω_dot, PI_GPS * 2.0^-43, 24; signed = true), 24)),
-            lnav_word((data.IODE_Sub_3, 8), (lnav_field(data.i_dot, PI_GPS * 2.0^-43, 14; signed = true), 14)),
+            lnav_word(
+                (data.IODE_Sub_3, 8),
+                (lnav_field(data.i_dot, PI_GPS * 2.0^-43, 14; signed = true), 14),
+            ),
         )
     else
         # Subframes 4 and 5: data ID 01 and a page ID the decoder does not read.

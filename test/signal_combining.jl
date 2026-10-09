@@ -9,7 +9,15 @@ using Accessors: @set
 const SC = TrackingLoops
 
 # A record of `signal` whose taps are `taps` turned by the prompt `p`.
-function combining_record(signal, p, taps; n = 5000, fs = 5e6Hz, previous_prompt = 0.0im, sample_index = n)
+function combining_record(
+    signal,
+    p,
+    taps;
+    n = 5000,
+    fs = 5e6Hz,
+    previous_prompt = 0.0im,
+    sample_index = n,
+)
     correlator = update_accumulator(get_default_correlator(signal), p .* SVector(taps...))
     LoopRecord(signal, correlator, previous_prompt, n, sample_index, sample_index, 1, fs)
 end
@@ -28,13 +36,25 @@ const _NO_WORD = FixedNCOWord(0.0, 0.0)
     vector = VectorPLLAndDLL(GPSL1CA(); combine_signals = true)
     @test TrackingLoops.combines_signals(vector)
     @test !TrackingLoops.combines_signals(vector.inner)
-    @test !TrackingLoops.combines_signals(VectorPLLAndDLL(GPSL1CA(); combine_signals = false))
+    @test !TrackingLoops.combines_signals(
+        VectorPLLAndDLL(GPSL1CA(); combine_signals = false),
+    )
     @test TrackingLoops.combines_signals(
-        VectorPLLAndDLL(GPSL1CA(); inner = ConventionalAssistedPLLAndDLL(), combine_signals = true),
+        VectorPLLAndDLL(
+            GPSL1CA();
+            inner = ConventionalAssistedPLLAndDLL(),
+            combine_signals = true,
+        ),
     )
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); inner = estimator)
-    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); inner = NCOReferencedPLLAndDLL(), combine_signals = true)
-    @test !TrackingLoops.combines_signals(VectorPLLAndDLL(GPSL1CA(); inner = NCOReferencedPLLAndDLL()))
+    @test_throws ArgumentError VectorPLLAndDLL(
+        GPSL1CA();
+        inner = NCOReferencedPLLAndDLL(),
+        combine_signals = true,
+    )
+    @test !TrackingLoops.combines_signals(
+        VectorPLLAndDLL(GPSL1CA(); inner = NCOReferencedPLLAndDLL()),
+    )
     # Whether a host hands passenger records over: a combining loop, and a vector loop
     # with passengers, combining or not.
     @test !takes_passenger_records(ConventionalAssistedPLLAndDLL())
@@ -48,16 +68,30 @@ const _NO_WORD = FixedNCOWord(0.0, 0.0)
         VectorPLLAndDLL((GalileoE1B(), GalileoE1C()); combine_signals = true),
     )
     # The keyword-update constructor keeps it unless told otherwise.
-    @test TrackingLoops.combines_signals(ConventionalPLLAndDLL(estimator; code_loop_filter_bandwidth = 2.0Hz))
-    @test !TrackingLoops.combines_signals(ConventionalPLLAndDLL(estimator; combine_signals = false))
+    @test TrackingLoops.combines_signals(
+        ConventionalPLLAndDLL(estimator; code_loop_filter_bandwidth = 2.0Hz),
+    )
+    @test !TrackingLoops.combines_signals(
+        ConventionalPLLAndDLL(estimator; combine_signals = false),
+    )
     # An estimator that does not combine leaves the state as it is.
     state = init_estimator_state(ConventionalAssistedPLLAndDLL(), GPSL5Q(), 0.0Hz, 0.0Hz)
     record = combining_record(GPSL5I(), cis(0.1), (0.5, 1.0, 0.5))
-    @test fold_passenger_record(ConventionalAssistedPLLAndDLL(), state, record, _NO_WORD; driver_signal = GPSL5Q()) ===
-          state
+    @test fold_passenger_record(
+        ConventionalAssistedPLLAndDLL(),
+        state,
+        record,
+        _NO_WORD;
+        driver_signal = GPSL5Q(),
+    ) === state
     nco_state = init_estimator_state(NCOReferencedPLLAndDLL(), GPSL5Q(), 0.0Hz, 0.0Hz)
-    @test fold_passenger_record(NCOReferencedPLLAndDLL(), nco_state, record, _NO_WORD; driver_signal = GPSL5Q()) ===
-          nco_state
+    @test fold_passenger_record(
+        NCOReferencedPLLAndDLL(),
+        nco_state,
+        record,
+        _NO_WORD;
+        driver_signal = GPSL5Q(),
+    ) === nco_state
 end
 
 @testset "Weights and the weighted mean" begin
@@ -83,7 +117,12 @@ end
     state = init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
     # L5I sits a quarter cycle from L5Q, which the loops lock onto the real axis:
     # its PLL is read on the driver's frame.
-    record = combining_record(GPSL5I(), cis(π / 2 + 0.1), (0.5, 1.0, 0.4); previous_prompt = cis(π / 2))
+    record = combining_record(
+        GPSL5I(),
+        cis(π / 2 + 0.1),
+        (0.5, 1.0, 0.4);
+        previous_prompt = cis(π / 2),
+    )
     # 10 ns at 10.23 Mchip/s: the later passenger reads the driver's error minus
     # 0.1023 chip, which the offset adds back.
     combined = fold_passenger_record(
@@ -107,26 +146,39 @@ end
     @test (@set combined.signal_combining_sums = SignalCombiningSums()) == state
 
     # No FLL without a previous prompt, no DLL without a known group delay.
-    partial =
-        fold_passenger_record(
-            estimator,
-            state,
-            combining_record(GPSL5I(), cis(π / 2 + 0.1), (0.5, 1.0, 0.4)),
-            _NO_WORD;
-            driver_signal = GPSL5Q(),
-        ).signal_combining_sums
-    @test iszero(partial.fll.weight) && iszero(partial.dll.weight) && partial.pll.weight > 0s
+    partial = fold_passenger_record(
+        estimator,
+        state,
+        combining_record(GPSL5I(), cis(π / 2 + 0.1), (0.5, 1.0, 0.4)),
+        _NO_WORD;
+        driver_signal = GPSL5Q(),
+    ).signal_combining_sums
+    @test iszero(partial.fll.weight) &&
+          iszero(partial.dll.weight) &&
+          partial.pll.weight > 0s
 
     # No FLL once it is no longer formed: after the FLL drop, or without an
     # FLL-assisted carrier filter.
     locked = @set state.staging.stage = WIDE_PLL
     @test iszero(
-        fold_passenger_record(estimator, locked, record, _NO_WORD; driver_signal = GPSL5Q()).signal_combining_sums.fll.weight,
+        fold_passenger_record(
+            estimator,
+            locked,
+            record,
+            _NO_WORD;
+            driver_signal = GPSL5Q(),
+        ).signal_combining_sums.fll.weight,
     )
     plain_estimator = ConventionalPLLAndDLL(; combine_signals = true)
     plain = init_estimator_state(plain_estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
     @test iszero(
-        fold_passenger_record(plain_estimator, plain, record, _NO_WORD; driver_signal = GPSL5Q()).signal_combining_sums.fll.weight,
+        fold_passenger_record(
+            plain_estimator,
+            plain,
+            record,
+            _NO_WORD;
+            driver_signal = GPSL5Q(),
+        ).signal_combining_sums.fll.weight,
     )
 
     # In the vector loop only into the PLL; out of it as the inner loop.
@@ -155,9 +207,15 @@ end
     # Pending sums whose passenger record ended at or before the driver record's start
     # belong to a driver record that never came: the step drops them.
     @test sums.first_end_sample == record.sample_index
-    driver(sample_index) = combining_record(GPSL5Q(), cis(0.3), (0.5, 1.0, 0.5);
-        sample_index, previous_prompt = cis(0.2))
-    carrier(state, record) = step_loop(estimator, state, record, _NO_WORD, NO_LANDING_SAMPLE)[2]
+    driver(sample_index) = combining_record(
+        GPSL5Q(),
+        cis(0.3),
+        (0.5, 1.0, 0.5);
+        sample_index,
+        previous_prompt = cis(0.2),
+    )
+    carrier(state, record) =
+        step_loop(estimator, state, record, _NO_WORD, NO_LANDING_SAMPLE)[2]
     @test carrier(combined, driver(10000)) == carrier(state, driver(10000))
     @test carrier(combined, driver(5000)) != carrier(state, driver(5000))
 end
@@ -177,22 +235,49 @@ end
     @test SC._passenger_fll_reading(beyond, true) ≈ uconvert(Hz, 2.0 / (2π * T))
     @test SC._passenger_fll_reading(beyond, false) ≈ uconvert(Hz, (2.0 - π) / (2π * T))
     # Combining reads it two-quadrant even on a wiped-off record.
-    wiped = LoopRecord(signal, beyond.filtered_correlator, previous, n, n, n, 1, fs;
-        polarity = 1)
-    sums = SC._add_passenger_discriminators(SignalCombiningSums(), wiped, _NO_WORD,
-        SC._ALL_LOOPS, signal, NaN)
+    wiped = LoopRecord(
+        signal,
+        beyond.filtered_correlator,
+        previous,
+        n,
+        n,
+        n,
+        1,
+        fs;
+        polarity = 1,
+    )
+    sums = SC._add_passenger_discriminators(
+        SignalCombiningSums(),
+        wiped,
+        _NO_WORD,
+        SC._ALL_LOOPS,
+        signal,
+        NaN,
+    )
     @test sums.fll.sum / sums.fll.weight ≈ uconvert(Hz, (2.0 - π) / (2π * T))
 end
 
 @testset "Several passengers add up" begin
     estimator = ConventionalAssistedPLLAndDLL(; combine_signals = true)
     state = init_estimator_state(estimator, GPSL1C_P(), 0.0Hz, 0.0Hz)
-    fold(state, record) = fold_passenger_record(estimator, state, record, _NO_WORD; driver_signal = GPSL1C_P())
+    fold(state, record) = fold_passenger_record(
+        estimator,
+        state,
+        record,
+        _NO_WORD;
+        driver_signal = GPSL1C_P(),
+    )
     veml = (0.2, 0.7, 1.0, 0.7, 0.2)
     d_record = combining_record(GPSL1C_D(), cis(0.1), veml; n = 50000)
     ca_records = (
         combining_record(GPSL1CA(), cis(0.2), (0.5, 1.0, 0.5)),
-        combining_record(GPSL1CA(), cis(0.25), (0.5, 1.0, 0.5); previous_prompt = cis(0.2), sample_index = 10000),
+        combining_record(
+            GPSL1CA(),
+            cis(0.25),
+            (0.5, 1.0, 0.5);
+            previous_prompt = cis(0.2),
+            sample_index = 10000,
+        ),
     )
     d_only = fold(state, d_record).signal_combining_sums
     ca_only = foldl(fold, ca_records; init = state).signal_combining_sums
@@ -215,7 +300,14 @@ end
     estimator = ConventionalAssistedPLLAndDLL(; combine_signals = true)
     alone_estimator = ConventionalAssistedPLLAndDLL()
     state = init_estimator_state(estimator, GalileoE1C(), 0.0Hz, 0.0Hz)
-    driver = combining_record(GalileoE1C(), cis(0.2), (0.6, 0.8, 1.0, 0.6, 0.4); n, fs, previous_prompt = cis(0.1))
+    driver = combining_record(
+        GalileoE1C(),
+        cis(0.2),
+        (0.6, 0.8, 1.0, 0.6, 0.4);
+        n,
+        fs,
+        previous_prompt = cis(0.1),
+    )
     step(state) = step_loop(estimator, state, driver, _NO_WORD, NO_LANDING_SAMPLE)
     w = 0.5 * 0.004s
     # Pending sums of passenger records ending with the driver record.
@@ -231,7 +323,8 @@ end
     # The DLL reads the weighted mean of the driver's and the passengers'.
     own_dll = dll_disc(GalileoE1C(), driver.filtered_correlator, 0.0Hz, fs)
     stepped, = step(with_sums(no_pll, no_fll, SC.WeightedSum(3w * 0.05, 3w)))
-    expected = last(filter_loop(SecondOrderBilinearLF(), (own_dll + 3 * 0.05) / 4, T, 1.0Hz))
+    expected =
+        last(filter_loop(SecondOrderBilinearLF(), (own_dll + 3 * 0.05) / 4, T, 1.0Hz))
     @test getfield(stepped.code_loop_filter, 1) ≈ getfield(expected, 1)
     # The sums are consumed.
     @test stepped.signal_combining_sums === SignalCombiningSums()
@@ -242,19 +335,17 @@ end
     @test step(with_sums(no_pll, fll_pending, no_pll))[2] != alone[2]
     # Not into an FLL that is no longer formed.
     locked = @set state.staging.stage = WIDE_PLL
-    @test step(@set locked.signal_combining_sums = pending(no_pll, fll_pending, no_pll))[2] ==
-          step(locked)[2]
+    locked_pending =
+        @set locked.signal_combining_sums = pending(no_pll, fll_pending, no_pll)
+    @test step(locked_pending)[2] == step(locked)[2]
 
     # In the vector loop: into the PLL only, and the satellite's accumulators keep the
     # driver's own DLL and FLL readings (the passengers' reach the filter through the
     # engine, see "vector_signal_groups.jl").
     vector = VectorPLLAndDLL(GalileoE1B(); combine_signals = true)
-    vt = SC._enable_vector_tracking(init_estimator_state(vector, GalileoE1C(), 0.0Hz, 0.0Hz))
-    mixed = pending(
-        SC.WeightedSum(w * 0.01, w),
-        fll_pending,
-        SC.WeightedSum(w * 0.05, w),
-    )
+    vt =
+        SC._enable_vector_tracking(init_estimator_state(vector, GalileoE1C(), 0.0Hz, 0.0Hz))
+    mixed = pending(SC.WeightedSum(w * 0.01, w), fll_pending, SC.WeightedSum(w * 0.05, w))
     vt_step(state) = step_satellite(vector, state, driver, _NO_WORD, NO_LANDING_SAMPLE)
     combined_vt, combined_carrier, = vt_step(@set vt.inner.signal_combining_sums = mixed)
     alone_vt, alone_carrier, = vt_step(vt)
@@ -262,11 +353,14 @@ end
     @test combined_vt.code_discr_acc == alone_vt.code_discr_acc
     @test combined_vt.carrier_discr_acc == alone_vt.carrier_discr_acc
     @test first(
-        vt_step(@set vt.inner.signal_combining_sums = pending(no_pll, fll_pending, SC.WeightedSum(w * 0.05, w))),
+        vt_step(
+            @set vt.inner.signal_combining_sums =
+                pending(no_pll, fll_pending, SC.WeightedSum(w * 0.05, w))
+        ),
     ).inner.carrier_loop_filter == alone_vt.inner.carrier_loop_filter
 end
 
-@testset "A four-quadrant driver reading beyond the two-quadrant range is not combined" begin
+@testset "A four-quadrant driver reading beyond the two-quadrant range stays alone" begin
     # A synced pilot driver reads its PLL four-quadrant; beyond ±1/4 cycle a
     # two-quadrant passenger would fold the error, so its pending PLL sum is left
     # out of that step, and joins within the range.
@@ -274,7 +368,10 @@ end
     state = init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
     record(phase) = LoopRecord(
         GPSL5Q(),
-        update_accumulator(get_default_correlator(GPSL5Q()), cis(phase) .* SVector(0.5, 1.0, 0.5)),
+        update_accumulator(
+            get_default_correlator(GPSL5Q()),
+            cis(phase) .* SVector(0.5, 1.0, 0.5),
+        ),
         cis(phase - 0.01),
         5000,
         5000,
@@ -284,7 +381,8 @@ end
         polarity = 1,
     )
     pending = @set state.signal_combining_sums.pll = SC.WeightedSum(0.001s * 0.1, 0.001s)
-    step(state, phase) = step_loop(estimator, state, record(phase), _NO_WORD, NO_LANDING_SAMPLE)
+    step(state, phase) =
+        step_loop(estimator, state, record(phase), _NO_WORD, NO_LANDING_SAMPLE)
     # 2.0 rad, about 0.32 cycle: beyond the range, the driver's own reading.
     @test step(pending, 2.0)[2] == step(state, 2.0)[2]
     # 0.2 rad: within it, combined.
@@ -312,11 +410,14 @@ end
 @testset "Signal combining adds no allocation" begin
     estimator = ConventionalAssistedPLLAndDLL(; combine_signals = true)
     state = init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
-    passenger = combining_record(GPSL5I(), cis(0.1), (0.5, 1.0, 0.5); previous_prompt = cis(0.05))
-    driver = combining_record(GPSL5Q(), cis(0.2), (0.5, 1.0, 0.5); previous_prompt = cis(0.1))
+    passenger =
+        combining_record(GPSL5I(), cis(0.1), (0.5, 1.0, 0.5); previous_prompt = cis(0.05))
+    driver =
+        combining_record(GPSL5Q(), cis(0.2), (0.5, 1.0, 0.5); previous_prompt = cis(0.1))
     state_ref = Ref(state)
     fold_and_step!(state_ref, estimator, passenger, driver, _NO_WORD)
-    @test (@allocated fold_and_step!(state_ref, estimator, passenger, driver, _NO_WORD)) == 0
+    @test (@allocated fold_and_step!(state_ref, estimator, passenger, driver, _NO_WORD)) ==
+          0
     @test isempty(
         AllocCheck.check_allocs(
             step_loop,
@@ -327,19 +428,44 @@ end
     @test isempty(
         AllocCheck.check_allocs(
             SC._with_passenger_record,
-            Tuple{typeof(state),typeof(passenger),FixedNCOWord,typeof(SC._ALL_LOOPS),typeof(driver.signal),Float64};
+            Tuple{
+                typeof(state),
+                typeof(passenger),
+                FixedNCOWord,
+                typeof(SC._ALL_LOOPS),
+                typeof(driver.signal),
+                Float64,
+            };
             ignore_throw = true,
         ),
     )
     # The same with the very-early-prompt-late correlator of a BOC signal pair.
     veml_state = init_estimator_state(estimator, GalileoE1C(), 0.0Hz, 0.0Hz)
     taps = (0.3, 0.6, 1.0, 0.6, 0.3)
-    veml_passenger = combining_record(GalileoE1B(), cis(0.1), taps; n = 16368, fs = 4.092e6Hz,
-        previous_prompt = cis(0.05))
-    veml_driver = combining_record(GalileoE1C(), cis(0.2), taps; n = 16368, fs = 4.092e6Hz,
-        previous_prompt = cis(0.1))
+    veml_passenger = combining_record(
+        GalileoE1B(),
+        cis(0.1),
+        taps;
+        n = 16368,
+        fs = 4.092e6Hz,
+        previous_prompt = cis(0.05),
+    )
+    veml_driver = combining_record(
+        GalileoE1C(),
+        cis(0.2),
+        taps;
+        n = 16368,
+        fs = 4.092e6Hz,
+        previous_prompt = cis(0.1),
+    )
     @test get_default_correlator(GalileoE1C()) isa VeryEarlyPromptLateCorrelator
     veml_ref = Ref(veml_state)
     fold_and_step!(veml_ref, estimator, veml_passenger, veml_driver, _NO_WORD)
-    @test (@allocated fold_and_step!(veml_ref, estimator, veml_passenger, veml_driver, _NO_WORD)) == 0
+    @test (@allocated fold_and_step!(
+        veml_ref,
+        estimator,
+        veml_passenger,
+        veml_driver,
+        _NO_WORD,
+    )) == 0
 end

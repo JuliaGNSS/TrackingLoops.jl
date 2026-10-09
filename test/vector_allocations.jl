@@ -19,15 +19,20 @@ end
 # The satellites take the latest cycle up, as they would on their next record.
 function take_up!(rx::SimReceiver, sample)
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
-        sat.state = TL._take_up_cycle(rx.vt, group, group.slots[i], sat.state,
-            take_up_record(sat, sample), sim_words(sat, NO_LANDING_SAMPLE), Int64(sample))
+        sat.state = TL._take_up_cycle(
+            rx.vt,
+            group,
+            group.slots[i],
+            sat.state,
+            take_up_record(sat, sample),
+            sim_words(sat, NO_LANDING_SAMPLE),
+            Int64(sample),
+        )
     end
 end
 
-@testset "Navigation cycles are allocation-free, $(length(signals)) signal group(s)" for signals in (
-    (GPSL1CA(),),
-    (GPSL1CA(), GalileoE1B()),
-)
+const _CYCLE_GROUPS = ((GPSL1CA(),), (GPSL1CA(), GalileoE1B()))
+@testset "Cycles allocate nothing, $(length(signals)) groups" for signals in _CYCLE_GROUPS
     cycle = 100 * SAMPLES_PER_MS
     scalar = SimReceiver(; signals, config = nothing)
     _, sample, _ = run_simulation!(scalar, 3)
@@ -47,8 +52,12 @@ end
 
     slot = rx.group.slots[2]
     sample += cycle
-    @test measure_navigation(rx, sample; fill! = (v, sat, e, l, nav) ->
-        (fill_slot!(v, sat, e, l, nav); v === slot && drop_slot!(v))) == 0
+    @test measure_navigation(
+        rx,
+        sample;
+        fill! = (v, sat, e, l, nav) ->
+            (fill_slot!(v, sat, e, l, nav); v === slot && drop_slot!(v)),
+    ) == 0
     @test slot.release_reason == VT_INELIGIBLE
     take_up!(rx, sample)
     sample += cycle
@@ -56,7 +65,8 @@ end
     take_up!(rx, sample)
     @test rx.sats[2].state.vt_on
 
-    unlocked!(v, sat, e, l, nav) = (fill_slot!(v, sat, e, l, nav); v.in_lock = false; v.pvt_ready = false)
+    unlocked!(v, sat, e, l, nav) =
+        (fill_slot!(v, sat, e, l, nav); v.in_lock = false; v.pvt_ready = false)
     rx.vt.time_with_insufficient_meas = 10.0s
     sample += cycle
     @test measure_navigation(rx, sample; fill! = unlocked!) == 0
@@ -100,7 +110,8 @@ end
         @test rx.vt.running == !isnothing(config)
         isnothing(config) ||
             @test !isempty(rx.vt.buffers.observability.hub_offset_constraints)
-        @test measure_navigation(rx, sample + 100 * SAMPLES_PER_MS) == 0 skip = VERSION < v"1.11"
+        @test measure_navigation(rx, sample + 100 * SAMPLES_PER_MS) == 0 skip =
+            VERSION < v"1.11"
     end
 end
 
@@ -115,7 +126,15 @@ end
     record = take_up_record(sat, sample)
     words = sim_words(sat, NO_LANDING_SAMPLE)
     state = sat.state
-    take_up(state) = @allocated TL._take_up_cycle(rx.vt, group, slot, state, record, words, Int64(sample))
+    take_up(state) = @allocated TL._take_up_cycle(
+        rx.vt,
+        group,
+        slot,
+        state,
+        record,
+        words,
+        Int64(sample),
+    )
     take_up(state)
     @test take_up(state) == 0
 end

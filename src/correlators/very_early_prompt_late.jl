@@ -38,8 +38,9 @@ end
 """
 $(SIGNATURES)
 
-VeryEarlyPromptLateCorrelator constructor without parameters and some default parameters.
-Default parameters take from https://gnss-sdr.org/docs/sp-blocks/tracking/#implementation-galileo_e1_dll_pll_veml_tracking
+VeryEarlyPromptLateCorrelator constructor without parameters and some default
+parameters, taken from GNSS-SDR's Galileo E1 DLL/PLL VEML tracking:
+<https://gnss-sdr.org/docs/sp-blocks/tracking/#implementation-galileo_e1_dll_pll_veml_tracking>
 
 Throws an `ArgumentError` if both code shifts are one chip or more: the BOC(1,1)
 correlation peak the VEML discriminator ([`dll_disc`](@ref)) is calibrated on has
@@ -56,9 +57,10 @@ function VeryEarlyPromptLateCorrelator(;
     ) < 1 || throw(
         ArgumentError(
             "VeryEarlyPromptLateCorrelator: the early/late code shift " *
-            "($preferred_early_late_to_prompt_code_shift chips) or the very-early/very-late " *
-            "code shift ($preferred_very_early_late_to_prompt_code_shift chips) must be " *
-            "below one chip; the VEML discriminator is calibrated on the BOC(1,1) " *
+            "($preferred_early_late_to_prompt_code_shift chips) or the " *
+            "very-early/very-late code shift " *
+            "($preferred_very_early_late_to_prompt_code_shift chips) must be below " *
+            "one chip; the VEML discriminator is calibrated on the BOC(1,1) " *
             "correlation peak, which has vanished from one chip on.",
         ),
     )

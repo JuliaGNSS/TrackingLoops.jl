@@ -10,8 +10,13 @@ using Accessors: setproperties
     for k = 1:200
         sgn = isodd(div(k - 1, 20)) ? -1.0 : 1.0
         p = 2000.0 * sgn
-        output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
-        state, prompt, filtered, blocks = apply_record(state, signal, 7, output, fs, density, true)
+        output = CorrelatorOutput(
+            EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5),
+            4000,
+            4000k,
+        )
+        state, prompt, filtered, blocks =
+            apply_record(state, signal, 7, output, fs, density, true)
         @test prompt == p / 4000
         @test get_prompt(filtered) == prompt
         @test blocks == 1
@@ -21,7 +26,8 @@ using Accessors: setproperties
     @test all(abs.(get_soft_bits(state)) .> 0)
     # C/N0: |P|²/N0 − 1/T with |P| = 0.5 and N0 = 1e-6/Hz over 1 ms records.
     cn0 = estimate_cn0(state, 1023 / get_code_frequency(signal))
-    @test 10 * log10(ustrip(Hz, Unitful.linear(cn0))) ≈ 10 * log10(0.25 / 1e-6 - 1000) atol = 1e-6
+    cn0_dbhz = 10 * log10(ustrip(Hz, Unitful.linear(cn0)))
+    @test cn0_dbhz ≈ 10 * log10(0.25 / 1e-6 - 1000) atol = 1e-6
     # A restarted bit clock forgets sync and keeps the rest.
     restarted = restart_bit_clock(state)
     @test !has_bit_or_secondary_code_been_found(restarted)
@@ -36,8 +42,21 @@ end
     fs = 25e6Hz
     state = SignalLoopState(data)
     p = 2000.0im   # the data component sits on the imaginary axis of the driver's frame
-    output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 25_000, 25_000)
-    state, prompt, _, _ = apply_record(state, data, 3, output, fs, 1e-6 / Hz, true, get_carrier_phase_offset(driver))
+    output = CorrelatorOutput(
+        EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5),
+        25_000,
+        25_000,
+    )
+    state, prompt, _, _ = apply_record(
+        state,
+        data,
+        3,
+        output,
+        fs,
+        1e-6 / Hz,
+        true,
+        get_carrier_phase_offset(driver),
+    )
     @test prompt == p / 25_000
     # The recorded prompt is the un-rotated one; the rotation only reaches the bit buffer.
     @test state.last_filtered_prompt == prompt
@@ -52,8 +71,17 @@ end
     @test record.sample_index == 8000
     @test record.fold_end == 8000
     # The host's per-measurement origin moves onto the band's common one.
-    shifted = LoopRecord(GPSL1CA(), correlator, cis(0.1), output, 1, 4e6Hz;
-        fold_end = 12_000, prn = 7, sample_offset = 40_000)
+    shifted = LoopRecord(
+        GPSL1CA(),
+        correlator,
+        cis(0.1),
+        output,
+        1,
+        4e6Hz;
+        fold_end = 12_000,
+        prn = 7,
+        sample_offset = 40_000,
+    )
     @test shifted.prn == 7
     @test shifted.sample_index == 48_000
     @test shifted.fold_end == 52_000
@@ -61,8 +89,18 @@ end
     # The positional form keeps its eight arguments.
     plain = LoopRecord(GPSL1CA(), correlator, cis(0.1), 4000, 8000, 8000, 1, 4e6Hz)
     @test plain.prn == 0 && isnan(plain.code_phase)
-    @test LoopRecord(GPSL1CA(), correlator, cis(0.1), 4000, 8000, 8000, 1, 4e6Hz;
-        prn = 3, code_phase = 0.5).prn == 3
+    @test LoopRecord(
+        GPSL1CA(),
+        correlator,
+        cis(0.1),
+        4000,
+        8000,
+        8000,
+        1,
+        4e6Hz;
+        prn = 3,
+        code_phase = 0.5,
+    ).prn == 3
 end
 
 @testset "A loop record built from the loop state follows the record contract" begin
@@ -80,11 +118,22 @@ end
     # A record of the same length chains from the last filtered prompt.
     output = CorrelatorOutput(correlator(2000.0im), 4000, 8000)
     _, _, filtered, blocks = apply_record(folded, signal, 7, output, fs, 1e-6 / Hz, true)
-    record = LoopRecord(folded, signal, filtered, output, blocks, fs; prn = 7, sample_offset = 100)
+    record = LoopRecord(
+        folded,
+        signal,
+        filtered,
+        output,
+        blocks,
+        fs;
+        prn = 7,
+        sample_offset = 100,
+    )
     @test record.previous_prompt == folded.last_filtered_prompt
     @test record.sample_index == 8100
     # One of another length does not.
-    @test iszero(LoopRecord(folded, signal, filtered, output, 2, fs; prn = 7).previous_prompt)
+    @test iszero(
+        LoopRecord(folded, signal, filtered, output, 2, fs; prn = 7).previous_prompt,
+    )
     # Nor does one whose polarity differs: a pilot's first record after its
     # secondary-code sync, which reads with the sync's polarity.
     pilot = GPSL5Q()
@@ -103,17 +152,34 @@ end
     @test record.polarity == get_sync_polarity(pilot, synced.bit_buffer, 1) != 0
     @test iszero(record.previous_prompt)
     # The fold remembers the polarity the record was correlated with.
-    folded, _, filtered, blocks = apply_record(synced, pilot, 1, output, 25e6Hz, 1e-6 / Hz, true)
+    folded, _, filtered, blocks =
+        apply_record(synced, pilot, 1, output, 25e6Hz, 1e-6 / Hz, true)
     @test folded.last_polarity == record.polarity
-    @test LoopRecord(folded, pilot, filtered, output, blocks, 25e6Hz; prn = 1).previous_prompt ==
-          folded.last_filtered_prompt
+    chained = LoopRecord(folded, pilot, filtered, output, blocks, 25e6Hz; prn = 1)
+    @test chained.previous_prompt == folded.last_filtered_prompt
     # A record after a sync found earlier in its fold was correlated with the pre-sync
     # replica: no polarity, and remembered as such.
-    pre_sync = LoopRecord(synced, pilot, correlator(0.08), output, 1, 25e6Hz; prn = 1,
-        correlated_pre_sync = true)
+    pre_sync = LoopRecord(
+        synced,
+        pilot,
+        correlator(0.08),
+        output,
+        1,
+        25e6Hz;
+        prn = 1,
+        correlated_pre_sync = true,
+    )
     @test pre_sync.polarity == 0
     @test pre_sync.previous_prompt == synced.last_filtered_prompt
-    folded, = apply_record(synced, pilot, 1, output, 25e6Hz, 1e-6 / Hz, true;
-        correlated_pre_sync = true)
+    folded, = apply_record(
+        synced,
+        pilot,
+        1,
+        output,
+        25e6Hz,
+        1e-6 / Hz,
+        true;
+        correlated_pre_sync = true,
+    )
     @test folded.last_polarity == 0
 end

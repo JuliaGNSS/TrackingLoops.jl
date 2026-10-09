@@ -50,7 +50,8 @@ using TrackingLoops, GNSSSignals, Unitful
 signal = GPSL1CA()
 fs = 4e6u"Hz"
 estimator = ConventionalAssistedPLLAndDLL()
-state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  # one per satellite
+# One per satellite:
+state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)
 loop = SignalLoopState(signal)              # bit buffer, C/N₀ estimator, prompt filter
 
 # For every correlator record `output::CorrelatorOutput` the correlator produced:
@@ -61,8 +62,9 @@ overshoot && @warn "record crossed a navigation-bit boundary; bit sync restarted
 # with, and the polarity the record was correlated with.
 record = LoopRecord(loop, signal, filtered, output, blocks, fs; prn)
 loop = folded
+words = FixedNCOWord(carrier_hz, code_hz)
 state, carrier_doppler, code_doppler =
-    step_loop(estimator, state, record, FixedNCOWord(carrier_hz, code_hz), NO_LANDING_SAMPLE)
+    step_loop(estimator, state, record, words, NO_LANDING_SAMPLE)
 # program the next replica with carrier_doppler and code_doppler
 ```
 

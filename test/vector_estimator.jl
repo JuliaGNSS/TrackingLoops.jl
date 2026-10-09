@@ -9,8 +9,16 @@ step_satellite(estimator, args...) = step_loop(estimator, args...)
 # One record at `sample_index` with the given raw accumulators, normalised the
 # way `apply_record` does before the loop filters see it (the post-correlation
 # filter is the identity for the first prompt).
-function vector_record(signal, accumulators, num_samples, fs; previous_prompt = complex(0.0, 0.0), sample_index = num_samples)
-    correlator = update_accumulator(get_default_correlator(signal), SVector(accumulators...))
+function vector_record(
+    signal,
+    accumulators,
+    num_samples,
+    fs;
+    previous_prompt = complex(0.0, 0.0),
+    sample_index = num_samples,
+)
+    correlator =
+        update_accumulator(get_default_correlator(signal), SVector(accumulators...))
     output = CorrelatorOutput(correlator, num_samples, sample_index)
     normalized = normalize(correlator, num_samples, get_code_amplitude(signal))
     LoopRecord(signal, normalized, previous_prompt, output, 1, fs)
@@ -21,7 +29,8 @@ end
     @test estimator.inner isa ConventionalPLLAndDLL{ThirdOrderAssistedBilinearLF}
     state = init_estimator_state(estimator, GPSL1CA(), 500.0Hz, 100.0Hz)
     @test state isa SatVectorPLLAndDLL
-    @test state.inner == init_estimator_state(ConventionalAssistedPLLAndDLL(), GPSL1CA(), 500.0Hz, 100.0Hz)
+    @test state.inner ==
+          init_estimator_state(ConventionalAssistedPLLAndDLL(), GPSL1CA(), 500.0Hz, 100.0Hz)
     @test state.vt_on == false
     @test state.code_discr_acc == (0, 0.0)
     @test state.carrier_discr_acc == (0, 0.0Hz)
@@ -41,30 +50,55 @@ end
     @test state.inner.bandwidths.wide_carrier == 50.0Hz
     @test state.inner.bandwidths.code == 1.0Hz
     @test state.inner.init_carrier_doppler == 100.0Hz
-    explicit = ConventionalAssistedPLLAndDLL(; wide_carrier_loop_filter_bandwidth = 12.0Hz, code_loop_filter_bandwidth = 1.0Hz)
-    explicit_state = init_estimator_state(VectorPLLAndDLL(GPSL1CA(); inner = explicit), GPSL1CA(), 100.0Hz, 0.0Hz)
+    explicit = ConventionalAssistedPLLAndDLL(;
+        wide_carrier_loop_filter_bandwidth = 12.0Hz,
+        code_loop_filter_bandwidth = 1.0Hz,
+    )
+    explicit_state = init_estimator_state(
+        VectorPLLAndDLL(GPSL1CA(); inner = explicit),
+        GPSL1CA(),
+        100.0Hz,
+        0.0Hz,
+    )
     @test explicit_state.inner.bandwidths.wide_carrier == 12.0Hz
     @test explicit_state.inner.bandwidths.code == 1.0Hz
-    bumped = VectorPLLAndDLL(GPSL1CA(); inner = ConventionalPLLAndDLL(explicit; wide_carrier_loop_filter_bandwidth = 15.0Hz))
+    bumped = VectorPLLAndDLL(
+        GPSL1CA();
+        inner = ConventionalPLLAndDLL(
+            explicit;
+            wide_carrier_loop_filter_bandwidth = 15.0Hz,
+        ),
+    )
     @test bumped.inner.wide_carrier_loop_filter_bandwidth == 15.0Hz
     @test bumped.inner.code_loop_filter_bandwidth == 1.0Hz
-    referenced = init_estimator_state(VectorPLLAndDLL(GalileoE1B(); inner = NCOReferencedPLLAndDLL()), GalileoE1B(), 0.0Hz, 0.0Hz)
+    referenced = init_estimator_state(
+        VectorPLLAndDLL(GalileoE1B(); inner = NCOReferencedPLLAndDLL()),
+        GalileoE1B(),
+        0.0Hz,
+        0.0Hz,
+    )
     @test referenced.inner isa SatNCOReferencedPLLAndDLL
-    @test referenced.inner.bandwidths.wide_carrier == default_narrow_carrier_loop_filter_bandwidth(GalileoE1B())
+    @test referenced.inner.bandwidths.wide_carrier ==
+          default_narrow_carrier_loop_filter_bandwidth(GalileoE1B())
 end
 
 @testset "A vector loop needs an FLL-assisted inner loop" begin
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); inner = ConventionalPLLAndDLL())
-    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); inner = ConventionalPLLAndDLL(ThirdOrderBilinearLF))
-    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); inner = VectorPLLAndDLL(GPSL1CA()))
-    @test VectorPLLAndDLL(GPSL1CA(); inner = ConventionalAssistedPLLAndDLL()) isa VectorPLLAndDLL
+    @test_throws ArgumentError VectorPLLAndDLL(
+        GPSL1CA();
+        inner = ConventionalPLLAndDLL(ThirdOrderBilinearLF),
+    )
+    @test_throws ArgumentError VectorPLLAndDLL(
+        GPSL1CA();
+        inner = VectorPLLAndDLL(GPSL1CA()),
+    )
+    @test VectorPLLAndDLL(GPSL1CA(); inner = ConventionalAssistedPLLAndDLL()) isa
+          VectorPLLAndDLL
     @test VectorPLLAndDLL(GPSL1CA(); inner = NCOReferencedPLLAndDLL()) isa VectorPLLAndDLL
 end
 
-@testset "Out of the vector loop it is the inner loop, with $(nameof(typeof(inner)))" for inner in (
-    ConventionalAssistedPLLAndDLL(),
-    NCOReferencedPLLAndDLL(),
-)
+const _INNERS = (ConventionalAssistedPLLAndDLL(), NCOReferencedPLLAndDLL())
+@testset "Off the vector loop it is $(nameof(typeof(inner)))" for inner in _INNERS
     # Under an NCO delay too: the delayed simulation of `estimators.jl`.
     for d in (0, 3)
         @test simulate_delayed_loop(VectorPLLAndDLL(GPSL1CA(); inner), d; steps = 300) ==
@@ -75,12 +109,24 @@ end
     signal = GPSL1CA()
     fs = 5e6Hz
     vector = VectorPLLAndDLL(GPSL1CA(); inner)
-    vector_state = TL._set_vector_corrections(init_estimator_state(vector, signal, 100.0Hz, 0.1Hz), 0.5Hz, 2.0Hz)
+    vector_state = TL._set_vector_corrections(
+        init_estimator_state(vector, signal, 100.0Hz, 0.1Hz),
+        0.5Hz,
+        2.0Hz,
+    )
     inner_state = init_estimator_state(inner, signal, 100.0Hz, 0.1Hz)
-    record = vector_record(signal, (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im), 5000, fs; previous_prompt = cis(0.1))
+    record = vector_record(
+        signal,
+        (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im),
+        5000,
+        fs;
+        previous_prompt = cis(0.1),
+    )
     words = FixedNCOWord(100.0, 0.1)
-    new_vector_state, vector_carrier, vector_code = step_satellite(vector, vector_state, record, words, NO_LANDING_SAMPLE)
-    new_inner_state, inner_carrier, inner_code = step_satellite(inner, inner_state, record, words, NO_LANDING_SAMPLE)
+    new_vector_state, vector_carrier, vector_code =
+        step_satellite(vector, vector_state, record, words, NO_LANDING_SAMPLE)
+    new_inner_state, inner_carrier, inner_code =
+        step_satellite(inner, inner_state, record, words, NO_LANDING_SAMPLE)
     @test vector_carrier == inner_carrier
     @test vector_code == inner_code
     @test new_vector_state.inner == new_inner_state
@@ -91,10 +137,7 @@ end
     @test vector_carrier != 100.0Hz
 end
 
-@testset "Vector loop closure applies the NCO corrections, with $(nameof(typeof(inner)))" for inner in (
-    ConventionalAssistedPLLAndDLL(),
-    NCOReferencedPLLAndDLL(),
-)
+@testset "Vector loop closure, $(nameof(typeof(inner)))" for inner in _INNERS
     sampling_frequency = 5e6Hz
     gpsl1 = GPSL1CA()
     carrier_doppler = 100.0Hz
@@ -110,7 +153,8 @@ end
     state = TL._set_vector_corrections(state, nav_code_freq_update, nav_carrier_freq_update)
     record = vector_record(gpsl1, accumulators, num_samples, sampling_frequency)
     words = FixedNCOWord(ustrip(Hz, carrier_doppler), ustrip(Hz, init_code_doppler))
-    state, new_carrier_doppler, new_code_doppler = step_satellite(estimator, state, record, words, NO_LANDING_SAMPLE)
+    state, new_carrier_doppler, new_code_doppler =
+        step_satellite(estimator, state, record, words, NO_LANDING_SAMPLE)
 
     normalized_correlator = update_accumulator(
         get_default_correlator(gpsl1),
@@ -118,7 +162,8 @@ end
     )
     integration_time = num_samples / sampling_frequency
     pll_discriminator = pll_disc(gpsl1, normalized_correlator)  # cycles
-    dll_discriminator = dll_disc(gpsl1, normalized_correlator, init_code_doppler, sampling_frequency)
+    dll_discriminator =
+        dll_disc(gpsl1, normalized_correlator, init_code_doppler, sampling_frequency)
     # The FLL branch is driven by the vector loop's carrier update.
     expected_carrier_freq_update, _ = filter_loop(
         ThirdOrderAssistedBilinearLF(),
@@ -157,24 +202,44 @@ end
     signal = GPSL1CA()
     fs = 5e6Hz
     estimator = VectorPLLAndDLL(GPSL1CA())
-    state = TL._enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
+    state =
+        TL._enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
     previous = cis(0.2)
-    record = vector_record(signal, (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im), 5000, fs; previous_prompt = previous)
+    record = vector_record(
+        signal,
+        (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im),
+        5000,
+        fs;
+        previous_prompt = previous,
+    )
     fll = fll_disc(signal, record.filtered_correlator, previous, 5000 / fs)
     @test fll != 0.0Hz
-    state, = step_satellite(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
-    state, = step_satellite(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
+    state, = step_satellite(
+        estimator,
+        state,
+        record,
+        FixedNCOWord(100.0, 0.1),
+        NO_LANDING_SAMPLE,
+    )
+    state, = step_satellite(
+        estimator,
+        state,
+        record,
+        FixedNCOWord(100.0, 0.1),
+        NO_LANDING_SAMPLE,
+    )
     @test state.carrier_discr_acc == (2, fll + fll)
     @test TL._mean_carrier_discriminator(state) == (fll + fll) / 2
 end
 
-@testset "The vector loop leaves records without a previous prompt out of the FLL accumulator" begin
+@testset "The vector loop leaves records without a previous prompt out of the FLL" begin
     # Counted, their 0 Hz would bias the mean: three readings of `fll` would
     # average as 3/4 of it.
     signal = GPSL1CA()
     fs = 5e6Hz
     estimator = VectorPLLAndDLL(GPSL1CA())
-    state = TL._enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
+    state =
+        TL._enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
     accumulators = (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im)
     first_record = vector_record(signal, accumulators, 5000, fs)
     record = vector_record(signal, accumulators, 5000, fs; previous_prompt = cis(0.2))
@@ -189,15 +254,29 @@ end
     @test TL._mean_carrier_discriminator(state) ≈ fll
 end
 
-@testset "The vector loop accumulates the FLL discriminator in Hz from a MHz sampling frequency" begin
+@testset "The vector loop accumulates the FLL in Hz from a MHz sampling frequency" begin
     # The FLL reading took the sampling frequency's unit, and the `Hz`-typed
     # accumulator refused it as soon as the satellite was in the vector loop.
     signal = GPSL1CA()
     estimator = VectorPLLAndDLL(GPSL1CA())
     function accumulated(fs)
-        state = TL._enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
-        record = vector_record(signal, (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im), 5000, fs; previous_prompt = cis(0.2))
-        state, = step_satellite(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
+        state = TL._enable_vector_tracking(
+            init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz),
+        )
+        record = vector_record(
+            signal,
+            (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im),
+            5000,
+            fs;
+            previous_prompt = cis(0.2),
+        )
+        state, = step_satellite(
+            estimator,
+            state,
+            record,
+            FixedNCOWord(100.0, 0.1),
+            NO_LANDING_SAMPLE,
+        )
         state.carrier_discr_acc
     end
     count, carrier_sum = accumulated(5.0u"MHz")
@@ -223,9 +302,16 @@ end
             p = cis(0.3 + 0.01k)
             output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), 4000, 4000k)
             record = LoopRecord(signal, output.correlator, previous, output, 1, fs)
-            landing = landing_offset == 0 ? NO_LANDING_SAMPLE : Int64(4000k + landing_offset)
-            state, carrier, code = step_satellite(estimator, state, record, timeline, landing)
-            schedule_word!(timeline, 4000k + landing_offset, ustrip(Hz, carrier), ustrip(Hz, code))
+            landing =
+                landing_offset == 0 ? NO_LANDING_SAMPLE : Int64(4000k + landing_offset)
+            state, carrier, code =
+                step_satellite(estimator, state, record, timeline, landing)
+            schedule_word!(
+                timeline,
+                4000k + landing_offset,
+                ustrip(Hz, carrier),
+                ustrip(Hz, code),
+            )
             promote_words!(timeline, 4000k - 4000)
             push!(carriers, carrier)
             previous = p
@@ -287,11 +373,28 @@ end
 end
 
 @testset "Resetting keeps the vector flag and stops applying the corrections" begin
-    estimator = VectorPLLAndDLL(GPSL1CA(); inner = ConventionalAssistedPLLAndDLL(; wide_carrier_loop_filter_bandwidth = 12.0Hz))
+    estimator = VectorPLLAndDLL(
+        GPSL1CA();
+        inner = ConventionalAssistedPLLAndDLL(;
+            wide_carrier_loop_filter_bandwidth = 12.0Hz,
+        ),
+    )
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
-    record = vector_record(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
+    record = vector_record(
+        GPSL1CA(),
+        (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im),
+        5000,
+        5e6Hz;
+        previous_prompt = cis(0.1),
+    )
     state = TL._set_vector_corrections(TL._enable_vector_tracking(state), 0.5Hz, 4.0Hz)
-    state, = step_satellite(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
+    state, = step_satellite(
+        estimator,
+        state,
+        record,
+        FixedNCOWord(100.0, 0.1),
+        NO_LANDING_SAMPLE,
+    )
     state = TL._set_vector_corrections(state, 0.6Hz, 4.0Hz, 0.01s)
     @test state.inner.carrier_loop_filter != ThirdOrderAssistedBilinearLF()
     reset = reset_estimator_state(estimator, state, 150.0Hz, 0.2Hz)
@@ -306,16 +409,23 @@ end
     # the epoch exactly as without the reset.
     @test reset.code_freq_update_history == (0.6Hz, 0.5Hz, 0.0Hz)
     @test reset.code_update_landing_lead == 0.01s
-    @test TrackingLoops.code_phase_advance(reset, 0.1) == TrackingLoops.code_phase_advance(state, 0.1)
+    @test TrackingLoops.code_phase_advance(reset, 0.1) ==
+          TrackingLoops.code_phase_advance(state, 0.1)
     @test TrackingLoops.code_phase_advance(reset, 0.1) != 0.0
     @test reset.inner.carrier_loop_filter == ThirdOrderAssistedBilinearLF()
     @test reset.inner.bandwidths.wide_carrier == 12.0Hz
     @test reset.inner.init_carrier_doppler == 150.0Hz
     @test reset.inner.init_code_doppler == 0.2Hz
     # With nothing applied, the code Doppler is the re-seeded one plus the carrier aiding.
-    _, carrier_doppler, code_doppler =
-        step_satellite(estimator, reset, record, FixedNCOWord(150.0, 0.2), NO_LANDING_SAMPLE)
-    @test code_doppler ≈ 0.2Hz + (carrier_doppler - 150.0Hz) * get_code_center_frequency_ratio(GPSL1CA())
+    _, carrier_doppler, code_doppler = step_satellite(
+        estimator,
+        reset,
+        record,
+        FixedNCOWord(150.0, 0.2),
+        NO_LANDING_SAMPLE,
+    )
+    @test code_doppler ≈
+          0.2Hz + (carrier_doppler - 150.0Hz) * get_code_center_frequency_ratio(GPSL1CA())
 end
 
 @testset "Releasing re-seeds the inner loop, with $(nameof(typeof(inner)))" for inner in (
@@ -324,9 +434,22 @@ end
 )
     estimator = VectorPLLAndDLL(GPSL1CA(); inner)
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
-    record = vector_record(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
-    state = TL._set_vector_corrections(TL._enable_vector_tracking(state), 0.5Hz, 4.0Hz, 0.01s)
-    state, = step_satellite(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
+    record = vector_record(
+        GPSL1CA(),
+        (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im),
+        5000,
+        5e6Hz;
+        previous_prompt = cis(0.1),
+    )
+    state =
+        TL._set_vector_corrections(TL._enable_vector_tracking(state), 0.5Hz, 4.0Hz, 0.01s)
+    state, = step_satellite(
+        estimator,
+        state,
+        record,
+        FixedNCOWord(100.0, 0.1),
+        NO_LANDING_SAMPLE,
+    )
     released = TL._release_from_vector_tracking(state, 150.0Hz, 0.2Hz)
     @test released isa typeof(state)
     @test !released.vt_on
@@ -343,6 +466,17 @@ end
     @test released.carrier_freq_update == 0.0Hz
     @test released.code_freq_update_history == (0.0Hz, 0.0Hz, 0.0Hz)
     # Out of the vector loop it steps exactly as the re-seeded inner loop.
-    @test step_satellite(estimator, released, record, FixedNCOWord(150.0, 0.2), NO_LANDING_SAMPLE)[2:3] ==
-          step_satellite(inner, released.inner, record, FixedNCOWord(150.0, 0.2), NO_LANDING_SAMPLE)[2:3]
+    @test step_satellite(
+        estimator,
+        released,
+        record,
+        FixedNCOWord(150.0, 0.2),
+        NO_LANDING_SAMPLE,
+    )[2:3] == step_satellite(
+        inner,
+        released.inner,
+        record,
+        FixedNCOWord(150.0, 0.2),
+        NO_LANDING_SAMPLE,
+    )[2:3]
 end

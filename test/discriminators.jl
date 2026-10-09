@@ -39,7 +39,8 @@ _prompt_correlator(p) = EarlyPromptLateCorrelator(SVector(p / 2, p, p / 2), 0.5)
     @test pll_disc(gpsl1, _prompt_correlator(-1.0 + 0.0im)) == 0
     @test pll_disc(gpsl1, _prompt_correlator(-1.0 + 0.0im); polarity = 1) ≈ 1 / 2
     # A negative polarity reads the error around the inverted prompt.
-    @test @inferred(pll_disc(gpsl1, _prompt_correlator(-cis(0.2)); polarity = -1)) ≈ 0.2 / 2π
+    @test @inferred(pll_disc(gpsl1, _prompt_correlator(-cis(0.2)); polarity = -1)) ≈
+          0.2 / 2π
     @test pll_disc(gpsl1, _prompt_correlator(-cis(2.5)); polarity = -1) ≈ 2.5 / 2π
     @test pll_disc(gpsl1, _prompt_correlator(-cis(0.2)); polarity = 1.0) ≈ (0.2 - π) / 2π
 end

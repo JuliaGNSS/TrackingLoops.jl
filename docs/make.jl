@@ -7,9 +7,9 @@ DocMeta.setdocmeta!(
     recursive = true,
 )
 
-makedocs(
+makedocs(;
     sitename = "TrackingLoops.jl",
-    format = Documenter.HTML(prettyurls = get(ENV, "CI", nothing) == "true"),
+    format = Documenter.HTML(; prettyurls = get(ENV, "CI", nothing) == "true"),
     modules = [TrackingLoops],
     doctest = true,
     # Every exported symbol must appear in the manual, and every `@ref` must
@@ -28,4 +28,4 @@ makedocs(
     ],
 )
 
-deploydocs(repo = "github.com/JuliaGNSS/TrackingLoops.jl.git", push_preview = true)
+deploydocs(; repo = "github.com/JuliaGNSS/TrackingLoops.jl.git", push_preview = true)

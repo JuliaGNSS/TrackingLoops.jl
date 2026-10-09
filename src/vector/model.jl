@@ -297,12 +297,12 @@ end
 # How long one manoeuvre lasts. A manoeuvre of this duration changes the velocity by `σ_a·τ`
 # — what order 1, modelling no velocity, has to absorb — and is built out of a jerk of
 # `σ_a/τ`, what order 3, modelling the acceleration, has to absorb. Two seconds is a road
-# vehicle's: a lane change, or a 0.5 g stop from 36 km/h, which is `acceleration_noise_std`'s
-# own default read as a manoeuvre. Deliberately a constant and not a keyword: it is inert at
-# the default `motion_model_order = 2`, where the acceleration itself is the unmodelled
-# derivative, so as a keyword it would sit on everyone's constructor to serve only the two
-# rarely-chosen orders. A platform whose manoeuvres are much shorter or longer changes it
-# here.
+# vehicle's: a lane change, or a 0.5 g stop from 36 km/h, which is
+# `acceleration_noise_std`'s own default read as a manoeuvre. Deliberately a constant and
+# not a keyword: it is inert at the default `motion_model_order = 2`, where the acceleration
+# itself is the unmodelled derivative, so as a keyword it would sit on everyone's
+# constructor to serve only the two rarely-chosen orders. A platform whose manoeuvres are
+# much shorter or longer changes it here.
 const MANOEUVRE_TIME = 2.0s
 
 # `Γ` comes back padded with zeros to three entries; only the first
@@ -385,7 +385,11 @@ function NavFilterModel(config::VectorTracking, layout::NavFilterLayout, integra
     rebuild_nav_filter_model!(model, config, integration_time)
 end
 
-function rebuild_nav_filter_model!(model::NavFilterModel, config::VectorTracking, integration_time)
+function rebuild_nav_filter_model!(
+    model::NavFilterModel,
+    config::VectorTracking,
+    integration_time,
+)
     T = ustrip(s, integration_time)
     nav_filter_process_model!(model.F, config, model.idxs, T)
     nav_filter_process_noise_covariance!(model.Q, config, model.idxs, T)
@@ -479,7 +483,7 @@ struct VTMember
     rate_variance::Float64
     cn0::Float64             # linear carrier-to-noise density (Hz)
     early_late_spacing::Float64 # chips
-    coherent_integration_time::Float64 # s, per coherent correlator dump (sets DLL/FLL noise)
+    coherent_integration_time::Float64 # s, per coherent dump (sets the DLL/FLL noise)
     # The member's broadcast offsets toward `CANDIDATE_HUB_SYSTEMS`, in that order,
     # as its measurement row carries them.
     time_offsets::NTuple{3,BroadcastTimeOffset}
@@ -651,7 +655,7 @@ function dense_bias_columns!(
     end
     primary =
         1 <= primary_clock_index <= length(clock_used) &&
-        clock_used[primary_clock_index] != 0 ? clock_used[primary_clock_index] : 1
+            clock_used[primary_clock_index] != 0 ? clock_used[primary_clock_index] : 1
     BiasColumns(clock_indices, num_clocks, ifb_indices, num_ifbs), primary
 end
 
@@ -686,10 +690,10 @@ end
 end
 
 # The measurement model `h!(y, x)` of one update, over the candidates' buffers: their
-# pseudoranges (`calc_ρ_hat!`), then the pseudorange rates of the candidates in
-# `rate_rows` (positions among the candidates; empty unless the rates are fused), then one
-# row per hub constraint, the broadcast offset between two clock states. A callable struct rather
-# than a closure, so the update compiles to one concrete method and allocates nothing.
+# pseudoranges (`calc_ρ_hat!`), then the pseudorange rates of the candidates in `rate_rows`
+# (positions among the candidates; empty unless the rates are fused), then one row per hub
+# constraint, the broadcast offset between two clock states. A callable struct rather than a
+# closure, so the update compiles to one concrete method and allocates nothing.
 struct VTMeasurementModel
     idxs::NavFilterIndices
     ξ::Vector{Float64}
@@ -733,22 +737,23 @@ end
 # `(θ_N − θ_0)/(2π·T)` and cycle `i+1` measures `(θ_2N − θ_N)/(2π·T)`. They share the
 # boundary phase estimate with opposite signs, giving
 #     cov = −σ_φ²/(2π·T)²,   var = 2·σ_φ²/(2π·T)²   ⇒   ρ(lag 1) = −1/2,
-# which a Kalman update cannot represent. Two consequences, neither of them a reason to inflate
-# `R`:
+# which a Kalman update cannot represent. Two consequences, neither of them a reason to
+# inflate `R`:
 #
 #  - The correlation is *negative*, so noise averages out faster across cycles than a
 #    white-noise filter credits. The filter is therefore already pessimistic about the rate
-#    channel, not overconfident — inflating `R` moves further in the direction it already errs.
-#    What the correlation does cost is a pessimistic reported velocity / clock-drift
+#    channel, not overconfident — inflating `R` moves further in the direction it already
+#    errs. What the correlation does cost is a pessimistic reported velocity / clock-drift
 #    uncertainty, which only measurement differencing (Bryson-Henrikson) or carrying the
 #    boundary phase as a state would fix.
 #  - The rate residuals carry a ≈ −0.5 lag-1 autocorrelation *by construction*. That is the
 #    telescoping, not a tracking fault, and it must not be tuned against.
 #
 # Note also that the derived variance is not conservative by accident: treating all `N`
-# per-dump discriminators as independent would give `N` times this value, and it is exactly the
-# −1/2 adjacency correlation making the interior phases telescope away that earns the tighter
-# figure. It is the right variance for the estimator the mean FLL discriminator actually is.
+# per-dump discriminators as independent would give `N` times this value, and it is exactly
+# the −1/2 adjacency correlation making the interior phases telescope away that earns the
+# tighter figure. It is the right variance for the estimator the mean FLL discriminator
+# actually is.
 
 # Measurement-noise variances: CN0-driven DLL thermal-noise variance for the pseudoranges,
 # and the pseudorange-rate variance for the ATAN frequency-lock discriminator
@@ -928,7 +933,7 @@ function _num_distinct(values)
     count = 0
     for j in eachindex(values)
         seen = false
-        for i in firstindex(values):(j-1)
+        for i = firstindex(values):(j-1)
             if values[i] === values[j]
                 seen = true
                 break
@@ -998,7 +1003,7 @@ function assess_bias_observability!(
     num_distinct_sats = 0
     for (k, j) in enumerate(candidate_indices)
         seen = false
-        for i in 1:(k-1)
+        for i = 1:(k-1)
             other = members[candidate_indices[i]]
             if other.clock_bias_index == members[j].clock_bias_index &&
                other.prn == members[j].prn
@@ -1068,14 +1073,19 @@ function assess_bias_observability!(
             merged[k] =
                 _time_system_index(collapsed, time_systems[k]) != 0 ? hub : time_systems[k]
         end
-        merged_unknowns, merged_distinct_required, _ = epoch_bias_unknowns!(ws, merged, bands)
+        merged_unknowns, merged_distinct_required, _ =
+            epoch_bias_unknowns!(ws, merged, bands)
         # Reported even when the merged layout is still short of its conditions, where
         # `decide_bias_layout` would fall back to the independent one and call the epoch
         # unsolvable: the merge can only lower both requirements (it drops a clock unknown
         # per collapsed system and can add back at most one inter-frequency bias each), so
         # the two agree on solvability, and applying the constraints on a starved epoch is
         # free information rather than a decision.
-        return BiasObservability(merged_unknowns, merged_distinct_required, num_distinct_sats)
+        return BiasObservability(
+            merged_unknowns,
+            merged_distinct_required,
+            num_distinct_sats,
+        )
     end
 
     # No collapse available: the layout stays independent, and the epoch is solvable only
@@ -1153,10 +1163,14 @@ function vt_post_fit_residuals(
     predicted_pseudorange,
     predicted_pseudorange_rate,
 )
-    (measured_pseudorange + member.code_discriminator * member.chip_length -
-     predicted_pseudorange) * m,
-    (predicted_pseudorange_rate - member.pseudorange_rate -
-     member.carrier_discriminator * member.wavelength) * (m / s)
+    (
+        measured_pseudorange + member.code_discriminator * member.chip_length -
+        predicted_pseudorange
+    ) * m,
+    (
+        predicted_pseudorange_rate - member.pseudorange_rate -
+        member.carrier_discriminator * member.wavelength
+    ) * (m / s)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1170,7 +1184,12 @@ end
 # systems that are present this cycle is what keeps the solution able to read a
 # week number from a decoded satellite of the primary system, so it always
 # carries a timestamp.
-function report_primary_clock_index(layout::NavFilterLayout, members, included_indices, current_index)
+function report_primary_clock_index(
+    layout::NavFilterLayout,
+    members,
+    included_indices,
+    current_index,
+)
     isempty(included_indices) && return current_index
     for j in included_indices
         members[j].clock_bias_index == current_index && return current_index
@@ -1196,20 +1215,21 @@ function report_primary_clock_index(layout::NavFilterLayout, members, included_i
 end
 
 # The epoch offset to carry into the next cycle: the cached one (or a freshly resolved one),
-# advanced by a week when `reference_time` has just wrapped at the 604800 s boundary. Without
-# that advance a mid-run Saturday→Sunday rollover would leave every reported `pvt.time`
-# exactly one week in the past for the rest of the run — the wrap takes a week off the time
-# of week and the offset, being a constant of the run everywhere else, never puts it back.
-# Only an offset that was *already* cached is advanced: one resolved on this very cycle was
-# read from a decoder that has rolled its own week number over too, so it is already current.
+# advanced by a week when `reference_time` has just wrapped at the 604800 s boundary.
+# Without that advance a mid-run Saturday→Sunday rollover would leave every reported
+# `pvt.time` exactly one week in the past for the rest of the run — the wrap takes a week
+# off the time of week and the offset, being a constant of the run everywhere else, never
+# puts it back. Only an offset that was *already* cached is advanced: one resolved on this
+# very cycle was read from a decoder that has rolled its own week number over too, so it is
+# already current.
 rolled_over_time_epoch_offset(resolved, cached, week_rollover) =
     week_rollover && !isnothing(cached) ? cached + SECONDS_PER_WEEK : resolved
 
 # The constant part of the solution's epoch, read off a measurement row of the primary
-# system: its week count in seconds plus that system's start epoch. `reference_time` is a GPS-Time-count time of
-# week, so the epoch that anchors it must absorb the system's scale offset: a BDT
-# week·604800 + start epoch pairs with BDT seconds-of-week, which read 14 s below the GPST
-# count.
+# system: its week count in seconds plus that system's start epoch. `reference_time` is a
+# GPS-Time-count time of week, so the epoch that anchors it must absorb the system's scale
+# offset: a BDT week·604800 + start epoch pairs with BDT seconds-of-week, which read 14 s
+# below the GPST count.
 #
 # It is a constant of the run, so it is resolved once and cached — after which a solution
 # can no longer lose its timestamp, and a timestamp is how every consumer tells a fix from
@@ -1233,7 +1253,8 @@ time_epoch_offset(row::SatelliteMeasurement) =
 # `nothing` while there is none.
 function vt_time(time_epoch_offset, reference_time, primary_clock_bias)
     isnothing(time_epoch_offset) && return nothing
-    corrected_reference_time = ustrip(s, reference_time) - primary_clock_bias / SPEED_OF_LIGHT
+    corrected_reference_time =
+        ustrip(s, reference_time) - primary_clock_bias / SPEED_OF_LIGHT
     TAITime(
         time_epoch_offset + floor(Int, corrected_reference_time),
         corrected_reference_time - floor(corrected_reference_time),
@@ -1251,7 +1272,13 @@ end
 # first measurements then pull them in through the Kalman update. The fixed variances
 # of the position and the seeded biases are a fallback: `seed_fix_covariance!` replaces
 # them with the fix's own covariance wherever its geometry is known.
-function initial_nav_state!(x, P, layout::NavFilterLayout, idxs::NavFilterIndices, pvt::PVTSolution)
+function initial_nav_state!(
+    x,
+    P,
+    layout::NavFilterLayout,
+    idxs::NavFilterIndices,
+    pvt::PVTSolution,
+)
     c = SPEED_OF_LIGHT
 
     init_std_pos = 1.0                # m
@@ -1305,7 +1332,8 @@ function initial_nav_state!(x, P, layout::NavFilterLayout, idxs::NavFilterIndice
     for index in eachindex(layout.extra_bands)
         state_index = idxs.ifb[index]
         if _fix_seeds_ifb(pvt, layout, index)
-            x[state_index] = ustrip(m, pvt.inter_frequency_biases[layout.extra_bands[index]].value)
+            x[state_index] =
+                ustrip(m, pvt.inter_frequency_biases[layout.extra_bands[index]].value)
             P[state_index, state_index] = init_std_seeded_ifb^2
         else
             P[state_index, state_index] = init_std_unseeded_ifb^2
@@ -1317,7 +1345,8 @@ end
 # Whether the fix estimated the clock-bias state `index` (the primary one, or another
 # system's through its inter-system bias), so that `initial_nav_state!` seeds it.
 _fix_seeds_clock(pvt::PVTSolution, layout::NavFilterLayout, primary_clock_index, index) =
-    index == primary_clock_index || haskey(pvt.inter_system_biases, layout.time_systems[index])
+    index == primary_clock_index ||
+    haskey(pvt.inter_system_biases, layout.time_systems[index])
 
 # Whether the fix seeds the inter-frequency-bias state `index`: only when it measured the
 # bias against the same reference band as the filter's layout — otherwise it refers to a
@@ -1373,8 +1402,24 @@ function seed_fix_covariance!(
     σ² = FIX_PSEUDORANGE_STD^2
     num_columns = size(covariance, 1)
     for column = 1:num_columns, row = 1:num_columns
-        i = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_used, ifb_used, row)
-        j = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_used, ifb_used, column)
+        i = _fix_state_index(
+            idxs,
+            layout,
+            pvt,
+            primary_clock_index,
+            clock_used,
+            ifb_used,
+            row,
+        )
+        j = _fix_state_index(
+            idxs,
+            layout,
+            pvt,
+            primary_clock_index,
+            clock_used,
+            ifb_used,
+            column,
+        )
         i == 0 || j == 0 || (P[i, j] = σ² * covariance[row, column])
     end
     true
@@ -1396,7 +1441,15 @@ end
 
 # The state behind column `column` of the fix's dense design matrix, `0` for a bias
 # state the fix did not seed.
-function _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_used, ifb_used, column)
+function _fix_state_index(
+    idxs,
+    layout,
+    pvt,
+    primary_clock_index,
+    clock_used,
+    ifb_used,
+    column,
+)
     column <= 3 && return idxs.pos[column]
     for (index, dense) in enumerate(clock_used)
         dense == column - 3 || continue

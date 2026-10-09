@@ -74,7 +74,8 @@ using TrackingLoops, GNSSSignals, Unitful
 signal = GPSL1CA()
 fs = 4e6u"Hz"
 estimator = ConventionalAssistedPLLAndDLL()
-state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  # one per satellite
+# One per satellite:
+state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)
 loop = SignalLoopState(signal)              # bit buffer, C/N₀ estimator, prompt filter
 
 # For every correlator record `output::CorrelatorOutput` the correlator produced:
@@ -85,8 +86,9 @@ overshoot && @warn "record crossed a navigation-bit boundary; bit sync restarted
 # with, and the polarity the record was correlated with.
 record = LoopRecord(loop, signal, filtered, output, blocks, fs; prn)
 loop = folded
+words = FixedNCOWord(carrier_hz, code_hz)
 state, carrier_doppler, code_doppler =
-    step_loop(estimator, state, record, FixedNCOWord(carrier_hz, code_hz), NO_LANDING_SAMPLE)
+    step_loop(estimator, state, record, words, NO_LANDING_SAMPLE)
 # program the next replica with carrier_doppler and code_doppler
 ```
 
@@ -101,12 +103,15 @@ satellite (`prn`), report the replica's code phase at their end (`code_phase`
 on the `CorrelatorOutput`) and share one time grid (`sample_offset`):
 
 ```julia
-estimator = VectorPLLAndDLL(GPSL1CA(), GalileoE1B())   # inner = ConventionalAssistedPLLAndDLL()
-state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  # one per satellite
+# The inner loop defaults to ConventionalAssistedPLLAndDLL():
+estimator = VectorPLLAndDLL(GPSL1CA(), GalileoE1B())
+# One per satellite:
+state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)
 
 # For every record, as above, on a time grid shared by all satellites:
 record = LoopRecord(loop, signal, filtered, output, blocks, fs; prn, sample_offset)
-state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words, landing_sample)
+state, carrier_doppler, code_doppler =
+    step_loop(estimator, state, record, words, landing_sample)
 
 navigation_solution(estimator)   # the latest PVTSolution
 navigation_status(estimator)     # what the latest navigation cycle did

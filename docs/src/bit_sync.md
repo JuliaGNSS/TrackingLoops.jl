@@ -22,7 +22,8 @@ Modules = [TrackingLoops]
 Pages = [
     "bit_buffer.jl",
     "gps/l1ca.jl", "gps/l1c_d.jl", "gps/l1c_p.jl", "gps/l2c.jl", "gps/l5.jl",
-    "galileo/e1b.jl", "galileo/e1c.jl", "galileo/e5a.jl", "galileo/e5a_qp.jl", "galileo/e5b.jl", "galileo/e6.jl",
+    "galileo/e1b.jl", "galileo/e1c.jl", "galileo/e5a.jl", "galileo/e5a_qp.jl",
+    "galileo/e5b.jl", "galileo/e6.jl",
     "beidou/b1i.jl", "beidou/b3i.jl", "beidou/b2a.jl", "beidou/b2b.jl", "beidou/b1c.jl",
 ]
 Private = false

@@ -98,13 +98,22 @@ function _bb_detect_over(prompts, confidence; upto = 0)
             block_number - 1,
             BB_L1CA_BLOCKS_PER_BIT,
         )
-        result =
-            _detect_bit_edge_cfar(accumulators, BB_L1CA_BLOCKS_PER_BIT, confidence, block_number)
+        result = _detect_bit_edge_cfar(
+            accumulators,
+            BB_L1CA_BLOCKS_PER_BIT,
+            confidence,
+            block_number,
+        )
         upto == 0 && result.found && return block_number
         upto == block_number && return result
     end
     return upto == 0 ? 0 :
-           _detect_bit_edge_cfar(accumulators, BB_L1CA_BLOCKS_PER_BIT, confidence, length(prompts))
+           _detect_bit_edge_cfar(
+        accumulators,
+        BB_L1CA_BLOCKS_PER_BIT,
+        confidence,
+        length(prompts),
+    )
 end
 
 @testset "The soft bit-edge detector needs at least two bins" begin
@@ -146,7 +155,7 @@ end
     end
 end
 
-@testset "A bit-edge confidence of 1.0 stays conservative rather than locking instantly" begin
+@testset "A bit-edge confidence of 1.0 stays conservative, not locking at once" begin
     rng = MersenneTwister(7)
     clean = _bb_bitstream([bit % 2 for bit = 0:39]; amp = 3.0)
     noisy = ComplexF64[prompt + complex(randn(rng), randn(rng)) for prompt in clean]
@@ -169,7 +178,9 @@ end
             block_number - 1,
             BB_L1CA_BLOCKS_PER_BIT,
         )
-        if _detect_bit_edge_cfar(accumulators, BB_L1CA_BLOCKS_PER_BIT, 0.999, block_number).found
+        detection =
+            _detect_bit_edge_cfar(accumulators, BB_L1CA_BLOCKS_PER_BIT, 0.999, block_number)
+        if detection.found
             found = true
             break
         end
@@ -180,10 +191,16 @@ end
 @testset "The CFAR decision core compares the peak against its runner-up" begin
     period = 5
     # Fewer than two bins on any hypothesis: no runner-up can exist yet.
-    @test _cfar_decide([10.0, 1.0, 1.0, 1.0, 1.0], zeros(5), 2 * period - 1, period, 0.999) ==
-          (false, -1, 0)
+    @test _cfar_decide(
+        [10.0, 1.0, 1.0, 1.0, 1.0],
+        zeros(5),
+        2 * period - 1,
+        period,
+        0.999,
+    ) == (false, -1, 0)
     # Noiseless separation locks at the peak.
-    accepted, peak, count = _cfar_decide([10.0, 1.0, 1.0, 1.0, 1.0], zeros(5), 2 * period, period, 0.999)
+    accepted, peak, count =
+        _cfar_decide([10.0, 1.0, 1.0, 1.0, 1.0], zeros(5), 2 * period, period, 0.999)
     @test accepted
     @test peak == 0
     @test count == 2
@@ -191,7 +208,8 @@ end
     @test !_cfar_decide(fill(5.0, 5), zeros(5), 2 * period, period, 0.999)[1]
     # The peak need not be the hypothesis with the most energy overall: the
     # best one with a single bin is the runner-up of the best with two bins.
-    accepted, peak, _ = _cfar_decide([1.0, 2.0, 1.0, 1.0, 10.0], zeros(5), 2 * period + 3, period, 0.999)
+    accepted, peak, _ =
+        _cfar_decide([1.0, 2.0, 1.0, 1.0, 10.0], zeros(5), 2 * period + 3, period, 0.999)
     @test peak == 1
     @test !accepted
     # A large peak variance suppresses the lock.
@@ -208,7 +226,15 @@ _bb_secondary_chips(signal, prn) = [
 
 # Block `i` (0-based) carries secondary chip `(i + start_chip) % N` times a
 # per-period data symbol times `amp`, plus optional complex Gaussian noise.
-function _bb_secondary_stream(signal, prn, nblocks; start_chip = 0, amp = 5.0, noise = 0.0, seed = 1)
+function _bb_secondary_stream(
+    signal,
+    prn,
+    nblocks;
+    start_chip = 0,
+    amp = 5.0,
+    noise = 0.0,
+    seed = 1,
+)
     N = get_secondary_code_length(signal)
     chips = _bb_secondary_chips(signal, prn)
     rng = MersenneTwister(seed)
@@ -230,7 +256,14 @@ function _bb_secondary_detect_over(prompts, signal, prn, confidence; upto = 0)
     _seed_phase_accumulators!(accumulators, N)
     local result
     for (block_number, prompt) in enumerate(prompts)
-        _update_secondary_accumulators!(accumulators, ComplexF64(prompt), block_number - 1, N, signal, prn)
+        _update_secondary_accumulators!(
+            accumulators,
+            ComplexF64(prompt),
+            block_number - 1,
+            N,
+            signal,
+            prn,
+        )
         result = _detect_secondary_code_cfar(accumulators, N, confidence, block_number)
         upto == 0 && result.found && return block_number
         upto == block_number && return result
@@ -238,7 +271,7 @@ function _bb_secondary_detect_over(prompts, signal, prn, confidence; upto = 0)
     return upto == 0 ? 0 : result
 end
 
-@testset "The correct secondary-code rotation wipes the overlay and dominates the energy" begin
+@testset "The correct secondary-code rotation wipes the overlay and dominates" begin
     signal = GPSL5I()
     prn = 1
     N = get_secondary_code_length(signal)
@@ -259,7 +292,8 @@ end
     prn = 1
     N = get_secondary_code_length(signal)
     prompts = _bb_secondary_stream(signal, prn, 2N - 1; amp = 8.0)
-    @test _bb_secondary_detect_over(prompts, signal, prn, 0.999; upto = 2N - 1).found == false
+    @test _bb_secondary_detect_over(prompts, signal, prn, 0.999; upto = 2N - 1).found ==
+          false
     for start_chip = 0:(N-1)
         prompts = _bb_secondary_stream(signal, prn, 4N; start_chip, amp = 8.0)
         synced = _bb_secondary_detect_over(prompts, signal, prn, 0.999)
@@ -278,8 +312,9 @@ end
     chips = _bb_secondary_chips(signal, prn)
     pos = ComplexF64[8.0 * c for c in chips]
     neg = ComplexF64[-8.0 * c for c in chips]
-    @test _bb_secondary_detect_over(vcat(pos, pos, pos), signal, prn, 0.999; upto = 3N).polarity == +1
-    @test _bb_secondary_detect_over(vcat(neg, neg, neg), signal, prn, 0.999; upto = 3N).polarity == -1
+    detect(prompts) = _bb_secondary_detect_over(prompts, signal, prn, 0.999; upto = 3N)
+    @test detect(vcat(pos, pos, pos)).polarity == +1
+    @test detect(vcat(neg, neg, neg)).polarity == -1
 end
 
 @testset "The soft secondary-code detector does not lock on pure noise" begin
@@ -392,7 +427,8 @@ end
     code_blocks_buffer_length = ndigits(code_blocks_buffer; base = 2)
     signal = GPSL1CA()
 
-    bit_buffer = BitBuffer(code_blocks_buffer, code_blocks_buffer_length, true, complex(-1, 0), 1)
+    bit_buffer =
+        BitBuffer(code_blocks_buffer, code_blocks_buffer_length, true, complex(-1, 0), 1)
     next_bit_buffer = @inferred TrackingLoops.buffer(signal, 1, bit_buffer, 1, -2 + 0im)
     @test isempty(get_soft_bits(next_bit_buffer))
     @test next_bit_buffer.prompt_accumulator == -3 + 0im
@@ -481,7 +517,7 @@ end
     @test reset_bit_buffer.polarity == bit_buffer.polarity
 end
 
-@testset "A secondary-code lock through buffer seeds the bit accumulator with the phase" begin
+@testset "A secondary-code lock seeds the bit accumulator with the phase" begin
     # GPS L5I: NH10 under 50 bps data — one bit is one NH10 period. Start the
     # stream three chips into the period; the soft detector locks at a period
     # boundary, so the upcoming integration is chip 0 and no pre-sync bits are
@@ -501,7 +537,7 @@ end
     @test length(get_soft_bits(bit_buffer)) == 1
 end
 
-@testset "A hard secondary-code lock through buffer leaves a pilot's post-sync buffer alone" begin
+@testset "A hard secondary-code lock leaves a pilot's post-sync buffer alone" begin
     # GPS L1C-P: the 1800-chip overlay on a dataless pilot, hard rotation sweep.
     # Feed exactly one overlay period of prompt signs starting at chip 0.
     signal = GPSL1C_P()
@@ -557,7 +593,8 @@ end
 
 @testset "The hard secondary-code search rejects windows past the error budget" begin
     reference = _packed_secondary_code(UInt32, GPSL5I(), 1)
-    @test _secondary_code_search(reference, reference, 10, 0) == SyncResult(true, 0, Int8(1))
+    @test _secondary_code_search(reference, reference, 10, 0) ==
+          SyncResult(true, 0, Int8(1))
     @test _secondary_code_search(reference ⊻ UInt32(1), reference, 10, 0).found == false
     @test _secondary_code_search(reference ⊻ UInt32(1), reference, 10, 1).found == true
     # Bits above the N-bit window are masked off.
