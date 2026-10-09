@@ -71,9 +71,12 @@ end
         slot.running_decoder = decoder
         slot.bit_buffer = TL.BitBuffer{UInt64}(UInt64(0), 0, true, 0, Int8(1), complex(0.0), blocks,
             slot.bit_buffer.soft_bits, slot.bit_buffer.phase_acc)
-        slot.last_code_phase_fraction = fraction
+        slot.data_last_code_phase_fraction = fraction
         slot.last_end_sample = end_sample
         slot.last_end_time = end_sample / fs
+        # The driver is the data signal.
+        slot.data_last_end_sample = end_sample
+        slot.data_last_end_time = end_sample / fs
         state = group.prototype
         record = engine_record(3, epoch_sample + 4000)
         TL._snapshot_epoch!(nav, group, slot, state, record, FixedNCOWord(0.0, code_doppler))

@@ -185,9 +185,9 @@ closes its loops on one of them, the driver, whose records go through
 the other signals, the passengers, are combined with the driver's into a
 weighted mean before the loop filters read it. A mean rather than a sum, so the
 loop gain does not change with the number of signals. The host folds each
-passenger record with [`combine_passenger_record`](@ref), in sample order and
-before the driver record it ends within, and asks [`combines_signals`](@ref)
-whether to.
+passenger record with [`fold_passenger_record`](@ref), in sample order and
+before the driver record it ends within, and asks
+[`takes_passenger_records`](@ref) whether to.
 
   - **Weights** are each signal's ICD power share
     (`GNSSSignals.get_relative_power`) times the record's integration time, and
@@ -232,10 +232,15 @@ whether to.
     delay relative to the driver's is known, passed as
     `differential_group_delay_chips`; zero is not assumed. Its discriminator is
     referred to the driver's code phase by it.
-  - **Vector tracking:** out of the vector loop, [`VectorPLLAndDLL`](@ref)
-    combines as its inner loop does. In the vector loop passengers are combined
-    into the PLL only: the code loop and the FLL branch belong to the
-    navigation filter, which reads the driver's own discriminators.
+  - **Vector tracking:** one switch here too, the vector loop's own,
+    `VectorPLLAndDLL(signals...; combine_signals = true)`; it covers the scalar
+    fallback, so the inner loop is built without it. Out of the vector loop it
+    combines as the scalar loop does. In it,
+    passengers are combined into the PLL, while the code loop and the FLL branch
+    belong to the navigation filter: it reads every signal's DLL and FLL
+    readings, each in the cycle of the driver record it ends within, and fuses
+    them weighted by
+    each signal's own C/N₀ (see [Vector tracking](@ref)).
   - The [`NCOReferencedPLLAndDLL`](@ref) does not combine: it steps the
     driver's phase error predicted to the landing sample, which the passengers'
     records are not.
@@ -245,6 +250,55 @@ Modules = [TrackingLoops]
 Pages = ["signal_combining.jl"]
 Private = false
 ```
+
+## Host contract
+
+Everything a host owes the estimators, scalar and vector, in one place.
+
+  - **Records.** One [`LoopRecord`](@ref) per completed record. Built with
+    `LoopRecord(loop, signal, filtered, output, blocks, fs; prn)` from the
+    signal's [`SignalLoopState`](@ref) *before* [`apply_record`](@ref) folded the
+    record, it follows the contract by construction: `previous_prompt` is zero
+    on the first record and wherever the block count or the polarity changes
+    (a sync that wipes a pilot's prompt off, a change of integration length),
+    and `polarity` is the bit buffer's as the record was correlated (pass
+    `correlated_pre_sync` as to `apply_record`). A host that builds records
+    itself applies the same rules.
+  - **The driver.** Every driver record, in order, goes to
+    [`step_loop`](@ref)`(estimator, state, record, words, landing_sample)`:
+    `words` are the replica words the record ran on, `landing_sample` is where
+    the command computed from the record's fold lands (`NO_LANDING_SAMPLE`: from
+    the record's end; a hardware host passes the landing sample, and the
+    estimator sizes its corrections for that moment).
+  - **Passengers.** Where [`takes_passenger_records`](@ref) holds, every
+    passenger record goes to [`fold_passenger_record`](@ref), in sample order,
+    each before the driver record it ends within (or ends at). Each passenger's
+    records follow the record contract for its own sequence;
+    `differential_group_delay_chips`, the passenger's group delay minus the
+    driver's (`NaN`: unknown), refers its code reading to the driver's. A
+    satellite's passenger and driver records share one sample frame
+    (`sample_index`): passenger sums still pending from before a dropped driver
+    integration (the code-phase snap at a sync) are discarded by their end.
+  - **C/N₀.** A record may carry the host's C/N₀ estimate of its signal
+    (`cn0`, `NaN` when unknown); only the vector loop reads it, and estimates
+    the C/N₀ from the prompts itself without it.
+  - **Vector tracking** needs, of every record handed to it, the satellite
+    (`prn`); the replica's code phase in chips at the record's end
+    (`code_phase`, from the [`CorrelatorOutput`](@ref): the end sample alone pins
+    it only to within one sample, some 75 m at 4 MHz; only its part past the
+    nearest code-block boundary is read, so any wrap convention works, and
+    without it, `NaN`, the record is taken to end on a block boundary); and a
+    common time grid: `sample_index / sampling_frequency` must be the time since
+    one origin shared by all satellites, which a host whose correlator restarts
+    its sample count restores with `sample_offset`.
+
+Where the passengers' state lives follows who owns it, and a host sees none of
+it. The sums a carrier loop combines are part of the satellite's loop state
+([`SignalCombiningSums`](@ref)): in a [`VectorPLLAndDLL`](@ref) the inner loop's,
+as they are its scalar fallback's own and travel with it into and out of the
+vector loop. The readings the navigation filter fuses — each passenger's DLL
+and FLL readings counted per cycle, and its C/N₀ — belong to the navigation
+engine, which owns the cycles, and are kept per satellite there.
 
 ## Integration length
 

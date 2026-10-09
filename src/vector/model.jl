@@ -472,6 +472,11 @@ struct VTMember
     pseudorange_rate::Float64 # measured λ·doppler (m/s)
     code_discriminator::Float64    # accumulated DLL output, moved to the epoch (chips)
     carrier_discriminator::Float64 # accumulated FLL output (Hz)
+    # The measurement variances of `code_discriminator` (m²) and
+    # `carrier_discriminator` (m²/s²), fused over the satellite's signals and built
+    # from the readings each delivered this cycle (see `_member_measurements`).
+    code_variance::Float64
+    rate_variance::Float64
     cn0::Float64             # linear carrier-to-noise density (Hz)
     early_late_spacing::Float64 # chips
     coherent_integration_time::Float64 # s, per coherent correlator dump (sets DLL/FLL noise)
@@ -765,23 +770,49 @@ end
 # loop noise bandwidth `B_n`; a single dump is the open-loop case `B_n = 1/(2·T_coh)`) and
 # the bracket the squaring loss from multiplying two noisy envelopes. The filter's code
 # measurement is the mean of the `N` per-dump discriminators, whose noise is white across
-# dumps (successive dumps share no samples), so
-#     var(mean) = σ_τ,dump²/N = d/(4·C/N0·T) · (1 + 2/((2 − d)·C/N0·T_coh))   [chips²],
-# i.e. the thermal term averages down over the whole filter interval `T` while the squaring
-# loss stays pinned to `T_coh` — a short coherent dump inflates the code variance no matter
-# how long the filter interval is. The pseudorange variance is `chip_length²` times that.
-# For the BOC VEML correlator `d` is the inner early-late pair's spacing, so the model is
-# the EPL approximation of it: the extra very-early/very-late taps average a little more
-# noise away, making the model mildly conservative there.
+# dumps (successive dumps share no samples), so over the span `S = N·T_coh` they cover
+#     var(mean) = σ_τ,dump²/N = d/(4·C/N0·S) · (1 + 2/((2 − d)·C/N0·T_coh))   [chips²],
+# i.e. the thermal term averages down over the span while the squaring loss stays pinned to
+# `T_coh` — a short coherent dump inflates the code variance no matter how long the span
+# is. The span is the filter interval for a signal that delivered a reading per dump all
+# cycle, and shorter for one that did not (see `_member_measurements`). The pseudorange
+# variance is `chip_length²` times that.
+# The model is the BPSK early-minus-late one. For a signal tracked with the
+# very-early-prompt-late correlator, `d` is the inner early-late pair's spacing, and the
+# variance is scaled by `_VEML_DLL_VARIANCE_FACTOR` (see there): a BOC(1,1)-family
+# signal's sharper correlation peak makes its VEML discriminator markedly less noisy than
+# the BPSK model at that spacing.
+#
+# At a low `C/N₀ · T_coh` the model overstates the variance of every signal's
+# discriminator: the envelope-normalised discriminators saturate, which bounds their
+# spread (at `C/N₀ · T_coh ≈ 1` a 1 ms GPS L1 C/A dump spreads about a twentieth of the
+# model). It is left as is: the overstatement is common to the signals it weighs against
+# each other, and makes the filter pessimistic rather than overconfident.
 #
 # The noise model assumes the early and late taps still sit inside the correlation
 # triangle, i.e. `d < 2` chips — which every real correlator configuration is well under
 # (the default is 0.5).
-function pseudorange_noise_variance(member::VTMember, T)
-    cn0_tcoh = member.cn0 * member.coherent_integration_time
-    d = member.early_late_spacing
+#
+# The factor by which a BOC(1,1)-family signal's VEML discriminator (`dll_disc` on a
+# `VeryEarlyPromptLateCorrelator`, the default ±0.15/±0.6 chip taps) is less noisy than the
+# BPSK early-minus-late model at its inner spacing, as a first-order correction. In a
+# sample-level simulation of `dll_disc` (25 MHz, zero code error) against the model, the
+# ratio at 40–45 dB-Hz was 0.36 for Galileo E1B as CBOC and 0.43 as BOC(1,1), while a
+# GPS L1 C/A EPL dump matched the model (0.94); at equal `C/N₀ · T_coh` the VEML-to-BPSK
+# ratio stayed between 0.33 and 0.45 down to 30 dB-Hz. It depends on the front end's
+# bandwidth through CBOC's BOC(6,1) part, which the simulation did not limit.
+const _VEML_DLL_VARIANCE_FACTOR = 0.4
+
+# The factor a correlator's DLL variance is scaled by against the BPSK model.
+_dll_variance_factor(::AbstractCorrelator) = 1.0
+_dll_variance_factor(::VeryEarlyPromptLateCorrelator) = _VEML_DLL_VARIANCE_FACTOR
+
+# Both are one signal's, from its linear C/N₀, coherent integration time (s), tap spacing
+# `d` (chips) and the span (s) its readings cover.
+function _pseudorange_noise_variance(cn0, coherent_integration_time, d, chip_length, span)
+    cn0_tcoh = cn0 * coherent_integration_time
     squaring_loss = 1 + 2 / ((2 - d) * cn0_tcoh)
-    d / (4 * T * member.cn0) * squaring_loss * member.chip_length^2
+    d / (4 * span * cn0) * squaring_loss * chip_length^2
 end
 
 # Rate. A coherent dump of length `T_coh` estimates carrier phase with the ATAN
@@ -789,14 +820,14 @@ end
 #     σ_φ² = 1/(2·C/N0·T_coh)·(1 + 1/(2·C/N0·T_coh))   [rad²].
 # The filter's rate measurement is the mean of the `N` per-dump discriminators. Each dump
 # is a frequency — a phase difference over one `T_coh`, `(θ_k − θ_{k-1})/(2π·T_coh)` — so
-# the mean reduces to `(θ_N − θ_0)/(2π·T)`: the interior phases cancel, leaving only the
-# two endpoint phase estimates, giving
-#     var(mean) = 2·σ_φ² / (2π·T)²   [Hz²],
+# the mean reduces to `(θ_N − θ_0)/(2π·S)` over the span `S = N·T_coh`: the interior
+# phases cancel, leaving only the two endpoint phase estimates, giving
+#     var(mean) = 2·σ_φ² / (2π·S)²   [Hz²],
 # and the pseudorange-rate variance is λ² times that.
-function pseudorange_rate_noise_variance(member::VTMember, T)
-    cn0_tcoh = member.cn0 * member.coherent_integration_time
+function _pseudorange_rate_noise_variance(cn0, coherent_integration_time, wavelength, span)
+    cn0_tcoh = cn0 * coherent_integration_time
     sigma_phi2 = 1 / (2 * cn0_tcoh) * (1 + 1 / (2 * cn0_tcoh))
-    member.wavelength^2 * sigma_phi2 / (2 * π^2 * T^2)
+    wavelength^2 * sigma_phi2 / (2 * π^2 * span^2)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -178,6 +178,8 @@ export NumAnts,
     NCOReferencedPLLAndDLL,
     SatNCOReferencedPLLAndDLL,
     VectorPLLAndDLL,
+    with_signal_groups,
+    VectorTrackingSettings,
     SatVectorPLLAndDLL,
     VectorTracking,
     VTStatus,
@@ -219,8 +221,8 @@ export NumAnts,
     wrap_half_cycle,
     get_sync_polarity,
     SignalCombiningSums,
-    combines_signals,
-    combine_passenger_record
+    takes_passenger_records,
+    fold_passenger_record
 
 const Maybe{T} = Union{T,Nothing}
 

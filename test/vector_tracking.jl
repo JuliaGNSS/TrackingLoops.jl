@@ -26,8 +26,42 @@ using Geodesy: ENUfromECEF, wgs84
     @test !VectorPLLAndDLL(GPSL1CA(); config = nothing).navigation.enabled
 end
 
+@testset "Signal groups bound once the host knows them" begin
+    # The settings alone hold no engine; binding them builds the estimator.
+    settings = VectorTrackingSettings(; cycle_time = 20ms, combine_signals = true)
+    @test !(settings isa AbstractDopplerEstimator)
+    @test_throws ArgumentError with_signal_groups(settings)
+    @test_throws ArgumentError VectorPLLAndDLL(; cycle_time = 20ms)
+    bound = with_signal_groups(settings, (GalileoE1C(), GalileoE1B()), GPSL1CA())
+    @test bound.navigation.cycle_time == 0.02s
+    @test TrackingLoops.combines_signals(bound)
+    @test takes_passenger_records(bound)
+    # As if built with its signals.
+    @test typeof(bound) ==
+          typeof(VectorPLLAndDLL((GalileoE1C(), GalileoE1B()), GPSL1CA(); combine_signals = true))
+    # A bound estimator serves any subset of its groups, in any order, the passengers
+    # of a group in any order too ...
+    @test with_signal_groups(bound, (GalileoE1C(), GalileoE1B()), GPSL1CA()) === bound
+    @test with_signal_groups(bound, GPSL1CA()) === bound
+    @test with_signal_groups(bound, GPSL1CA(), (GalileoE1C(), GalileoE1B())) === bound
+    three = VectorPLLAndDLL((GPSL5Q(), GPSL5I()), (GalileoE1C(), GalileoE1B()))
+    @test with_signal_groups(three, (GalileoE1C(), GalileoE1B())) === three
+    # ... and refuses a group it was not built for, or with other passengers.
+    @test_throws ArgumentError with_signal_groups(bound, GalileoE1C(), GPSL1CA())
+    @test_throws ArgumentError with_signal_groups(bound, (GPSL1CA(), GPSL1C_D()))
+    @test_throws ArgumentError with_signal_groups(bound, GPSL5I())
+    # The groups are checked as for the signals the estimator is built with.
+    @test_throws ArgumentError with_signal_groups(settings, GalileoE1C())
+    @test_throws ArgumentError with_signal_groups(settings, (GPSL1CA(), GalileoE1B()))
+    # Other estimators need no groups.
+    scalar = ConventionalAssistedPLLAndDLL()
+    @test with_signal_groups(scalar, GPSL1CA()) === scalar
+    # The settings are checked as the estimator's keywords.
+    @test_throws ArgumentError VectorTrackingSettings(; inner = ConventionalPLLAndDLL())
+    @test_throws ArgumentError VectorTrackingSettings(; cycle_time = 0ms)
+end
+
 @testset "The estimator rejects what it cannot track" begin
-    @test_throws ArgumentError VectorPLLAndDLL()
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(), GPSL1CA())
     # A dataless pilot carries no bits to decode.
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1C_P())

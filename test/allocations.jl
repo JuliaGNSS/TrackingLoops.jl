@@ -111,6 +111,38 @@ end
     end
 end
 
+@testset "A very-early-prompt-late record runs through the vector loop without allocating" begin
+    # Its tap spacing and DLL variance factor are read per record by the engine.
+    signal = GalileoE1B()
+    fs = 4.092e6Hz
+    estimator = VectorPLLAndDLL(signal)
+    taps = SVector(0.3, 0.6, 1.0, 0.6, 0.3)
+    timeline = NCOTimeline()
+    reset_timeline!(timeline, 100.0, 0.1)
+    function run_veml_vector!(state_ref, first_k, n)
+        local p, out, rec, carrier, code
+        st = state_ref[]
+        for k = first_k:(first_k+n-1)
+            p = cis(0.01k)
+            out = CorrelatorOutput(
+                update_accumulator(get_default_correlator(signal), p .* taps),
+                16368,
+                16368k,
+                0.0,
+            )
+            rec = LoopRecord(signal, out.correlator, cis(0.01(k - 1)), out, 1, fs; prn = 3)
+            st, carrier, code = step_loop(estimator, st, rec, timeline, Int64(16368k + 32736))
+            schedule_word!(timeline, 16368k + 32736, ustrip(Hz, carrier), ustrip(Hz, code))
+            promote_words!(timeline, 16368k - 16368)
+        end
+        state_ref[] = st
+        nothing
+    end
+    state_ref = Ref(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
+    run_veml_vector!(state_ref, 1, 200)
+    @test (@allocated run_veml_vector!(state_ref, 201, 100)) == 0
+end
+
 @testset "A very-early-prompt-late record folds and steps without allocating" begin
     # Galileo E1B's default correlator has five taps; its fold, discriminators and
     # step take other methods than the three-tap ones above.

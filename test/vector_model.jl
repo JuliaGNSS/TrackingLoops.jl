@@ -31,6 +31,8 @@ function _test_member(;
     pseudorange_rate = 0.0,
     code_discriminator = 0.0,
     carrier_discriminator = 0.0,
+    code_variance = 1.0,
+    rate_variance = 1.0,
     cn0 = 10^4.5, # 45 dB-Hz
     early_late_spacing = 1.0,
     coherent_integration_time = nothing,
@@ -63,6 +65,8 @@ function _test_member(;
         pseudorange_rate,
         code_discriminator,
         carrier_discriminator,
+        code_variance,
+        rate_variance,
         cn0,
         early_late_spacing,
         tcoh,
@@ -400,16 +404,26 @@ end
 end
 
 @testset "Measurement noise" begin
+    # One signal's variances over the span (s) its readings cover.
+    range_variance(m, span) = TL._pseudorange_noise_variance(
+        m.cn0,
+        m.coherent_integration_time,
+        m.early_late_spacing,
+        m.chip_length,
+        span,
+    )
+    rate_variance(m, span) =
+        TL._pseudorange_rate_noise_variance(m.cn0, m.coherent_integration_time, m.wavelength, span)
     l1 = _test_member(; prn = 1)
     l5 = _test_member(; prn = 2, signal = GPSL5I(), group = 2)
     T = 0.1
     # The DLL thermal noise scales with the squared chip length: GPS L5's chips
     # are 10× shorter than L1 C/A's, so its thermal variance is 100× smaller.
     # (L1 C/A and L5I share a 1 ms coherent dump, so the squaring loss cancels here.)
-    @test TL.pseudorange_noise_variance(l1, T) / TL.pseudorange_noise_variance(l5, T) ≈
+    @test range_variance(l1, T) / range_variance(l5, T) ≈
           (l1.chip_length / l5.chip_length)^2
     # The rate rows scale with the squared carrier wavelength.
-    @test TL.pseudorange_rate_noise_variance(l1, T) / TL.pseudorange_rate_noise_variance(l5, T) ≈
+    @test rate_variance(l1, T) / rate_variance(l5, T) ≈
           (l1.wavelength / l5.wavelength)^2
 
     # Both rows use each member's coherent integration time: GPS L1 C/A integrates 1 ms per
@@ -432,31 +446,31 @@ end
     rate_var(m) = let ct = m.cn0 * m.coherent_integration_time
         m.wavelength^2 * (1 / (2 * ct) * (1 + 1 / (2 * ct))) / (2 * π^2 * T^2)
     end
-    @test TL.pseudorange_noise_variance(ca, T) ≈ range_var(ca)
-    @test TL.pseudorange_noise_variance(e1b, T) ≈ range_var(e1b)
-    @test TL.pseudorange_rate_noise_variance(ca, T) ≈ rate_var(ca)
-    @test TL.pseudorange_rate_noise_variance(e1b, T) ≈ rate_var(e1b)
+    @test range_variance(ca, T) ≈ range_var(ca)
+    @test range_variance(e1b, T) ≈ range_var(e1b)
+    @test rate_variance(ca, T) ≈ rate_var(ca)
+    @test rate_variance(e1b, T) ≈ rate_var(e1b)
     # shorter-T_coh C/A is the noisier rate measurement
-    @test TL.pseudorange_rate_noise_variance(ca, T) > TL.pseudorange_rate_noise_variance(e1b, T)
+    @test rate_variance(ca, T) > rate_variance(e1b, T)
     # E1B's chips are 293 m against C/A's 293 m, so at equal C/N0 and spacing the only
     # difference in the range rows is the squaring loss — C/A's shorter dump costs it more.
     @test ca.chip_length ≈ e1b.chip_length
-    @test TL.pseudorange_noise_variance(ca, T) > TL.pseudorange_noise_variance(e1b, T)
+    @test range_variance(ca, T) > range_variance(e1b, T)
 
     # The squaring loss is pinned to the coherent dump, not the filter interval: lengthening
     # the filter interval averages the thermal term down but cannot buy back the loss.
-    @test TL.pseudorange_noise_variance(ca, 0.1) / TL.pseudorange_noise_variance(ca, 1.0) ≈ 10.0
+    @test range_variance(ca, 0.1) / range_variance(ca, 1.0) ≈ 10.0
     # A weak-signal member is dominated by the squaring loss, which no filter interval fixes.
     weak = _test_member(; cn0 = 10^2.0) # 20 dB-Hz
     weak_loss = 1 + 2 / ((2 - weak.early_late_spacing) * weak.cn0 * weak.coherent_integration_time)
     @test weak_loss > 10
-    @test TL.pseudorange_noise_variance(weak, 0.1) ≈ range_var(weak, 0.1)
+    @test range_variance(weak, 0.1) ≈ range_var(weak, 0.1)
 
     # Narrowing the correlator at equal C/N0 lowers the thermal term proportionally, which
     # is the whole point of a narrow spacing.
     narrow = _test_member(; early_late_spacing = 0.5)
-    @test TL.pseudorange_noise_variance(narrow, 0.1) ≈ range_var(narrow, 0.1)
-    @test TL.pseudorange_noise_variance(narrow, 0.1) < range_var(ca, 0.1)
+    @test range_variance(narrow, 0.1) ≈ range_var(narrow, 0.1)
+    @test range_variance(narrow, 0.1) < range_var(ca, 0.1)
 
     # The C/N₀ floor keeps a starved or NaN estimate from degenerating the weights.
     @test TL.linear_cn0_floor(45.0) ≈ 10^4.5

@@ -55,24 +55,114 @@ until the filter takes it over, and again once the filter lets it go. In the
 vector loop the code filter is frozen, the filter's corrections steer the
 replica, and the discriminators are accumulated for the filter.
 
+## Several signals of a satellite
+
+A satellite tracked on several signals of one band lists them as a group, the
+driver first, in the order the host steps them:
+
+```julia
+estimator = VectorPLLAndDLL((GalileoE1C(), GalileoE1B()), GPSL1CA(); combine_signals = true)
+```
+
+A host that already keeps its satellites' signal groups builds the settings
+alone, [`VectorTrackingSettings`](@ref) with the estimator's keywords, and
+[`with_signal_groups`](@ref) builds the estimator for its groups, so they are
+listed once; Tracking.jl's `TrackState` does this:
+
+```julia
+settings = VectorTrackingSettings(; combine_signals = true)
+estimator = with_signal_groups(settings, (GalileoE1C(), GalileoE1B()), GPSL1CA())
+```
+
+The settings are no estimator: the host steps, and the results are read from, the
+estimator `with_signal_groups` returned. Handed an estimator already built with its
+signals, `with_signal_groups` returns it for any of its groups, in any order, and
+throws for a group it was not built for.
+
+The host steps the driver's records with [`step_loop`](@ref). Every passenger
+record goes to [`fold_passenger_record`](@ref), which such an estimator takes
+([`takes_passenger_records`](@ref) is `true`): in sample order, each before the
+driver record it ends within. A passenger record carries the passenger's own
+`prn` and `code_phase`, and the `fold_end` of the driver's fold (see
+[Host contract](@ref)). The signals of a group are one constellation's and
+share the driver's code rate and carrier frequency.
+
+- **Decoding.** The engine decodes the bits of the group's first signal that
+  carries navigation data: the driver, or for a dataless pilot driver its data
+  passenger, whose records then run the satellite's bit clock and decoder. The
+  filter ranges on the driver, and reports the satellite by it.
+- **Combining** (`combine_signals = true`, the vector loop's own switch, as
+  `ConventionalPLLAndDLL`'s is the scalar loop's; it covers the scalar fallback
+  too, so `inner` is built without it). Out of the vector loop the passengers are
+  combined as in the scalar loops ([Signal combining](@ref)); in it, into the
+  PLL. The code and rate measurements the filter owns take every signal's DLL
+  and raw FLL readings. A passenger's readings wait for the driver's next record
+  and join its cycle, as the scalar loops combine them into that record: a
+  reading moves by at most one driver record across an epoch. Each signal's
+  cycle mean is weighted by its inverse variance, built from that signal's own
+  C/N₀, coherent integration time and tap spacing, and from the span its
+  readings cover that cycle, so a signal with readings for part of a cycle only
+  weighs that much less. The fused variance is the inverse of the summed
+  weights. The variances take every reading of a cycle at the signal's latest
+  coherent integration time: in the one cycle where a signal's records change
+  length (at bit sync, say) they are off by up to the ratio of the two lengths. Only the thermal noise averages
+  down: the orbit, clock and atmosphere are common to every signal of a
+  satellite. The code variance follows the BPSK early-minus-late model; for a
+  signal tracked with the very-early-prompt-late correlator (Galileo E1, the
+  BOC(1,1) family) it is scaled by 0.4, a first-order correction from a
+  simulation of its discriminator (0.36 for CBOC, 0.43 for BOC(1,1)). At a low
+  C/N₀ · T_coh the model overstates every signal's variance alike, as the
+  normalised discriminators saturate. A passenger's DLL
+  readings are taken only where its group delay relative to the driver is given
+  (`differential_group_delay_chips`), referred to the driver's code phase by
+  it. A passenger's FLL readings are read four-quadrant where its record has a
+  polarity. A member with no code reading of any signal in a
+  cycle is withheld from it, one with no rate reading from its rate row only.
+  Without `combine_signals` the filter reads the driver's readings alone, and
+  the passengers' records only decode the bits where the driver carries none.
+- **Two weightings, by design.** Whatever closes a carrier loop on the combined
+  readings — the scalar fallback out of the vector loop, and the PLL aiding in
+  it — weights them by the ICD power split, exactly as the scalar loops do
+  ([Signal combining](@ref)), so a satellite's loops do not change when it
+  enters or leaves the vector loop. Only the navigation filter's code and rate
+  measurements are weighted by inverse variance, from each signal's C/N₀: the
+  filter needs their variances anyway, and the measured C/N₀ also covers what
+  the power split does not, such as a passenger's own antenna gain.
+- **C/N₀.** The engine weights the measurements and decides lock by each
+  signal's C/N₀: the host's estimate where its records carry one (their `cn0`,
+  see [`LoopRecord`](@ref)), its own estimate from the prompts otherwise.
+
+## Staging and discriminators under vector tracking
+
+A satellite's carrier loop stages as the scalar loop does only while it is out
+of the vector loop: `inner` runs FLL-assisted until frequency lock (see
+[`FrequencyLockIndicator`](@ref)) and then as a PLL alone. In the vector loop
+the FLL branch carries the navigation filter's carrier correction, so it is
+never dropped there, and the frequency lock indicator is left as it is. A
+satellite the filter takes over keeps `inner`'s state; one it releases re-seeds
+`inner` from the Dopplers its replica runs at, which restarts the staging.
+
+The discriminators are the record's in both modes. Where the record's
+`polarity` (see [`LoopRecord`](@ref)) says the replica wipes off every sign
+modulation of its prompt (a pilot synced to its secondary code), the PLL and the
+FLL read four-quadrant, otherwise two-quadrant. In the vector loop the PLL still
+closes on that reading, and the raw FLL reading accumulated for the filter is
+four-quadrant on such a record, so a pilot's rate measurement has the ±1/(2T) range rather than ±1/(4T).
+A record without a previous prompt has no FLL reading and is left out of the
+cycle's rate measurement; a cycle without any FLL reading withholds the
+satellite's rate row and keeps its pseudorange row. Passengers combined into the
+PLL read it two-quadrant, and only while the driver's own reading lies within
+that range ([Signal combining](@ref)); the FLL readings the filter fuses are
+the passengers' own, four-quadrant where the record has a polarity, as the
+driver's.
+
 ## What the records must carry
 
 The engine derives everything from the records except what only the correlator
-knows, which every [`LoopRecord`](@ref) handed to the estimator must carry:
-
-- `prn`: the satellite;
-- `code_phase`: the replica's code phase in chips at the record's end, from the
-  [`CorrelatorOutput`](@ref). The end sample alone pins it only to within one
-  sample (some 75 m at 4 MHz). Only its part past the nearest code-block
-  boundary is read, so any wrap convention works; without it (`NaN`) the record
-  is taken to end on a block boundary;
-- a common time grid: `sample_index / sampling_frequency` must be the time since
-  one origin shared by all satellites. A host whose correlator restarts its
-  sample count passes the offset as `sample_offset` when it builds the record.
-
-`NO_LANDING_SAMPLE` keeps meaning that the command computed from a record acts
-from the record's end; a hardware host passes the landing sample, and each
-satellite sizes its corrections for that moment.
+knows: the satellite (`prn`), the replica's code phase at the record's end
+(`code_phase`) and a time grid shared by all satellites. The
+[Host contract](@ref) lists them with everything else a host owes the
+estimators.
 
 ## The lifecycle of a satellite
 
@@ -170,9 +260,9 @@ and cycles allocate nothing, and the whole estimator compiles with
 
 ## Known limits
 
-- The engine decodes the bits of the signal it steps, so a dataless pilot
-  (GPS L1C-P, Galileo E1C) cannot run vector tracking: the constructor rejects
-  it.
+- A dataless pilot (GPS L1C-P, Galileo E1C) runs vector tracking only with its
+  data component as a passenger, whose bits the engine decodes: on its own the
+  constructor rejects it.
 - Lock is a C/N₀ threshold over the bit-synced satellites, not a full lock
   detector.
 - A host must report the record's `prn` and `code_phase`. HardwareLoopCore does

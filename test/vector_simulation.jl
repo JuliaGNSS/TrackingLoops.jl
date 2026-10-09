@@ -587,7 +587,8 @@ end
 # result of every cycle the estimator ran, the sample reached, and whether a replica
 # left its signal.
 function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
-        outage = (t, i) -> false, fade = (t, i) -> 1.0, on_tick = sample -> nothing)
+        outage = (t, i) -> false, fade = (t, i) -> 1.0, on_tick = sample -> nothing,
+        record! = pipeline_record!, driver_signal = GPSL1CA())
     results = []
     nav = receiver.vt
     sample = start_sample
@@ -602,7 +603,7 @@ function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
             sat.amplitude = fade(t, i)
             while sat.next_end_sample <= sample
                 record_end = sat.next_end_sample
-                code_errors[i] = pipeline_record!(receiver, sat, receiver.last_ends[i])
+                code_errors[i] = record!(receiver, sat, receiver.last_ends[i])
                 receiver.last_ends[i] = record_end
             end
         end
@@ -614,7 +615,7 @@ function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
             push!(results, (; pvt = deepcopy(pvt), status = nav.status, code_errors = copy(code_errors),
                 time = receiver.truth.t0 + TrackingLoops._epoch_time(nav, nav.cycle_epoch),
                 measured = collect(keys(pvt.sats)),
-                reasons = [release_reason(receiver.estimator, GPSL1CA(), sat.decoder.prn) for sat in receiver.sats]))
+                reasons = [release_reason(receiver.estimator, driver_signal, sat.decoder.prn) for sat in receiver.sats]))
         end
     end
     results, sample, false

@@ -17,23 +17,46 @@ end
 const _NO_WORD = FixedNCOWord(0.0, 0.0)
 
 @testset "Signal combining is an estimator setting, off by default" begin
-    @test !combines_signals(ConventionalPLLAndDLL())
-    @test !combines_signals(ConventionalAssistedPLLAndDLL())
-    @test !combines_signals(NCOReferencedPLLAndDLL())
-    @test !combines_signals(VectorPLLAndDLL(GPSL1CA()))
+    @test !TrackingLoops.combines_signals(ConventionalPLLAndDLL())
+    @test !TrackingLoops.combines_signals(ConventionalAssistedPLLAndDLL())
+    @test !TrackingLoops.combines_signals(NCOReferencedPLLAndDLL())
+    @test !TrackingLoops.combines_signals(VectorPLLAndDLL(GPSL1CA()))
     estimator = ConventionalAssistedPLLAndDLL(; combine_signals = true)
-    @test combines_signals(estimator)
-    @test combines_signals(VectorPLLAndDLL(GPSL1CA(); inner = estimator))
+    @test TrackingLoops.combines_signals(estimator)
+    # The vector loop has its own switch, which covers its scalar fallback too: its
+    # inner loop is built without one.
+    vector = VectorPLLAndDLL(GPSL1CA(); combine_signals = true)
+    @test TrackingLoops.combines_signals(vector)
+    @test !TrackingLoops.combines_signals(vector.inner)
+    @test !TrackingLoops.combines_signals(VectorPLLAndDLL(GPSL1CA(); combine_signals = false))
+    @test TrackingLoops.combines_signals(
+        VectorPLLAndDLL(GPSL1CA(); inner = ConventionalAssistedPLLAndDLL(), combine_signals = true),
+    )
+    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); inner = estimator)
+    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); inner = NCOReferencedPLLAndDLL(), combine_signals = true)
+    @test !TrackingLoops.combines_signals(VectorPLLAndDLL(GPSL1CA(); inner = NCOReferencedPLLAndDLL()))
+    # Whether a host hands passenger records over: a combining loop, and a vector loop
+    # with passengers, combining or not.
+    @test !takes_passenger_records(ConventionalAssistedPLLAndDLL())
+    @test takes_passenger_records(estimator)
+    @test !takes_passenger_records(VectorPLLAndDLL(GPSL1CA()))
+    @test takes_passenger_records(vector)
+    @test takes_passenger_records(VectorPLLAndDLL((GalileoE1C(), GalileoE1B())))
+    # A data driver decodes its own bits: without combining it needs no passenger.
+    @test !takes_passenger_records(VectorPLLAndDLL((GalileoE1B(), GalileoE1C())))
+    @test takes_passenger_records(
+        VectorPLLAndDLL((GalileoE1B(), GalileoE1C()); combine_signals = true),
+    )
     # The keyword-update constructor keeps it unless told otherwise.
-    @test combines_signals(ConventionalPLLAndDLL(estimator; code_loop_filter_bandwidth = 2.0Hz))
-    @test !combines_signals(ConventionalPLLAndDLL(estimator; combine_signals = false))
+    @test TrackingLoops.combines_signals(ConventionalPLLAndDLL(estimator; code_loop_filter_bandwidth = 2.0Hz))
+    @test !TrackingLoops.combines_signals(ConventionalPLLAndDLL(estimator; combine_signals = false))
     # An estimator that does not combine leaves the state as it is.
     state = init_estimator_state(ConventionalAssistedPLLAndDLL(), GPSL5Q(), 0.0Hz, 0.0Hz)
     record = combining_record(GPSL5I(), cis(0.1), (0.5, 1.0, 0.5))
-    @test combine_passenger_record(ConventionalAssistedPLLAndDLL(), state, record, _NO_WORD; driver_signal = GPSL5Q()) ===
+    @test fold_passenger_record(ConventionalAssistedPLLAndDLL(), state, record, _NO_WORD; driver_signal = GPSL5Q()) ===
           state
     nco_state = init_estimator_state(NCOReferencedPLLAndDLL(), GPSL5Q(), 0.0Hz, 0.0Hz)
-    @test combine_passenger_record(NCOReferencedPLLAndDLL(), nco_state, record, _NO_WORD; driver_signal = GPSL5Q()) ===
+    @test fold_passenger_record(NCOReferencedPLLAndDLL(), nco_state, record, _NO_WORD; driver_signal = GPSL5Q()) ===
           nco_state
 end
 
@@ -63,7 +86,7 @@ end
     record = combining_record(GPSL5I(), cis(π / 2 + 0.1), (0.5, 1.0, 0.4); previous_prompt = cis(π / 2))
     # 10 ns at 10.23 Mchip/s: the later passenger reads the driver's error minus
     # 0.1023 chip, which the offset adds back.
-    combined = combine_passenger_record(
+    combined = fold_passenger_record(
         estimator,
         state,
         record,
@@ -85,7 +108,7 @@ end
 
     # No FLL without a previous prompt, no DLL without a known group delay.
     partial =
-        combine_passenger_record(
+        fold_passenger_record(
             estimator,
             state,
             combining_record(GPSL5I(), cis(π / 2 + 0.1), (0.5, 1.0, 0.4)),
@@ -98,18 +121,18 @@ end
     # FLL-assisted carrier filter.
     locked = @set state.frequency_lock = FrequencyLockIndicator(0.0Hz * 0.0s, 0.0s, true)
     @test iszero(
-        combine_passenger_record(estimator, locked, record, _NO_WORD; driver_signal = GPSL5Q()).signal_combining_sums.fll.weight,
+        fold_passenger_record(estimator, locked, record, _NO_WORD; driver_signal = GPSL5Q()).signal_combining_sums.fll.weight,
     )
     plain_estimator = ConventionalPLLAndDLL(; combine_signals = true)
     plain = init_estimator_state(plain_estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
     @test iszero(
-        combine_passenger_record(plain_estimator, plain, record, _NO_WORD; driver_signal = GPSL5Q()).signal_combining_sums.fll.weight,
+        fold_passenger_record(plain_estimator, plain, record, _NO_WORD; driver_signal = GPSL5Q()).signal_combining_sums.fll.weight,
     )
 
     # In the vector loop only into the PLL; out of it as the inner loop.
-    vector = VectorPLLAndDLL(GPSL5I(); inner = estimator)
+    vector = VectorPLLAndDLL((GPSL5Q(), GPSL5I()); combine_signals = true)
     vector_state = init_estimator_state(vector, GPSL5Q(), 0.0Hz, 0.0Hz)
-    in_vt = combine_passenger_record(
+    in_vt = fold_passenger_record(
         vector,
         SC._enable_vector_tracking(vector_state),
         record,
@@ -119,7 +142,7 @@ end
     ).inner.signal_combining_sums
     @test in_vt.pll == sums.pll
     @test iszero(in_vt.fll.weight) && iszero(in_vt.dll.weight)
-    out_of_vt = combine_passenger_record(
+    out_of_vt = fold_passenger_record(
         vector,
         vector_state,
         record,
@@ -164,7 +187,7 @@ end
 @testset "Several passengers add up" begin
     estimator = ConventionalAssistedPLLAndDLL(; combine_signals = true)
     state = init_estimator_state(estimator, GPSL1C_P(), 0.0Hz, 0.0Hz)
-    fold(state, record) = combine_passenger_record(estimator, state, record, _NO_WORD; driver_signal = GPSL1C_P())
+    fold(state, record) = fold_passenger_record(estimator, state, record, _NO_WORD; driver_signal = GPSL1C_P())
     veml = (0.2, 0.7, 1.0, 0.7, 0.2)
     d_record = combining_record(GPSL1C_D(), cis(0.1), veml; n = 50000)
     ca_records = (
@@ -222,9 +245,10 @@ end
     @test step(@set locked.signal_combining_sums = pending(no_pll, fll_pending, no_pll))[2] ==
           step(locked)[2]
 
-    # In the vector loop: into the PLL only, and the navigation filter gets the
-    # driver's own DLL and FLL readings.
-    vector = VectorPLLAndDLL(GalileoE1B(); inner = estimator)
+    # In the vector loop: into the PLL only, and the satellite's accumulators keep the
+    # driver's own DLL and FLL readings (the passengers' reach the filter through the
+    # engine, see "vector_signal_groups.jl").
+    vector = VectorPLLAndDLL(GalileoE1B(); combine_signals = true)
     vt = SC._enable_vector_tracking(init_estimator_state(vector, GalileoE1C(), 0.0Hz, 0.0Hz))
     mixed = pending(
         SC.WeightedSum(w * 0.01, w),
@@ -271,7 +295,7 @@ end
 # `Ref` so the measurement sees only what the two calls allocate (see
 # `allocations.jl` for why the testset's own variables are kept out of it).
 function fold_and_step!(state_ref, estimator, passenger, driver, words)
-    st = combine_passenger_record(
+    st = fold_passenger_record(
         estimator,
         state_ref[],
         passenger,

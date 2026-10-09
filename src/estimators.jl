@@ -32,7 +32,11 @@ of its own, as [`VectorPLLAndDLL`](@ref) does:
 
   - `prn`: the satellite (`0` when the host does not say);
   - `code_phase`: the replica's code phase (chips) at `sample_index`, from the
-    [`CorrelatorOutput`](@ref) (`NaN` when the producer does not report it).
+    [`CorrelatorOutput`](@ref) (`NaN` when the producer does not report it);
+  - `cn0`: the host's C/N₀ estimate of the record's signal in dB-Hz (`NaN`, the
+    default, when it gives none), which the vector loop weights the navigation
+    filter's measurements and decides lock by; without it the vector loop
+    estimates the C/N₀ from the prompts itself. The scalar loops do not read it.
 
 A satellite's driver and passenger records share one sample frame, which signal
 combining compares their ends on. For such an estimator `sample_index /
@@ -70,6 +74,7 @@ struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F}
     prn::Int
     code_phase::Float64
     polarity::Int8
+    cn0::Float64
 end
 
 LoopRecord(
@@ -84,6 +89,7 @@ LoopRecord(
     prn::Integer = 0,
     code_phase::Real = NaN,
     polarity::Integer = 0,
+    cn0 = NaN,
 ) = LoopRecord(
     signal,
     filtered_correlator,
@@ -96,6 +102,7 @@ LoopRecord(
     Int(prn),
     Float64(code_phase),
     Int8(polarity),
+    _record_cn0(cn0),
 )
 
 LoopRecord(
@@ -109,6 +116,7 @@ LoopRecord(
     prn::Integer = 0,
     sample_offset::Integer = 0,
     polarity::Integer = 0,
+    cn0 = NaN,
 ) = LoopRecord(
     signal,
     filtered_correlator,
@@ -121,12 +129,18 @@ LoopRecord(
     Int(prn),
     output.code_phase,
     Int8(polarity),
+    _record_cn0(cn0),
 )
+
+# A record's C/N₀ in dB-Hz, from a number in dB-Hz or a dB-Hz quantity, such as
+# `estimate_cn0` returns.
+_record_cn0(cn0::Real) = Float64(cn0)
+_record_cn0(cn0) = Float64(ustrip(cn0))
 
 """
     LoopRecord(loop::SignalLoopState, signal, filtered_correlator,
                output::CorrelatorOutput, integrated_code_blocks, sampling_frequency;
-               prn, fold_end = output.sample_index, sample_offset = 0,
+               prn, fold_end = output.sample_index, sample_offset = 0, cn0 = NaN,
                correlated_pre_sync = false)
 
 The [`LoopRecord`](@ref) of a record `apply_record` folded, built from the
@@ -143,8 +157,8 @@ asks of a host filled in:
 The arguments are those of the constructor that takes a `CorrelatorOutput`,
 with `loop` in place of the previous prompt: `filtered_correlator` and
 `integrated_code_blocks` are what `apply_record` returned for the record, and
-`fold_end` and `sample_offset` are as there. `prn` is required here, as the
-polarity of a secondary code can depend on it.
+`fold_end`, `sample_offset` and `cn0` are as there. `prn` is required here, as
+the polarity of a secondary code can depend on it.
 
 Pass the same `correlated_pre_sync` as to `apply_record`: a record that follows a
 sync found earlier in the same fold was correlated with the pre-sync replica, so its
@@ -162,6 +176,7 @@ function LoopRecord(
     prn::Integer,
     fold_end = output.sample_index,
     sample_offset::Integer = 0,
+    cn0 = NaN,
     correlated_pre_sync::Bool = false,
 )
     polarity = _correlated_polarity(signal, loop.bit_buffer, prn, correlated_pre_sync)
@@ -178,6 +193,7 @@ function LoopRecord(
         prn,
         sample_offset,
         polarity,
+        cn0,
     )
 end
 
@@ -254,7 +270,7 @@ integration needs no re-tuning.
 `combine_signals = true` combines the discriminators of a satellite's other
 signals, the passengers, into the loops of the signal whose records
 [`step_loop`](@ref) closes them on, the driver; the host folds each passenger
-record with [`combine_passenger_record`](@ref). See
+record with [`fold_passenger_record`](@ref). See
 [Signal combining](@ref). Each passenger is assumed to integrate no longer than
 the driver. A longer passenger record is combined only into the driver record it
 ends in, with a weight proportional to its integration time (its cube for the
@@ -393,8 +409,9 @@ end
 One record through the conventional loop: PLL (and FLL, for the assisted
 filter) discriminators against the filtered prompt, the DLL normalised with the
 code word the record ran on, both bandwidths capped by their stability products
-against the record's integration time, and the Dopplers aided. `landing_sample` is ignored: the conventional loop assumes its
-command acts before the next record.
+against the record's integration time, and the Dopplers aided. `landing_sample`
+is ignored: the conventional loop assumes its command acts before the next
+record.
 """
 @inline step_loop(
     estimator::ConventionalPLLAndDLL,
@@ -568,31 +585,41 @@ end
     code_doppler
 end
 
-"""
-    combines_signals(estimator) -> Bool
-
-Whether `estimator` combines passenger discriminators into the driver's loops,
-so that the host folds each passenger record with
-[`combine_passenger_record`](@ref). `false` for every estimator but a
-[`ConventionalPLLAndDLL`](@ref) built with `combine_signals = true`, and a
-[`VectorPLLAndDLL`](@ref) whose inner loop is one.
-"""
+# Whether `estimator` combines passenger discriminators into the driver's loops: a
+# `ConventionalPLLAndDLL` or `VectorPLLAndDLL` built with `combine_signals = true`.
+# Internal: a host asks `takes_passenger_records`, which also covers a vector loop that
+# takes passenger records to decode a pilot driver's data without combining.
 combines_signals(::AbstractDopplerEstimator) = false
 combines_signals(estimator::ConventionalPLLAndDLL) = estimator.combine_signals
 
 """
-    combine_passenger_record(estimator, state, record::LoopRecord, words;
-                             driver_signal, differential_group_delay_chips = NaN)
+    takes_passenger_records(estimator) -> Bool
+
+Whether the host should hand `estimator` every passenger record with
+[`fold_passenger_record`](@ref): where it combines signals (built with
+`combine_signals = true`), and for a [`VectorPLLAndDLL`](@ref) with a dataless
+driver, which decodes the navigation data from its data passenger whether it
+combines or not. Where it is `false`,
+`fold_passenger_record` returns the state unchanged, so a host may skip the
+passenger walk.
+"""
+takes_passenger_records(estimator::AbstractDopplerEstimator) = combines_signals(estimator)
+
+"""
+    fold_passenger_record(estimator, state, record::LoopRecord, words;
+                          driver_signal, differential_group_delay_chips = NaN)
         -> state
 
-Fold one completed passenger record into the per-satellite `state`: its
-discriminators, weighted by its signal's ICD power share and integration time,
-join the sums the driver's next [`step_loop`](@ref) closes its loops on. Call it
-for every passenger record in sample order, each before the driver record it
-ends within (or ends at); records left pending after the driver's last carry
-over to its next, unless they ended before it starts (see
-[`SignalCombiningSums`](@ref)). The passenger's records share the driver's
-sample frame (`sample_index`). `words` are the replica words the satellite ran on.
+Fold one completed passenger record into the per-satellite `state`. In a
+scalar loop that combines signals its discriminators, weighted by its signal's
+ICD power share and integration time, join the sums the driver's next
+[`step_loop`](@ref) closes its loops on; for what a [`VectorPLLAndDLL`](@ref)
+does with it, see there. Call it for every passenger record in sample order,
+each before the driver record it ends within (or ends at); records left pending
+after the driver's last carry over to its next, unless they ended before it
+starts (see [`SignalCombiningSums`](@ref)). The passenger's records share the
+driver's sample frame (`sample_index`). `words` are the replica words the
+satellite ran on.
 
   - `record` is the passenger's own record, its `previous_prompt` following
     [`LoopRecord`](@ref)'s contract for the passenger's own record sequence.
@@ -606,10 +633,11 @@ sample frame (`sample_index`). `words` are the replica words the satellite ran o
     `NaN` (unknown) leaves the passenger out of the code loop.
 
 The FLL is combined only while it is formed, before frequency lock. An
-estimator that does not combine signals ([`combines_signals`](@ref)) returns
-`state` unchanged. See [Signal combining](@ref).
+estimator that takes no passenger records ([`takes_passenger_records`](@ref))
+returns `state` unchanged. See [Signal combining](@ref) and
+[Host contract](@ref).
 """
-@inline combine_passenger_record(
+@inline fold_passenger_record(
     ::AbstractDopplerEstimator,
     state,
     record::LoopRecord,
@@ -618,7 +646,7 @@ estimator that does not combine signals ([`combines_signals`](@ref)) returns
     differential_group_delay_chips::Real = NaN,
 ) = state
 
-@inline function combine_passenger_record(
+@inline function fold_passenger_record(
     estimator::ConventionalPLLAndDLL,
     state::SatConventionalPLLAndDLL,
     record::LoopRecord,

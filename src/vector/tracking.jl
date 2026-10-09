@@ -74,8 +74,35 @@ end
 SatelliteReport(decoder) =
     SatelliteReport(0, false, decoder, false, nothing, NaN, false, false, false, VT_NOT_RELEASED)
 
+# What the navigation engine keeps of one passenger signal of a satellite for the
+# filter's measurements: its own C/N₀ estimator, coherent integration time and tap
+# spacing (chips), which its readings' variances are built from. The readings
+# themselves are in the satellite's state (`PassengerReadings`).
+struct VTPassenger
+    cn0_estimator::MomentsCN0Estimator
+    # The host's C/N₀ estimate (dB-Hz) with the last record, `NaN` without one; where
+    # given, it is read instead of `cn0_estimator`'s.
+    host_cn0_dbhz::Float64
+    integration_time::typeof(1.0s)
+    early_late_spacing::Float64
+    # Its correlator's DLL variance factor against the BPSK model (`_dll_variance_factor`).
+    dll_variance_factor::Float64
+end
+
+VTPassenger(cn0_estimator::MomentsCN0Estimator) =
+    VTPassenger(cn0_estimator, NaN, 0.001s, 0.5, 1.0)
+
+# A passenger's C/N₀ (dB-Hz): the host's estimate where it gave one, else its own.
+_passenger_cn0_dbhz(p::VTPassenger) =
+    _cn0_dbhz(p.host_cn0_dbhz, p.cn0_estimator, p.integration_time)
+
 # One satellite of the navigation engine. A slot is never deleted: a satellite that is
 # dropped leaves it free with all its storage, for the next satellite to reuse.
+#
+# Its bit clock and decoder run on the group's data signal, the first of its signals
+# that carries navigation data: the driver itself, or for a dataless pilot driver its
+# data passenger. The `data_*` fields follow the data signal's records, everything
+# else the driver's.
 mutable struct VTSlot{D,B<:Unsigned,E<:SatVectorPLLAndDLL}
     prn::Int
     occupied::Bool
@@ -83,19 +110,27 @@ mutable struct VTSlot{D,B<:Unsigned,E<:SatVectorPLLAndDLL}
     registration::Int
     # Whether the slot snapshotted the epoch of the running cycle.
     active::Bool
-    # The bit clock, decoder and C/N₀ estimator, advanced every record.
+    # The bit clock and decoder, advanced every data-signal record, and the driver's
+    # C/N₀ estimator, every driver record.
     bit_buffer::BitBuffer{B}
     running_decoder::D
     cn0_estimator::MomentsCN0Estimator
+    # The host's C/N₀ estimate (dB-Hz) with the last driver record, `NaN` without one;
+    # where given, it is read instead of `cn0_estimator`'s.
+    host_cn0_dbhz::Float64
     # The fold the bit sync was found in: its later records were correlated
     # before the sync.
     sync_fold_end::Int
-    # The last record's end.
+    # The last driver record's end.
     last_end_sample::Int
     last_end_time::Float64 # s
-    last_code_phase_fraction::Float64 # chips past the nearest code-block boundary
+    # The last data-signal record's end, and its replica's code phase there.
+    data_last_end_sample::Int
+    data_last_end_time::Float64 # s
+    data_last_code_phase_fraction::Float64 # chips past the nearest code-block boundary
     last_integration_time::typeof(1.0s)
     last_early_late_spacing::Float64 # chips
+    last_dll_variance_factor::Float64
     # Replica chips from the epoch of the latest snapshot to the last record's end.
     chips_since_epoch::Float64
     # The first epoch the slot can snapshot, and the epoch of its latest snapshot.
@@ -114,6 +149,7 @@ mutable struct VTSlot{D,B<:Unsigned,E<:SatVectorPLLAndDLL}
     cn0_dbhz::Float64
     coherent_integration_time::typeof(1.0s)
     early_late_spacing::Float64
+    dll_variance_factor::Float64
     in_lock::Bool
     pvt_ready::Bool
     # What the latest cycle decided, for the satellite to take up.
@@ -121,26 +157,38 @@ mutable struct VTSlot{D,B<:Unsigned,E<:SatVectorPLLAndDLL}
     restart_cycle::Int
     correction_cycle::Int
     member_index::Int
+    # One per passenger signal of the group, in its order.
+    const passengers::Vector{VTPassenger}
     # What `satellite_report` hands out, refreshed in place.
     const report::SatelliteReport{D}
 end
 
-function VTSlot(signal::AbstractGNSSSignal, prn::Integer, state::SatVectorPLLAndDLL, num_prompts_for_cn0_estimation)
-    decoder = GNSSDecoderState(signal, prn)
+function VTSlot(
+    data_signal::AbstractGNSSSignal,
+    num_passengers::Int,
+    prn::Integer,
+    state::SatVectorPLLAndDLL,
+    num_prompts_for_cn0_estimation,
+)
+    decoder = GNSSDecoderState(data_signal, prn)
     VTSlot(
         Int(prn),
         false,
         0,
         false,
-        SignalLoopState(signal).bit_buffer,
+        SignalLoopState(data_signal).bit_buffer,
         decoder,
         MomentsCN0Estimator(num_prompts_for_cn0_estimation),
+        NaN,
         typemin(Int),
+        0,
+        0.0,
         0,
         0.0,
         0.0,
         0.001s,
         0.5,
+        1.0,
         0.0,
         typemax(Int),
         typemin(Int),
@@ -153,29 +201,60 @@ function VTSlot(signal::AbstractGNSSSignal, prn::Integer, state::SatVectorPLLAnd
         NaN,
         0.001s,
         0.5,
+        1.0,
         false,
         false,
         VT_NOT_RELEASED,
         -1,
         -1,
         0,
+        [VTPassenger(MomentsCN0Estimator(num_prompts_for_cn0_estimation)) for _ = 1:num_passengers],
         SatelliteReport(decoder),
     )
 end
 
-# The slots of one ranging signal, and a fresh satellite state to fill a new slot
-# with.
-struct VTSlotGroup{S<:AbstractGNSSSignal,V<:VTSlot,E<:SatVectorPLLAndDLL}
+# The slots of one ranging signal, the driver, with its passengers, the signal its
+# bit clock runs on (`data_signal`, the driver or one of the passengers) and a fresh
+# satellite state to fill a new slot with.
+struct VTSlotGroup{
+    S<:AbstractGNSSSignal,
+    P<:Tuple,
+    C<:AbstractGNSSSignal,
+    V<:VTSlot,
+    E<:SatVectorPLLAndDLL,
+}
     signal::S
+    passengers::P
+    data_signal::C
     slots::Vector{V}
     prototype::E
     num_prompts_for_cn0_estimation::Int
 end
 
-function VTSlotGroup(signal::AbstractGNSSSignal, prototype::SatVectorPLLAndDLL, capacity, num_prompts)
-    slots = [VTSlot(signal, 1, prototype, num_prompts) for _ = 1:capacity]
-    VTSlotGroup(signal, sizehint!(slots, 2 * capacity), prototype, num_prompts)
+function VTSlotGroup(signals::Tuple, prototype::SatVectorPLLAndDLL, capacity, num_prompts)
+    driver, passengers = first(signals), Base.tail(signals)
+    data_signal = signals[findfirst(signal -> !iszero(get_data_frequency(signal)), signals)]
+    slots = [
+        VTSlot(data_signal, length(passengers), 1, prototype, num_prompts) for _ = 1:capacity
+    ]
+    VTSlotGroup(
+        driver,
+        passengers,
+        data_signal,
+        sizehint!(slots, 2 * capacity),
+        prototype,
+        num_prompts,
+    )
 end
+
+# A fresh slot of the group, for satellite `prn`.
+_new_slot(group::VTSlotGroup, prn, state) = VTSlot(
+    group.data_signal,
+    length(group.passengers),
+    prn,
+    state,
+    group.num_prompts_for_cn0_estimation,
+)
 
 """
     VTStatus
@@ -373,7 +452,7 @@ end
 
 function VectorNavigation(
     config::Union{VectorTracking,Nothing},
-    signals::Tuple{Vararg{AbstractGNSSSignal}},
+    signal_groups::Tuple{Vararg{Tuple}},
     inner::AbstractDopplerEstimator;
     cycle_time,
     lock_cn0_threshold::Float64,
@@ -384,12 +463,20 @@ function VectorNavigation(
     enable_tropospheric_correction::Bool,
 )
     filter_config = isnothing(config) ? VectorTracking() : config
+    # The filter ranges on the drivers.
+    signals = map(first, signal_groups)
     layout = NavFilterLayout(signals)
     model = NavFilterModel(filter_config, layout, uconvert(s, cycle_time))
     n = num_nav_states(filter_config, layout)
-    groups = map(signals) do signal
-        prototype = SatVectorPLLAndDLL(init_estimator_state(inner, signal, 0.0Hz, 0.0Hz), false)
-        VTSlotGroup(signal, prototype, max_satellites_per_signal, num_prompts_for_cn0_estimation)
+    groups = map(signal_groups) do group_signals
+        inner_state = init_estimator_state(inner, first(group_signals), 0.0Hz, 0.0Hz)
+        prototype = SatVectorPLLAndDLL(inner_state, false, Base.tail(group_signals))
+        VTSlotGroup(
+            group_signals,
+            prototype,
+            max_satellites_per_signal,
+            num_prompts_for_cn0_estimation,
+        )
     end
     max_members = max_satellites_per_signal * length(signals)
     states = map(_satellite_state_buffer, groups)
@@ -425,7 +512,7 @@ function VectorNavigation(
     )
 end
 
-_satellite_state_buffer(group::VTSlotGroup{S,<:VTSlot{D}}) where {S,D} =
+_satellite_state_buffer(group::VTSlotGroup{S,P,C,<:VTSlot{D}}) where {S,P,C,D} =
     sizehint!(SatelliteState{Float64,D,S}[], 2 * max(length(group.slots), 1))
 
 """
@@ -691,6 +778,12 @@ function _collect_members!(j, group, g, buffer, vt, T)
         state = sat.estimator_state
         j += 1
         row = buffers.rows[j]
+        code_discriminator,
+        carrier_discriminator,
+        code_variance,
+        rate_variance,
+        has_code,
+        has_rate = _member_measurements(sat, state, T, chip_length, wavelength)
         push!(
             buffers.members,
             VTMember(
@@ -702,16 +795,18 @@ function _collect_members!(j, group, g, buffer, vt, T)
                 chip_length,
                 wavelength,
                 code_frequency,
-                sat.in_lock && has_accumulated_code_discriminator(state),
-                has_accumulated_carrier_discriminator(state),
+                sat.in_lock && has_code,
+                has_rate,
                 row.time,
                 row.time - row.count_offset_to_gpst,
                 row.position,
                 row.velocity,
                 row.clock_drift,
                 wavelength * ustrip(Hz, sat.carrier_doppler),
-                accumulated_code_discriminator(state, T),
-                accumulated_carrier_discriminator(state),
+                code_discriminator,
+                carrier_discriminator,
+                code_variance,
+                rate_variance,
                 linear_cn0_floor(sat.cn0_dbhz),
                 sat.early_late_spacing,
                 ustrip(s, sat.coherent_integration_time),
@@ -720,6 +815,110 @@ function _collect_members!(j, group, g, buffer, vt, T)
         )
     end
     j
+end
+
+# This cycle's code (chips) and rate (Hz) measurements of the member in slot `sat`, their
+# variances (m², m²/s²), and whether there is one at all:
+# `(code, rate, code_variance, rate_variance, has_code, has_rate)`.
+#
+# Each signal's mean reading is weighted by its inverse variance, built from that signal's
+# own C/N₀, coherent integration time and tap spacing, and from the span its readings
+# cover: `n` readings of `T_coh` each average the noise over `n·T_coh`
+# (`_pseudorange_noise_variance`, `_pseudorange_rate_noise_variance`). A signal with
+# readings for part of a cycle only — the first cycle after its satellite entered the
+# loop or its group delay was set — weighs that much less. Every reading is taken at
+# the signal's latest coherent integration time, so this assumes a signal's records
+# keep their length through a cycle: in the cycle where they change (from one code
+# block to a whole bit at bit sync, say) the earlier readings count at the new length,
+# and that cycle's variance and weight are off by up to the ratio of the two.
+# The fused variance is the inverse of the summed weights. The passengers' DLL readings
+# are referred to the driver's code phase already, and moved to the epoch like the
+# driver's: one replica steers them all. What the fusion averages down is the thermal
+# noise only, each signal correlating the received noise against its own code; the
+# orbit, clock and atmosphere are common to every signal of a satellite and are not
+# measurement noise here.
+#
+# A signal without a reading this cycle is left out rather than entered as a zero. A
+# member with no code reading of any signal is withheld from the update, one with no
+# rate reading of any signal from its rate row only. Without passenger readings the
+# measurements are the driver's own, bit for bit.
+function _member_measurements(sat::VTSlot, state::SatVectorPLLAndDLL, T, chip_length, wavelength)
+    cn0 = linear_cn0_floor(sat.cn0_dbhz)
+    coherent_integration_time = ustrip(s, sat.coherent_integration_time)
+    code_variance =
+        sat.dll_variance_factor * _code_variance(
+            cn0,
+            coherent_integration_time,
+            sat.early_late_spacing,
+            chip_length,
+            first(state.code_discr_acc),
+        )
+    rate_variance = _rate_variance(
+        cn0,
+        coherent_integration_time,
+        wavelength,
+        first(state.carrier_discr_acc),
+    )
+    has_code = has_accumulated_code_discriminator(state)
+    has_rate = has_accumulated_carrier_discriminator(state)
+    code = accumulated_code_discriminator(state, T)
+    rate = accumulated_carrier_discriminator(state)
+    readings = state.passenger_readings
+    any(r -> first(r.code) > 0 || first(r.carrier) > 0, readings) ||
+        return code, rate, code_variance, rate_variance, has_code, has_rate
+    code_weight = has_code ? inv(code_variance) : 0.0
+    rate_weight = has_rate ? inv(rate_variance) : 0.0
+    code_sum = code_weight * code
+    rate_sum = rate_weight * rate
+    advance = code_phase_advance(state, T)
+    for (p, r) in zip(sat.passengers, readings)
+        p_cn0 = linear_cn0_floor(_passenger_cn0_dbhz(p))
+        p_coherent_integration_time = ustrip(s, p.integration_time)
+        count, discr_sum = r.code
+        if count > 0
+            weight = inv(
+                p.dll_variance_factor * _code_variance(
+                    p_cn0,
+                    p_coherent_integration_time,
+                    p.early_late_spacing,
+                    chip_length,
+                    count,
+                ),
+            )
+            code_weight += weight
+            code_sum += weight * (-discr_sum / count + advance)
+        end
+        count, frequency_sum = r.carrier
+        if count > 0
+            weight =
+                inv(_rate_variance(p_cn0, p_coherent_integration_time, wavelength, count))
+            rate_weight += weight
+            rate_sum += weight * ustrip(Hz, frequency_sum) / count
+        end
+    end
+    has_code = code_weight > 0
+    has_rate = rate_weight > 0
+    (
+        has_code ? code_sum / code_weight : 0.0,
+        has_rate ? rate_sum / rate_weight : 0.0,
+        has_code ? inv(code_weight) : Inf,
+        has_rate ? inv(rate_weight) : Inf,
+        has_code,
+        has_rate,
+    )
+end
+
+# The variances of a signal's `count` readings of `coherent_integration_time` each; `Inf`
+# without a reading.
+function _code_variance(cn0, coherent_integration_time, d, chip_length, count)
+    count > 0 || return Inf
+    span = count * coherent_integration_time
+    _pseudorange_noise_variance(cn0, coherent_integration_time, d, chip_length, span)
+end
+function _rate_variance(cn0, coherent_integration_time, wavelength, count)
+    count > 0 || return Inf
+    span = count * coherent_integration_time
+    _pseudorange_rate_noise_variance(cn0, coherent_integration_time, wavelength, span)
 end
 
 # Gather this cycle's members: the satellites in the loop, their rows at the epoch, and
@@ -842,13 +1041,13 @@ function _measurement_update!(vt::VectorNavigation, T)
     for (k, j) in enumerate(candidates)
         member = members[j]
         z[k] = measured[j] + member.code_discriminator * member.chip_length
-        R[k, k] = pseudorange_noise_variance(member, T)
+        R[k, k] = member.code_variance
     end
     for (i, k) in enumerate(rate_rows)
         member = members[candidates[k]]
         z[num_sats+i] =
             member.pseudorange_rate + member.carrier_discriminator * member.wavelength
-        R[num_sats+i, num_sats+i] = pseudorange_rate_noise_variance(member, T)
+        R[num_sats+i, num_sats+i] = member.rate_variance
     end
     # Each clock collapse rides along as one extra measurement row, appended after the
     # satellite rows.

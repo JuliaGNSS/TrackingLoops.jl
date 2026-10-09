@@ -2,7 +2,7 @@
 # Signal combining: the passengers (every signal of a satellite but the driver
 # whose record `step_loop` closes the loops on) mix their discriminators into the
 # driver's before its loop filters read them. The host folds each passenger
-# record with `combine_passenger_record` as it completes, in sample order, and
+# record with `fold_passenger_record` as it completes, in sample order, and
 # the driver's next `step_loop` closes on the weighted means and starts the sums
 # afresh. See "Signal combining" in the manual.
 # ─────────────────────────────────────────────────────────────────────────────
