@@ -5,19 +5,12 @@ Outcome of a per-signal bit-sync / secondary-code-sync detector call.
 
 Fields:
 
-  - `found::Bool` — whether the detector locked on this update.
-  - `phase::Int` — when `found = true`, the secondary-code chip the
-    *upcoming* integration aligns to, in `0:secondary_code_length-1`
-    (recovered by the hard rotation search in `_secondary_code_search`).
-    Zero for signals without a secondary code (the L1 C/A bit-edge case
-    fires at the data-bit boundary, where the upcoming integration starts a
-    new bit, not at a secondary-chip offset) and also for the soft
-    `_detect_secondary_code_cfar`, which only fires at the winning
-    rotation's own period boundary, so the upcoming integration always starts
-    at secondary chip 0.
-  - `polarity::Int8` — `+1` or `-1`; which match orientation the detector
-    locked. Carries through to the post-sync prompt accumulator so that a
-    negative-polarity lock doesn't trip the downstream bit decoder.
+  - `found::Bool`: whether the detector locked on this update.
+  - `phase::Int`: the secondary-code chip the *upcoming* integration aligns to
+    (`0:N-1`, from the hard `_secondary_code_search`); zero for the soft CFAR
+    detectors and signals without a secondary code, which fire on a boundary.
+  - `polarity::Int8`: `±1`, the locked match orientation, applied to the decoded
+    bits so a negative-polarity lock does not invert them.
 """
 struct SyncResult
     found::Bool
@@ -28,79 +21,35 @@ end
 """
 $(SIGNATURES)
 
-Standard-normal quantile (inverse CDF) `Φ⁻¹(probability)` for
-`probability ∈ (0, 1)`, as `√2 · erfinv(2·probability − 1)` (`erfinv` from
-SpecialFunctions.jl). Used by `_t_quantile` as the `dof → ∞` anchor
-that its tail expansion corrects. Returns `±Inf` at `probability = 1` / `0`;
-callers keep the argument in the open interval.
+Standard-normal quantile `Φ⁻¹(probability) = √2 · erfinv(2·probability − 1)`, the
+`dof → ∞` anchor of `_t_quantile`. `±Inf` at `probability = 1` / `0`.
 """
 @inline _norm_quantile(probability::Float64) = sqrt(2.0) * erfinv(2 * probability - 1)
 
 """
 $(SIGNATURES)
 
-`probability`-quantile of a Student-t distribution with `dof` degrees of
-freedom, i.e. `t` such that `P(T ≤ t) = probability`. Used by
-`_detect_bit_edge_cfar` in place of a standard-normal quantile as a
-**small-sample penalty**, not because the detector's z-score is exactly
-Student-t distributed. The z-score there divides the energy gap by a standard
-error built from a variance *estimated* over `peak_bin_count` bins; a normal
-threshold treats that estimate as exact and is badly overconfident when the
-count is tiny (its ~3.9 threshold is a ~10% per-phase false alarm at one d.o.f.,
-not the intended ~1e-4), which let a variance-collapsed 1–2-bin fluctuation lock
-(JuliaGNSS/Tracking#124 fixed a 1-block hard-detector miss; this closes the soft
-detector's own few-bin false-lock). The t-quantile is the right *shape* of
-correction — it grows steeply as `dof → 1` and relaxes to the normal quantile as
-`dof → ∞` (so mature many-bin locks are unaffected, no cutoff needed) — but its
-nominal `dof = peak_bin_count − 1` is a heuristic, **not** the true degrees of
-freedom: the per-bin values are χ² (non-central) energies rather than Gaussian,
-and the competing phases share blocks (correlated), so the exact sampling
-distribution is neither normal nor Student-t and the realised false-alarm rate
-is only approximately the nominal one. It is used as a conservative,
-integration-forcing penalty, not an exact calibration.
-
-# Implementation
+`probability`-quantile of a Student-t distribution with `dof` degrees of freedom.
+`_cfar_decide` uses it as a **small-sample penalty** on its threshold: its z-score
+is not exactly Student-t (χ² bin energies, correlated hypotheses), so the nominal
+`dof = peak_bin_count − 1` is a heuristic. What matters is the shape: steep as
+`dof → 1`, the normal quantile as `dof → ∞`.
 
 Hill's algorithm (Hill, G. W. (1970), *Algorithm 396: Student's t-quantiles*,
-Comm. ACM 13(10), 619–620), driven by the two-tailed probability
-`2·(1 − probability)`: `dof = 1` (Cauchy) and `dof = 2` invert in elementary
-functions and are returned exactly, and above that a series in either the
-normal deviate `_norm_quantile` (the near-normal branch, `y > 0.05 + a`)
-or the two-tailed probability itself (the deep-tail branch, `y ≤ 0.05 + a`) is
-used, where `y = (d·two_tailed)^(2/dof)`. The lower tail is reflected by
-symmetry, and the median `t(0.5) = 0` is returned directly — which also avoids
-a `1 − 0.5` self-recursion. The sole caller passes `probability > 0.5` (and
-`dof ≥ 1`, since `peak_bin_count ≥ 2` at the call site).
-
-Hill's series is accurate to ≲2e-4 *relative* — worst around `dof ≈ 3–10`,
-better than 1e-5 by `dof ≈ 50` — which is orders of magnitude finer than the
-nominal-d.o.f. modelling error above, and far too fine to move which block the
-detector locks on. That error buys both of the properties this call site needs,
-against an exact inversion through `SpecialFunctions.beta_inc_inv`:
-
-  - **Allocation-free.** `beta_inc_inv` allocates internal scratch arrays
-    (`zeros(22)` / `zeros(31)` inside the incomplete-beta asymptotic
-    expansions) over part of the `dof` range the detector sweeps. This
-    function runs once per primary-code block for every unsynced satellite, so
-    an allocation here makes `track!` allocate in proportion to the signal
-    length across the whole acquisition — the regression
-    `test/track_in_place.jl`'s pre-sync guard exists to catch.
-  - **Cheap.** `beta_inc_inv` is an iterative Newton solve that evaluates a
-    full regularized incomplete beta per step (~0.2–2.8 µs here); Hill's is a
-    single closed-form pass (~3–78 ns), 10–170× faster over the whole `dof`
-    range and never slower. End to end that is a pre-sync `track!` at 1.7× (200
-    blocks) to 1.3× (900 blocks).
+Comm. ACM 13(10), 619–620) on the two-tailed probability: closed forms at
+`dof = 1, 2`, otherwise a series in the normal deviate or (deep tail) in the
+probability. Accuracy ≲ 2e-4 relative (worst at `dof ≈ 3–10`). Used instead of
+`SpecialFunctions.beta_inc_inv`, which allocates over part of the `dof` range
+(Tracking.jl's `test/track_in_place.jl` requires a zero-allocation pre-sync path)
+and is 10–170× slower.
 """
 function _t_quantile(probability::Float64, dof::Real)
     probability == 0.5 && return 0.0
     probability < 0.5 && return -_t_quantile(1 - probability, dof)
-    # Hill's algorithm is written in terms of the two-tailed probability.
     two_tailed_probability = 2 * (1 - probability)
-    # `dof = 1` is the standard Cauchy, `quantile(p) = cot(π·two_tailed/2)`
-    # (the cotangent form keeps its accuracy in the far tail, where the
-    # equivalent `tan(π(probability − ½))` cancels). At `dof = 2` the CDF
-    # `½·(1 + t/√(2 + t²))` inverts in closed form. Both are exact, and both
-    # are where the series below is weakest.
+    # `dof = 1` is the Cauchy, `cot(π·two_tailed/2)` (accurate in the far tail,
+    # where `tan(π(probability − ½))` cancels); `dof = 2` inverts
+    # `½·(1 + t/√(2 + t²))`. The series is weakest exactly there.
     dof == 1 &&
         return cos(two_tailed_probability * pi / 2) / sin(two_tailed_probability * pi / 2)
     dof == 2 && return sqrt(2 / (two_tailed_probability * (2 - two_tailed_probability)) - 2)
@@ -110,10 +59,7 @@ function _t_quantile(probability::Float64, dof::Real)
     d = ((94.5 / (b + c) - 3) / b + 1) * sqrt(a * pi / 2) * dof
     y = (d * two_tailed_probability)^(2 / dof)
     if y > 0.05 + a
-        # Near-normal branch (large `y`): correct the normal deviate (the
-        # `dof → ∞` limit) by an asymptotic series in `1/dof`. This is where
-        # mature (large-dof) locks land — `y → 1` as the bin count grows — so
-        # the threshold relaxes onto `Φ⁻¹` with no cutoff.
+        # Near-normal branch: asymptotic series in `1/dof` on the normal deviate.
         x = _norm_quantile(probability)
         y = x^2
         dof < 5 && (c += 0.3 * (dof - 4.5) * (x + 0.6))
@@ -121,9 +67,7 @@ function _t_quantile(probability::Float64, dof::Real)
         y = (((((0.4 * y + 6.3) * y + 36) * y + 94.5) / c - y - 3) / b + 1) * x
         y = expm1(a * y^2)
     else
-        # Deep-tail branch (small `y`): a series in the two-tailed probability
-        # itself, used at few-bin / small-dof arguments where the normal deviate
-        # is a poor starting point.
+        # Deep-tail branch: series in the two-tailed probability.
         y =
             (
                 (
@@ -138,38 +82,23 @@ end
 """
 $(SIGNATURES)
 
-Per-hypothesis bin statistics for the soft, maximum-energy CFAR sync
-detectors — one entry per candidate timing hypothesis. It backs **both** soft
-detectors (a signal uses at most one): the GPS L1 C/A bit-edge detector
-`_detect_bit_edge_cfar`, where a hypothesis is an edge phase
-`phase ∈ 0:blocks_per_bit-1` and the bin is one navigation bit, updated by
-`_update_phase_accumulators!`; and the secondary-code detector
-`_detect_secondary_code_cfar`, where a hypothesis is an overlay rotation
-`d ∈ 0:N-1` and the bin is one (overlay-wiped) secondary-code period, updated by
-`_update_secondary_accumulators!`. In both cases it is advanced one
-primary-code block at a time so detection stays O(hypotheses) per block with no
-growing pre-sync history. Below, `period` is `blocks_per_bit` (L1 C/A) or the
-secondary-code length `N`.
+Per-hypothesis bin statistics for the soft CFAR sync detectors, one entry per
+timing hypothesis: bit-edge phase with one-bit bins (`_detect_bit_edge_cfar`,
+`_update_phase_accumulators!`) or overlay rotation with one overlay-wiped
+secondary period per bin (`_detect_secondary_code_cfar`,
+`_update_secondary_accumulators!`). O(hypotheses) per block, no growing history.
+`period` is `blocks_per_bit` or the secondary-code length `N`.
 
-The vectors are mutated in place across the immutable [`BitBuffer`](@ref)
-reconstructions (the same pattern as `soft_bits`). This is deliberate: the
-accumulators are streaming state advanced every block, and an immutable
-representation would either inline ~660 B into every per-block `BitBuffer`
-copy (≈6× the heap traffic, dead weight post-sync) or box a fresh value
-each block — both reintroduce the per-block allocation this design exists
-to avoid. A single shared, in-place-updated buffer per satellite is the
-allocation-free choice.
+The vectors are mutated in place across [`BitBuffer`](@ref) rebuilds: an immutable
+form would be copied (~660 B) or boxed every block, allocating pre-sync.
 
 Fields (all length `period` once seeded; empty before the first block):
 
-  - `open_bin_sum` — coherent sum of the hypothesis's *currently open* bin
-    (overlay-wiped for the secondary-code detector).
-  - `mean_bin_energy` / `bin_energy_sum_of_squared_deviations` — Welford running mean and
-    sum of squared deviations (`M₂ = Σ(energyᵢ − mean)²`) of the hypothesis's
-    *completed*-bin energies, for a numerically stable variance. The bin
-    count is not stored — it is `div(num_blocks - hypothesis, period)`.
-  - `last_bin_polarity` — sign (`±1`, `0` before the first bin) of the most
-    recently completed bin's real part, i.e. the lock polarity.
+  - `open_bin_sum`: coherent sum of the open bin (overlay-wiped for secondary).
+  - `mean_bin_energy` / `bin_energy_sum_of_squared_deviations`: Welford mean and
+    `M₂ = Σ(energyᵢ − mean)²` of the completed-bin energies; the bin count is
+    `div(num_blocks - hypothesis, period)`.
+  - `last_bin_polarity`: sign of the last completed bin's real part (`0` before).
 """
 struct PhaseAccumulators
     open_bin_sum::Vector{ComplexF64}
@@ -184,8 +113,7 @@ PhaseAccumulators() = PhaseAccumulators(ComplexF64[], Float64[], Float64[], Int8
 @inline _is_seeded(accumulators::PhaseAccumulators, blocks_per_bit::Int) =
     length(accumulators.mean_bin_energy) == blocks_per_bit
 
-# Size the (initially empty) accumulator vectors to `blocks_per_bit` phases
-# and zero them.
+# Size the accumulator vectors to `blocks_per_bit` phases and zero them.
 function _seed_phase_accumulators!(accumulators::PhaseAccumulators, blocks_per_bit::Int)
     for vector in (
         accumulators.open_bin_sum,
@@ -198,11 +126,8 @@ function _seed_phase_accumulators!(accumulators::PhaseAccumulators, blocks_per_b
     _reset_phase_accumulators!(accumulators)
 end
 
-# Zero the accumulators in place, keeping their current length. Used by the
-# boundary-overshoot resync (`_resync_bit_buffer`), where `_is_seeded` is
-# already satisfied at the right length, so the next pre-sync block would
-# otherwise fold into the *old* lock's bin statistics instead of starting a
-# fresh search. A no-op on the hard-decision path, whose vectors stay empty.
+# Zero in place, keeping the length: on resync `_is_seeded` is still true, so
+# without this the next block would fold into the old statistics.
 function _reset_phase_accumulators!(accumulators::PhaseAccumulators)
     fill!(accumulators.open_bin_sum, zero(ComplexF64))
     fill!(accumulators.mean_bin_energy, 0.0)
@@ -214,14 +139,11 @@ end
 """
 $(SIGNATURES)
 
-Fold the `prompt` of the primary-code block at 0-based `block_index` into
-the [`PhaseAccumulators`](@ref) (in place) for a `blocks_per_bit`-phase
-bit-edge search. Each `phase`'s bins start at index `phase` and span
-`blocks_per_bit` blocks; `prompt` is added to every phase whose bin is open
-at `block_index` (`block_index ≥ phase`), and the single phase whose bin
-ends at `block_index` has that completed bin's energy `|bin_sum|²` folded
-into its Welford mean / sum-of-squared-deviations and its polarity recorded.
-O(blocks_per_bit) per call, allocation-free.
+Fold the `prompt` of the block at 0-based `block_index` into the
+[`PhaseAccumulators`](@ref) of a `blocks_per_bit`-phase bit-edge search. Phase
+`phase`'s bins start at block `phase`; the prompt joins every open bin, and the one
+phase whose bin ends here folds `|bin_sum|²` into its Welford statistics and
+records its polarity.
 """
 function _update_phase_accumulators!(
     accumulators::PhaseAccumulators,
@@ -235,7 +157,7 @@ function _update_phase_accumulators!(
         if (block_index - phase) % blocks_per_bit == blocks_per_bit - 1
             bin_sum = accumulators.open_bin_sum[phase+1]
             bin_energy = abs2(bin_sum)
-            # Welford update of this phase's completed-bin energy mean / M₂.
+            # Welford update.
             completed_bin_count = div(block_index + 1 - phase, blocks_per_bit)
             energy_delta = bin_energy - accumulators.mean_bin_energy[phase+1]
             accumulators.mean_bin_energy[phase+1] += energy_delta / completed_bin_count
@@ -251,67 +173,29 @@ end
 """
 $(SIGNATURES)
 
-Shared CFAR (constant-false-alarm-rate) decision core for the soft,
-maximum-energy sync detectors — both the GPS L1 C/A bit-edge detector
-`_detect_bit_edge_cfar` and the secondary-code detector
-`_detect_secondary_code_cfar` route through here. Given the
-per-hypothesis running statistics carried in [`PhaseAccumulators`](@ref) it
-identifies the maximum-energy hypothesis, its closest competitor, and decides
-whether the peak is significant enough to lock. The two detectors differ only in
-what a "hypothesis" is (a bit-edge phase vs. a secondary-code rotation) and how
-the accumulators are fed; the decision below is identical.
+Shared CFAR (constant-false-alarm-rate) decision of the soft sync detectors:
+find the maximum-energy hypothesis and its closest competitor in the
+[`PhaseAccumulators`](@ref) statistics and decide whether the peak is significant.
+`period` is both the blocks per bin and the number of hypotheses; `confidence` is
+the target `1 − P(false lock)`.
 
-Arguments:
+Returns `(accepted, peak_index, peak_bin_count)`: whether the gap is significant
+(the caller still gates on the bin boundary), the 0-based winner (`-1` if none)
+and its completed-bin count.
 
-  - `mean_bin_energy` — per-hypothesis mean completed-bin energy
-    (`accumulators.mean_bin_energy`).
-  - `bin_energy_sum_of_squared_deviations` — per-hypothesis Welford `M₂`
-    (`accumulators.bin_energy_sum_of_squared_deviations`), used only for the
-    peak.
-  - `num_blocks` — total primary-code blocks folded so far.
-  - `period` — number of primary-code blocks per bin, which is also the number
-    of competing hypotheses: `blocks_per_bit` (20 for L1 C/A) or the
-    secondary-code length `N`. A hypothesis `h ∈ 0:period-1` has completed-bin
-    count `div(num_blocks - h, period)`.
-  - `confidence` — target `1 − P(false lock)`.
-
-Returns `(accepted, peak_index, peak_bin_count)`: `accepted` is whether the
-peak's energy gap over its runner-up is statistically significant (the caller
-still applies its own bin-boundary gate before firing); `peak_index` is the
-0-based winning hypothesis (`-1` if none qualifies) and `peak_bin_count` its
-completed-bin count.
-
-# Statistic
-
-Each hypothesis coherently sums its `period`-block bins and the per-bin energy
-`|Σ|²` is folded into a running mean; the true hypothesis keeps full coherent
-gain on every bin while wrong ones lose energy (L1 C/A: wrong phases straddle a
-data-bit transition; secondary code: wrong rotations fail to wipe the overlay).
-The per-hypothesis mean bin energy is therefore the maximum-likelihood timing
-statistic.
-
-# CFAR confidence
-
-The noise scale is the *bin-to-bin* sample variance of the winning hypothesis's
-own completed-bin energies (Welford, numerically stable at any bin count). The
-true hypothesis's bins vary only with thermal noise and slow drift — exactly the
-run-to-run spread the test must compare the gap against. The peak is accepted
-only when it beats the runner-up by a margin significant under that spread:
+The true hypothesis keeps full coherent gain on every bin while wrong ones lose
+energy (straddling a bit transition, or failing to wipe the overlay), so the mean
+bin energy is the maximum-likelihood timing statistic. The noise scale is the
+winner's *bin-to-bin* energy variance, which captures thermal noise and slow
+drift. The peak is accepted only when
 
     z_score = energy_gap / standard_error
             ≥ t⁻¹(1 - false_alarm_probability/(period - 1);  ν = peak_bin_count − 1)
 
-where the standard error combines the peak's per-bin energy variance over the
-peak and runner-up bin counts, `false_alarm_probability = 1 - confidence` is
-Bonferroni-split over the `period - 1` competing hypotheses, and the quantile is
-the Student-t inverse-CDF `_t_quantile` at a nominal `ν = peak_bin_count − 1`
-d.o.f. — a small-sample penalty for dividing by a variance estimated over that
-few bins, not a claim that `z_score` is exactly Student-t (the per-bin energies
-are χ² and the hypotheses correlated; see `_t_quantile`). A real peak has a
-structural gap that dwarfs the thermal bin-to-bin spread, so `z_score` grows
-like the square root of the bin count and crosses the threshold sooner at high
-C/N₀ and later in noise — the detector self-paces — while a drift-only asymmetry
-keeps `z_score` bounded and never locks.
+with the standard error over the peak and runner-up bin counts, the false-alarm
+probability Bonferroni-split over the competitors, and `_t_quantile` as a
+small-sample penalty. A real peak's `z_score` grows like √bins, so the detector
+self-paces with C/N₀; a drift-only asymmetry stays bounded and never locks.
 """
 @inline function _cfar_decide(
     mean_bin_energy::AbstractVector{Float64},
@@ -320,15 +204,11 @@ keeps `z_score` bounded and never locks.
     period::Int,
     confidence::Float64,
 )
-    # Need at least two complete bins on some hypothesis before any hypothesis
-    # can serve as a runner-up; below that a transition cannot have been
-    # localized yet.
+    # Need two complete bins on some hypothesis.
     num_blocks < 2 * period && return (false, -1, 0)
 
-    # Single O(period) pass: the peak (highest mean bin energy among hypotheses
-    # with ≥ 2 complete bins) and the two highest hypotheses overall. The
-    # runner-up is the higher of those two that isn't the peak. A hypothesis's
-    # completed-bin count is `div(num_blocks - h, period)`.
+    # One pass: the peak (highest energy with ≥ 2 bins) and the two highest
+    # overall; the runner-up is the higher of those that isn't the peak.
     peak_index = -1
     peak_energy = -1.0
     peak_bin_count = 0          # best, ≥ 2 bins
@@ -357,11 +237,9 @@ keeps `z_score` bounded and never locks.
             peak_bin_count = bin_count
         end
     end
-    # `num_blocks >= 2 * period` guarantees hypothesis 0 has ≥ 2 bins, so
-    # `peak_index` is always set.
+    # Unreachable: hypothesis 0 has ≥ 2 bins here.
     peak_index < 0 && return (false, -1, 0)
 
-    # Runner-up: the highest-energy hypothesis that isn't the peak (any bin count).
     runner_up_energy, runner_up_bin_count =
         best_index == peak_index ? (second_best_energy, second_best_bin_count) :
         (best_energy, best_bin_count)
@@ -370,15 +248,8 @@ keeps `z_score` bounded and never locks.
     energy_gap = peak_energy - runner_up_energy
     energy_gap <= 0 && return (false, peak_index, peak_bin_count)
 
-    # Noise scale: the bin-to-bin variance of the peak hypothesis's own
-    # completed-bin energies, maintained by Welford so it is numerically stable
-    # at any bin count. The true hypothesis has pure (non-straddling) bins, so
-    # this is the genuine run-to-run spread — thermal noise *and* slow drift /
-    # quantization — which a within-bin residual would miss and then mistake a
-    # tiny systematic cross-hypothesis asymmetry for a significant peak. The
-    # runner-up is assumed to share this per-bin variance (it can only be larger,
-    # from its straddling bins, so this is the optimistic — fastest-locking —
-    # choice that still rejects drift-only asymmetries).
+    # The runner-up is assumed to share the peak's variance (its straddling bins
+    # can only make it larger): the fastest-locking choice that rejects drift.
     @inbounds bin_energy_variance =
         bin_energy_sum_of_squared_deviations[peak_index+1] / (peak_bin_count - 1)
     standard_error =
@@ -386,27 +257,11 @@ keeps `z_score` bounded and never locks.
     z_score =
         standard_error > 0 ? energy_gap / standard_error : (energy_gap > 0 ? Inf : 0.0)
 
-    # `confidence` is the (1 - false-sync probability) target, Bonferroni-split
-    # over the `period - 1` competing hypotheses. Clamp the quantile argument to
-    # the open interval (0, 1): otherwise `confidence = 1.0` (or the rounding of
-    # `1 - tiny/(period-1)` up to 1.0) yields a `quantile(1) = NaN`, and the
-    # `z_score < threshold` gate would silently pass (NaN comparisons are false),
-    # turning "maximum confidence" into "lock immediately".
+    # Clamp to (0, 1): `confidence = 1.0` would give a NaN threshold, which the
+    # gate below would pass, locking immediately.
     false_alarm_probability = 1 - confidence
     quantile_argument =
         clamp(1 - false_alarm_probability / (period - 1), nextfloat(0.0), prevfloat(1.0))
-    # `standard_error` divides by a variance ESTIMATED from `peak_bin_count`
-    # bins, so a normal threshold is badly overconfident at 1-2 bins (its ~3.9
-    # value is a ~10% per-hypothesis false alarm at 1 d.o.f., not the intended
-    # 1e-4), which let a variance-collapsed 2-bin fluctuation lock. Apply the
-    # Student-t quantile at a nominal `peak_bin_count - 1` d.o.f. as a
-    # small-sample penalty (NOT because `z_score` is exactly Student-t: the
-    # per-bin energies are χ² and the hypotheses correlated, so the nominal
-    # d.o.f. and false-alarm rate are approximate — see `_t_quantile`). It
-    # demands z ≈ 6000 at 1 d.o.f. and relaxes to the normal threshold as bins
-    # accumulate, forcing enough integration before a lock (which also lets the
-    # carrier settle) while leaving mature clean locks (many bins ⇒ t ≈ normal)
-    # unchanged.
     z_threshold = _t_quantile(quantile_argument, peak_bin_count - 1)
     z_score < z_threshold && return (false, peak_index, peak_bin_count)
 
@@ -416,38 +271,12 @@ end
 """
 $(SIGNATURES)
 
-Soft-decision, CFAR bit-edge detector — a signal-agnostic maximum-energy
-timing synchronizer for any signal whose navigation bit spans more than one
-primary-code period with no secondary code (selected by
-[`uses_soft_bit_edge_detection`](@ref); GPS L1 C/A is the current example
-with `blocks_per_bit = 20`). Signals with a periodic secondary code (GPS
-L5I, GPS L1C-P) instead use the soft `_detect_secondary_code_cfar` or
-the hard `_secondary_code_search`, which correlate against a known
-overlay.
+Soft CFAR bit-edge detector (see [`uses_soft_bit_edge_detection`](@ref); GPS L1 C/A)
+running `_cfar_decide` over the edge phases `0:blocks_per_bit-1`.
 
-The per-phase bin statistics are carried in `accumulators`
-([`PhaseAccumulators`](@ref), advanced in place by
-`_update_phase_accumulators!`); `blocks_per_bit` is the number of
-primary-code blocks per navigation bit (20 for L1 C/A) and `num_blocks` is
-the total number of prompts seen. The maximum-energy hypothesis test — peak
-vs. runner-up, Welford noise scale, and Student-t CFAR threshold — is the
-shared `_cfar_decide` core (the hypothesis here is the bit-edge
-`phase ∈ 0:blocks_per_bit-1`). The detector is O(blocks_per_bit) per call — no
-rescan of history — so it stays cheap on the pre-sync hot path no matter how
-long sync takes.
-
-# Boundary firing
-
-Detection is reported (`found = true`) only when the most recent block also
-*ends* the winning phase's bit (`num_blocks % blocks_per_bit == peak_phase`),
-so the upcoming integration starts a fresh navigation bit. This keeps the
-`phase = 0` contract — and, crucially, the post-sync coherent
-`blocks_per_bit`-block integration — aligned to the true bit grid, which is
-what makes the off-by-one lock of issue #124 structurally impossible: the
-detector can only ever fire at the energy-maximizing phase's own boundary,
-never at a neighbour's.
-
-`polarity` is the sign of the most recently completed bin's coherent sum.
+Fires only when the latest block *ends* the winning phase's bit, so the upcoming
+integration starts a fresh bit (rules out the off-by-one lock of JuliaGNSS/Tracking.jl#124).
+`polarity` is the sign of the last completed bin's sum.
 """
 function _detect_bit_edge_cfar(
     accumulators::PhaseAccumulators,
@@ -464,8 +293,6 @@ function _detect_bit_edge_cfar(
     )
     accepted || return SyncResult(false, 0, Int8(0))
 
-    # Fire only at the winning phase's own bit boundary so the upcoming
-    # integration starts a new bit.
     num_blocks % blocks_per_bit != peak_phase && return SyncResult(false, 0, Int8(0))
 
     @inbounds polarity =
@@ -476,26 +303,10 @@ end
 """
 $(SIGNATURES)
 
-Fold the `prompt` of the primary-code block at 0-based `block_index` into the
-[`PhaseAccumulators`](@ref) (in place) for a soft, maximum-energy secondary-code
-rotation search of period `N = secondary_code_length`. This is the
-secondary-code analog of `_update_phase_accumulators!`: each rotation
-hypothesis `d ∈ 0:N-1` is a candidate secondary-chip alignment whose bins span
-`N` blocks starting at index `d`. Unlike the bit-edge case, each block is
-multiplied by the *known* secondary chip before being summed, so the correct
-rotation wipes the overlay and every block in the bin adds coherently
-(`|Σ p·s|²` large) while wrong rotations straddle the fixed overlay transitions
-and lose energy.
-
-`signal` / `prn` select the secondary code via `secondary_value`; under
-hypothesis `d`, block `i` carries secondary chip `mod(i - d, N)` (`±1`), so the
-bin completes when `chip == N - 1` and chip 0 is anchored to the physical
-secondary-code chip 0 — the same overlay the replica applies post-sync, and the
-same rotation the hard `_secondary_code_search` locks (its bespoke packed
-reference differs only by an overall polarity, which the energy statistic here is
-invariant to). Each completed bin's energy `|bin_sum|²` is folded into that
-rotation's Welford mean / sum-of-squared-deviations and its polarity recorded.
-O(N) per call, allocation-free.
+The secondary-code analog of `_update_phase_accumulators!`: rotation `d ∈ 0:N-1`
+has `N`-block bins starting at block `d`, and block `i` is multiplied by secondary
+chip `mod(i - d, N)` (the overlay the post-sync replica applies) before summing,
+so the correct rotation adds coherently.
 """
 function _update_secondary_accumulators!(
     accumulators::PhaseAccumulators,
@@ -515,7 +326,7 @@ function _update_secondary_accumulators!(
         if chip == N - 1
             bin_sum = accumulators.open_bin_sum[d+1]
             bin_energy = abs2(bin_sum)
-            # Welford update of this rotation's completed-bin energy mean / M₂.
+            # Welford update.
             completed_bin_count = div(block_index + 1 - d, N)
             energy_delta = bin_energy - accumulators.mean_bin_energy[d+1]
             accumulators.mean_bin_energy[d+1] += energy_delta / completed_bin_count
@@ -531,33 +342,13 @@ end
 """
 $(SIGNATURES)
 
-Soft-decision, CFAR secondary-code sync detector — the maximum-energy analog of
-`_detect_bit_edge_cfar` for signals carrying a short periodic secondary /
-overlay code (selected by [`uses_soft_secondary_code_detection`](@ref) — GPS
-L5I/L5Q, Galileo E1C / E5aI / E5aQ / E5bI / E5bQ / E6C and BeiDou B1I / B3I /
-B2aI / B2aQ). The per-rotation bin statistics are carried in `accumulators`
-([`PhaseAccumulators`](@ref), advanced in place by
-`_update_secondary_accumulators!`); `secondary_code_length` (`N`) is both
-the bin length and the number of rotation hypotheses, and `num_blocks` is the
-total number of prompts seen. The peak-vs-runner-up hypothesis test is the shared
-`_cfar_decide` core.
+Soft CFAR secondary-code detector, the analog of `_detect_bit_edge_cfar` for short
+overlays (see [`uses_soft_secondary_code_detection`](@ref)). Unlike the hard
+`_secondary_code_search` it rejects the noise-driven false locks a short template
+match is prone to.
 
-Compared with the hard-decision rotation sweep `_secondary_code_search`,
-this uses the *soft* prompt magnitude and a CFAR confidence, so it rejects the
-noise-driven false locks a short (e.g. 10-chip NH10) hard template match is prone
-to and self-paces with C/N₀.
-
-# Boundary firing
-
-Detection is reported only when the most recent block also *ends* the winning
-rotation's known-code period (`num_blocks % N == peak_rotation`), so the upcoming
-integration starts at secondary chip 0 — the true chip-0 boundary, since each
-rotation is anchored to the physical secondary chip 0 (see
-`_update_secondary_accumulators!`). The reported `SyncResult.phase` is
-therefore always `0`, and downstream code-phase snapping
-(Tracking.jl's `_snap_code_phase_from_synced_signal`) anchors on that boundary.
-`polarity` is the sign of the winning period's coherent (overlay-wiped) sum
-(resolved to the data-bit / carrier sign downstream by the navigation preamble).
+Fires only when the latest block ends the winning rotation's period, so the
+upcoming integration starts at secondary chip 0 and `SyncResult.phase` is `0`.
 """
 function _detect_secondary_code_cfar(
     accumulators::PhaseAccumulators,
@@ -574,8 +365,6 @@ function _detect_secondary_code_cfar(
     )
     accepted || return SyncResult(false, 0, Int8(0))
 
-    # Fire only at the winning rotation's own period boundary so the upcoming
-    # integration starts at secondary chip 0.
     num_blocks % secondary_code_length != peak_rotation &&
         return SyncResult(false, 0, Int8(0))
 
@@ -587,35 +376,14 @@ end
 """
 $(SIGNATURES)
 
-Generic **hard-decision** secondary-code sync detector for signals on the
-hard path — among the currently implemented signals the two 1800-chip overlay
-pilots, GPS L1C-P and BeiDou B1C-P, route through here. The short-secondary-code
-signals (GPS L5I/L5Q, the other Galileo E1/E5/E6 components, BeiDou
-B1I/B3I/B2a) were moved to the soft, maximum-energy
-`_detect_secondary_code_cfar` (see
-[`uses_soft_secondary_code_detection`](@ref)); GPS L1 C/A uses the soft
-bit-edge `_detect_bit_edge_cfar`. Unlike those, this runs a full
-rotation search against a *known* overlay code, so it locks after a single
-secondary-code period in the worst case and recovers the true
-secondary-code phase.
+**Hard-decision** secondary-code rotation search (currently the 1800-chip overlay
+pilots GPS L1C-P and BeiDou B1C-P); locks within one secondary period.
 
-`received` is the prompt-sign sliding window with the newest block in
-bit 0. `reference` is the secondary code packed in that **same**
-newest-first order — bit `i` holds secondary chip `(N - 1 - i)` — so that
-when the most recent `N` blocks span exactly one period ending on its
-last chip, `received & mask == reference`. `N` is the secondary-code
-length.
-
-The search rotates the low `N` bits of `received` left by `d ∈ 0:N-1`,
-tracking the best positive- and negated-polarity Hamming match in one
-pass. The winning rotation `d` is how far the buffer leads the reference,
-which maps to the secondary-chip offset of the **upcoming** integration
-as `phase = mod(N - d, N)` — exactly the value the post-sync `code_phase`
-snap (Tracking.jl's `_snap_code_phase_from_synced_signal`) anchors on. Returns
-`SyncResult(false, 0, 0)` when the best distance exceeds `max_errors`.
-
-Inlined so the per-signal `reference` / `N` constants fold at the call
-site (the L1C-P window is 1800).
+`received` is the prompt-sign window, newest block in bit 0; `reference` is packed
+newest-first (bit `i` = chip `N - 1 - i`). Rotating the low `N` bits left by `d`
+finds the best Hamming match of either polarity; the upcoming integration's chip is
+`mod(N - d, N)` (Tracking.jl's `_snap_code_phase_from_synced_signal` anchor). No
+lock if the best distance exceeds `max_errors`.
 """
 @inline function _secondary_code_search(
     received::B,
@@ -624,21 +392,16 @@ site (the L1C-P window is 1800).
     max_errors::Int,
 ) where {B<:Unsigned}
     N = secondary_code_length
-    # `reference` lives in the low `N` bits; mask the search to that window.
-    # `one(B) << N` is undefined when `N` equals the full bit width
-    # (e.g. UInt1800 for L1C-P), so special-case the exact-width buffer.
+    # `one(B) << N` is undefined for an exact-width buffer (UInt1800).
     mask = N == 8 * sizeof(B) ? ~zero(B) : (one(B) << N) - one(B)
     masked = received & mask
     best_d = 0
     best_dist = N + 1
     best_pol = Int8(0)
     @inbounds for d = 0:(N-1)
-        # Rotate-left by `d` within the N-bit window. `d == 0` is special-
-        # cased because `masked >> N` is undefined for an exact-width buffer.
+        # Rotate left within N bits; `masked >> N` is undefined at exact width.
         shifted = d == 0 ? masked : ((masked << d) | (masked >> (N - d))) & mask
         dist_pos = count_ones(shifted ⊻ reference)
-        # Both operands occupy only the low `N` bits, so the negated-polarity
-        # distance is the complement within that window.
         dist_neg = N - dist_pos
         if dist_pos < best_dist
             best_dist = dist_pos
@@ -658,20 +421,11 @@ end
 """
 $(SIGNATURES)
 
-Shared detector body for signals with no sub-block boundary to find, which
-therefore report `found = true` from the very first integration.
-
-Two shapes qualify. Most are signals that broadcast one channel symbol per
-primary code period (GPS L1C-D, GPS L2CM, Galileo E1B / E6-B, BeiDou
-B2b-I / B1C-D): the buffer of primary-block signs is itself the symbol
-stream, leaving downstream consumers (GNSSDecoder.jl) to resolve the
-residual ±1 polarity ambiguity via the navigation preamble. The other is
-Galileo E5a-QP, which carries neither data nor an overlay, so every block
-boundary is equivalent and the lock gates only its switch to the
-whole-code-cycle coherent integration.
-
-A signal of either shape delegates its `detect_bit_or_secondary_code_sync`
-method here.
+Detector for signals with no sub-block boundary to find: `found = true` from the
+first integration. Covers one symbol per code period (GPS L1C-D, L2CM, Galileo
+E1B / E6-B, BeiDou B2b-I / B1C-D; GNSSDecoder.jl resolves the ±1 polarity from
+the preamble) and Galileo E5a-QP (no data, no overlay; the lock only gates
+whole-code-cycle integration).
 """
 @inline function _detect_symbol_is_code_block_sync(
     ::AbstractGNSSSignal,
@@ -685,18 +439,14 @@ end
 """
 $(SIGNATURES)
 
-Shared detector body for signals that lock onto a periodic secondary /
-overlay code (GPS L5I's NH10, GPS L1C-P's 1800-chip overlay): wait until
-the sliding `code_block_bits` window covers one full secondary-code
-period, then run the `_secondary_code_search` rotation sweep
-against the signal's packed reference (`_packed_secondary_code`).
-The tolerance is a percentage of the secondary-code window, discretized
-per signal as `floor(tolerance × N)` — see
-[`get_bit_edge_or_secondary_code_tolerance`](@ref).
+Hard-path detector for secondary-coded signals: once `N` blocks are buffered, run
+`_secondary_code_search` against `_packed_secondary_code` allowing
+`floor(tolerance × N)` errors ([`get_bit_edge_or_secondary_code_tolerance`](@ref)).
 
-A new secondary-coded signal only needs a `_packed_secondary_code`
-method (plus `get_code_block_buffer_type`) and a
-`detect_bit_or_secondary_code_sync` method delegating here.
+A new secondary-coded signal needs `get_secondary_code`, a
+`get_code_block_buffer_type` of at least `N` bits and a
+`detect_bit_or_secondary_code_sync` method delegating here (reached by soft-path
+signals only if their trait is overridden).
 """
 @inline function _detect_secondary_code_sync(
     signal::AbstractGNSSSignal,
@@ -719,31 +469,13 @@ end
 """
 $(SIGNATURES)
 
-Reference for `_detect_secondary_code_sync`: return the signal's secondary /
-overlay code for `prn`, packed into the buffer type `B` in the same newest-first
-order the prompt buffer fills — bit `i` holds secondary chip `N - 1 - i`, so
-that when the most recent `N` blocks span exactly one period ending on its last
-chip, `received & mask == reference` (see `_secondary_code_search`).
-
-The single generic method below covers every signal GNSSSignals defines; it
-stays a `function` others can specialize only for a signal whose overlay is
-not reachable through `get_secondary_code`.
+The secondary code for `prn` packed into `B` in `_secondary_code_search`'s order.
+Specialize only for an overlay not reachable through `get_secondary_code`.
 """
 function _packed_secondary_code end
 
-# The only packer: derive the reference directly from the signal's
-# `SecondaryCode` (`get_secondary_code`), setting bit `N - 1 - k` iff
-# secondary chip `k` is positive. Works for both `SharedSecondaryCode`
-# (GPS L5I's NH10 / L5Q's NH20, Galileo E1C's CS25 / E5aI's CS20) and
-# `PerPRNSecondaryCode` (Galileo E5aQ's per-PRN CS100, the 1800-chip overlays
-# of GPS L1C-P and BeiDou B1C-P), so a secondary-coded signal needs no bespoke
-# method — it only picks a wide enough `get_code_block_buffer_type`. Because
-# every signal's reference comes from this one convention, the reported
-# `polarity` means the same thing across signals: `+1` iff the prompt signs
-# follow `get_secondary_code`, which is the same overlay the post-sync replica
-# and the soft `_update_secondary_accumulators!` apply. The rotation
-# search in `_secondary_code_search` tries both polarities, so the
-# convention only sets that sign, not whether the lock is found.
+# Bit `N - 1 - k` set iff chip `k` is positive; one convention for all signals, so
+# `polarity = +1` always means the prompt signs follow `get_secondary_code`.
 @inline function _packed_secondary_code(
     ::Type{B},
     signal::AbstractGNSSSignal,
@@ -763,31 +495,13 @@ end
 """
 $(SIGNATURES)
 
-BitBuffer to buffer bits.
+Bit sync state and decoded soft bits of one signal.
 
-The `code_block_buffer` field is the sync-search sliding window — its
-width `B` is chosen per signal by [`get_code_block_buffer_type`](@ref) so
-that a single integer can hold the entire pre-sync search horizon (one
-NH10 period for GPS L5I, 40 primary blocks for GPS L1 C/A, 1800 chips
-for the GPS L1C-P overlay, etc.). After sync the field is dead state and
-the decoded navigation bits accumulate as **soft bits** in `soft_bits`
-(one polarity-corrected coherent prompt sum per bit, sign = the hard
-bit). Soft bits are the only bit store — decoders take them directly
-(soft-decision Viterbi for Galileo E1B, LDPC for GPS L1C-D, confidence
-weighting everywhere else), and a hard decision is just `soft_bit > 0`.
-Because the store is a growable vector rather than the fixed `UInt128`
-it used to be, there is no limit on how many bits may accumulate between
-resets.
-
-The `phase_acc` field holds the incremental per-hypothesis bin statistics
-([`PhaseAccumulators`](@ref)) consumed by whichever soft CFAR sync detector the
-signal uses — `_detect_bit_edge_cfar` for signals whose
-[`uses_soft_bit_edge_detection`](@ref) is `true` (GPS L1 C/A), or
-`_detect_secondary_code_cfar` for those whose
-[`uses_soft_secondary_code_detection`](@ref) is `true` (every signal with a
-secondary code of length `1 < N ≤ 100`). It is seeded and updated only for those
-signals; for all others (hard-decision path) it stays empty. Its size is bounded
-(one entry per hypothesis), so there is no growing pre-sync history.
+`code_block_buffer` is the pre-sync window of prompt signs, `B` bits wide
+([`get_code_block_buffer_type`](@ref)), unused after sync. `soft_bits` collects
+the decoded bits (see [`get_soft_bits`](@ref)), unbounded between resets.
+`phase_acc` holds the soft CFAR detector's [`PhaseAccumulators`](@ref), empty on
+the hard path.
 """
 struct BitBuffer{B<:Unsigned}
     code_block_buffer::B
@@ -801,9 +515,7 @@ struct BitBuffer{B<:Unsigned}
     phase_acc::PhaseAccumulators
 end
 
-# Default constructor preserves the pre-refactor `UInt128`-backed search
-# buffer. Once `get_code_block_buffer_type` lands (Step 2) the per-signal
-# `TrackedSignal` constructor picks the right width instead.
+# Untyped default: a `UInt128` search buffer.
 function BitBuffer()
     BitBuffer{UInt128}(
         zero(UInt128),
@@ -818,7 +530,6 @@ function BitBuffer()
     )
 end
 
-# Typed empty constructor used by the per-signal `TrackedSignal` path.
 function BitBuffer{B}() where {B<:Unsigned}
     BitBuffer{B}(
         zero(B),
@@ -833,11 +544,8 @@ function BitBuffer{B}() where {B<:Unsigned}
     )
 end
 
-# Convenience outer constructor for the pre-sync / post-sync search state
-# without the phase / polarity arguments (assumed zero). Used by test and
-# benchmark code that builds a `BitBuffer` from raw integer / Complex{Int}
-# literals. `soft_bits` seeds the decoded-bit store; it is aliased, not
-# copied, so the caller can observe in-place pushes.
+# For tests and benchmarks: zero phase / polarity, empty accumulators; `soft_bits`
+# is aliased, not copied.
 function BitBuffer(
     code_block_buffer::B,
     code_block_buffer_length::Integer,
@@ -864,10 +572,9 @@ end
     has_bit_or_secondary_code_been_found(bit_buffer::BitBuffer)
     has_bit_or_secondary_code_been_found(state::SignalLoopState)
 
-Whether the signal's navigation-bit boundary (data signals) or secondary-code
-phase (pilots) has been found. From then on the signal may be integrated over
-more than one primary code period, and completed bits are collected for
-[`get_soft_bits`](@ref).
+Whether the navigation-bit boundary or secondary-code phase has been found; from
+then on the signal may integrate over several code periods and bits are collected
+for [`get_soft_bits`](@ref).
 """
 @inline has_bit_or_secondary_code_been_found(bit_buffer::BitBuffer) = bit_buffer.found
 
@@ -875,152 +582,65 @@ more than one primary code period, and completed bits are collected for
     get_soft_bits(bit_buffer::BitBuffer)
     get_soft_bits(state::SignalLoopState)
 
-The soft bits decoded so far: for each completed navigation bit, the sum of
-its filtered prompts (real part, after de-rotation). A hard decision is the
-sign, `soft_bit > 0`; the magnitude is the bit's reliability.
+The soft bits decoded so far: per navigation bit, the polarity-corrected real part
+of the summed de-rotated prompts. The sign is the hard decision, the magnitude the
+reliability. Bits recovered from the pre-sync window are sign votes scaled by the
+sync-time prompt magnitude, to stay comparable.
 
-Bits recovered from the pre-sync window at the moment of bit sync only have
-the ±1 signs of their prompts available; their sign-vote sum is scaled by the
-sync-time prompt magnitude so that their magnitudes stay comparable with the
-coherently accumulated post-sync bits.
-
-This is the buffer's own vector, not a copy. The consumer drains it (`empty!`)
-after reading; it has room for 64 bits before it grows and allocates.
+The buffer's own vector, not a copy: drain it (`empty!`) after reading; it holds
+64 bits before it allocates.
 """
 @inline get_soft_bits(bit_buffer::BitBuffer) = bit_buffer.soft_bits
 
 """
 $(SIGNATURES)
 
-Width `B` of the packed prompt-sign buffer (`BitBuffer.code_block_buffer`) for
-`signal`, returned as a concrete `Unsigned` subtype.
+Concrete `Unsigned` width `B` of `BitBuffer.code_block_buffer` for `signal`
+(default `UInt64`), a type parameter so construction is type-stable.
 
-That packed buffer is the sliding-window search horizon **only for the
-hard-decision path** — the rotation/Hamming sweep `_secondary_code_search`,
-which among the currently implemented signals is used by the two 1800-chip
-overlay pilots, GPS L1C-P and BeiDou B1C-P. The soft-decision CFAR detectors
-(`_detect_bit_edge_cfar` for GPS L1 C/A,
-`_detect_secondary_code_cfar` for the short-secondary-code signals) read
-the incremental [`PhaseAccumulators`](@ref) instead, so for those signals the
-packed buffer of this width is built but not consulted for detection — it is
-vestigial (the width could be `UInt8`; it is left at the horizon width below for
-uniformity and so the hard path stays available). The table gives, per signal,
-the returned width and — for the hard path — the horizon it must hold:
-
-| Signal        | Returns    | Detector / buffer role                              |
-|:------------- |:---------- |:--------------------------------------------------- |
-| GPS L1 C/A    | `UInt64`   | soft bit-edge CFAR — packed buffer vestigial        |
-| Galileo E1B   | `UInt8`    | symbol = primary period, buffer unused              |
-| GPS L5I       | `UInt32`   | soft secondary CFAR — packed buffer vestigial       |
-| GPS L5Q       | `UInt32`   | soft secondary CFAR — packed buffer vestigial       |
-| GPS L1C-D     | `UInt8`    | symbol = primary period, buffer unused              |
-| GPS L1C-P     | `UInt1800` | **hard** rotation sweep — 1800-chip overlay horizon |
-| GPS L2CM      | `UInt8`    | symbol = primary period, buffer unused              |
-| GPS L2CL      | `UInt8`    | dataless pilot, no sync, buffer unused              |
-| Galileo E1C   | `UInt32`   | soft secondary CFAR — packed buffer vestigial       |
-| Galileo E5a-I | `UInt32`   | soft secondary CFAR — packed buffer vestigial       |
-| Galileo E5a-Q | `UInt128`  | soft secondary CFAR — packed buffer vestigial       |
-| Galileo E5b-I | `UInt32`   | soft secondary CFAR — packed buffer vestigial       |
-| Galileo E5b-Q | `UInt128`  | soft secondary CFAR — packed buffer vestigial       |
-| Galileo E6-B  | `UInt8`    | symbol = primary period, buffer unused              |
-| Galileo E6-C  | `UInt128`  | soft secondary CFAR — packed buffer vestigial       |
-| BeiDou B1I    | `UInt32`   | soft secondary CFAR — packed buffer vestigial       |
-| BeiDou B3I    | `UInt32`   | soft secondary CFAR — packed buffer vestigial       |
-| BeiDou B2a-I  | `UInt32`   | soft secondary CFAR — packed buffer vestigial       |
-| BeiDou B2a-Q  | `UInt128`  | soft secondary CFAR — packed buffer vestigial       |
-| BeiDou B2b-I  | `UInt8`    | symbol = primary period, buffer unused              |
-| BeiDou B1C-D  | `UInt8`    | symbol = primary period, buffer unused              |
-| BeiDou B1C-P  | `UInt1800` | **hard** rotation sweep — 1800-chip overlay horizon |
-
-The default for any signal not specialized below is `UInt64`. The width
-flows through `BitBuffer{B}` and `TrackedSignal{Sig, B, C, PCF, CN0}` so the
-parameter chain stays type-stable at construction.
+Hard-path signals need at least `N` bits (the 1800-chip overlay pilots use
+`UInt1800`); soft-detector signals keep a width holding their horizon so the hard
+path stays available; signals with nothing to search use `UInt8`. Per-signal
+values: [Code-block buffer widths](@ref).
 """
 @inline get_code_block_buffer_type(::AbstractGNSSSignal) = UInt64
 
 """
 $(SIGNATURES)
 
-Per-signal Hamming tolerance used by the **hard-decision** rotation/Hamming
-sweep `_secondary_code_search`, expressed as a fraction of the search
-window.
-
-Returns the largest **fraction** of bit-flips the per-signal
-`detect_bit_or_secondary_code_sync` accepts before reporting
-`found = true`. Each detector converts this to an integer error budget
-at its call site: `max_errors = floor(Int, tolerance × window_size)`.
-
-Among the currently implemented signals **only the 1800-chip overlay pilots GPS
-L1C-P and BeiDou B1C-P read this trait** — they are the only signals still on the
-hard path. The short-secondary-code signals (GPS L5I/L5Q, Galileo
-E1C/E5aI/E5aQ/E5bI/E5bQ/E6C, BeiDou B1I/B3I/B2aI/B2aQ) were moved to the soft,
-confidence-driven `_detect_secondary_code_cfar` (selected by
-[`uses_soft_secondary_code_detection`](@ref)) and no longer consult it; likewise
-GPS L1 C/A uses `_detect_bit_edge_cfar`. Both soft detectors are tuned by
-[`get_bit_edge_detection_confidence`](@ref) instead. Galileo E1B / E6-B, GPS
-L1C-D and BeiDou B2b-I / B1C-D broadcast one channel symbol per primary code
-period, so their detectors return `SyncResult(true, 0, +1)` unconditionally — the
-trait default applies but the value is ignored — and GPS L2CL is a dataless pilot
-with no sync.
-
-Default is `0.025` (2.5 %). At the 1800-chip window of either overlay pilot that
-discretizes to `max_errors = 45`. (For reference, the same 2.5 % at the now-soft
-signals' short windows would floor to 0–2 errors — an exact or near-exact match —
-which is exactly the noise-driven false-lock exposure the move to the soft
-detector removed.)
+Hamming tolerance of the **hard-decision** `_secondary_code_search`: the largest
+fraction of chip errors accepted, `max_errors = floor(Int, tolerance × N)`. Default
+`0.025` (45 of 1800 chips). Only hard-path signals (GPS L1C-P, BeiDou B1C-P) read
+it; the soft detectors use [`get_bit_edge_detection_confidence`](@ref).
 
 # Overriding
 
-To loosen the tolerance for low-C/N₀ work, dispatch the trait on the (hard-path)
-signal type in your own module:
+E.g. to loosen it for low-C/N₀ work:
 
 ```julia
 TrackingLoops.get_bit_edge_or_secondary_code_tolerance(::GPSL1C_P) = 0.05
 ```
 
-The override takes effect at the next call to
-`detect_bit_or_secondary_code_sync` — there is no need to rebuild any
-TrackState. The trait is `@inline`'d so the override folds at the
-detector's call site. (Overriding it for a soft-detector signal has no effect;
-tune [`get_bit_edge_detection_confidence`](@ref) there instead.)
+Takes effect at the next detector call.
 """
 @inline get_bit_edge_or_secondary_code_tolerance(::AbstractGNSSSignal) = 0.025
 
 """
 $(SIGNATURES)
 
-Whether `signal`'s bit edge is located with the soft-decision,
-maximum-energy CFAR detector `_detect_bit_edge_cfar` (which reads
-the incremental [`PhaseAccumulators`](@ref)) rather than the hard-decision
-`detect_bit_or_secondary_code_sync` path.
+Whether `signal`'s bit edge is found by the soft CFAR detector
+`_detect_bit_edge_cfar` instead of the hard `detect_bit_or_secondary_code_sync`.
 
-This is **signal-agnostic**: the detector and accumulators are
-parameterised by the number of primary-code blocks per navigation bit
-(`L`, from `_calc_num_code_blocks_that_form_a_bit`), with no
-per-signal constants. The default enables it for any signal whose
-navigation bit spans **more than one** primary-code period **and** which
-carries no secondary/overlay code — i.e. the bit edge is a sub-bit timing
-offset to be found, not a symbol boundary that is already aligned (Galileo
-E1B, GPS L1C-D: one symbol per primary period) and not a periodic overlay
-(GPS L5I, L1C-P: located by `_secondary_code_search`). Among the
-currently implemented signals only GPS L1 C/A (20 blocks/bit) qualifies,
-but a newly added signal with the same structure is picked up
-automatically. Note BeiDou B1I/B3I do *not* qualify even though their GEO
-satellites carry no overlay: `get_secondary_code_length` is 20 for the signal
-type, so they route to the secondary-code detector. On a GEO PRN that detector
-finds nothing to lock — the all-ones column is rotation-invariant and the D2
-symbols are 2 blocks long, so no 20-block rotation bin stands out — and those
-satellites stay pre-sync (see `src/beidou/b1i.jl`).
-
-Override per signal type to force the choice, e.g. to disable it:
+By default true when a bit spans **more than one** code period **and** there is no
+secondary code (currently only GPS L1 C/A). BeiDou B1I/B3I do not qualify even on
+GEO PRNs, since their signal type reports a 20-chip secondary code (see
+[BeiDou GEO satellites](@ref)). Override per signal type, e.g.:
 
 ```julia
 TrackingLoops.uses_soft_bit_edge_detection(::SomeSignal) = false
 ```
 
-The result is constant-folded per signal type, so the branch in
-`_buffer_find_bit` compiles away and signals that don't use it
-never seed or update `phase_acc`.
+Constant-folded per signal type.
 """
 @inline uses_soft_bit_edge_detection(signal::AbstractGNSSSignal) =
     _calc_num_code_blocks_that_form_a_bit(signal) > 1 &&
@@ -1029,36 +649,19 @@ never seed or update `phase_acc`.
 """
 $(SIGNATURES)
 
-Whether `signal`'s secondary/overlay code is located with the soft-decision,
-maximum-energy CFAR detector `_detect_secondary_code_cfar` (which reads
-the incremental [`PhaseAccumulators`](@ref)) rather than the hard-decision
-rotation/Hamming sweep `_secondary_code_search`.
+Whether `signal`'s secondary code is found by the soft CFAR detector
+`_detect_secondary_code_cfar` instead of the hard `_secondary_code_search`.
 
-The soft detector coherently integrates one *full secondary-code period* per bin,
-so it only makes sense while a whole period is a phase-coherent integration
-length. The default therefore enables it for signals with a **short** secondary
-code — `1 < get_secondary_code_length(signal) ≤ 100` — which covers GPS L5I
-(NH10, 10), GPS L5Q (NH20, 20), Galileo E1C (CS25, 25), E5aI (CS20, 20), E5aQ
-(CS100, 100), E5bI (CS4, 4) and E5bQ / E6C (CS100, 100), plus BeiDou B1I / B3I
-(NH20, 20), B2aI (5) and B2aQ (100) — all periods of at most 100 ms. The two
-1800-chip overlay pilots, GPS L1C-P and BeiDou B1C-P, are deliberately excluded:
-an 1800-chip overlay is an 18 s period, far too long to integrate coherently
-(and such a long code is not false-lock-prone), so they keep the hard
-`_secondary_code_search`.
-
-Because it locates a periodic overlay, this is mutually exclusive with
-[`uses_soft_bit_edge_detection`](@ref) (which requires *no* secondary code); a
-signal routes to at most one soft detector.
-
-Override per signal type to force the choice, e.g. to disable it:
+Each bin integrates one secondary period coherently, so the default enables it
+only for short codes, `1 < N ≤ 100`; the 1800-chip overlays (18 s) are too long to
+integrate and too long to false-lock, and keep the hard sweep. Mutually exclusive
+with [`uses_soft_bit_edge_detection`](@ref). Override per signal type, e.g.:
 
 ```julia
 TrackingLoops.uses_soft_secondary_code_detection(::GPSL5I) = false
 ```
 
-The result is constant-folded per signal type, so the branch in
-`_buffer_find_bit` compiles away and signals that don't use it never
-seed or update `phase_acc`.
+Constant-folded per signal type.
 """
 @inline uses_soft_secondary_code_detection(signal::AbstractGNSSSignal) =
     1 < get_secondary_code_length(signal) <= 100
@@ -1066,16 +669,10 @@ seed or update `phase_acc`.
 """
 $(SIGNATURES)
 
-Target confidence (one minus the probability of a false lock) for the
-soft-decision CFAR sync detectors — the GPS L1 C/A bit-edge detector
-`_detect_bit_edge_cfar` and the secondary-code detector
-`_detect_secondary_code_cfar` both read it.
-
-Default `0.999`: the detector keeps integrating primary-code blocks until
-the maximum-energy hypothesis beats its closest competitor with this
-confidence, so a clean signal locks in as little as two bins
-while a noisy one self-paces to as long as it takes. Lower it to lock
-faster at the cost of more false locks; raise it to be more conservative.
+Target confidence (`1 − P(false lock)`) of the soft CFAR sync detectors, default
+`0.999`: they integrate until the best hypothesis beats its competitor with this
+confidence (two bins for a clean signal, longer in noise). Lower it to lock faster
+at the cost of more false locks.
 
 # Overriding
 
@@ -1083,13 +680,11 @@ faster at the cost of more false locks; raise it to be more conservative.
 TrackingLoops.get_bit_edge_detection_confidence(::GPSL1CA) = 0.9999
 ```
 
-Takes effect at the next detector call — no TrackState rebuild needed.
+Takes effect at the next detector call.
 """
 @inline get_bit_edge_detection_confidence(::AbstractGNSSSignal) = 0.999
 
-# Number of primary-code blocks that form one navigation bit.
-# Returns 0 for pilot signals (`data_frequency = 0`), where the concept is
-# undefined; callers must guard for that case before using the result.
+# Primary-code blocks per navigation bit; 0 for pilots, which callers must guard.
 @inline function _calc_num_code_blocks_that_form_a_bit(signal::AbstractGNSSSignal)
     data_freq = get_data_frequency(signal)
     iszero(data_freq) && return 0
@@ -1099,16 +694,12 @@ end
 """
 $(SIGNATURES)
 
-Buffer data bits based on the prompt accumulation and the current prompt value.
+Advance the bit buffer by one record of `integrated_code_blocks` blocks.
 
-Post-sync, `integrated_code_blocks` is added to a running count and one soft bit
-is emitted each time that count reaches the signal's blocks-per-bit. A record
-that carries the count *past* the boundary — which only an external
-`CorrelatorOutput` producer whose records are not bit-aligned can produce —
-drops bit sync instead (`found` returns to `false`, so the detector re-runs from
-a clean accumulator); see issue #238. It does not log: [`apply_record`](@ref)
-reports the drop as its `overshoot` flag, and the caller decides what to do
-with it.
+Post-sync, one soft bit is emitted each time the block count reaches a bit. A
+record carrying the count *past* the boundary (only from a non-bit-aligned external
+producer) drops sync instead (JuliaGNSS/Tracking.jl#238): its energy belongs to two
+bits. Silent; [`apply_record`](@ref) reports it as `overshoot`.
 """
 function buffer(
     signal::AbstractGNSSSignal,
@@ -1117,8 +708,6 @@ function buffer(
     integrated_code_blocks,
     prompt,
 ) where {B<:Unsigned}
-    # The divide is deferred to the helper — pilot signals
-    # (`get_data_frequency = 0`) would otherwise blow up here with `Int(Inf)`.
     num_code_blocks_that_form_a_bit = _calc_num_code_blocks_that_form_a_bit(signal)
 
     if (bit_buffer.found == false)
@@ -1132,10 +721,7 @@ function buffer(
         )
     end
 
-    # Pilot signals (e.g. GPS L1C-P) carry no navigation data; once their
-    # secondary code is synced there is nothing to decode, so the buffer is
-    # left untouched (the `found` / `secondary_phase` / `polarity` state stays
-    # for code-phase anchoring and longer coherent integration).
+    # Pilots: nothing to decode; the lock still anchors the code phase.
     num_code_blocks_that_form_a_bit == 0 && return bit_buffer
 
     prompt_accumulator = bit_buffer.prompt_accumulator + prompt
@@ -1143,42 +729,12 @@ function buffer(
         bit_buffer.prompt_accumulator_integrated_code_blocks + integrated_code_blocks
 
     if prompt_accumulator_integrated_code_blocks > num_code_blocks_that_form_a_bit
-        # A record whose block count carries the accumulator *past* the bit
-        # boundary (18 accumulated + a 3-block record = 21 for GPS L1 C/A). The
-        # boundary test below is an equality, so once the count has stepped over
-        # it, it can never be met again: the accumulator climbs forever and not
-        # one further bit is pushed, while tracking, C/N₀ and the lock detectors
-        # all keep looking perfect — "ranging-ready, never healthy" (issue #238,
-        # seen on the LiteX-M2SDR hardware-correlator path).
-        #
-        # Only an external `CorrelatorOutput` producer can get here: the
-        # software correlate phase truncates the first post-sync integration to
-        # land on the boundary and then hands over whole bits, so its records
-        # step the accumulator exactly onto it.
-        #
-        # Resynchronise rather than paper over it. The straddling record's
-        # energy belongs to two different bits, so emitting a bit at `>=` and
-        # carrying the overshoot would soft-corrupt that bit and its successor
-        # with no way for a decoder to tell; dropping `found` costs one bit-sync
-        # (the detector re-runs from a clean accumulator, and the caller reverts
-        # to single-block records because `calc_num_code_blocks_for_bit_buffer`
-        # reads the same flag) and hides nothing. The already-decoded
-        # `soft_bits` are untouched — they were complete and correct.
-        # Silent here: the fold that called `buffer` sees `found` drop from
-        # `true` to `false` on a post-sync record and reports the overshoot to
-        # its caller (`fold_record`), which is where a receiver logs it and a
-        # loop process publishes a status event. Nothing on this path may
-        # allocate or format a string.
+        # Overshoot (e.g. 18 + a 3-block record for L1 C/A): resync rather than
+        # emit at `>=`, see the docstring. Must not allocate or format a string.
         return _resync_bit_buffer(bit_buffer)
     elseif prompt_accumulator_integrated_code_blocks == num_code_blocks_that_form_a_bit
-        # Flip the decoded bit if the detector locked at negative polarity:
-        # the prompt accumulator's real-part sign is then inverted relative
-        # to the data symbol's "0/1" convention.
         bit_acc =
             bit_buffer.polarity < 0 ? -real(prompt_accumulator) : real(prompt_accumulator)
-        # The polarity-corrected accumulation IS the bit: its sign is the hard
-        # decision, its magnitude the confidence. The vector grows without a
-        # ceiling — the caller decides how often to read bits out and `reset`.
         push!(bit_buffer.soft_bits, Float32(bit_acc))
         return BitBuffer{B}(
             bit_buffer.code_block_buffer,
@@ -1206,12 +762,7 @@ function buffer(
     end
 end
 
-# Return `bit_buffer` to its pre-sync state after a bit-boundary overshoot: the
-# search window, the lock (`found` / `secondary_phase` / `polarity`) and the
-# partial coherent accumulation are all dropped, and the per-hypothesis
-# statistics are zeroed so the next block starts a clean search. `soft_bits` is
-# kept — those bits completed before the bad record — and so is the vector
-# identity, which the caller may be holding.
+# Back to pre-sync after an overshoot; `soft_bits` is kept (same vector).
 @inline function _resync_bit_buffer(bit_buffer::BitBuffer{B}) where {B<:Unsigned}
     BitBuffer{B}(
         zero(B),
@@ -1243,14 +794,8 @@ function _buffer_find_bit(
     code_block_buffer = (bit_buffer.code_block_buffer << 1) + B(real(prompt) > 0)
     code_block_buffer_length = bit_buffer.code_block_buffer_length + 1
 
-    # Signals that detect the sync point from soft prompts fold each block into
-    # the per-hypothesis accumulators and run a maximum-energy CFAR detector:
-    # GPS L1 C/A over bit-edge phases, and short-secondary-code signals (GPS
-    # L5I/L5Q, Galileo E1C/E5aI/E5aQ) over overlay rotations. Everything else
-    # stays on the hard-decision sliding-window path. Both soft branches share
-    # the single `phase_acc` buffer (a signal is at most one of them). The
-    # branch folds at compile time per signal type, so non-soft signals never
-    # touch `phase_acc`.
+    # Soft detectors share `phase_acc`; the rest take the hard path. Folds at
+    # compile time.
     phase_acc = bit_buffer.phase_acc
     if uses_soft_bit_edge_detection(signal)
         blocks_per_bit = num_code_blocks_that_form_a_bit
@@ -1308,18 +853,9 @@ function _buffer_find_bit(
         )
     end
     if get_secondary_code_length(signal) > 1
-        # Secondary-code signals (GPS L5I, GPS L1C-P): the buffered pre-sync
-        # prompt signs are modulated by the secondary code, not the navigation
-        # data, so there are no data bits to recover from them. Data-bit
-        # decoding starts fresh post-sync. The rotation search locks at *any*
-        # secondary chip, so the upcoming integration starts `sync.phase` blocks
-        # into the current data bit — not at its boundary. Seed the accumulator
-        # block count with `sync.phase` so the first emitted bit completes
-        # exactly `num_code_blocks_that_form_a_bit − sync.phase` blocks later, on
-        # the data-bit boundary, instead of `num_code_blocks_that_form_a_bit`
-        # blocks after the lock instant (issue #125). For pilots
-        # (`num_code_blocks_that_form_a_bit == 0`) the post-sync `buffer` path
-        # returns early and never consults this seed, so it is harmless there.
+        # Pre-sync signs carry the overlay, not data: no bits to recover. Seed the
+        # block count with `sync.phase` so the first bit ends on the boundary
+        # (JuliaGNSS/Tracking.jl#125).
         return BitBuffer{B}(
             code_block_buffer,
             code_block_buffer_length,
@@ -1333,13 +869,7 @@ function _buffer_find_bit(
         )
     end
     if num_code_blocks_that_form_a_bit == 0
-        # A dataless signal that has no overlay either, so the branch above did
-        # not take it: Galileo E5a-QP, whose detector reports the lock on the
-        # first block because there is no boundary to find. There are no data
-        # bits to recover from the buffered pre-sync signs — and the divisions
-        # below would be by zero. `secondary_phase` stays 0: with
-        # `get_secondary_code_length == 1` nothing reads it (the code-phase snap
-        # skips such signals, and the post-sync `buffer` path returns early).
+        # Dataless, no overlay (Galileo E5a-QP): avoid dividing by zero below.
         return BitBuffer{B}(
             code_block_buffer,
             code_block_buffer_length,
@@ -1356,34 +886,17 @@ function _buffer_find_bit(
         div(code_block_buffer_length, num_code_blocks_that_form_a_bit),
         div(sizeof(code_block_buffer) * 8, num_code_blocks_that_form_a_bit),
     )
-    # Hoist the one field the closure needs (`sync.polarity`) into a plain
-    # local so the closure below does not capture `sync` itself. `sync` is
-    # assigned in two branches above (the soft vs. hard detector), and
-    # capturing a variable that is assigned in more than one place forces
-    # Julia to box it: a per-call `Core.Box` plus heap-boxing of each
-    # `SyncResult`. That fires on every code block until sync, so it shows up
-    # as a per-code-block allocation on the pre-sync hot path (~80 B/block),
-    # making `track!` allocate in proportion to the signal length instead of
-    # staying allocation-free after warmup. Capturing the plain `Int` keeps
-    # `sync` unboxed.
+    # Hoisted: capturing `sync` (assigned in several branches) would box it.
     lock_polarity = Int(sync.polarity)
     for bit_index = num_bits:-1:1     # oldest recovered bit first
-        # Apply the lock polarity to the buffered pre-sync bits as well, so
-        # they map symbol levels to bit values the same way as every
-        # post-sync bit (which is sign-flipped via `bit_buffer.polarity` in
-        # `buffer`). Otherwise a negative-polarity lock would invert only
-        # the post-sync part of the bit stream (issue #127).
+        # Lock polarity applies here too (JuliaGNSS/Tracking.jl#127).
         bit_sum =
             sum(0:(num_code_blocks_that_form_a_bit-1)) do code_block_index
                 buffer_code_block_index =
                     (bit_index - 1) * num_code_blocks_that_form_a_bit + code_block_index
                 ((code_block_buffer & (one(B) << buffer_code_block_index)) > 0) * 2 - 1
             end * lock_polarity
-        # The pre-sync window only stores prompt signs, so `bit_sum` is a
-        # ±1-per-block vote count (already polarity-corrected above). Scale it
-        # by the sync-time prompt magnitude (the best available amplitude
-        # estimate) so these recovered soft bits live in the same
-        # coherent-amplitude-sum units as the bits accumulated post-sync.
+        # Sign votes scaled to soft-bit units (see `get_soft_bits`).
         push!(bit_buffer.soft_bits, Float32(bit_sum * abs(prompt)))
     end
     return BitBuffer{B}(
@@ -1402,21 +915,13 @@ end
 """
 $(SIGNATURES)
 
-Walk a just-synced `bit_buffer`'s `secondary_phase` forward by
-`num_code_blocks` primary-code blocks (modulo the secondary-code length). No-op
-for signals without a secondary code, where the field is unused.
+Advance a just-synced `bit_buffer`'s `secondary_phase` by `num_code_blocks`
+(mod `N`); no-op without a secondary code.
 
-`secondary_phase` is the secondary chip the **upcoming** integration aligns to,
-and it is read exactly once: by the code-phase snap
-(Tracking.jl's `_snap_code_phase_from_synced_signal`), which runs after the whole
-chunk has been folded. The detector reports it for the block right after the
-syncing record, so every further record folded in the same chunk — the ones
-`_apply_correlator_output` marks `correlated_pre_sync`, correlated with the
-pre-sync (un-wiped) replica — moves that anchor along by the blocks it covers.
-Without this the snap anchors the replica `num_code_blocks` chips early, the
-post-sync replica bakes the wrong overlay chip into every block, and the
-coherent bit sum collapses to a fraction of its length — the secondary-code
-sibling of the bit-grid slip in issue #219.
+The detector reports the phase for the block after the syncing record, but
+Tracking.jl reads it only after the whole chunk, so every later record of the
+chunk (`correlated_pre_sync`) must move it along, or the replica applies the wrong
+overlay chip (cf. JuliaGNSS/Tracking.jl#219).
 """
 @inline function _advance_secondary_phase(
     signal::AbstractGNSSSignal,
@@ -1456,21 +961,17 @@ end
 """
     get_sync_polarity(signal, bit_buffer, prn) -> Int8
 
-The polarity of a pilot's prompt according to its secondary-code sync, or `0`.
-Nonzero, the replica wipes every sign modulation off the prompt, and the
-four-quadrant discriminators read it: the PLL with this sign
-(`pll_disc(...; polarity)`), the FLL (`fll_disc(...; four_quadrant = true)`).
-`0`, both stay two-quadrant: a data signal, a pilot before its sync, and a pilot
-without a secondary code (GPS L2 CL, Galileo E5a-QP), whose sync reads no sign.
-Pass it as a [`LoopRecord`](@ref)'s `polarity`, from the bit buffer as it was
-when the record was correlated.
+A pilot's prompt polarity from its secondary-code sync, or `0`. Nonzero, the replica
+wipes every sign modulation off the prompt, so both discriminators are four-quadrant:
+the PLL reads the prompt with this sign (`pll_disc(...; polarity)`), the FLL
+`atan(cross, dot)`. `0` keeps both two-quadrant: data signals, pilots before sync and
+pilots without a secondary code (GPS L2 CL, Galileo E5a-QP). Pass the bit buffer as
+it was when the record was correlated; the result is a [`LoopRecord`](@ref)'s
+`polarity`.
 
-The sync reads the sign off one whole secondary period of the prompt summed
-with the code wiped off. That sum was correlated with a pre-sync replica, which
-carries secondary chip 0 on every block, so the post-sync prompt has the sync
-polarity times chip 0. If the Costas loop slipped half a cycle between the sync
-and the switch, the four-quadrant PLL pulls the carrier phase over by half a
-cycle: that is the start of the resolved carrier phase, not a slip within it.
+The pre-sync replica carries secondary chip 0 on every block, so the post-sync
+prompt has the sync polarity times chip 0. A half-cycle Costas slip before the
+switch is pulled over once: the start of the resolved phase, not a slip within it.
 """
 @inline function get_sync_polarity(
     signal::AbstractGNSSSignal,

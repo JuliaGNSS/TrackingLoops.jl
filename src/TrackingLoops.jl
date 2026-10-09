@@ -1,31 +1,22 @@
 """
     TrackingLoops
 
-The device-independent core of a GNSS tracking loop, extracted from Tracking.jl
-so that the same code closes the loops in the software receiver and in the
-allocation-free *loop process* of a hardware correlator:
+The device-independent core of a GNSS tracking loop, shared by the software
+receiver (Tracking.jl) and the allocation-free *loop process* of a hardware
+correlator (HardwareLoopCore.jl):
 
-  - the correlator record types and their accessors, the discriminators and
-    the post-correlation filter;
-  - the navigation-bit buffer with its bit-edge and secondary-code sync
-    detectors, per signal;
+  - correlator record types, discriminators and the post-correlation filter;
+  - the navigation-bit buffer with per-signal bit-edge and secondary-code sync;
   - the C/N₀ estimators and the noise-density window they read;
-  - the loop filters' bandwidth rules and the Doppler estimators — the
-    conventional FLL-assisted PLL/DLL and the delay-aware NCO-referenced
-    loop — behind one per-record [`step_loop`](@ref) on a plain per-satellite state,
-    and the [`VectorPLLAndDLL`](@ref) a vector-tracking filter takes over;
-  - the per-record fold [`apply_record`](@ref) that advances a signal
-    component's prompt filter, C/N₀ estimator and bit buffer identically on
-    both paths;
+  - loop-filter bandwidth rules and the Doppler estimators (conventional
+    FLL-assisted PLL/DLL, delay-aware NCO-referenced loop) behind one per-record
+    [`step_loop`](@ref);
+  - [`apply_record`](@ref), the per-record fold of a signal component;
   - the [`NCOTimeline`](@ref): what a hardware NCO ran and will run;
-  - vector tracking: [`VectorPLLAndDLL`](@ref), whose navigation engine
-    decodes every satellite's bits, solves the PVT and then closes every
-    satellite's loops at once with a navigation filter, all from the records
-    it is stepped with.
+  - vector tracking: [`VectorPLLAndDLL`](@ref) decodes every satellite's bits,
+    solves the PVT and closes all loops at once with a navigation filter.
 
-Tracking.jl depends on this package for its software correlator; the loop
-process's engine (HardwareLoopCore.jl) depends on it without Tracking. Nothing
-here reads a raw sample, and nothing here knows a device or a segment.
+Nothing here reads a raw sample or knows a device or a segment.
 """
 module TrackingLoops
 
@@ -89,8 +80,7 @@ using Unitful: upreferred, uconvert, ustrip, dimension, NoUnits, Hz, dBHz, ms, s
 using Random: AbstractRNG, Xoshiro
 import Base.zero, Base.length
 
-# 1800-bit exact-width unsigned for the 1800-chip overlay-code searches of
-# GPS L1C-P and BeiDou B1C-P.
+# For the 1800-chip overlay-code searches of GPS L1C-P and BeiDou B1C-P.
 BitIntegers.@define_integers 1800
 
 export NumAnts,
@@ -231,8 +221,7 @@ const Maybe{T} = Union{T,Nothing}
 """
 $(SIGNATURES)
 
-Type parameter wrapper for specifying the number of antennas in the system.
-Use `NumAnts(n)` to create an instance.
+Type parameter wrapper for the number of antennas; create with `NumAnts(n)`.
 """
 struct NumAnts{x} end
 
@@ -241,8 +230,8 @@ NumAnts(x) = NumAnts{x}()
 """
 $(SIGNATURES)
 
-Type parameter wrapper for specifying the number of correlator accumulators.
-Use `NumAccumulators(n)` to create an instance.
+Type parameter wrapper for the number of correlator accumulators; create with
+`NumAccumulators(n)`.
 """
 struct NumAccumulators{x} end
 
@@ -251,20 +240,17 @@ NumAccumulators(x) = NumAccumulators{x}()
 """
     update(x, prompt)
 
-Advance a per-record state — a C/N₀ estimator or a post-correlation filter —
-with one prompt and return the new state (immutable update).
+Advance a per-record state (C/N₀ estimator, post-correlation filter) by one prompt
+and return the new state.
 """
 function update end
 
 """
 $(SIGNATURES)
 
-Abstract supertype for Doppler estimators. Concrete subtypes carry estimator
-configuration; the per-satellite state lives with the satellite.
-
-Every estimator implements one interface, and a host (Tracking.jl's `track!`,
-a hardware correlator's loop process) drives it through that interface alone,
-so the estimators are interchangeable:
+Abstract supertype for Doppler estimators. Subtypes carry configuration; the
+per-satellite state lives with the satellite. Hosts drive every estimator through
+one interface:
 
   - [`init_estimator_state`](@ref)`(estimator, driver_signal, carrier_doppler,
     code_doppler)` builds a satellite's state;
@@ -275,9 +261,8 @@ so the estimators are interchangeable:
     code_doppler)` re-seeds it from converged Dopplers, keeping what the
     estimator chooses to keep.
 
-[`ConventionalPLLAndDLL`](@ref), [`NCOReferencedPLLAndDLL`](@ref) and the
-vector loop [`VectorPLLAndDLL`](@ref) all implement it. The vector loop's
-navigation engine runs inside its `step_loop` too, from what the records carry.
+Implemented by [`ConventionalPLLAndDLL`](@ref), [`NCOReferencedPLLAndDLL`](@ref)
+and [`VectorPLLAndDLL`](@ref), whose navigation engine also runs inside `step_loop`.
 """
 abstract type AbstractDopplerEstimator end
 

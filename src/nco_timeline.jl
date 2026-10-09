@@ -1,13 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# What the device NCO ran: per-channel word timelines (moved here from
-# GNSSReceiver's hardware_correlator.jl, unchanged in arithmetic).
+# What the device NCO ran: per-channel word timelines.
 # ─────────────────────────────────────────────────────────────────────────────
 
 "\"No landing sample\": the command acts at each record's end, i.e. no delay."
 const NO_LANDING_SAMPLE = typemin(Int64)
 
-# One NCO word the host has scheduled at a named device sample. Plain `Float64`
-# Hz.
+# One NCO word scheduled at a device sample, in plain `Float64` Hz.
 struct ScheduledNCOWord
     sample::Int64
     carrier_doppler::Float64
@@ -17,22 +15,19 @@ end
 """
     NCOTimeline(; capacity = 64)
 
-The carrier and code words one hardware channel's NCOs ran and will run: the
-word in effect now and the words already scheduled at named device samples.
+The carrier and code words one hardware channel's NCOs ran and will run: the word
+in effect now and the words scheduled at device samples.
 
-A hardware loop is closed through a device that holds each word until the next
-one lands, milliseconds after the record that motivated it ended. The loop
-filter therefore cannot assume that the word it last computed is the one a
-record was integrated under, and a correction computed against the wrong word
-restates an error the device is already about to remove. The timeline is the
-record of what the NCO actually did, so the estimator can attribute every
-record to the word that really ran ([`mean_nco_word`](@ref)) and size its
-correction for the moment it will land ([`NCOReferencedPLLAndDLL`](@ref)).
+A device holds each word until the next lands, milliseconds after the record that
+motivated it, so the last computed word need not be the one a record ran on; a
+correction against the wrong word restates an error the device is about to remove.
+The timeline lets the estimator attribute each record to the word that really ran
+([`mean_nco_word`](@ref)) and size its correction for when it lands
+([`NCOReferencedPLLAndDLL`](@ref)).
 
-The scheduled words live in a fixed-size vector of `capacity` entries with a
-count, so scheduling and promoting words never touch the allocator. Should more
-words than that ever be in flight, the oldest is taken as landed. Read them
-with [`scheduled_words`](@ref).
+Scheduled words live in a fixed vector of `capacity` entries, so nothing allocates;
+with more in flight the oldest is taken as landed. Read them with
+[`scheduled_words`](@ref).
 """
 mutable struct NCOTimeline
     applied_carrier_doppler::Float64
@@ -44,8 +39,7 @@ mutable struct NCOTimeline
 end
 
 function NCOTimeline(; capacity::Integer = 64)
-    # `schedule_word!` drops the oldest word to make room, so there has to be
-    # one to drop.
+    # `schedule_word!` drops the oldest word to make room.
     capacity >= 1 || throw(ArgumentError("an NCOTimeline needs a capacity of at least 1"))
     NCOTimeline(0.0, 0.0, [ScheduledNCOWord(0, 0.0, 0.0) for _ = 1:capacity], 0)
 end
@@ -65,9 +59,9 @@ end
 """
     schedule_word!(timeline, sample, carrier_doppler_hz, code_doppler_hz)
 
-Record a word the device has accepted for `sample`. A device keeps the newest
-command for a given sample, and a later command is never scheduled for an
-earlier sample, so anything queued at or past `sample` is superseded.
+Record a word the device has accepted for `sample`. Anything queued at or past
+`sample` is superseded (a device keeps the newest command per sample, and a later
+command never targets an earlier sample).
 """
 function schedule_word!(timeline::NCOTimeline, sample, carrier_doppler_hz, code_doppler_hz)
     words = timeline.words
@@ -76,8 +70,7 @@ function schedule_word!(timeline::NCOTimeline, sample, carrier_doppler_hz, code_
         count -= 1
     end
     if count >= length(words)
-        # Never grow: the oldest word has certainly landed by the time this many
-        # are in flight.
+        # Full: take the oldest as landed rather than grow.
         @inbounds oldest = words[1]
         timeline.applied_carrier_doppler = oldest.carrier_doppler
         timeline.applied_code_doppler = oldest.code_doppler
@@ -153,11 +146,9 @@ end
 Whether a scheduled word takes effect in `[lo, hi]`, i.e. whether a record
 ending at `lo` and one starting at `hi` ran on different words.
 
-The convention is [`mean_nco_word`](@ref)'s: a record ending at sample `b`
-covers `[b - integrated_samples, b)`, and a word landing at `s` is in effect
-from `s` on. So a word landing exactly at a record's end belongs to the next
-record, and two back-to-back records (`lo == hi`) ran on different words when
-one lands at that shared boundary.
+As in [`mean_nco_word`](@ref), a record ending at `b` covers
+`[b - integrated_samples, b)` and a word landing at `s` is in effect from `s` on, so
+back-to-back records (`lo == hi`) differ when a word lands at their boundary.
 """
 function word_changes_within(timeline::NCOTimeline, lo, hi)
     @inbounds for i = 1:timeline.count
@@ -180,13 +171,12 @@ end
 """
     mean_nco_word(words, a, b) -> (carrier_doppler_hz, code_doppler_hz)
 
-Time-weighted mean of the carrier and code words in effect over the device
-samples `[a, b)` — the replica frequencies a record integrated over that span
-was really correlated with. For `b <= a` the word in effect at `a`.
+Time-weighted mean of the carrier and code words in effect over device samples
+`[a, b)`: the replica frequencies a record over that span was correlated with. For
+`b <= a`, the word in effect at `a`.
 
-`words` is an [`NCOTimeline`](@ref) for a hardware channel, or a
-[`FixedNCOWord`](@ref) where the replica ran on one known word (the software
-receiver regenerates its replicas from the satellite's Doppler every chunk).
+`words` is an [`NCOTimeline`](@ref) (hardware channel) or a [`FixedNCOWord`](@ref)
+(software receiver, one word per chunk).
 """
 function mean_nco_word(timeline::NCOTimeline, a::Real, b::Real)
     total = b - a
@@ -213,8 +203,8 @@ end
 """
     FixedNCOWord(carrier_doppler_hz, code_doppler_hz)
 
-A replica that ran on one known word for every span asked about — what the
-software receiver's replicas do within a chunk. See [`mean_nco_word`](@ref).
+A replica that ran on one known word for every span, as the software receiver's
+do within a chunk. See [`mean_nco_word`](@ref).
 """
 struct FixedNCOWord
     carrier_doppler::Float64

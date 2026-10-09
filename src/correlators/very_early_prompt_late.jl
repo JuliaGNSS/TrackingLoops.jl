@@ -1,11 +1,8 @@
 """
 $(SIGNATURES)
 
-VeryEarlyPromptLateCorrelator holding a user defined number of correlation values.
-The code is shifted in samples. Hence, the specified code shift is actually a
-preferred code shift, because depending on sampling frequency and
-code frequency the specified code shift might not be the actual code shift. It is as
-close as possible, though. The algorithm makes sure that at least one sample is shifted.
+Correlator with very-early, early, prompt, late and very-late taps. Code shifts are
+preferred shifts, rounded to whole samples as for [`EarlyPromptLateCorrelator`](@ref).
 """
 struct VeryEarlyPromptLateCorrelator{M,T} <: AbstractEarlyPromptLateCorrelator{M}
     accumulators::SVector{5,T}
@@ -38,13 +35,12 @@ end
 """
 $(SIGNATURES)
 
-VeryEarlyPromptLateCorrelator constructor without parameters and some default
-parameters, taken from GNSS-SDR's Galileo E1 DLL/PLL VEML tracking:
+Construct a zeroed [`VeryEarlyPromptLateCorrelator`](@ref); default shifts from
+GNSS-SDR's Galileo E1 VEML tracking:
 <https://gnss-sdr.org/docs/sp-blocks/tracking/#implementation-galileo_e1_dll_pll_veml_tracking>
 
-Throws an `ArgumentError` if both code shifts are one chip or more: the BOC(1,1)
-correlation peak the VEML discriminator ([`dll_disc`](@ref)) is calibrated on has
-vanished there, so no tap would see the signal.
+Throws an `ArgumentError` if both code shifts are one chip or more, where the
+BOC(1,1) peak the VEML [`dll_disc`](@ref) is calibrated on has vanished.
 """
 function VeryEarlyPromptLateCorrelator(;
     num_ants::NumAnts = NumAnts(1),
@@ -108,9 +104,7 @@ end
 """
 $(SIGNATURES)
 
-Calculate the replica phase offset required for the correlator with
-respect to the prompt correlator, expressed in samples. The shifts are
-ordered from latest to earliest replica.
+Replica shifts relative to the prompt in samples, from latest to earliest replica.
 """
 function get_correlator_sample_shifts(
     correlator::VeryEarlyPromptLateCorrelator,

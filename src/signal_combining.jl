@@ -1,30 +1,26 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Signal combining: the passengers (every signal of a satellite but the driver
-# whose record `step_loop` closes the loops on) mix their discriminators into the
-# driver's before its loop filters read them. The host folds each passenger
-# record with `fold_passenger_record` as it completes, in sample order, and
-# the driver's next `step_loop` closes on the weighted means and starts the sums
-# afresh. See "Signal combining" in the manual.
+# Signal combining: passengers (every signal of a satellite but the driver) mix their
+# discriminators into the driver's before its loop filters read them. The host folds
+# each passenger record with `fold_passenger_record` in sample order; the driver's
+# next `step_loop` closes on the weighted means and resets the sums. See "Signal
+# combining" in the manual.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# One loop's weighted sum of passenger discriminators and its summed weights.
-# The weight of a record is its signal's ICD power share times its integration
-# time, cubed for the FLL, whose noise variance falls with the cube.
+# One loop's weighted sum of passenger discriminators and its summed weights
+# (weights: see `_discriminator_weight`).
 struct WeightedSum{S,W}
     sum::S
     weight::W
 end
 
-# One more discriminator `reading` with weight `weight` added.
 @inline _accumulated(ws::WeightedSum, reading, weight) =
     WeightedSum(ws.sum + weight * reading, ws.weight + weight)
 
 """
     SignalCombiningSums()
 
-The passengers' weighted discriminators pending for the driver's next record,
-one weighted sum per loop, held in the per-satellite state of an
-estimator that combines signals:
+The passengers' weighted discriminators pending for the driver's next record, one
+weighted sum per loop, held per satellite by an estimator that combines signals:
 
   - `pll`: PLL discriminators in cycles, weighted in s;
   - `fll`: FLL discriminators in Hz, weighted in s³;
@@ -32,9 +28,9 @@ estimator that combines signals:
     weighted in s;
   - `first_end_sample`: the end sample of the earliest pending record
     (`typemax(Int)` with none). A passenger enters only the driver record it ends
-    in, so pending records the driver's step finds ending at or before its record's
-    start belong to a driver record that never came (the host dropped the driver's
-    in-flight integration, e.g. at a code-phase snap), and the step drops the sums.
+    in, so if that is at or before the start of the driver record that steps the
+    sums, they belong to one that never came (the host dropped the driver's
+    in-flight integration, e.g. at a code-phase snap) and are dropped.
 """
 struct SignalCombiningSums
     pll::WeightedSum{typeof(1.0s),typeof(1.0s)}
@@ -50,9 +46,7 @@ SignalCombiningSums() = SignalCombiningSums(
     typemax(Int),
 )
 
-# `pending` for the driver `record`, or no sums if one of them ended at or before the
-# record's start (see `SignalCombiningSums`). Records come in sample order, so the
-# earliest end decides.
+# `pending`, or none if stale for the driver `record` (see `SignalCombiningSums`).
 @inline _pending_for(pending::SignalCombiningSums, record) =
     pending.first_end_sample <= record.sample_index - record.integrated_samples ?
     SignalCombiningSums() : pending
@@ -61,37 +55,32 @@ SignalCombiningSums() = SignalCombiningSums(
 const _ALL_LOOPS = (pll = true, fll = true, dll = true)
 const _PLL_ONLY = (pll = true, fll = false, dll = false)
 
-# A weighted mean of the driver's own discriminator and the passengers' sum. With
-# no passenger weight it is the driver's own as is: `(w · d) / w` is not `d` bit
-# for bit.
+# Weighted mean of the driver's discriminator and the passengers' sum; exactly the
+# driver's own with no passenger weight (`(w · d) / w` is not `d` bit for bit).
 @inline _weighted_mean(own, own_weight, pending::WeightedSum) =
     iszero(pending.weight) ? own :
     (own_weight * own + pending.sum) / (own_weight + pending.weight)
 
-# The weighted mean, but only while the driver's own reading lies within `range`,
-# the two-quadrant range: there a four-quadrant driver reads the error as a
-# two-quadrant passenger does, beyond it the passenger would fold it by half a
-# cycle. A two-quadrant driver's reading never leaves the range.
+# The weighted mean only while the driver's reading lies within the two-quadrant
+# `range`: there a four-quadrant driver reads the error as a two-quadrant passenger
+# does; beyond it the passenger would fold it by half a cycle.
 @inline _gated_mean(own, own_weight, pending::WeightedSum, range) =
     abs(own) < range ? _weighted_mean(own, own_weight, pending) : own
 
-# The two-quadrant discriminators' ranges, which `_gated_mean` keeps a
-# four-quadrant driver within: ±1/4 cycle for the PLL's
-# `atan(Q / I)`, ±1/(4T) for the FLL's `atan(cross / dot)`.
+# Two-quadrant ranges: ±1/4 cycle for the PLL's `atan(Q / I)`, ±1/(4T) for the
+# FLL's `atan(cross / dot)`.
 const _TWO_QUADRANT_PLL_RANGE = 0.25
 @inline _two_quadrant_fll_range(integration_time) = uconvert(Hz, 1 / (4 * integration_time))
 
-# The weight of one record's discriminator: its signal's ICD power share times its
-# integration time. The FLL's is the integration time cubed, as its noise
-# variance falls with its cube.
+# A record's discriminator weight: its signal's ICD power share times its
+# integration time, cubed for the FLL, whose noise variance falls with the cube.
 @inline _discriminator_weight(signal::AbstractGNSSSignal, integration_time) =
     get_relative_power(signal) * uconvert(s, integration_time)
 @inline _fll_discriminator_weight(signal::AbstractGNSSSignal, integration_time) =
     get_relative_power(signal) * uconvert(s, integration_time)^3
 
-# A passenger record's DLL reading (chips): normalised with the code word the
-# satellite's replica ran on and referred to the driver's code phase by
-# `differential_group_delay_chips`.
+# A passenger's DLL reading (chips), normalised with the code word the replica ran
+# on and referred to the driver's code phase.
 @inline function _passenger_dll_reading(record, words, differential_group_delay_chips)
     record_start = record.sample_index - record.integrated_samples
     _, applied_code = mean_nco_word(words, record_start, record.sample_index)
@@ -103,8 +92,7 @@ const _TWO_QUADRANT_PLL_RANGE = 0.25
     ) + differential_group_delay_chips
 end
 
-# A passenger record's FLL reading (Hz), two- or four-quadrant. The record must
-# have a previous prompt.
+# A passenger's FLL reading (Hz). The record must have a previous prompt.
 @inline _passenger_fll_reading(record, four_quadrant::Bool) = fll_disc(
     record.signal,
     record.filtered_correlator,
@@ -113,17 +101,13 @@ end
     four_quadrant,
 )
 
-# One passenger record's weighted discriminators added to `sums`, formed only for
-# the loops it is combined into. Its PLL is read on the driver's carrier phase
-# frame. Its PLL and FLL are always two-quadrant, which is blind to a sign flip
-# of a whole record, so data passengers and records correlated before the
-# passenger's own sync count like any other. A four-quadrant driver reading is
-# combined with them only within the two-quadrant range (`_gated_mean`), where
-# both read alike. A four-quadrant passenger reading could not be gated so: a
-# Costas driver locked half a cycle off, or a two-quadrant FLL folding an error
-# beyond its range, still reads within that range. Its DLL
-# (`_passenger_dll_reading`) is combined only where
-# `differential_group_delay_chips` is known (not `NaN`).
+# One passenger record's weighted discriminators added to `sums`, for the loops in
+# `loops` only. The PLL is read on the driver's carrier-phase frame. PLL and FLL are
+# always two-quadrant, blind to a whole-record sign flip, so data passengers and
+# pre-sync records count like any other; the driver side is gated (`_gated_mean`).
+# A four-quadrant passenger reading could not be gated: a Costas driver locked half
+# a cycle off, or a two-quadrant FLL folding an error, still reads within range.
+# The DLL counts only where `differential_group_delay_chips` is known (not `NaN`).
 @inline function _add_passenger_discriminators(
     sums::SignalCombiningSums,
     record,
@@ -160,12 +144,10 @@ end
     )
 end
 
-# The driver's discriminators of one record combined with the passengers'
-# pending sums in the loops `loops`, which only `pending` already restricts, so
-# this is the identity where no passenger record is pending. A four-quadrant
-# driver reading is combined only within the passengers' two-quadrant range. The
-# FLL is combined into `frequency_error` and `raw_frequency_error` alike: only
-# the conventional loop combines, where the two are one reading.
+# The driver's discriminators combined with the pending sums in `loops`; the
+# identity when nothing is pending. The FLL goes into `frequency_error` and
+# `raw_frequency_error` alike: only the conventional loop combines, where they are
+# one reading.
 @inline function _combine_discriminators(
     discriminators,
     pending::SignalCombiningSums,

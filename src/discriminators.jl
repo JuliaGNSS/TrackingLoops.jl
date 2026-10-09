@@ -1,12 +1,9 @@
 """
 $(SIGNATURES)
 
-Calculates the code phase error in chips using the noncoherent early minus late
-envelope normalized discriminator.
-
-Uses the generalized normalization for arbitrary early-late spacing `d` (in chips):
-`(2 - d) / 2 * (E - L) / (E + L)`
-which reduces to `1/2 * (E - L) / (E + L)` for the standard 1-chip spacing.
+Code phase error in chips from the noncoherent early-minus-late envelope normalized
+discriminator `(2 - d) / 2 * (E - L) / (E + L)` for early-late spacing `d` in chips
+(`1/2 * (E - L) / (E + L)` at 1 chip).
 
 See: Kaplan & Hegarty, "Understanding GPS: Principles and Applications", 2nd ed.,
 Table 5.5; GNSS-SDR tracking_discriminators.cc.
@@ -35,21 +32,16 @@ _boc11_envelope(offset) =
     offset < 1 / 3 ? 1 - 3 * offset :
     offset < 1 / 2 ? 3 * offset - 1 : offset < 1 ? 1 - offset : 0.0
 
-# Envelope derivative as the mean of the one-sided derivatives, so a tap sitting exactly
-# on an envelope knot (e.g. the side-lobe vertex at 0.5 chips under coarse sampling, where
-# the ± excursions of the tap pair run along different segments) gets the slope those
-# excursions actually produce.
+# Mean of the one-sided derivatives, so a tap exactly on a knot (e.g. the side-lobe
+# vertex at 0.5 chips under coarse sampling) gets the slope its ± excursions produce.
 function _boc11_envelope_slope(offset)
     right = offset < 1 / 3 ? -3.0 : offset < 1 / 2 ? 3.0 : offset < 1 ? -1.0 : 0.0
     left = offset <= 1 / 3 ? -3.0 : offset <= 1 / 2 ? 3.0 : offset <= 1 ? -1.0 : 0.0
     (left + right) / 2
 end
 
-# S-curve slope of the very-early-minus-late discriminator at the origin, for the
-# inner (early/late) and outer (very-early/very-late) tap offsets in chips: each tap
-# pair's envelope difference contributes −2·slope·τ to the numerator and its envelope
-# sum 2·|R| to the denominator. For the default ±0.15/±0.6 taps this is
-# 4 / (2 − 3·0.15 − 0.6) ≈ 4.2.
+# VEML S-curve slope at the origin for inner and outer tap offsets in chips: each tap
+# pair contributes −2·slope·τ to the numerator and 2·|R| to the denominator.
 _veml_discriminator_slope(inner_offset, outer_offset) =
     -(_boc11_envelope_slope(inner_offset) + _boc11_envelope_slope(outer_offset)) /
     (_boc11_envelope(inner_offset) + _boc11_envelope(outer_offset))
@@ -57,21 +49,17 @@ _veml_discriminator_slope(inner_offset, outer_offset) =
 """
 $(SIGNATURES)
 
-Calculates the code phase error in chips using the noncoherent very early minus late
-envelope normalized discriminator `(VE + E - VL - L) / (VE + E + VL + L)` for
-BOC(1,1)-dominant signals (Galileo E1, GPS L1C), divided by its S-curve slope so the
-output is calibrated in chips — the contract the early-prompt-late method above keeps
-with its `(2 - d) / 2` factor. The slope (≈ 4.3 for the default ±0.15/±0.6 chip taps)
-is evaluated on the piecewise-linear sine-BOC(1,1) autocorrelation envelope at the
-actual sample-quantized tap offsets, the calibration GNSS-SDR applies where it wants
-chips from a BOC discriminator (`CalculateSlopeAbs` on `SinBocCorrelationFunction`).
-Against the full CBOC/TMBOC modulations a residual gain error of the modulation
-mismatch remains, and the discriminator is linear only within the inner tap offset.
+Code phase error in chips from the noncoherent very-early-minus-late envelope
+normalized discriminator `(VE + E - VL - L) / (VE + E + VL + L)` for BOC(1,1)-dominant
+signals (Galileo E1, GPS L1C), divided by its S-curve slope so the output is in chips.
+The slope (`4 / (2 − 3·0.15 − 0.6) ≈ 4.2` for the default ±0.15/±0.6 chip taps) is
+evaluated on the piecewise-linear sine-BOC(1,1) envelope at the sample-quantized tap
+offsets, as GNSS-SDR's `CalculateSlopeAbs` on `SinBocCorrelationFunction` does.
+Against full CBOC/TMBOC a residual gain error remains; the discriminator is linear
+only within the inner tap offset.
 
-Throws an `ArgumentError` if both tap offsets, after quantization to whole samples,
-are one chip or more: the envelope is zero at both, so the slope is undefined. The
-correlator's constructor rejects such shifts already; this catches preferred shifts
-just below one chip that a coarse sampling rate rounds up to it.
+Throws an `ArgumentError` if both quantized tap offsets are one chip or more (slope
+undefined), which a coarse sampling rate can cause for shifts just below one chip.
 
 Raw discriminator form from GNSS-SDR's Galileo E1 DLL/PLL VEML tracking:
 <https://gnss-sdr.org/docs/sp-blocks/tracking/#implementation-galileo_e1_dll_pll_veml_tracking>
@@ -110,26 +98,20 @@ function dll_disc(
     L = abs(get_late(correlator))
     VL = abs(get_very_late(correlator))
     raw = (VE + E - VL - L) / (VE + E + VL + L)
-    # A tap layout whose S-curve is locally flat cannot be calibrated — return the raw
-    # discriminator rather than dividing by zero. Every functional layout (inner taps on
-    # the main peak, outer taps on the side lobe) has a positive slope.
+    # A locally flat S-curve cannot be calibrated; functional layouts have slope > 0.
     slope == 0 ? raw : raw / slope
 end
 
 """
 $(SIGNATURES)
 
-Calculates the carrier phase error in cycles, the unit the carrier loop filter
-takes alongside the FLL's Hz (see [`calculate_carrier_frequency_update`](@ref)).
-With the prompt's sign unknown, `polarity = 0` (the default), it is the
-two-quadrant Costas discriminator `atan(Q / I) / 2π`: it reads a prompt and its
-negation alike, so a data bit or secondary-code chip flipping the prompt's sign
-does not disturb it, at the price of a range of only ±1/4 cycle. Given the
-prompt's sign as `polarity` (±1), it is the four-quadrant discriminator
-`atan(Q, I) / 2π` of the prompt times `polarity`, over ±1/2 cycle, which is
-worth up to 6 dB of tracking threshold. A wrong `polarity` reads as a phase
-error of half a cycle, so pass ±1 only where the prompt's sign is known: a
-dataless signal, synced to its secondary code where it has one.
+Carrier phase error in cycles (see [`calculate_carrier_frequency_update`](@ref)).
+With `polarity = 0` (default) it is the two-quadrant Costas discriminator
+`atan(Q / I) / 2π`: insensitive to data or secondary-code sign flips, range ±1/4
+cycle. With the prompt's sign as `polarity` (±1) it is the four-quadrant
+`atan(Q, I) / 2π` of `polarity * prompt`, range ±1/2 cycle, worth up to 6 dB of
+tracking threshold. A wrong `polarity` reads as half a cycle of error, so pass ±1
+only for a dataless signal, synced to its secondary code where it has one.
 
 See: Kaplan & Hegarty, "Understanding GPS: Principles and Applications", 2nd ed.,
 Tables 5.2 and 5.3.
@@ -144,19 +126,13 @@ end
 """
 $(SIGNATURES)
 
-Calculates the carrier frequency error in Hz from the rotation between the
-previous and the current prompt. By default it is the two-quadrant
-discriminator `atan(cross / dot)`: like `pll_disc(signal, correlator)` it reads
-the rotation whether or not a sign flip separates the two prompts, and its range
-is ±1 / (4 · `integration_time`). With `four_quadrant = true` it is the
-four-quadrant `atan(cross, dot)`, over ±1 / (2 · `integration_time`). That needs
-both prompts to share their sign, as a flip between them reads as half a cycle
-of rotation: a dataless signal, synced to its secondary code where it has one.
-Which sign they share does not matter, as it
-cancels in the product.
-
-The result is always in `Hz`, whatever unit the integration time carries, and
-zero without a previous prompt.
+Carrier frequency error in `Hz`, whatever unit the integration time carries, from
+the rotation between the previous and current prompt; zero without a previous
+prompt. By default the two-quadrant
+`atan(cross / dot)`, insensitive to a sign flip between the prompts, range
+±1 / (4 · `integration_time`). With `four_quadrant = true` the four-quadrant
+`atan(cross, dot)`, range ±1 / (2 · `integration_time`); it needs both prompts to
+share their sign (either one), as for [`pll_disc`](@ref)'s `polarity`.
 
 See: Kaplan & Hegarty, "Understanding GPS: Principles and Applications", 2nd ed.,
 Table 5.4.
@@ -169,7 +145,6 @@ function fll_disc(
     four_quadrant::Bool = false,
 )
     if previous_prompt == 0
-        # return 0 when there is no previous prompt
         return uconvert(Hz, 0.0/integration_time)
     end
 
@@ -179,7 +154,7 @@ function fll_disc(
     cross = imag(result)
     dot = real(result)
 
-    # atan(+-Int) produces valid outputs (+-π / 2)
+    # Two-quadrant: `cross / dot` is ±Inf where `dot` is zero, which `atan` maps to ±π/2.
     rotation = four_quadrant ? atan(cross, dot) : atan(cross / dot)
     return uconvert(Hz, rotation / (2 * pi * integration_time))
 end

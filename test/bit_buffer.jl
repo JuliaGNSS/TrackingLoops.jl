@@ -28,14 +28,12 @@ end
     @test _norm_quantile(0.975) ≈ 1.959964 atol = 1e-6
     @test _norm_quantile(0.999) ≈ 3.090232 atol = 1e-6
     @test _norm_quantile(0.025) ≈ -_norm_quantile(0.975) atol = 1e-12
-    # The open-interval contract: `_t_quantile` clamps before calling in, so
-    # the ±Inf endpoints are documented behaviour rather than an error.
+    # ±Inf at the endpoints is documented behaviour (`_t_quantile` clamps first).
     @test _norm_quantile(1.0) == Inf
     @test _norm_quantile(0.0) == -Inf
 end
 
-# `@allocated` at global scope picks up boxing from untyped global lookups, so
-# the measurement goes through a typed function.
+# Measure inside a typed function: `@allocated` at global scope counts global boxing.
 _bb_measure_t_quantile_alloc(probability::Float64, dof::Int) =
     (_t_quantile(probability, dof); @allocated _t_quantile(probability, dof))
 
@@ -121,8 +119,8 @@ end
 end
 
 @testset "A noiseless bit-edge lock fires at the true bit boundary, not one early" begin
-    # Data 0,0,1: the first transition is preceded by a repeated bit (the
-    # issue-#124 trigger). The true edge is at block 60.
+    # Data 0,0,1: a repeated bit before the first transition (JuliaGNSS/Tracking.jl#124).
+    # The true edge is at block 60.
     @test _bb_detect_over(_bb_bitstream([0, 0, 1])[1:59], 0.999; upto = 59).found == false
     res = _bb_detect_over(_bb_bitstream([0, 0, 1]), 0.999; upto = 60)
     @test res.found == true
@@ -337,8 +335,8 @@ end
     @test hard_false_locks > 0
 end
 
-# Feed one-block prompts through `buffer` and return the 1-based block at which
-# the detector locked (0 if never) together with the final bit buffer.
+# Feed prompts one block per call through `buffer`; return the 1-based lock block
+# (0 if none) and the final bit buffer.
 # With `stop_at_lock` the feed ends on the locking block.
 function _bb_feed_prompts(prompts; signal = GPSL1CA(), prn = 1, stop_at_lock = false)
     bit_buffer = BitBuffer{get_code_block_buffer_type(signal)}()

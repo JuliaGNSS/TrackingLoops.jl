@@ -375,7 +375,8 @@ end
     @test @inferred(estimate_cn0(estimator, CN0_T)) isa typeof(0.0dBHz)
 end
 
-@testset "The signals NWPR cannot serve, the noise reference can (issue #217)" begin
+# JuliaGNSS/Tracking.jl#217
+@testset "The signals NWPR cannot serve, the noise reference can" begin
     # One symbol per code block, or a secondary code before sync: NWPR admits no
     # coherent window ever and reports its fallback; the noise reference has no
     # window, so these are ordinary records to it.
@@ -490,7 +491,8 @@ end
     @test estimate_cn0(single, 1ms) == estimate_cn0(get_fallback_cn0_estimator(single), 1ms)
 end
 
-@testset "NWPR CN0 estimator noise floor beats the moment ratio (issue #217)" begin
+# JuliaGNSS/Tracking.jl#217
+@testset "NWPR CN0 estimator noise floor beats the moment ratio" begin
     # The moment ratio manufactures signal power out of noise at a finite
     # window; NWPR does not. Amplitude √(C/N₀·T) in unit-variance complex noise.
     prompts(cn0, n, seed) =
