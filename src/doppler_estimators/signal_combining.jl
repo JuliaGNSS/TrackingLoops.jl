@@ -182,3 +182,9 @@ end
     raw_frequency_error = loops.fll ? frequency_error : discriminators.raw_frequency_error
     merge(discriminators, (; phase_error, frequency_error, raw_frequency_error, code_error))
 end
+
+# Rotates a component's bit-buffer prompt onto the real axis, given the loops lock
+# the driver there: a bit-identical no-op (`cis(0)`) for an in-phase component,
+# `±90°` for a quadrature one (GPS L5 / Galileo E5a I vs Q).
+@inline _carrier_phase_derotation(driver_carrier_phase_offset::Real, signal) =
+    cis(driver_carrier_phase_offset - get_carrier_phase_offset(signal))

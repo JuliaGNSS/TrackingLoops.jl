@@ -62,6 +62,167 @@ get_soft_bits(state::SignalLoopState) = get_soft_bits(state.bit_buffer)
 estimate_cn0(state::SignalLoopState, integration_time) =
     estimate_cn0(state.cn0_estimator, integration_time)
 
+"""
+$(SIGNATURES)
+
+One completed record as the loop-filter step sees it: the signal, the filtered
+(antenna-combined, normalised) correlator, the previous filtered prompt, the
+record's span and block count, the band's sampling frequency, and `fold_end`, the
+end sample of the fold's last record, against which a landing sample is measured.
+
+Fields for an estimator with per-satellite state of its own
+([`VectorPLLAndDLL`](@ref)):
+
+  - `prn`: the satellite (`0` if unknown);
+  - `code_phase`: the replica's code phase (chips) at `sample_index`, from the
+    [`CorrelatorOutput`](@ref) (`NaN` if not reported);
+  - `cn0`: the host's C/N₀ estimate in dB-Hz (`NaN` by default), which weights
+    the navigation filter's measurements and decides lock; without it the vector
+    loop estimates C/N₀ from the prompts. The scalar loops ignore it.
+
+A satellite's driver and passenger records share one sample frame. For such an
+estimator `sample_index / sampling_frequency` must be the time since an origin
+shared by every satellite of the band; a host whose correlator restarts its
+sample count passes the offset as `sample_offset` (added to `sample_index` and
+`fold_end`).
+
+`polarity`, from the bit buffer as it was when the record was correlated (before
+the fold that may sync it), picks the carrier discriminators: the prompt's sign from
+the secondary-code sync ([`get_sync_polarity`](@ref)). Nonzero, the replica wipes
+every sign modulation off the prompt, so the PLL and the FLL are four-quadrant; `0`
+(default) keeps both two-quadrant (the Costas PLL).
+
+`previous_prompt` is zero, giving no FLL reading, for the first record and for a
+record whose length or `polarity` differs from the previous one: the FLL divides
+the rotation by this record's integration time, which is the time between the
+prompts only for records of one length, and a wipe-off change would read as half a
+cycle. The constructor that takes a [`SignalLoopState`](@ref) applies
+these rules.
+"""
+struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F}
+    signal::S
+    filtered_correlator::C
+    previous_prompt::ComplexF64
+    integrated_samples::Int
+    sample_index::Int
+    fold_end::Int
+    integrated_code_blocks::Int
+    sampling_frequency::F
+    prn::Int
+    code_phase::Float64
+    polarity::Int8
+    cn0::Float64
+end
+
+LoopRecord(
+    signal::AbstractGNSSSignal,
+    filtered_correlator::AbstractCorrelator,
+    previous_prompt,
+    integrated_samples::Integer,
+    sample_index::Integer,
+    fold_end::Integer,
+    integrated_code_blocks::Integer,
+    sampling_frequency;
+    prn::Integer = 0,
+    code_phase::Real = NaN,
+    polarity::Integer = 0,
+    cn0 = NaN,
+) = LoopRecord(
+    signal,
+    filtered_correlator,
+    ComplexF64(previous_prompt),
+    Int(integrated_samples),
+    Int(sample_index),
+    Int(fold_end),
+    Int(integrated_code_blocks),
+    sampling_frequency,
+    Int(prn),
+    Float64(code_phase),
+    Int8(polarity),
+    _record_cn0(cn0),
+)
+
+LoopRecord(
+    signal,
+    filtered_correlator,
+    previous_prompt,
+    output::CorrelatorOutput,
+    integrated_code_blocks,
+    sampling_frequency;
+    fold_end = output.sample_index,
+    prn::Integer = 0,
+    sample_offset::Integer = 0,
+    polarity::Integer = 0,
+    cn0 = NaN,
+) = LoopRecord(
+    signal,
+    filtered_correlator,
+    ComplexF64(previous_prompt),
+    output.integrated_samples,
+    output.sample_index + Int(sample_offset),
+    Int(fold_end) + Int(sample_offset),
+    Int(integrated_code_blocks),
+    sampling_frequency,
+    Int(prn),
+    output.code_phase,
+    Int8(polarity),
+    _record_cn0(cn0),
+)
+
+# C/N₀ in dB-Hz from a number or a dB-Hz quantity (as `estimate_cn0` returns).
+_record_cn0(cn0::Real) = Float64(cn0)
+_record_cn0(cn0) = Float64(ustrip(cn0))
+
+"""
+    LoopRecord(loop::SignalLoopState, signal, filtered_correlator,
+               output::CorrelatorOutput, integrated_code_blocks, sampling_frequency;
+               prn, fold_end = output.sample_index, sample_offset = 0, cn0 = NaN,
+               correlated_pre_sync = false)
+
+The [`LoopRecord`](@ref) of a record `apply_record` folded, built from the
+signal's state `loop` *before* that fold, with `polarity` and `previous_prompt`
+filled in by `LoopRecord`'s rules (block count compared via
+`integrated_code_blocks`). `filtered_correlator` and `integrated_code_blocks` are
+what `apply_record` returned; other arguments are as for the `CorrelatorOutput`
+constructor. `prn` is required, as a secondary code's polarity can depend on it.
+
+Pass `correlated_pre_sync` as to `apply_record`: a record after a sync found earlier
+in its fold was correlated with the pre-sync replica and still carries the secondary
+code, so it gets no polarity; read with the sync's, the four-quadrant PLL would take
+every secondary chip flip for a half-cycle phase error.
+"""
+function LoopRecord(
+    loop::SignalLoopState,
+    signal::AbstractGNSSSignal,
+    filtered_correlator,
+    output::CorrelatorOutput,
+    integrated_code_blocks::Integer,
+    sampling_frequency;
+    prn::Integer,
+    fold_end = output.sample_index,
+    sample_offset::Integer = 0,
+    cn0 = NaN,
+    correlated_pre_sync::Bool = false,
+)
+    polarity = _correlated_polarity(signal, loop.bit_buffer, prn, correlated_pre_sync)
+    chains =
+        integrated_code_blocks == loop.last_num_code_blocks &&
+        polarity == loop.last_polarity
+    LoopRecord(
+        signal,
+        filtered_correlator,
+        chains ? loop.last_filtered_prompt : complex(0.0, 0.0),
+        output,
+        integrated_code_blocks,
+        sampling_frequency;
+        fold_end,
+        prn,
+        sample_offset,
+        polarity,
+        cn0,
+    )
+end
+
 # Fold the record into the C/N₀ estimator, or skip it while a required noise density
 # is not measured yet. Both branches return the same type; `requires_noise_density`
 # folds away at compile time.

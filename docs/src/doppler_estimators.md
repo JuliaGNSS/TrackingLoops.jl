@@ -46,7 +46,11 @@ Private = false
 
 ```@autodocs
 Modules = [TrackingLoops]
-Pages = ["estimators.jl"]
+Pages = [
+    "doppler_estimators/conventional.jl",
+    "doppler_estimators/nco_referenced.jl",
+    "doppler_estimators/interface.jl",
+]
 Private = false
 ```
 
@@ -114,7 +118,7 @@ resulting defaults, `BL` in Hz:
 
 ```@autodocs
 Modules = [TrackingLoops]
-Pages = ["loop_filters.jl"]
+Pages = ["loop_filters.jl", "doppler_estimators/carrier_loop_staging.jl"]
 Private = false
 ```
 
@@ -233,7 +237,7 @@ passenger record with [`fold_passenger_record`](@ref) (see
 
 ```@autodocs
 Modules = [TrackingLoops]
-Pages = ["signal_combining.jl"]
+Pages = ["doppler_estimators/signal_combining.jl"]
 Private = false
 ```
 

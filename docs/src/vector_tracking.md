@@ -226,7 +226,7 @@ cycles allocate nothing, and the estimator compiles with `juliac --trim=safe`.
 
 ```@autodocs
 Modules = [TrackingLoops]
-Pages = ["vector/estimator.jl", "vector/engine.jl"]
+Pages = ["vector/estimator.jl", "vector/engine.jl", "vector/passengers.jl"]
 Private = false
 ```
 
@@ -234,6 +234,6 @@ Private = false
 
 ```@autodocs
 Modules = [TrackingLoops]
-Pages = ["vector/tracking.jl", "vector/model.jl"]
+Pages = ["vector/state.jl", "vector/tracking.jl", "vector/model.jl"]
 Private = false
 ```
