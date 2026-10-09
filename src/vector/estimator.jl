@@ -422,6 +422,3 @@ function combine_passenger_record(
     )
     SatVectorPLLAndDLL(state; inner)
 end
-
-drop_pending_combining(estimator::VectorPLLAndDLL, state::SatVectorPLLAndDLL) =
-    SatVectorPLLAndDLL(state; inner = drop_pending_combining(estimator.inner, state.inner))

@@ -220,8 +220,7 @@ export NumAnts,
     get_sync_polarity,
     SignalCombiningSums,
     combines_signals,
-    combine_passenger_record,
-    drop_pending_combining
+    combine_passenger_record
 
 const Maybe{T} = Union{T,Nothing}
 

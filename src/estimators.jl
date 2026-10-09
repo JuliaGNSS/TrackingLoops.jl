@@ -34,8 +34,10 @@ of its own, as [`VectorPLLAndDLL`](@ref) does:
   - `code_phase`: the replica's code phase (chips) at `sample_index`, from the
     [`CorrelatorOutput`](@ref) (`NaN` when the producer does not report it).
 
-For such an estimator `sample_index / sampling_frequency` must also be the
-time since one origin shared by every satellite of the band. A host whose
+A satellite's driver and passenger records share one sample frame, which signal
+combining compares their ends on. For such an estimator `sample_index /
+sampling_frequency` must also be the time since one origin shared by every
+satellite of the band. A host whose
 correlator restarts its sample count passes that origin's offset as
 `sample_offset` to the constructor that takes a `CorrelatorOutput`; it is added
 to `sample_index` and `fold_end`.
@@ -588,7 +590,9 @@ discriminators, weighted by its signal's ICD power share and integration time,
 join the sums the driver's next [`step_loop`](@ref) closes its loops on. Call it
 for every passenger record in sample order, each before the driver record it
 ends within (or ends at); records left pending after the driver's last carry
-over to its next. `words` are the replica words the satellite ran on.
+over to its next, unless they ended before it starts (see
+[`SignalCombiningSums`](@ref)). The passenger's records share the driver's
+sample frame (`sample_index`). `words` are the replica words the satellite ran on.
 
   - `record` is the passenger's own record, its `previous_prompt` following
     [`LoopRecord`](@ref)'s contract for the passenger's own record sequence.
@@ -659,19 +663,6 @@ end
         differential_group_delay_chips,
     ),
 )
-
-"""
-    drop_pending_combining(estimator, state) -> state
-
-`state` without its pending signal-combining sums, the passengers' weighted
-discriminators the driver's next step would combine, for a host whose driver
-drops its in-flight integration (e.g. at a code-phase snap): the passenger
-records still pending ended before the driver's re-integration starts. `state`
-unchanged for an estimator that does not combine signals.
-"""
-drop_pending_combining(::AbstractDopplerEstimator, state) = state
-drop_pending_combining(::ConventionalPLLAndDLL, state::SatConventionalPLLAndDLL) =
-    SatConventionalPLLAndDLL(state; signal_combining_sums = SignalCombiningSums())
 
 # ── The NCO-referenced (delay-aware) PLL/DLL ─────────────────────────────────
 

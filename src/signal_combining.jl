@@ -29,19 +29,33 @@ estimator that combines signals:
   - `pll`: PLL discriminators in cycles, weighted in s;
   - `fll`: FLL discriminators in Hz, weighted in s³;
   - `dll`: DLL discriminators referred to the driver's code phase, in chips,
-    weighted in s.
+    weighted in s;
+  - `first_end_sample`: the end sample of the earliest pending record
+    (`typemax(Int)` with none). A passenger enters only the driver record it ends
+    in, so pending records the driver's step finds ending at or before its record's
+    start belong to a driver record that never came (the host dropped the driver's
+    in-flight integration, e.g. at a code-phase snap), and the step drops the sums.
 """
 struct SignalCombiningSums
     pll::WeightedSum{typeof(1.0s),typeof(1.0s)}
     fll::WeightedSum{typeof(1.0Hz * 1.0s^3),typeof(1.0s^3)}
     dll::WeightedSum{typeof(1.0s),typeof(1.0s)}
+    first_end_sample::Int
 end
 
 SignalCombiningSums() = SignalCombiningSums(
     WeightedSum(0.0s, 0.0s),
     WeightedSum(0.0Hz * 0.0s^3, 0.0s^3),
     WeightedSum(0.0s, 0.0s),
+    typemax(Int),
 )
+
+# `pending` for the driver `record`, or no sums if one of them ended at or before the
+# record's start (see `SignalCombiningSums`). Records come in sample order, so the
+# earliest end decides.
+@inline _pending_for(pending::SignalCombiningSums, record) =
+    pending.first_end_sample <= record.sample_index - record.integrated_samples ?
+    SignalCombiningSums() : pending
 
 # The loops passengers are combined into.
 const _ALL_LOOPS = (pll = true, fll = true, dll = true)
@@ -143,6 +157,7 @@ end
         _accumulated(sums.pll, pll, pll_weight),
         _accumulated(sums.fll, fll, fll_weight),
         _accumulated(sums.dll, dll, dll_weight),
+        min(sums.first_end_sample, record.sample_index),
     )
 end
 
@@ -158,6 +173,7 @@ end
     record,
     loops,
 )
+    pending = _pending_for(pending, record)
     integration_time = discriminators.integration_time
     weight = _discriminator_weight(record.signal, integration_time)
     phase_error =

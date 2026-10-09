@@ -129,11 +129,14 @@ end
     ).inner.signal_combining_sums
     @test out_of_vt == sums
 
-    # Dropping the pending sums.
-    @test drop_pending_combining(estimator, combined).signal_combining_sums ===
-          SignalCombiningSums()
-    @test drop_pending_combining(vector, SatVectorPLLAndDLL(vector_state; inner = combined)).inner ==
-          drop_pending_combining(estimator, combined)
+    # Pending sums whose passenger record ended at or before the driver record's start
+    # belong to a driver record that never came: the step drops them.
+    @test sums.first_end_sample == record.sample_index
+    driver(sample_index) = combining_record(GPSL5Q(), cis(0.3), (0.5, 1.0, 0.5);
+        sample_index, previous_prompt = cis(0.2))
+    carrier(state, record) = step_loop(estimator, state, record, _NO_WORD, NO_LANDING_SAMPLE)[2]
+    @test carrier(combined, driver(10000)) == carrier(state, driver(10000))
+    @test carrier(combined, driver(5000)) != carrier(state, driver(5000))
 end
 
 @testset "A passenger's FLL reading, two- or four-quadrant" begin
@@ -192,7 +195,9 @@ end
     driver = combining_record(GalileoE1C(), cis(0.2), (0.6, 0.8, 1.0, 0.6, 0.4); n, fs, previous_prompt = cis(0.1))
     step(state) = step_loop(estimator, state, driver, _NO_WORD, NO_LANDING_SAMPLE)
     w = 0.5 * 0.004s
-    with_sums(pll, fll, dll) = @set state.signal_combining_sums = SignalCombiningSums(pll, fll, dll)
+    # Pending sums of passenger records ending with the driver record.
+    pending(pll, fll, dll) = SignalCombiningSums(pll, fll, dll, n)
+    with_sums(pll, fll, dll) = @set state.signal_combining_sums = pending(pll, fll, dll)
     no_pll = SC.WeightedSum(0.0s, 0.0s)
     no_fll = SC.WeightedSum(0.0Hz * 0.0s^3, 0.0s^3)
 
@@ -214,14 +219,14 @@ end
     @test step(with_sums(no_pll, fll_pending, no_pll))[2] != alone[2]
     # Not into an FLL that is no longer formed.
     locked = @set state.frequency_lock = FrequencyLockIndicator(0.0Hz * 0.0s, 0.0s, true)
-    @test step(@set locked.signal_combining_sums = SignalCombiningSums(no_pll, fll_pending, no_pll))[2] ==
+    @test step(@set locked.signal_combining_sums = pending(no_pll, fll_pending, no_pll))[2] ==
           step(locked)[2]
 
     # In the vector loop: into the PLL only, and the navigation filter gets the
     # driver's own DLL and FLL readings.
     vector = VectorPLLAndDLL(GalileoE1B(); inner = estimator)
     vt = SC._enable_vector_tracking(init_estimator_state(vector, GalileoE1C(), 0.0Hz, 0.0Hz))
-    mixed = SignalCombiningSums(
+    mixed = pending(
         SC.WeightedSum(w * 0.01, w),
         fll_pending,
         SC.WeightedSum(w * 0.05, w),
@@ -233,7 +238,7 @@ end
     @test combined_vt.code_discr_acc == alone_vt.code_discr_acc
     @test combined_vt.carrier_discr_acc == alone_vt.carrier_discr_acc
     @test first(
-        vt_step(@set vt.inner.signal_combining_sums = SignalCombiningSums(no_pll, fll_pending, SC.WeightedSum(w * 0.05, w))),
+        vt_step(@set vt.inner.signal_combining_sums = pending(no_pll, fll_pending, SC.WeightedSum(w * 0.05, w))),
     ).inner.carrier_loop_filter == alone_vt.inner.carrier_loop_filter
 end
 

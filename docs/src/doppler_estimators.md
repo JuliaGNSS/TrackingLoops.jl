@@ -200,8 +200,12 @@ whether to.
   - **Time alignment:** every passenger record folded before a driver record is
     combined into it, and the driver's step starts the sums afresh. Records
     folded after the driver's last one stay pending in the satellite's state
-    ([`SignalCombiningSums`](@ref)) for its next; a host that drops the driver's
-    in-flight integration drops them with [`drop_pending_combining`](@ref).
+    ([`SignalCombiningSums`](@ref)) for its next. A pending record that ended at
+    or before the start of the driver record that steps it belongs to a driver
+    record that never came (the host dropped the driver's in-flight integration,
+    e.g. at a code-phase snap), so the step drops the pending sums. This needs a
+    satellite's driver and passenger records on one sample frame (their
+    `sample_index`).
     Where no passenger record is pending, the driver's loops close on its own
     discriminators, bit for bit. Each passenger is assumed to integrate no
     longer than the driver, as a longer record would dominate the one driver
