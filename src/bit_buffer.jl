@@ -1451,30 +1451,16 @@ function reset(bit_buffer::BitBuffer{B}) where {B<:Unsigned}
 end
 
 """
-    has_wiped_off_prompt(signal, bit_buffer) -> Bool
-
-Whether the replica wipes every sign modulation off `signal`'s prompt, so that
-consecutive prompts share their sign: a dataless signal, synced to its
-secondary code where it has one. Pass the bit buffer as it was when the record
-was correlated, i.e. before the fold that may sync it. Where this holds, the
-FLL may be four-quadrant (`fll_disc(...; four_quadrant = true)`); pass it as a
-[`LoopRecord`](@ref)'s `wiped_off`.
-"""
-@inline has_wiped_off_prompt(signal::AbstractGNSSSignal, bit_buffer::BitBuffer) =
-    iszero(get_data_frequency(signal)) && (
-        get_secondary_code_length(signal) == 1 ||
-        has_bit_or_secondary_code_been_found(bit_buffer)
-    )
-
-"""
     get_sync_polarity(signal, bit_buffer, prn) -> Int8
 
-The polarity of a pilot's prompt according to its secondary-code sync, which
-the four-quadrant PLL reads the prompt with (`pll_disc(...; polarity)`), or `0`
-for the Costas PLL: a data signal, a pilot before its sync, and a pilot without
-a secondary code (GPS L2 CL, Galileo E5a-QP), whose sync reads no sign. Pass it
-as a [`LoopRecord`](@ref)'s `polarity`, from the bit buffer as it was when the
-record was correlated.
+The polarity of a pilot's prompt according to its secondary-code sync, or `0`.
+Nonzero, the replica wipes every sign modulation off the prompt, and the
+four-quadrant discriminators read it: the PLL with this sign
+(`pll_disc(...; polarity)`), the FLL (`fll_disc(...; four_quadrant = true)`).
+`0`, both stay two-quadrant: a data signal, a pilot before its sync, and a pilot
+without a secondary code (GPS L2 CL, Galileo E5a-QP), whose sync reads no sign.
+Pass it as a [`LoopRecord`](@ref)'s `polarity`, from the bit buffer as it was
+when the record was correlated.
 
 The sync reads the sign off one whole secondary period of the prompt summed
 with the code wiped off. That sum was correlated with a pre-sync replica, which
@@ -1484,8 +1470,9 @@ and the switch, the four-quadrant PLL pulls the carrier phase over by half a
 cycle: that is the start of the resolved carrier phase, not a slip within it.
 """
 @inline function get_sync_polarity(signal::AbstractGNSSSignal, bit_buffer::BitBuffer, prn::Integer)
-    has_wiped_off_prompt(signal, bit_buffer) && get_secondary_code_length(signal) > 1 ||
-        return Int8(0)
+    iszero(get_data_frequency(signal)) &&
+        get_secondary_code_length(signal) > 1 &&
+        has_bit_or_secondary_code_been_found(bit_buffer) || return Int8(0)
     chip0 = GNSSSignals.secondary_value(get_secondary_code(signal), prn, 0)
     Int8(bit_buffer.polarity * sign(chip0))
 end

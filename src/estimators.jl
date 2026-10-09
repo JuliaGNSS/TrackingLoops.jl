@@ -40,24 +40,21 @@ correlator restarts its sample count passes that origin's offset as
 `sample_offset` to the constructor that takes a `CorrelatorOutput`; it is added
 to `sample_index` and `fold_end`.
 
-Two fields pick the carrier discriminators, both from the signal's bit buffer as
-it was when the record was correlated (before the fold that may sync it):
-
-  - `wiped_off`: the replica wipes every sign modulation off the prompt
-    ([`has_wiped_off_prompt`](@ref)), so the FLL is four-quadrant. `false` by default.
-  - `polarity`: the prompt's sign from the secondary-code sync
-    ([`get_sync_polarity`](@ref)), so the PLL is four-quadrant; `0` (the default)
-    keeps the Costas PLL.
+`polarity` picks the carrier discriminators, from the signal's bit buffer as it was
+when the record was correlated (before the fold that may sync it): the prompt's
+sign from the secondary-code sync ([`get_sync_polarity`](@ref)). Nonzero, the
+replica wipes every sign modulation off the prompt, so the PLL and the FLL are
+four-quadrant; `0` (the default) keeps both two-quadrant (the Costas PLL).
 
 `previous_prompt` is the previous record's filtered prompt, or zero where the
 FLL has nothing to compare with: the first record, and a record whose length or
-whose `wiped_off` differs from the previous record's. The FLL divides the
+whose `polarity` differs from the previous record's. The FLL divides the
 rotation between the two prompts by this record's integration time, which is
 the time between them only for records of one length, and a sign flip between a
 prompt with and one without the wipe-off would read as half a cycle. A record
 with a zero previous prompt gives no FLL reading. The constructor that takes a
-[`SignalLoopState`](@ref) fills in `previous_prompt`, `wiped_off` and `polarity`
-by these rules.
+[`SignalLoopState`](@ref) fills in `previous_prompt` and `polarity` by these
+rules.
 """
 struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F}
     signal::S
@@ -70,7 +67,6 @@ struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F}
     sampling_frequency::F
     prn::Int
     code_phase::Float64
-    wiped_off::Bool
     polarity::Int8
 end
 
@@ -85,7 +81,6 @@ LoopRecord(
     sampling_frequency;
     prn::Integer = 0,
     code_phase::Real = NaN,
-    wiped_off::Bool = false,
     polarity::Integer = 0,
 ) = LoopRecord(
     signal,
@@ -98,7 +93,6 @@ LoopRecord(
     sampling_frequency,
     Int(prn),
     Float64(code_phase),
-    wiped_off,
     Int8(polarity),
 )
 
@@ -112,7 +106,6 @@ LoopRecord(
     fold_end = output.sample_index,
     prn::Integer = 0,
     sample_offset::Integer = 0,
-    wiped_off::Bool = false,
     polarity::Integer = 0,
 ) = LoopRecord(
     signal,
@@ -125,7 +118,6 @@ LoopRecord(
     sampling_frequency,
     Int(prn),
     output.code_phase,
-    wiped_off,
     Int8(polarity),
 )
 
@@ -139,12 +131,11 @@ The [`LoopRecord`](@ref) of a record `apply_record` folded, built from the
 signal's state `loop` *before* that fold, with the fields the record contract
 asks of a host filled in:
 
-  - `wiped_off` ([`has_wiped_off_prompt`](@ref)) and `polarity`
-    ([`get_sync_polarity`](@ref)) from the bit buffer as the record was
-    correlated;
+  - `polarity` ([`get_sync_polarity`](@ref)) from the bit buffer as the record
+    was correlated;
   - `previous_prompt`: the last filtered prompt, or zero where the FLL must not
     compare with it — the first record, and a record whose block count
-    (`integrated_code_blocks`, as `apply_record` returned it) or wipe-off differs
+    (`integrated_code_blocks`, as `apply_record` returned it) or polarity differs
     from the previous record's.
 
 The arguments are those of the constructor that takes a `CorrelatorOutput`,
@@ -155,9 +146,9 @@ polarity of a secondary code can depend on it.
 
 Pass the same `correlated_pre_sync` as to `apply_record`: a record that follows a
 sync found earlier in the same fold was correlated with the pre-sync replica, so its
-prompt still carries the secondary code. It is neither wiped off nor read with the
-sync's polarity, which would turn every secondary chip flip into a half-cycle phase
-error of the four-quadrant PLL.
+prompt still carries the secondary code. It gets no polarity: read with the sync's,
+the four-quadrant PLL would take every secondary chip flip for a half-cycle phase
+error.
 """
 function LoopRecord(
     loop::SignalLoopState,
@@ -171,9 +162,9 @@ function LoopRecord(
     sample_offset::Integer = 0,
     correlated_pre_sync::Bool = false,
 )
-    wiped_off = _correlated_wipe_off(signal, loop.bit_buffer, correlated_pre_sync)
+    polarity = _correlated_polarity(signal, loop.bit_buffer, prn, correlated_pre_sync)
     chains =
-        integrated_code_blocks == loop.last_num_code_blocks && wiped_off == loop.last_wiped_off
+        integrated_code_blocks == loop.last_num_code_blocks && polarity == loop.last_polarity
     LoopRecord(
         signal,
         filtered_correlator,
@@ -184,8 +175,7 @@ function LoopRecord(
         fold_end,
         prn,
         sample_offset,
-        wiped_off,
-        polarity = wiped_off ? get_sync_polarity(signal, loop.bit_buffer, prn) : 0,
+        polarity,
     )
 end
 
@@ -443,7 +433,7 @@ command acts before the next record.
             filtered_correlator,
             record.previous_prompt,
             integration_time;
-            four_quadrant = record.wiped_off,
+            four_quadrant = !iszero(record.polarity),
         ) : 0.0Hz
     (;
         integration_time,
@@ -603,7 +593,7 @@ over to its next. `words` are the replica words the satellite ran on.
   - `record` is the passenger's own record, its `previous_prompt` following
     [`LoopRecord`](@ref)'s contract for the passenger's own record sequence.
     The scalar loops read its two-quadrant discriminators whatever its
-    `wiped_off` and `polarity`, and combine a four-quadrant driver reading
+    `polarity`, and combine a four-quadrant driver reading
     with them only within the two-quadrant range.
   - `driver_signal` rotates the passenger's prompt onto the driver's carrier
     phase frame by the nominal carrier phase offsets.
@@ -921,7 +911,7 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
             filtered_correlator,
             record.previous_prompt,
             integration_time;
-            four_quadrant = record.wiped_off,
+            four_quadrant = !iszero(record.polarity),
         ) : 0.0Hz
     frequency_error = raw_frequency_error
 

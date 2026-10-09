@@ -58,7 +58,7 @@ folded, prompt, filtered, blocks, overshoot =
     apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready)
 overshoot && @warn "record crossed a navigation-bit boundary; bit sync restarted"
 # Built from the state before the fold: the previous prompt the FLL may compare
-# with, and the wipe-off and polarity the record was correlated with.
+# with, and the polarity the record was correlated with.
 record = LoopRecord(loop, signal, filtered, output, blocks, fs; prn)
 loop = folded
 state, carrier_doppler, code_doppler =

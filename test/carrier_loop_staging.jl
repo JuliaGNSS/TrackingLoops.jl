@@ -16,7 +16,6 @@ function staging_step(
     state,
     prompt,
     previous_prompt,
-    wiped_off = false,
     polarity = 0,
 )
     record = LoopRecord(
@@ -28,7 +27,6 @@ function staging_step(
         5000,
         1,
         5e6Hz;
-        wiped_off,
         polarity,
     )
     # `step_satellite` (from `vector_estimator.jl`) is `step_loop` but for the
@@ -45,19 +43,7 @@ end
 state_init_carrier_doppler(state) = state.init_carrier_doppler
 state_init_carrier_doppler(state::SatVectorPLLAndDLL) = state.inner.init_carrier_doppler
 
-@testset "Wiped-off prompts and the sync's sign" begin
-    # Data signals never are.
-    @test !has_wiped_off_prompt(GPSL1CA(), BitBuffer{UInt32}())
-    @test !has_wiped_off_prompt(GPSL1CA(), setproperties(BitBuffer{UInt32}(), (; found = true)))
-    # Pilots with a secondary code once synced to it ...
-    @test !has_wiped_off_prompt(GalileoE1C(), BitBuffer{UInt32}())
-    @test has_wiped_off_prompt(GalileoE1C(), setproperties(BitBuffer{UInt32}(), (; found = true)))
-    @test !has_wiped_off_prompt(GPSL5Q(), BitBuffer{UInt32}())
-    @test has_wiped_off_prompt(GPSL5Q(), setproperties(BitBuffer{UInt32}(), (; found = true)))
-    # ... and pilots without one from the start.
-    @test has_wiped_off_prompt(GalileoE5aQP(), BitBuffer{UInt32}())
-    @test has_wiped_off_prompt(GPSL2CL(), BitBuffer{UInt32}())
-
+@testset "The sync's sign" begin
     # The sync polarity times secondary chip 0, which the pre-sync replica
     # carries on every block: +1 for GPS L5Q, -1 for every Galileo E1C PRN.
     synced(polarity) =
@@ -67,8 +53,9 @@ state_init_carrier_doppler(state::SatVectorPLLAndDLL) = state.inner.init_carrier
     @test get_sync_polarity(GalileoE1C(), synced(1), 1) === Int8(-1)
     @test get_sync_polarity(GalileoE1C(), synced(-1), 11) === Int8(1)
     # None where there is no such sync: before it, on data, and on the pilots
-    # without a secondary code, which keep the Costas PLL.
+    # without a secondary code, which stay two-quadrant.
     @test get_sync_polarity(GalileoE1C(), BitBuffer{UInt32}(), 1) === Int8(0)
+    @test get_sync_polarity(GPSL1CA(), synced(1), 1) === Int8(0)
     @test get_sync_polarity(GPSL5I(), synced(1), 1) === Int8(0)
     @test get_sync_polarity(GalileoE5aQP(), synced(1), 1) === Int8(0)
     @test get_sync_polarity(GPSL2CL(), BitBuffer{UInt32}(), 1) === Int8(0)
@@ -172,7 +159,7 @@ end
     freq_update = 0.0Hz
     for k = 1:3000
         prompt = -cis(φ)
-        freq_update, state = staging_step(estimator, state, prompt, previous_prompt, true, -1)
+        freq_update, state = staging_step(estimator, state, prompt, previous_prompt, -1)
         state.frequency_lock.locked &&
             (max_error = max(max_error, abs(rem2pi(φ, RoundNearest))))
         previous_prompt = prompt
@@ -228,8 +215,8 @@ end
         init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz),
     )
     # A 120° advance in 1 ms: 333 Hz four-quadrant, -167 Hz two-quadrant.
-    _, wiped_off = staging_step(estimator, vt_state, cis(2π / 3), cis(0.0), true, -1)
-    _, with_flips = staging_step(estimator, vt_state, cis(2π / 3), cis(0.0), false, 0)
+    _, wiped_off = staging_step(estimator, vt_state, cis(2π / 3), cis(0.0), -1)
+    _, with_flips = staging_step(estimator, vt_state, cis(2π / 3), cis(0.0), 0)
     @test TrackingLoops._mean_carrier_discriminator(wiped_off) ≈ (333 + 1 / 3) * 1Hz
     @test TrackingLoops._mean_carrier_discriminator(with_flips) ≈ -(166 + 2 / 3) * 1Hz
     # No frequency lock indicator in the vector loop: it stays FLL-assisted.

@@ -76,7 +76,7 @@ end
     first_record = LoopRecord(loop, signal, filtered, output, blocks, fs; prn = 7)
     @test iszero(first_record.previous_prompt)
     @test first_record.prn == 7
-    @test !first_record.wiped_off && first_record.polarity == 0
+    @test first_record.polarity == 0
     # A record of the same length chains from the last filtered prompt.
     output = CorrelatorOutput(correlator(2000.0im), 4000, 8000)
     _, _, filtered, blocks = apply_record(folded, signal, 7, output, fs, 1e-6 / Hz, true)
@@ -85,40 +85,35 @@ end
     @test record.sample_index == 8100
     # One of another length does not.
     @test iszero(LoopRecord(folded, signal, filtered, output, 2, fs; prn = 7).previous_prompt)
-    # Nor does one whose wipe-off differs: a pilot's first record after its
-    # secondary-code sync, which also reads with the sync's polarity.
+    # Nor does one whose polarity differs: a pilot's first record after its
+    # secondary-code sync, which reads with the sync's polarity.
     pilot = GPSL5Q()
     unsynced = SignalLoopState(pilot)
-    @test !unsynced.last_wiped_off
+    @test unsynced.last_polarity == 0
     synced = SignalLoopState(
         setproperties(unsynced.bit_buffer, (; found = true, polarity = Int8(1))),
         unsynced.cn0_estimator,
         unsynced.post_corr_filter,
         cis(0.3),
         1,
-        false,
+        Int8(0),
     )
     output = CorrelatorOutput(correlator(2000.0), 25_000, 25_000)
     record = LoopRecord(synced, pilot, correlator(0.08), output, 1, 25e6Hz; prn = 1)
-    @test record.wiped_off
-    @test record.polarity == get_sync_polarity(pilot, synced.bit_buffer, 1)
+    @test record.polarity == get_sync_polarity(pilot, synced.bit_buffer, 1) != 0
     @test iszero(record.previous_prompt)
-    # The fold remembers the wipe-off the record was correlated with.
+    # The fold remembers the polarity the record was correlated with.
     folded, _, filtered, blocks = apply_record(synced, pilot, 1, output, 25e6Hz, 1e-6 / Hz, true)
-    @test folded.last_wiped_off
+    @test folded.last_polarity == record.polarity
     @test LoopRecord(folded, pilot, filtered, output, blocks, 25e6Hz; prn = 1).previous_prompt ==
           folded.last_filtered_prompt
     # A record after a sync found earlier in its fold was correlated with the pre-sync
-    # replica: not wiped off, no polarity, and remembered as such.
+    # replica: no polarity, and remembered as such.
     pre_sync = LoopRecord(synced, pilot, correlator(0.08), output, 1, 25e6Hz; prn = 1,
         correlated_pre_sync = true)
-    @test !pre_sync.wiped_off && pre_sync.polarity == 0
+    @test pre_sync.polarity == 0
     @test pre_sync.previous_prompt == synced.last_filtered_prompt
     folded, = apply_record(synced, pilot, 1, output, 25e6Hz, 1e-6 / Hz, true;
         correlated_pre_sync = true)
-    @test !folded.last_wiped_off
-    # A pilot without a secondary code is wiped off whether or not it synced.
-    l2cl = GPSL2CL()
-    @test LoopRecord(SignalLoopState(l2cl), l2cl, correlator(0.08), output, 1, 25e6Hz;
-        prn = 1, correlated_pre_sync = true).wiped_off
+    @test folded.last_polarity == 0
 end

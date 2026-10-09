@@ -11,8 +11,8 @@
 
 The per-record state of one signal component on a satellite: its bit buffer,
 C/N₀ estimator, post-correlation filter, the last filtered prompt (which the
-FLL discriminator chains from), the block count of the last record and whether
-its prompt was wiped off ([`has_wiped_off_prompt`](@ref)). An immutable value,
+FLL discriminator chains from), the block count of the last record and the
+polarity it was correlated with ([`get_sync_polarity`](@ref)). An immutable value,
 rebuilt by [`apply_record`](@ref) per record; the estimators buffer into
 vectors they own, so every component needs its own instance. The state before
 a record's fold builds the record's [`LoopRecord`](@ref).
@@ -23,7 +23,7 @@ struct SignalLoopState{B<:Unsigned,PCF<:AbstractPostCorrFilter,CN0<:AbstractCN0E
     post_corr_filter::PCF
     last_filtered_prompt::ComplexF64
     last_num_code_blocks::Int
-    last_wiped_off::Bool
+    last_polarity::Int8
 end
 
 function SignalLoopState(
@@ -53,7 +53,7 @@ function SignalLoopState(
         post_corr_filter,
         complex(0.0, 0.0),
         1,
-        false,
+        Int8(0),
     )
 end
 
@@ -103,11 +103,11 @@ end
 @inline _drops_pre_sync_prompt(signal::AbstractGNSSSignal, correlated_pre_sync::Bool) =
     correlated_pre_sync && get_secondary_code_length(signal) > 1
 
-# `has_wiped_off_prompt` for a record correlated with `bit_buffer`'s state, or with the
+# `get_sync_polarity` of a record correlated with `bit_buffer`'s state, or with the
 # pre-sync replica if `correlated_pre_sync`, which leaves the secondary code on.
-@inline _correlated_wipe_off(signal, bit_buffer::BitBuffer, correlated_pre_sync::Bool) =
-    has_wiped_off_prompt(signal, bit_buffer) &&
-    !_drops_pre_sync_prompt(signal, correlated_pre_sync)
+@inline _correlated_polarity(signal, bit_buffer::BitBuffer, prn, correlated_pre_sync::Bool) =
+    _drops_pre_sync_prompt(signal, correlated_pre_sync) ? Int8(0) :
+    get_sync_polarity(signal, bit_buffer, prn)
 
 # One record into the bit buffer: `bit_block_count` blocks (from
 # `calc_num_code_blocks_for_bit_buffer`) of the de-rotated `bit_prompt`. Shared by
@@ -280,7 +280,7 @@ half of a pilot/data pair) must be handed the driver's.
         prompt,
         integrated_code_blocks,
         # As the record was correlated: before the fold that may sync it.
-        _correlated_wipe_off(signal, state.bit_buffer, correlated_pre_sync),
+        _correlated_polarity(signal, state.bit_buffer, prn, correlated_pre_sync),
     )
     new_state, prompt, filtered_correlator, integrated_code_blocks, overshoot
 end
@@ -297,7 +297,7 @@ restart_bit_clock(state::SignalLoopState) = SignalLoopState(
     state.post_corr_filter,
     state.last_filtered_prompt,
     state.last_num_code_blocks,
-    state.last_wiped_off,
+    state.last_polarity,
 )
 
 # An unsynchronised bit buffer that owns `bb`'s vectors: the soft bits are
@@ -336,7 +336,7 @@ reset_signal_state(state::SignalLoopState) = SignalLoopState(
     state.post_corr_filter,
     complex(0.0, 0.0),
     1,
-    false,
+    Int8(0),
 )
 
 _reset_cn0_estimator(e::NoiseRefCN0Estimator) =

@@ -152,7 +152,7 @@ end
     @test SC._passenger_fll_reading(beyond, false) ≈ uconvert(Hz, (2.0 - π) / (2π * T))
     # Combining reads it two-quadrant even on a wiped-off record.
     wiped = LoopRecord(signal, beyond.filtered_correlator, previous, n, n, n, 1, fs;
-        wiped_off = true, polarity = 1)
+        polarity = 1)
     sums = SC._add_passenger_discriminators(SignalCombiningSums(), wiped, _NO_WORD,
         SC._ALL_LOOPS, signal, NaN)
     @test sums.fll.sum / sums.fll.weight ≈ uconvert(Hz, (2.0 - π) / (2π * T))
@@ -252,7 +252,6 @@ end
         5000,
         1,
         5e6Hz;
-        wiped_off = true,
         polarity = 1,
     )
     pending = @set state.signal_combining_sums.pll = SC.WeightedSum(0.001s * 0.1, 0.001s)
