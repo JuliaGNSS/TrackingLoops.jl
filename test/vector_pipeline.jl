@@ -19,14 +19,22 @@ const WARM_PIPELINE = let
 end
 
 # A copy of the warm receiver to run on. On Julia 1.10 `deepcopy` keeps no spare
-# capacity of an empty vector, so the soft-bit buffers get theirs back: the first soft
-# bit of every satellite would allocate otherwise.
+# capacity of an empty vector, so the host's soft-bit buffers get theirs back: the first
+# soft bit of every satellite would allocate otherwise.
 function warm_pipeline()
     rx = deepcopy(WARM_PIPELINE.rx)
-    for slot in rx.vt.groups[1].slots
-        sizehint!(slot.bit_buffer.soft_bits, 64)
+    for sat in rx.sats
+        sizehint!(get_soft_bits(sat.signal_state), 64)
     end
     rx
+end
+
+# A satellite joining a running pipeline receiver at device sample `sample`.
+function join_pipeline!(rx, decoder, sample)
+    sat = start_pipeline_sat!(pipeline_sat(decoder, rx.estimator, rx.truth, sim_time(rx, sample)), sample)
+    push!(rx.sats, sat)
+    push!(rx.last_ends, sample)
+    sat
 end
 
 @testset "From records alone: bit sync, decoding, the scalar fix, the filter" begin
@@ -42,7 +50,7 @@ end
     # in, and seeded the filter.
     for slot in pipeline_slots(rx)
         @test slot.occupied
-        @test slot.bit_buffer.found
+        @test slot.bit_synced
         @test TL.is_decoding_completed_for_positioning(slot.running_decoder)
         @test slot.in_lock && slot.pvt_ready
         @test 40 < slot.cn0_dbhz < 50
@@ -201,11 +209,7 @@ end
     # decoder starts from nothing.
     decoders, _ = fixture_decoders(GPSL1CA())
     newcomer_decoder = decoders[9]
-    newcomer = SimSat(GPSL1CA(), newcomer_decoder, rx.estimator, rx.truth, sim_time(rx, sample);
-        cn0_dbhz = 45.0, stream = LNAVStream(newcomer_decoder.data))
-    newcomer.next_end_sample = next_block_end(newcomer, sample)
-    push!(rx.sats, newcomer)
-    push!(rx.last_ends, sample)
+    newcomer = join_pipeline!(rx, newcomer_decoder, sample)
     results, sample, diverged = run_pipeline!(rx, 1.0; start_sample = sample)
     @test !diverged
     @test length(slots) == 8
@@ -220,11 +224,7 @@ end
     @test rx.allocated[] == 0
     @test all(r -> r.status.running, results)
     # With every slot taken, one more satellite grows the group.
-    another = SimSat(GPSL1CA(), gone.decoder, rx.estimator, rx.truth, sim_time(rx, sample);
-        cn0_dbhz = 45.0, stream = gone.stream)
-    another.next_end_sample = next_block_end(another, sample)
-    push!(rx.sats, another)
-    push!(rx.last_ends, sample)
+    another = join_pipeline!(rx, gone.decoder, sample)
     rx.measuring[] = false
     _, _, diverged = run_pipeline!(rx, 0.3; start_sample = sample)
     @test !diverged
@@ -247,11 +247,7 @@ end
     @test !slot.occupied
     # Re-acquired: a fresh state on the same PRN, which registers on its old slot.
     registrations = nav.registrations
-    reacquired = SimSat(GPSL1CA(), lost.decoder, rx.estimator, rx.truth, sim_time(rx, sample);
-        cn0_dbhz = 45.0, stream = lost.stream)
-    reacquired.next_end_sample = next_block_end(reacquired, sample)
-    push!(rx.sats, reacquired)
-    push!(rx.last_ends, sample)
+    reacquired = join_pipeline!(rx, lost.decoder, sample)
     results, _, diverged = run_pipeline!(rx, 14.0; start_sample = sample)
     @test !diverged
     @test nav.registrations == registrations + 1

@@ -16,6 +16,13 @@ the channel's [`NCOTimeline`](@ref) for a hardware one — and `landing_sample`
 is the sample the new command takes effect at, or [`NO_LANDING_SAMPLE`](@ref)
 for "at the end of each record".
 
+A host calls it on every record of a satellite, whichever of its signals the
+record belongs to, with the satellite's one state. The estimator tells the
+records apart by their signal: the driver's — the signal
+[`init_estimator_state`](@ref) was given — step the loop; any other's (a
+passenger's) leave a scalar loop's state as it is and return the command in
+force at the landing, read from `words`, so applying it changes nothing.
+
 - [`ConventionalPLLAndDLL`](@ref) — a PLL and a carrier-aided DLL.
 - [`ConventionalAssistedPLLAndDLL`](@ref) — the same, with the PLL assisted by
   an FLL, which pulls in larger initial frequency errors. This is the default
@@ -175,10 +182,12 @@ closes its loops on one of them, the driver, whose records go through
 `ConventionalAssistedPLLAndDLL(; combine_signals = true)`, the discriminators of
 the other signals, the passengers, are combined with the driver's into a
 weighted mean before the loop filters read it. A mean rather than a sum, so the
-loop gain does not change with the number of signals. The host folds each
-passenger record with [`combine_passenger_record`](@ref), in sample order and
-before the driver record it ends within, and asks [`combines_signals`](@ref)
-whether to.
+loop gain does not change with the number of signals. The host needs nothing
+for it beyond what it does anyway: it steps every passenger record with
+[`step_loop`](@ref), and a combining estimator adds the record to the sums its
+state keeps for the driver's next step. A passenger's group delay relative to
+the driver's, where known, rides on its record
+(`LoopRecord(...; differential_group_delay_chips)`).
 
   - **Weights** are each signal's ICD power share
     (`GNSSSignals.get_relative_power`) times the record's integration time, and
@@ -188,11 +197,18 @@ whether to.
     The discriminators are calibrated (PLL in cycles, FLL in Hz, DLL in chips),
     so the mean is unbiased whatever the weights; they only decide how much
     noise is removed.
-  - **Time alignment:** every passenger record folded before a driver record is
+  - **Time alignment:** every passenger record stepped before a driver record is
     combined into it, and the driver's step starts the sums afresh. Records
-    folded after the driver's last one stay pending in the satellite's state
+    stepped after the driver's last one stay pending in the satellite's state
     ([`SignalCombiningSums`](@ref)) for its next; a host that drops the driver's
     in-flight integration drops them with [`drop_pending_passengers`](@ref).
+    Records need not come in any order. One that comes after the driver record
+    it ended within joins the driver's next step: its reading is then one
+    driver record old, so part of the error it saw has already been corrected
+    once. Weighted by the passenger's power share, that acts like a little
+    extra loop delay on part of the input, so a host that can hand a
+    satellite's records over in sample order at no cost (Tracking.jl, which
+    correlates them in one chunk) does.
     Where no passenger record is pending, the driver's loops close on its own
     discriminators, bit for bit. Each passenger is assumed to integrate no
     longer than the driver, as a longer record would dominate the one driver

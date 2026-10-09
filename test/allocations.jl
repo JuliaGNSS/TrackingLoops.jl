@@ -69,7 +69,8 @@ end
         estimator = VectorPLLAndDLL(signal; inner)
         state = init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz)
         output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000, 0.0)
-        record = LoopRecord(signal, output.correlator, cis(0.1), output, 1, fs; prn = 3)
+        record = LoopRecord(signal, output.correlator, cis(0.1), output, 1, fs; prn = 3,
+            signal_state = SignalLoopState(signal))
         nav = estimator.navigation
         group = first(nav.groups)
         slot = first(group.slots)
@@ -80,33 +81,48 @@ end
         for words_type in (FixedNCOWord, NCOTimeline)
             sig = Tuple{typeof(estimator),typeof(state),typeof(record),words_type,Int64}
             @test isempty(AllocCheck.check_allocs(TrackingLoops._step_satellite, sig; ignore_throw = true))
-            @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_epoch!,
+            @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_driver_half!,
                 Tuple{typeof(nav),typeof(group),typeof(slot),typeof(state),typeof(record),words_type};
                 ignore_throw = true))
+            @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_decoding_half!,
+                Tuple{typeof(nav),typeof(group),typeof(slot),typeof(record),words_type};
+                ignore_throw = true))
         end
-        # A run through the whole estimator, the state kept in a `Ref`: the satellite
-        # registers, syncs to nothing and the engine cycles every 100 ms.
+        @test isempty(AllocCheck.check_allocs(TrackingLoops._complete_snapshot!,
+            Tuple{typeof(nav),typeof(group),typeof(slot)}; ignore_throw = true))
+        # A run through the whole estimator as a host drives it, the states kept in
+        # `Ref`s: each record folded into the signal's state, then stepped. The
+        # satellite registers, finds the bit edges, decodes bits that never sync a frame
+        # and the engine cycles every 100 ms.
         timeline = NCOTimeline()
         reset_timeline!(timeline, 100.0, 0.1)
-        function run_vector_records!(state_ref, estimator, timeline, first_k, n)
-            local p, out, rec, carrier, code
+        function run_vector_records!(state_ref, signal_ref, estimator, timeline, first_k, n)
+            local p, out, rec, carrier, code, filtered
             st = state_ref[]
-            previous = complex(0.0, 0.0)
+            sig = signal_ref[]
             for k = first_k:(first_k+n-1)
-                p = cis(0.01k) * (isodd(k ÷ 20) ? 1 : -1)
+                p = 4000 * cis(0.01k) * (isodd(k ÷ 20) ? 1 : -1)
                 out = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k, 0.0)
-                rec = LoopRecord(signal, out.correlator, previous, out, 1, fs; prn = 3)
+                previous = sig.last_filtered_prompt
+                sig, _, filtered, blocks = apply_record(sig, signal, 3, out, fs, 1e-4 / Hz, true)
+                rec = LoopRecord(signal, filtered, previous, out, blocks, fs; prn = 3, signal_state = sig)
                 st, carrier, code = step_loop(estimator, st, rec, timeline, Int64(4000k + 8000))
                 schedule_word!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
                 promote_words!(timeline, 4000k - 4000)
-                previous = p
+                # The host drains the soft bits after every record.
+                empty!(get_soft_bits(sig))
             end
             state_ref[] = st
+            signal_ref[] = sig
             nothing
         end
         state_ref = Ref(state)
-        run_vector_records!(state_ref, estimator, timeline, 1, 400)
-        @test (@allocated run_vector_records!(state_ref, estimator, timeline, 401, 400)) == 0
+        signal_ref = Ref(SignalLoopState(signal))
+        run_vector_records!(state_ref, signal_ref, estimator, timeline, 1, 400)
+        @test has_bit_or_secondary_code_been_found(signal_ref[])
+        @test (@allocated run_vector_records!(state_ref, signal_ref, estimator, timeline, 401, 400)) == 0
+        @test satellite_report(estimator, signal, 3).bit_synced
+        @test isfinite(satellite_report(estimator, signal, 3).cn0_dbhz)
         @test nav.cycle_id >= 7
     end
 end

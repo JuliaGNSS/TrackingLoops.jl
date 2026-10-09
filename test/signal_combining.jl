@@ -9,32 +9,43 @@ using Accessors: @set
 const SC = TrackingLoops
 
 # A record of `signal` whose taps are `taps` turned by the prompt `p`.
-function combining_record(signal, p, taps; n = 5000, fs = 5e6Hz, previous_prompt = 0.0im, sample_index = n)
+function combining_record(signal, p, taps; n = 5000, fs = 5e6Hz, previous_prompt = 0.0im, sample_index = n,
+        differential_group_delay_chips = NaN, prn = 0)
     correlator = update_accumulator(get_default_correlator(signal), p .* SVector(taps...))
-    LoopRecord(signal, correlator, previous_prompt, n, sample_index, sample_index, 1, fs)
+    LoopRecord(signal, correlator, previous_prompt, n, sample_index, sample_index, 1, fs;
+        differential_group_delay_chips, prn)
 end
 
 const _NO_WORD = FixedNCOWord(0.0, 0.0)
 
+# A passenger's record through the satellite's `step_loop`, as the host hands it
+# over: the state it leaves, after checking it returned the command in force.
+function fold(estimator, state, record)
+    folded, carrier, code = step_loop(estimator, state, record, _NO_WORD, NO_LANDING_SAMPLE)
+    @test (carrier, code) == (0.0Hz, 0.0Hz)
+    folded
+end
+
 @testset "Signal combining is an estimator setting, off by default" begin
-    @test !combines_signals(ConventionalPLLAndDLL())
-    @test !combines_signals(ConventionalAssistedPLLAndDLL())
-    @test !combines_signals(NCOReferencedPLLAndDLL())
-    @test !combines_signals(VectorPLLAndDLL(GPSL1CA()))
+    @test !SC._combines_signals(ConventionalPLLAndDLL())
+    @test !SC._combines_signals(ConventionalAssistedPLLAndDLL())
+    @test !SC._combines_signals(NCOReferencedPLLAndDLL())
     estimator = ConventionalAssistedPLLAndDLL(; combine_signals = true)
-    @test combines_signals(estimator)
-    @test combines_signals(VectorPLLAndDLL(GPSL1CA(); inner = estimator))
+    @test SC._combines_signals(estimator)
     # The keyword-update constructor keeps it unless told otherwise.
-    @test combines_signals(ConventionalPLLAndDLL(estimator; code_loop_filter_bandwidth = 2.0Hz))
-    @test !combines_signals(ConventionalPLLAndDLL(estimator; combine_signals = false))
+    @test SC._combines_signals(ConventionalPLLAndDLL(estimator; code_loop_filter_bandwidth = 2.0Hz))
+    @test !SC._combines_signals(ConventionalPLLAndDLL(estimator; combine_signals = false))
     # An estimator that does not combine leaves the state as it is.
     state = init_estimator_state(ConventionalAssistedPLLAndDLL(), GPSL5Q(), 0.0Hz, 0.0Hz)
     record = combining_record(GPSL5I(), cis(0.1), (0.5, 1.0, 0.5))
-    @test combine_passenger_record(ConventionalAssistedPLLAndDLL(), state, record, _NO_WORD; driver_signal = GPSL5Q()) ===
-          state
+    @test fold(ConventionalAssistedPLLAndDLL(), state, record) === state
     nco_state = init_estimator_state(NCOReferencedPLLAndDLL(), GPSL5Q(), 0.0Hz, 0.0Hz)
-    @test combine_passenger_record(NCOReferencedPLLAndDLL(), nco_state, record, _NO_WORD; driver_signal = GPSL5Q()) ===
-          nco_state
+    @test fold(NCOReferencedPLLAndDLL(), nco_state, record) === nco_state
+    # The vector loop combines as its inner loop does.
+    vector_state = init_estimator_state(VectorPLLAndDLL(GPSL5Q() => GPSL5I()), GPSL5Q(), 0.0Hz, 0.0Hz)
+    plain_vector = fold(VectorPLLAndDLL(GPSL5Q() => GPSL5I()), vector_state,
+        combining_record(GPSL5I(), cis(0.1), (0.5, 1.0, 0.5); prn = 1))
+    @test plain_vector.inner == vector_state.inner
 end
 
 @testset "Weights and the weighted mean" begin
@@ -63,14 +74,10 @@ end
     record = combining_record(GPSL5I(), cis(π / 2 + 0.1), (0.5, 1.0, 0.4); previous_prompt = cis(π / 2))
     # 10 ns at 10.23 Mchip/s: the later passenger reads the driver's error minus
     # 0.1023 chip, which the offset adds back.
-    combined = combine_passenger_record(
-        estimator,
-        state,
-        record,
-        _NO_WORD;
-        driver_signal = GPSL5Q(),
-        differential_group_delay_chips = 0.1023,
-    )
+    record_with_delay =
+        combining_record(GPSL5I(), cis(π / 2 + 0.1), (0.5, 1.0, 0.4); previous_prompt = cis(π / 2),
+            differential_group_delay_chips = 0.1023)
+    combined = fold(estimator, state, record_with_delay)
     sums = combined.signal_combining_sums
     weight = 0.5 * 0.001s
     @test sums.pll.weight ≈ weight
@@ -85,48 +92,28 @@ end
 
     # No FLL without a previous prompt, no DLL without a known group delay.
     partial =
-        combine_passenger_record(
-            estimator,
-            state,
-            combining_record(GPSL5I(), cis(π / 2 + 0.1), (0.5, 1.0, 0.4)),
-            _NO_WORD;
-            driver_signal = GPSL5Q(),
-        ).signal_combining_sums
+        fold(estimator, state, combining_record(GPSL5I(), cis(π / 2 + 0.1), (0.5, 1.0, 0.4))).signal_combining_sums
     @test iszero(partial.fll.weight) && iszero(partial.dll.weight) && partial.pll.weight > 0s
 
     # No FLL once it is no longer formed: after frequency lock, or without an
     # FLL-assisted carrier filter.
     locked = @set state.frequency_lock = FrequencyLockIndicator(0.0Hz * 0.0s, 0.0s, true)
-    @test iszero(
-        combine_passenger_record(estimator, locked, record, _NO_WORD; driver_signal = GPSL5Q()).signal_combining_sums.fll.weight,
-    )
+    @test iszero(fold(estimator, locked, record).signal_combining_sums.fll.weight)
     plain_estimator = ConventionalPLLAndDLL(; combine_signals = true)
     plain = init_estimator_state(plain_estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
-    @test iszero(
-        combine_passenger_record(plain_estimator, plain, record, _NO_WORD; driver_signal = GPSL5Q()).signal_combining_sums.fll.weight,
-    )
+    @test iszero(fold(plain_estimator, plain, record).signal_combining_sums.fll.weight)
 
-    # In the vector loop only into the PLL; out of it as the inner loop.
-    vector = VectorPLLAndDLL(GPSL5I(); inner = estimator)
+    # In the vector loop only into the PLL; out of it as the inner loop. The
+    # passenger is also the satellite's decoding signal there, so its record names
+    # the satellite.
+    vector = VectorPLLAndDLL(GPSL5Q() => GPSL5I(); inner = estimator)
     vector_state = init_estimator_state(vector, GPSL5Q(), 0.0Hz, 0.0Hz)
-    in_vt = combine_passenger_record(
-        vector,
-        SC._enable_vector_tracking(vector_state),
-        record,
-        _NO_WORD;
-        driver_signal = GPSL5Q(),
-        differential_group_delay_chips = 0.1023,
-    ).inner.signal_combining_sums
+    vector_record = combining_record(GPSL5I(), cis(π / 2 + 0.1), (0.5, 1.0, 0.4); previous_prompt = cis(π / 2),
+        differential_group_delay_chips = 0.1023, prn = 1)
+    in_vt = fold(vector, SC._enable_vector_tracking(vector_state), vector_record).inner.signal_combining_sums
     @test in_vt.pll == sums.pll
     @test iszero(in_vt.fll.weight) && iszero(in_vt.dll.weight)
-    out_of_vt = combine_passenger_record(
-        vector,
-        vector_state,
-        record,
-        _NO_WORD;
-        driver_signal = GPSL5Q(),
-        differential_group_delay_chips = 0.1023,
-    ).inner.signal_combining_sums
+    out_of_vt = fold(vector, vector_state, vector_record).inner.signal_combining_sums
     @test out_of_vt == sums
 
     # Dropping the pending sums.
@@ -139,7 +126,7 @@ end
 @testset "Several passengers add up" begin
     estimator = ConventionalAssistedPLLAndDLL(; combine_signals = true)
     state = init_estimator_state(estimator, GPSL1C_P(), 0.0Hz, 0.0Hz)
-    fold(state, record) = combine_passenger_record(estimator, state, record, _NO_WORD; driver_signal = GPSL1C_P())
+    fold(state, record) = Main.fold(estimator, state, record)
     veml = (0.2, 0.7, 1.0, 0.7, 0.2)
     d_record = combining_record(GPSL1C_D(), cis(0.1), veml; n = 50000)
     ca_records = (
@@ -219,15 +206,7 @@ end
 # `Ref` so the measurement sees only what the two calls allocate (see
 # `allocations.jl` for why the testset's own variables are kept out of it).
 function fold_and_step!(state_ref, estimator, passenger, driver, words)
-    st = combine_passenger_record(
-        estimator,
-        state_ref[],
-        passenger,
-        words;
-        # The driver's own signal: constructing one builds its code table.
-        driver_signal = driver.signal,
-        differential_group_delay_chips = 0.1,
-    )
+    st, _, _ = step_loop(estimator, state_ref[], passenger, words, NO_LANDING_SAMPLE)
     st, _, _ = step_loop(estimator, st, driver, words, NO_LANDING_SAMPLE)
     state_ref[] = st
     nothing
@@ -236,7 +215,8 @@ end
 @testset "Signal combining adds no allocation" begin
     estimator = ConventionalAssistedPLLAndDLL(; combine_signals = true)
     state = init_estimator_state(estimator, GPSL5Q(), 0.0Hz, 0.0Hz)
-    passenger = combining_record(GPSL5I(), cis(0.1), (0.5, 1.0, 0.5); previous_prompt = cis(0.05))
+    passenger = combining_record(GPSL5I(), cis(0.1), (0.5, 1.0, 0.5); previous_prompt = cis(0.05),
+        differential_group_delay_chips = 0.1)
     driver = combining_record(GPSL5Q(), cis(0.2), (0.5, 1.0, 0.5); previous_prompt = cis(0.1))
     state_ref = Ref(state)
     fold_and_step!(state_ref, estimator, passenger, driver, _NO_WORD)
@@ -251,7 +231,7 @@ end
     @test isempty(
         AllocCheck.check_allocs(
             SC._with_passenger_record,
-            Tuple{typeof(state),typeof(passenger),FixedNCOWord,typeof(SC._ALL_LOOPS),typeof(driver.signal),Float64};
+            Tuple{typeof(state),typeof(passenger),FixedNCOWord,typeof(SC._ALL_LOOPS)};
             ignore_throw = true,
         ),
     )

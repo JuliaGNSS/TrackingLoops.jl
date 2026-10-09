@@ -1,10 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Signal combining: the passengers (every signal of a satellite but the driver
 # whose record `step_loop` closes the loops on) mix their discriminators into the
-# driver's before its loop filters read them. The host folds each passenger
-# record with `combine_passenger_record` as it completes, in sample order, and
-# the driver's next `step_loop` closes on the weighted means and starts the sums
-# afresh. See "Signal combining" in the manual.
+# driver's before its loop filters read them. The host steps each passenger
+# record with `step_loop` as it completes, as it does the driver's; the passenger
+# step adds it to the sums, and the driver's next step closes on the weighted
+# means and starts the sums afresh. See "Signal combining" in the manual.
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
@@ -84,22 +84,23 @@ const _TWO_QUADRANT_PLL_RANGE = 0.25
 # frame. Its two-quadrant carrier discriminators are blind to a sign flip of a
 # whole record, so data passengers and records correlated before the passenger's
 # own sync count like any other. Its DLL is normalised with the code word the
-# satellite's replica ran on and referred to the driver's code phase by
-# `differential_group_delay_chips` (`NaN`: unknown, not combined).
+# satellite's replica ran on and referred to the driver's code phase by the
+# record's `differential_group_delay_chips` (`NaN`: unknown, not combined).
+# `driver_carrier_phase` is the driver's carrier phase offset (rad).
 @inline function _add_passenger_discriminators(
     sums::SignalCombiningSums,
     record,
     words,
     loops,
-    driver_signal::AbstractGNSSSignal,
-    differential_group_delay_chips::Real,
+    driver_carrier_phase::Real,
 )
+    differential_group_delay_chips = record.differential_group_delay_chips
     signal = record.signal
     correlator = record.filtered_correlator
     integration_time = record.integrated_samples / record.sampling_frequency
     weight = _discriminator_weight(signal, integration_time)
     pll_weight = loops.pll ? weight : zero(weight)
-    derotation = _carrier_phase_derotation(get_carrier_phase_offset(driver_signal), signal)
+    derotation = _carrier_phase_derotation(driver_carrier_phase, signal)
     pll =
         iszero(pll_weight) ? 0.0 :
         _phase_error_in_cycles(

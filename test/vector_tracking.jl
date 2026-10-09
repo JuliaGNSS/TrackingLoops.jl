@@ -29,14 +29,18 @@ end
 @testset "The estimator rejects what it cannot track" begin
     @test_throws ArgumentError VectorPLLAndDLL()
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(), GPSL1CA())
-    # A dataless pilot carries no bits to decode.
+    # A dataless pilot carries no bits to decode, alone or as a pair's decoding signal.
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1C_P())
     @test_throws ArgumentError VectorPLLAndDLL(GalileoE1C())
+    @test_throws ArgumentError VectorPLLAndDLL(GalileoE1B() => GalileoE1C())
+    # A decoding signal at another chip rate than its driver's.
+    @test_throws ArgumentError VectorPLLAndDLL(GPSL5Q() => GPSL1CA())
+    @test_throws ArgumentError VectorPLLAndDLL(GalileoE1C() => GalileoE1B(), GalileoE1C() => GalileoE1B())
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); cycle_time = 0.0s)
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); cycle_time = -0.1s)
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); cycle_time = Inf * s)
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); max_satellites_per_signal = 0)
-    # A record of a signal it was not built for, or of no satellite.
+    # A record of no satellite, or of a satellite whose driver it was not built for.
     estimator = VectorPLLAndDLL(GPSL1CA())
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
@@ -44,8 +48,15 @@ end
     words = FixedNCOWord(100.0, 0.1)
     @test_throws ArgumentError step_loop(estimator, state,
         LoopRecord(GPSL1CA(), correlator, complex(0.0), output, 1, 4e6Hz), words, NO_LANDING_SAMPLE)
-    @test_throws ArgumentError step_loop(estimator, state,
+    other = init_estimator_state(estimator, GalileoE1B(), 100.0Hz, 0.1Hz)
+    @test_throws ArgumentError step_loop(estimator, other,
         LoopRecord(GalileoE1B(), correlator, complex(0.0), output, 1, 4e6Hz; prn = 3), words, NO_LANDING_SAMPLE)
+    # A passenger it does not decode is ignored: the state as it was, the command in
+    # force, and the satellite not even registered.
+    passenger = step_loop(estimator, state,
+        LoopRecord(GalileoE1B(), correlator, complex(0.0), output, 1, 4e6Hz; prn = 3), words, NO_LANDING_SAMPLE)
+    @test passenger == (state, 100.0Hz, 0.1Hz)
+    @test estimator.navigation.registrations == 0
 end
 
 @testset "Without a configuration only the scalar PVT is solved" begin

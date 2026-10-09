@@ -201,6 +201,10 @@ export NumAnts,
     LoopRecord,
     step_loop,
     SignalLoopState,
+    SyncChange,
+    SYNC_UNCHANGED,
+    SYNC_FOUND,
+    SYNC_LOST,
     apply_record,
     restart_bit_clock,
     reset_signal_state,
@@ -221,8 +225,6 @@ export NumAnts,
     sync_polarity,
     WeightedSum,
     SignalCombiningSums,
-    combines_signals,
-    combine_passenger_record,
     drop_pending_passengers
 
 const Maybe{T} = Union{T,Nothing}
@@ -269,7 +271,10 @@ so the estimators are interchangeable:
     code_doppler)` builds a satellite's state;
   - [`step_loop`](@ref)`(estimator, state, record, words, landing_sample)`
     folds one record into it and returns `(state, carrier_doppler,
-    code_doppler)`;
+    code_doppler)`. The host calls it on *every* record of the satellite,
+    driver and passengers alike, each built from its signal's
+    [`SignalLoopState`](@ref) after [`apply_record`](@ref), and applies the
+    returned Dopplers; the estimator tells the records apart by their signal;
   - [`reset_estimator_state`](@ref)`(estimator, state, carrier_doppler,
     code_doppler)` re-seeds it from converged Dopplers, keeping what the
     estimator chooses to keep.

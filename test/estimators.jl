@@ -100,7 +100,20 @@ end
     conv = init_estimator_state(ConventionalAssistedPLLAndDLL(), GalileoE1B(), 0.0Hz, 0.0Hz)
     @test conv isa SatConventionalPLLAndDLL
     @test conv.carrier_loop_filter_bandwidth == default_carrier_loop_filter_bandwidth(GalileoE1B())
-    @test estimator_state_type(ConventionalAssistedPLLAndDLL(), GPSL1CA()) === typeof(conv)
+    # The state records the driver its records close the loops on, by a key that
+    # leaves its type the same for every driver: one host vector holds them all.
+    @test conv.driver == TrackingLoops._signal_key(GalileoE1B()) != 0
+    @test conv.driver_carrier_phase == get_carrier_phase_offset(GalileoE1B())
+    @test state.driver == TrackingLoops._signal_key(GPSL1CA())
+    @test conv.driver != TrackingLoops._signal_key(GalileoE1C())
+    @test estimator_state_type(ConventionalAssistedPLLAndDLL(), GalileoE1B()) ===
+          estimator_state_type(ConventionalAssistedPLLAndDLL(), GPSL1CA())
+    @test estimator_state_type(NCOReferencedPLLAndDLL(), GalileoE1B()) === typeof(state)
+    @test isbitstype(typeof(conv)) && isbitstype(typeof(state))
+    @test reset_estimator_state(ConventionalAssistedPLLAndDLL(), conv, 1.0Hz, 0.0Hz).driver == conv.driver
+    @test reset_estimator_state(NCOReferencedPLLAndDLL(), state, 1.0Hz, 0.0Hz).driver == state.driver
+    # A state built by hand records no driver: every record is the driver's.
+    @test SatConventionalPLLAndDLL(; init_carrier_doppler = 0.0Hz, init_code_doppler = 0.0Hz).driver == 0
 end
 
 @testset "Without a landing sample the NCO-referenced loop is the conventional loop" begin

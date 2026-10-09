@@ -37,8 +37,8 @@ two, and not for a fallback.
     SatelliteReport
 
 What a [`VectorPLLAndDLL`](@ref) knows of one satellite (see
-[`satellite_report`](@ref)), so a consumer need not decode its bits or estimate
-its C/N₀ again:
+[`satellite_report`](@ref)), keyed by its driver signal, so a consumer need not
+decode its bits again:
 
   - `prn`, and `tracked`: whether a satellite is stepped on it now (`false` once
     it went two cycles without a record; the rest then describes it as it was);
@@ -46,11 +46,14 @@ its C/N₀ again:
     ephemeris, health and time of week. It shares its buffers with the one the
     estimator keeps decoding into, so copy (`copy(decoder)`) what is needed after
     the next record;
-  - `bit_synced`: whether its bit clock has found the bit edges;
+  - `bit_synced`: whether the bit clock of its decoding signal (the data
+    component of a pilot + data pair) holds the bit edges, as of its last
+    record;
   - at the latest epoch it was snapshotted at (`epoch`, on the records' time
-    grid, `nothing` before the first): `cn0_dbhz`, `in_lock` (synced and the
-    C/N₀ above the lock threshold) and `pvt_ready` (in lock, decoded for
-    positioning and healthy);
+    grid, `nothing` before the first): `cn0_dbhz`, the driver's C/N₀ from the
+    estimator the host configured for it, `in_lock` (the decoding signal
+    synced and the driver's C/N₀ above the lock threshold) and `pvt_ready` (in
+    lock, decoded for positioning and healthy);
   - `in_vector_loop`: whether the latest cycle has it in the vector loop, and
     `release_reason` whether and why that cycle released it.
 
@@ -76,21 +79,28 @@ SatelliteReport(decoder) =
 
 # One satellite of the navigation engine. A slot is never deleted: a satellite that is
 # dropped leaves it free with all its storage, for the next satellite to reuse.
-mutable struct VTSlot{D,B<:Unsigned,E<:SatVectorPLLAndDLL}
+#
+# Two signals of the satellite feed it: the driver, whose records close the loops and
+# which the engine ranges on, and the decoding signal, whose soft bits it decodes — the
+# data component of a pilot + data pair, the driver itself for a plain signal. Each has
+# its own record stream, and the snapshot at an epoch is taken in two halves, one from
+# the record of each that crosses it, in whichever order they come.
+mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     prn::Int
     occupied::Bool
     # The registration that holds the slot; a state of an older one registers again.
     registration::Int
     # Whether the slot snapshotted the epoch of the running cycle.
     active::Bool
-    # The bit clock, decoder and C/N₀ estimator, advanced every record.
-    bit_buffer::BitBuffer{B}
+    # The decoding signal's bit clock after its last record, as the record summarised
+    # it, and the decoder its soft bits are decoded into.
+    bit_synced::Bool
+    blocks_into_symbol::Int
     running_decoder::D
-    cn0_estimator::MomentsCN0Estimator
-    # The fold the bit sync was found in: its later records were correlated
-    # before the sync.
+    # The fold the decoding signal's bit sync was found in: its later records were
+    # correlated before the sync, so their bit clock does not place the symbol edge.
     sync_fold_end::Int
-    # The last record's end.
+    # The driver's last record end.
     last_end_sample::Int
     last_end_time::Float64 # s
     last_code_phase_fraction::Float64 # chips past the nearest code-block boundary
@@ -98,9 +108,24 @@ mutable struct VTSlot{D,B<:Unsigned,E<:SatVectorPLLAndDLL}
     last_early_late_spacing::Float64 # chips
     # Replica chips from the epoch of the latest snapshot to the last record's end.
     chips_since_epoch::Float64
+    # The decoding signal's last record end.
+    decoding_last_end_sample::Int
+    decoding_last_end_time::Float64 # s
+    decoding_last_code_phase_fraction::Float64 # chips past the nearest code-block boundary
     # The first epoch the slot can snapshot, and the epoch of its latest snapshot.
     first_epoch::Int
     snapshot_epoch::Int
+    # The two halves of the snapshot at the pending epoch: the epoch each was last taken
+    # at, and what each leaves for the other. The driver's half leaves its replica's code
+    # phase at the epoch (chips past the nearest code-block boundary); the decoding
+    # signal's the decoder at its last record end before the epoch, its bit sync, and its
+    # replica's code phase at the epoch counted from the last data-symbol edge.
+    driver_epoch::Int
+    decoding_epoch::Int
+    epoch_driver_code_phase::Float64
+    epoch_symbol_code_phase::Float64
+    epoch_bit_synced::Bool
+    epoch_decoder::D
     # The snapshot at the epoch: what the cycle reads, and partly writes. The decoder
     # is the one at the record end before the epoch, the replica moved on to the
     # epoch; `estimator_state` is the satellite's state there, with the
@@ -125,16 +150,16 @@ mutable struct VTSlot{D,B<:Unsigned,E<:SatVectorPLLAndDLL}
     const report::SatelliteReport{D}
 end
 
-function VTSlot(signal::AbstractGNSSSignal, prn::Integer, state::SatVectorPLLAndDLL, num_prompts_for_cn0_estimation)
-    decoder = GNSSDecoderState(signal, prn)
+function VTSlot(decoding_signal::AbstractGNSSSignal, prn::Integer, state::SatVectorPLLAndDLL)
+    decoder = GNSSDecoderState(decoding_signal, prn)
     VTSlot(
         Int(prn),
         false,
         0,
         false,
-        SignalLoopState(signal).bit_buffer,
+        false,
+        0,
         decoder,
-        MomentsCN0Estimator(num_prompts_for_cn0_estimation),
         typemin(Int),
         0,
         0.0,
@@ -142,8 +167,17 @@ function VTSlot(signal::AbstractGNSSSignal, prn::Integer, state::SatVectorPLLAnd
         0.001s,
         0.5,
         0.0,
+        0,
+        0.0,
+        0.0,
         typemax(Int),
         typemin(Int),
+        typemin(Int),
+        typemin(Int),
+        0.0,
+        0.0,
+        false,
+        decoder,
         decoder,
         state,
         0.0,
@@ -163,19 +197,23 @@ function VTSlot(signal::AbstractGNSSSignal, prn::Integer, state::SatVectorPLLAnd
     )
 end
 
-# The slots of one ranging signal, and a fresh satellite state to fill a new slot
-# with.
-struct VTSlotGroup{S<:AbstractGNSSSignal,V<:VTSlot,E<:SatVectorPLLAndDLL}
+# The slots of one driver signal, the signal its satellites decode, and a fresh
+# satellite state to fill a new slot with.
+struct VTSlotGroup{S<:AbstractGNSSSignal,DS<:AbstractGNSSSignal,V<:VTSlot,E<:SatVectorPLLAndDLL}
     signal::S
+    decoding_signal::DS
     slots::Vector{V}
     prototype::E
-    num_prompts_for_cn0_estimation::Int
 end
 
-function VTSlotGroup(signal::AbstractGNSSSignal, prototype::SatVectorPLLAndDLL, capacity, num_prompts)
-    slots = [VTSlot(signal, 1, prototype, num_prompts) for _ = 1:capacity]
-    VTSlotGroup(signal, sizehint!(slots, 2 * capacity), prototype, num_prompts)
+function VTSlotGroup(signal::AbstractGNSSSignal, decoding_signal::AbstractGNSSSignal, prototype::SatVectorPLLAndDLL, capacity)
+    slots = [VTSlot(decoding_signal, 1, prototype) for _ = 1:capacity]
+    VTSlotGroup(signal, decoding_signal, sizehint!(slots, 2 * capacity), prototype)
 end
+
+# Whether the group's satellites decode a signal other than their driver: a pilot +
+# data pair, whose two signals come in separate records.
+_is_paired(group::VTSlotGroup{S,DS}) where {S,DS} = !(group.decoding_signal isa S)
 
 """
     VTStatus
@@ -368,25 +406,25 @@ mutable struct VectorNavigation{G<:Tuple,SB<:Tuple}
     registrations::Int
 end
 
+# `signals` pairs each driver with the signal its satellites decode.
 function VectorNavigation(
     config::Union{VectorTracking,Nothing},
-    signals::Tuple{Vararg{AbstractGNSSSignal}},
+    signals::Tuple{Vararg{Tuple{AbstractGNSSSignal,AbstractGNSSSignal}}},
     inner::AbstractDopplerEstimator;
     cycle_time,
     lock_cn0_threshold::Float64,
     max_satellites_per_signal::Int,
-    num_prompts_for_cn0_estimation::Int,
     approximate_year::Integer,
     enable_ionospheric_correction::Bool,
     enable_tropospheric_correction::Bool,
 )
     filter_config = something(config, VectorTracking())
-    layout = NavFilterLayout(signals)
+    layout = NavFilterLayout(map(first, signals))
     model = NavFilterModel(filter_config, layout, uconvert(s, cycle_time))
     n = num_nav_states(filter_config, layout)
-    groups = map(signals) do signal
+    groups = map(signals) do (signal, decoding_signal)
         prototype = SatVectorPLLAndDLL(init_estimator_state(inner, signal, 0.0Hz, 0.0Hz), false)
-        VTSlotGroup(signal, prototype, max_satellites_per_signal, num_prompts_for_cn0_estimation)
+        VTSlotGroup(signal, decoding_signal, prototype, max_satellites_per_signal)
     end
     max_members = max_satellites_per_signal * length(signals)
     states = map(_satellite_state_buffer, groups)
@@ -422,7 +460,7 @@ function VectorNavigation(
     )
 end
 
-_satellite_state_buffer(group::VTSlotGroup{S,<:VTSlot{D}}) where {S,D} =
+_satellite_state_buffer(group::VTSlotGroup{S,DS,<:VTSlot{D}}) where {S,DS,D} =
     sizehint!(SatelliteState{Float64,D,S}[], 2 * max(length(group.slots), 1))
 
 """
@@ -486,7 +524,7 @@ function _satellite_report(nav, groups::Tuple, signal::S, prn) where {S}
         report.prn = slot.prn
         report.tracked = slot.occupied
         report.decoder = slot.running_decoder
-        report.bit_synced = slot.bit_buffer.found
+        report.bit_synced = slot.bit_synced
         report.epoch =
             slot.snapshot_epoch == typemin(Int) ? nothing : slot.snapshot_epoch * nav.cycle_time
         report.cn0_dbhz = slot.cn0_dbhz

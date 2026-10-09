@@ -16,35 +16,61 @@
     VectorPLLAndDLL(signals...; inner = ConventionalAssistedPLLAndDLL(),
                     config = VectorTracking(), cycle_time = 100ms,
                     lock_cn0_threshold = 30dBHz, max_satellites_per_signal = 16,
-                    num_prompts_for_cn0_estimation = 100,
                     approximate_year = year(now(UTC)),
                     enable_ionospheric_correction = true,
                     enable_tropospheric_correction = true)
 
-Vector-tracking Doppler estimator for the ranging `signals` (one or more
-`AbstractGNSSSignal`s, each at most once). It does the whole pipeline inside
-[`step_loop`](@ref), from what the records carry: every satellite stepped with
-this estimator shares one navigation engine, which syncs to the navigation
-bits, decodes them, estimates the C/N₀, solves the scalar PVT, seeds the
+Vector-tracking Doppler estimator for the ranging `signals`, each at most once.
+A ranging signal is the *driver* of its satellites — the signal whose records
+close the loops and which the engine ranges on — and is given either
+
+  - plain, `GPSL1CA()`: a data signal, which is also the signal decoded; or
+  - as a pair `driver => decoding_signal`, `GalileoE1C() => GalileoE1B()`: the
+    pilot ranged on and the data component whose navigation message is
+    decoded. The decoding signal must carry data and have the driver's chip
+    rate; the code lengths may differ (GPS L2CL against L2CM).
+
+It does the whole pipeline inside [`step_loop`](@ref), from what the records
+carry: every satellite stepped with this estimator shares one navigation
+engine, which decodes the navigation bits, solves the scalar PVT, seeds the
 navigation filter from its first fix and from then on runs one filter cycle
 every `cycle_time`, taking satellites over and handing them back. A host needs
 no vector-specific code: it builds the satellites' states with
-[`init_estimator_state`](@ref) and steps them like any other loop's. Read the
-results with [`navigation_solution`](@ref), [`navigation_status`](@ref),
-[`release_reason`](@ref), [`member_sats`](@ref), [`position_uncertainty`](@ref)
-and [`clock_uncertainty`](@ref).
+[`init_estimator_state`](@ref) for their driver and steps *every* record of a
+satellite with that state, driver and passengers alike, as for any other loop.
+Read the results with [`navigation_solution`](@ref),
+[`navigation_status`](@ref), [`satellite_report`](@ref),
+[`release_reason`](@ref), [`member_sats`](@ref),
+[`position_uncertainty`](@ref) and [`clock_uncertainty`](@ref), all keyed by
+the driver.
 
-The records must identify their satellite and replica: `prn` and `code_phase`
-on the [`LoopRecord`](@ref), and `sample_index / sampling_frequency` on a time
-grid shared by all satellites. Records of a signal not among `signals`, or
-without a PRN, throw an `ArgumentError`. The host should step every satellite
-at least once per `cycle_time / 2`: a cycle runs once every satellite has
-reached its epoch, and a satellite that has not stepped for `2 · cycle_time`
-is dropped.
+The records must identify their satellite and replica — `prn` and
+`code_phase` on the [`LoopRecord`](@ref), and `sample_index /
+sampling_frequency` on a time grid shared by all satellites — and carry their
+signal's bit clock and C/N₀ estimator: build them with the signal's
+[`SignalLoopState`](@ref) after [`apply_record`](@ref) (`signal_state`). The
+engine keeps no bit clock and no C/N₀ estimator of its own:
 
-Per satellite, every record runs `inner` — the scalar loop the satellite uses
-until the filter takes it over, and again once the filter releases it.
-While a satellite is in the vector loop:
+  - the decoding signal's records carry the soft bits it decodes, exactly the
+    ones each record appended, and its bit sync, which places the data-symbol
+    edges;
+  - the driver's records carry the C/N₀ estimator the host configured for the
+    driver (noise-referenced by default), read at every navigation epoch for
+    the lock and the measurement weights, and capped at 80 dB-Hz. One that has
+    no estimate yet reads `-Inf dB-Hz`: the satellite is out of lock;
+  - a satellite is in lock with the driver's C/N₀ above `lock_cn0_threshold`
+    and the decoding signal's bit sync found.
+
+A record of any other passenger signal is ignored. A satellite whose driver
+is not among `signals`, or a record without a PRN, throws an `ArgumentError`.
+The host should step every satellite's driver and decoding signal at least
+once per `cycle_time / 2`: a cycle runs once every satellite has had a record
+of each cross its epoch, in whichever order they come, and a satellite without
+a record of either for `2 · cycle_time` is dropped.
+
+Per satellite, every driver record runs `inner` — the scalar loop the
+satellite uses until the filter takes it over, and again once the filter
+releases it. While a satellite is in the vector loop:
 
   - its carrier filter always runs, with the PLL branch fed by the satellite's
     own phase discriminator and the FLL branch fed by the filter's carrier
@@ -56,9 +82,9 @@ While a satellite is in the vector loop:
   - the DLL output (chips) and the raw FLL discriminator (Hz) are accumulated
     for the filter to read.
 
-Each satellite picks up the corrections of the latest cycle on its next record,
-sized for where they land: at `landing_sample`, or at the record's end under
-`NO_LANDING_SAMPLE`.
+Each satellite picks up the corrections of the latest cycle on its next driver
+record, sized for where they land: at `landing_sample`, or at the record's end
+under `NO_LANDING_SAMPLE`. A passenger's record returns the command in force.
 
 `inner` must have an FLL-assisted carrier filter, since that is the only input
 path the carrier correction has into the loop: a
@@ -66,8 +92,8 @@ path the carrier correction has into the loop: a
 [`ConventionalAssistedPLLAndDLL`](@ref) builds) or an
 [`NCOReferencedPLLAndDLL`](@ref). With the latter the phase discriminator keeps
 its prediction to the landing sample in the vector loop too. Anything else
-throws an `ArgumentError`, as does a dataless signal (a pilot such as GPS L1C-P
-or Galileo E1C): the estimator decodes the bits of the signal it steps.
+throws an `ArgumentError`, as does a dataless decoding signal (a plain pilot
+such as GPS L1C-P or Galileo E1C: pair it with its data component).
 `config = nothing` only ever solves the scalar PVT.
 
 Storage is allocated at construction for `max_satellites_per_signal`
@@ -399,29 +425,21 @@ end
     discriminators.raw_frequency_error
 end
 
-combines_signals(estimator::VectorPLLAndDLL) = combines_signals(estimator.inner)
-
-# In the vector loop passengers join the PLL only; out of it, the inner loop's.
-function combine_passenger_record(
+# A passenger's record into the satellite's state: in the vector loop it joins the
+# PLL only; out of it, the inner loop's loops.
+function _with_passenger_record(
     estimator::VectorPLLAndDLL,
     state::SatVectorPLLAndDLL,
     record::LoopRecord,
-    words;
-    driver_signal::AbstractGNSSSignal,
-    differential_group_delay_chips::Real = NaN,
+    words,
 )
-    combines_signals(estimator) || return state
+    _combines_signals(estimator.inner) || return state
     loops = state.vt_on ? _PLL_ONLY : _scalar_loops_to_combine(state.inner)
-    inner = _with_passenger_record(
-        state.inner,
-        record,
-        words,
-        loops,
-        driver_signal,
-        differential_group_delay_chips,
-    )
-    SatVectorPLLAndDLL(state; inner)
+    SatVectorPLLAndDLL(state; inner = _with_passenger_record(state.inner, record, words, loops))
 end
+
+_combines_signals(::AbstractDopplerEstimator) = false
+_combines_signals(estimator::ConventionalPLLAndDLL) = estimator.combine_signals
 
 drop_pending_passengers(estimator::VectorPLLAndDLL, state::SatVectorPLLAndDLL) =
     SatVectorPLLAndDLL(state; inner = drop_pending_passengers(estimator.inner, state.inner))

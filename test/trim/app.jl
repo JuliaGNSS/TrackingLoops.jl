@@ -2,22 +2,21 @@
 # records alone, on the synthetic GPS L1 C/A satellites of `../vector_simulation.jl`
 # that broadcast real navigation bits — bit sync, decoding, the scalar fix, the seed
 # and a steady state through a partial outage — printed so the trimmed executable's
-# output can be compared against a regular Julia session. It is the loop process's
-# workload: `step_loop` on every record of every channel, and nothing else.
+# output can be compared against a regular Julia session. It runs twice: on the C/A
+# signal alone, and ranging on a pilot while decoding the C/A data component. It is
+# the loop process's workload: `apply_record` and `step_loop` on every record of every
+# signal, and nothing else.
 using TrackingLoops, GNSSSignals, StaticArrays, Unitful, LinearAlgebra
 using Unitful: Hz, s, ms
 
 include(joinpath(@__DIR__, "..", "vector_simulation.jl"))
 
-# Every channel's records that end within the millisecond ending at `sample`.
+# Every channel's records that end within the millisecond ending at `sample`, of
+# every signal.
 function step_channels!(rx, sample, outage::Bool)
     for (i, sat) in enumerate(rx.sats)
         sat.in_view = !(outage && i <= 2)
-        while sat.next_end_sample <= sample
-            record_end = sat.next_end_sample
-            pipeline_record!(rx, sat, rx.last_ends[i])
-            rx.last_ends[i] = record_end
-        end
+        pipeline_records!(rx, i, sample)
     end
     nothing
 end
@@ -40,13 +39,11 @@ function report(io, cycle, pvt, status)
     println(io)
 end
 
-function (@main)(args::Vector{String})::Cint
-    io = Core.stdout
-    rx = PipelineReceiver()
+# 33 s: the first fix comes 26.2 s in; a two-second outage of two satellites late on.
+function run_receiver(io, rx)
     nav = rx.estimator.navigation
     last_cycle = nav.cycle_id
     sample = 0
-    # 33 s: the first fix comes 26.2 s in; a two-second outage of two satellites late on.
     for _ = 1:33_000
         sample += SAMPLES_PER_MS
         t = sample / 4e6
@@ -57,5 +54,13 @@ function (@main)(args::Vector{String})::Cint
             (status.enabled || last_cycle % 20 == 0) && report(io, last_cycle, nav.pvt, status)
         end
     end
+    nothing
+end
+
+function (@main)(args::Vector{String})::Cint
+    io = Core.stdout
+    run_receiver(io, PipelineReceiver())
+    println(io, "pilot + data:")
+    run_receiver(io, PipelineReceiver(; signals = GPSL1C_P() => GPSL1CA()))
     return 0
 end

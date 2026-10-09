@@ -39,10 +39,15 @@ which has no Windows build.
 
 Per satellite you hold a Doppler-estimator state and, per tracked signal of
 that satellite, a [`SignalLoopState`](@ref). For every correlator record
-([`CorrelatorOutput`](@ref)) the correlator produced, [`apply_record`](@ref)
-folds the record into the signal's prompt filter, C/N₀ estimator and bit
-buffer, and [`step_loop`](@ref) turns the filtered correlator into the Dopplers
-the next replica runs with:
+([`CorrelatorOutput`](@ref)) the correlator produced, of any signal of the
+satellite, [`apply_record`](@ref) folds the record into the signal's prompt
+filter, C/N₀ estimator and bit buffer, and [`step_loop`](@ref) turns the record
+built from it into the Dopplers the next replica runs with. The satellite's
+*driver* — the signal its state was initialised with — closes the loops; a
+record of another signal of the satellite (a *passenger*, such as the data
+component of a pilot + data pair) leaves a scalar loop alone and returns the
+command already in force, so the host applies the result the same way for every
+record:
 
 ```julia
 using TrackingLoops, GNSSSignals, Unitful
@@ -58,7 +63,7 @@ previous_prompt = loop.last_filtered_prompt   # read before `apply_record` repla
 loop, prompt, filtered, blocks, overshoot =
     apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready)
 overshoot && @warn "record crossed a navigation-bit boundary; bit sync restarted"
-record = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs)
+record = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs; prn, signal_state = loop)
 state, carrier_doppler, code_doppler =
     step_loop(estimator, state, record, FixedNCOWord(carrier_hz, code_hz), NO_LANDING_SAMPLE)
 # program the next replica with carrier_doppler and code_doppler
@@ -69,10 +74,16 @@ Read the results off the state as they become available:
 [`has_bit_or_secondary_code_been_found`](@ref) and [`get_soft_bits`](@ref) on
 `loop.bit_buffer`.
 
+The record carries a summary of the signal's state after the fold — its bit
+sync, the soft bits this record appended and its C/N₀ estimator — which the
+vector loop reads and the scalar loops ignore.
+
 Everything is a plain value or a small mutable state that is preallocated once,
 so a loop can be stepped for hours without allocating — provided the consumer
 drains the decoded soft bits ([`get_soft_bits`](@ref)) as they arrive; the bit
-buffer has room for 64 of them before its vector grows.
+buffer has room for 64 of them before its vector grows. When it drains them —
+after every record or once per chunk — is up to the consumer: an estimator only
+ever reads the bits each record appended.
 
 ## Contents of this manual
 
