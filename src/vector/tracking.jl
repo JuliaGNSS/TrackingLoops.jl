@@ -83,6 +83,8 @@ struct VTPassenger
     # The host's C/N₀ estimate (dB-Hz) with the last record, `NaN` without one; where
     # given, it is read instead of `cn0_estimator`'s.
     host_cn0_dbhz::Float64
+    # As `VTSlot.held_cn0_dbhz`, for the passenger.
+    held_cn0_dbhz::Float64
     integration_time::typeof(1.0s)
     early_late_spacing::Float64
     # Its correlator's DLL variance factor against the BPSK model (`_dll_variance_factor`).
@@ -90,11 +92,11 @@ struct VTPassenger
 end
 
 VTPassenger(cn0_estimator::MomentsCN0Estimator) =
-    VTPassenger(cn0_estimator, NaN, 0.001s, 0.5, 1.0)
+    VTPassenger(cn0_estimator, NaN, NaN, 0.001s, 0.5, 1.0)
 
 # A passenger's C/N₀ (dB-Hz): the host's estimate where it gave one, else its own.
 _passenger_cn0_dbhz(p::VTPassenger) =
-    _cn0_dbhz(p.host_cn0_dbhz, p.cn0_estimator, p.integration_time)
+    _cn0_dbhz(p.host_cn0_dbhz, p.held_cn0_dbhz, p.cn0_estimator, p.integration_time)
 
 # One satellite of the navigation engine. A slot is never deleted: a satellite that is
 # dropped leaves it free with all its storage, for the next satellite to reuse.
@@ -118,6 +120,9 @@ mutable struct VTSlot{D,B<:Unsigned,E<:SatVectorPLLAndDLL}
     # The host's C/N₀ estimate (dB-Hz) with the last driver record, `NaN` without one;
     # where given, it is read instead of `cn0_estimator`'s.
     host_cn0_dbhz::Float64
+    # The engine's own estimate from before the last change of record length, read while
+    # `cn0_estimator` refills (see `_restart_cn0`); `NaN` without one.
+    held_cn0_dbhz::Float64
     # The fold the bit sync was found in: its later records were correlated
     # before the sync.
     sync_fold_end::Int
@@ -179,6 +184,7 @@ function VTSlot(
         SignalLoopState(data_signal).bit_buffer,
         decoder,
         MomentsCN0Estimator(num_prompts_for_cn0_estimation),
+        NaN,
         NaN,
         typemin(Int),
         0,

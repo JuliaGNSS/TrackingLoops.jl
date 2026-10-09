@@ -180,7 +180,7 @@ end
     for k = 1:100
         estimator = update(estimator, cis(0.01k) * (1 + 0.05 * (-1)^k))
     end
-    passenger(host_cn0; factor = 1.0) = TL.VTPassenger(estimator, host_cn0, 0.001s, 0.5, factor)
+    passenger(host_cn0; factor = 1.0) = TL.VTPassenger(estimator, host_cn0, NaN, 0.001s, 0.5, factor)
     # The state with the passenger's cycle readings.
     with_readings(state, code, carrier) = SatVectorPLLAndDLL(
         state;
@@ -352,9 +352,9 @@ end
     state, = step_loop(v, state, driver, _NO_WORD, NO_LANDING_SAMPLE)
     slot = group.slots[state.slot]
     @test slot.host_cn0_dbhz == 38.5
-    @test TL._cn0_dbhz(slot.host_cn0_dbhz, slot.cn0_estimator, 1ms) == 38.5
+    @test TL._cn0_dbhz(slot.host_cn0_dbhz, NaN, slot.cn0_estimator, 1ms) == 38.5
     # Capped as the engine's own estimate is.
-    @test TL._cn0_dbhz(120.0, slot.cn0_estimator, 1ms) == TL.MAX_CN0_DBHZ
+    @test TL._cn0_dbhz(120.0, NaN, slot.cn0_estimator, 1ms) == TL.MAX_CN0_DBHZ
     state = fold_passenger_record(v, state, group_record(GPSL5I(), cis(0.1), taps, 10000; cn0 = 36.0),
         _NO_WORD; driver_signal = GPSL5Q(), differential_group_delay_chips = 0.0)
     @test TL._passenger_cn0_dbhz(only(slot.passengers)) == 36.0
@@ -367,4 +367,28 @@ end
     @test step_loop(scalar, scalar_state, driver, _NO_WORD, NO_LANDING_SAMPLE) ==
           step_loop(scalar, scalar_state, group_record(GPSL5Q(), cis(0.0), taps, 5000), _NO_WORD,
               NO_LANDING_SAMPLE)
+end
+
+@testset "A change of record length restarts the engine's own C/N₀" begin
+    # Prompts of two lengths carry two noise scales, which one integration time cannot
+    # turn into a C/N₀: the estimate restarts, holding the old one while it refills.
+    prompt(k) = cis(0.1k) * (1 + 0.1 * (-1)^k)
+    estimator = MomentsCN0Estimator(10)
+    for k = 1:10
+        estimator = update(estimator, prompt(k))
+    end
+    before = TL._capped_cn0_dbhz(estimator, 1ms)
+    held, same = TL._restart_cn0(NaN, estimator, 1.0ms, 1.1ms)
+    @test isnan(held) && same === estimator
+    held, fresh = TL._restart_cn0(NaN, estimator, 1.0ms, 20.0ms)
+    @test held == before && length(fresh) == 0
+    fresh = update(fresh, prompt(1))
+    @test TL._cn0_dbhz(NaN, held, fresh, 20ms) == before
+    for k = 2:10
+        fresh = update(fresh, prompt(k))
+    end
+    @test TL._cn0_dbhz(NaN, held, fresh, 20ms) == TL._capped_cn0_dbhz(fresh, 20ms)
+    # The host's estimate wins either way, and an empty estimator holds nothing.
+    @test TL._cn0_dbhz(35.0, held, fresh, 20ms) == 35.0
+    @test isnan(first(TL._restart_cn0(NaN, MomentsCN0Estimator(10), 1.0ms, 4.0ms)))
 end

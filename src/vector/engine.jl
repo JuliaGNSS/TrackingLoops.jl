@@ -390,6 +390,7 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     slot.bit_buffer = _fresh_bit_buffer(slot.bit_buffer)
     slot.cn0_estimator = _reset_cn0_estimator(slot.cn0_estimator)
     slot.host_cn0_dbhz = NaN
+    slot.held_cn0_dbhz = NaN
     slot.sync_fold_end = typemin(Int)
     fs = _sampling_frequency_hz(record)
     start = record.sample_index - record.integrated_samples
@@ -548,7 +549,12 @@ function _snapshot_epoch!(
         _code_phase_from_symbol_edge(group.data_signal, slot) + data_chips_to_epoch,
         code_frequency,
     )
-    cn0_dbhz = _cn0_dbhz(slot.host_cn0_dbhz, slot.cn0_estimator, slot.last_integration_time)
+    cn0_dbhz = _cn0_dbhz(
+        slot.host_cn0_dbhz,
+        slot.held_cn0_dbhz,
+        slot.cn0_estimator,
+        slot.last_integration_time,
+    )
     in_lock = slot.bit_buffer.found && cn0_dbhz >= nav.lock_cn0_threshold
     slot.decoder = decoder
     slot.estimator_state = state
@@ -578,10 +584,36 @@ _capped_cn0_dbhz(cn0_estimator, integration_time) =
     min(Float64(ustrip(estimate_cn0(cn0_estimator, integration_time))), MAX_CN0_DBHZ)
 
 # The C/N₀ of a signal: the host's estimate where it gave one, the engine's own
-# otherwise, capped alike.
-_cn0_dbhz(host_cn0_dbhz, cn0_estimator, integration_time) =
-    isnan(host_cn0_dbhz) ? _capped_cn0_dbhz(cn0_estimator, integration_time) :
+# otherwise (`held_cn0_dbhz` while its estimator refills, see `_restart_cn0`), capped
+# alike.
+_cn0_dbhz(host_cn0_dbhz, held_cn0_dbhz, cn0_estimator, integration_time) =
+    isnan(host_cn0_dbhz) ? _own_cn0_dbhz(held_cn0_dbhz, cn0_estimator, integration_time) :
     min(host_cn0_dbhz, MAX_CN0_DBHZ)
+
+_own_cn0_dbhz(held_cn0_dbhz, cn0_estimator, integration_time) =
+    !isnan(held_cn0_dbhz) && _refilling(cn0_estimator) ? min(held_cn0_dbhz, MAX_CN0_DBHZ) :
+    _capped_cn0_dbhz(cn0_estimator, integration_time)
+
+_refilling(cn0_estimator::MomentsCN0Estimator) =
+    length(cn0_estimator) < length(get_prompt_buffer(cn0_estimator))
+
+# Relative change of a signal's record length that restarts its C/N₀ estimate: the
+# moment estimator would mix prompts of two noise scales and divide them by one
+# integration time. Well below the factor between two lengths (1 to 20 ms at bit sync).
+const _CN0_RECORD_LENGTH_CHANGE = 0.25
+
+# A signal's C/N₀ estimate for a record of `integration_time` after one of
+# `previous_integration_time`: unchanged at about the same length; otherwise restarted,
+# with the estimate before the change held until the restarted one has refilled
+# (a few prompts read as an arbitrarily high C/N₀). Returns `(held, estimator)`.
+function _restart_cn0(held_cn0_dbhz, cn0_estimator, previous_integration_time, integration_time)
+    abs(integration_time - previous_integration_time) >
+    _CN0_RECORD_LENGTH_CHANGE * integration_time || return held_cn0_dbhz, cn0_estimator
+    held =
+        iszero(length(cn0_estimator)) ? NaN :
+        _own_cn0_dbhz(held_cn0_dbhz, cn0_estimator, previous_integration_time)
+    held, _reset_cn0_estimator(cn0_estimator)
+end
 
 # Whether some satellite of the group can still snapshot the pending epoch at
 # `epoch_time`: one that is tracked, not stale at `now`, due at that epoch and not yet
@@ -746,6 +778,12 @@ function _advance_slot!(group::VTSlotGroup, slot::VTSlot, record::LoopRecord, wo
     slot.chips_since_epoch +=
         (record.sample_index - slot.last_end_sample) / fs * (code_frequency + code_word)
     _drives_data_signal(group) && _advance_data_signal!(group, slot, record)
+    slot.held_cn0_dbhz, slot.cn0_estimator = _restart_cn0(
+        slot.held_cn0_dbhz,
+        slot.cn0_estimator,
+        slot.last_integration_time,
+        uconvert(s, record.integrated_samples / record.sampling_frequency),
+    )
     slot.cn0_estimator = update(slot.cn0_estimator, get_prompt(record.filtered_correlator))
     slot.host_cn0_dbhz = record.cn0
     slot.last_end_sample = record.sample_index
@@ -895,10 +933,18 @@ function _fold_passenger_record!(group::VTSlotGroup, state::SatVectorPLLAndDLL, 
     record.signal isa typeof(group.data_signal) &&
         _advance_data_signal!(group, slot, record)
     passenger = slot.passengers[index]
+    integration_time = uconvert(s, record.integrated_samples / record.sampling_frequency)
+    held, cn0_estimator = _restart_cn0(
+        passenger.held_cn0_dbhz,
+        passenger.cn0_estimator,
+        passenger.integration_time,
+        integration_time,
+    )
     slot.passengers[index] = VTPassenger(
-        update(passenger.cn0_estimator, get_prompt(record.filtered_correlator)),
+        update(cn0_estimator, get_prompt(record.filtered_correlator)),
         record.cn0,
-        uconvert(s, record.integrated_samples / record.sampling_frequency),
+        held,
+        integration_time,
         _early_late_spacing_chips(record),
         _dll_variance_factor(record.filtered_correlator),
     )

@@ -130,7 +130,10 @@ share the driver's code rate and carrier frequency.
   the power split does not, such as a passenger's own antenna gain.
 - **C/N₀.** The engine weights the measurements and decides lock by each
   signal's C/N₀: the host's estimate where its records carry one (their `cn0`,
-  see [`LoopRecord`](@ref)), its own estimate from the prompts otherwise.
+  see [`LoopRecord`](@ref)), its own estimate from the prompts otherwise. Its
+  own restarts where a signal's records change length (at bit sync, say), as
+  prompts of two lengths cannot share one estimate, and the estimate from before
+  is kept until the restarted one has refilled.
 
 ## Staging and discriminators under vector tracking
 
