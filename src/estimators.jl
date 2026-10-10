@@ -16,6 +16,14 @@
 # *is* the conventional loop to the bit.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# The soft bits a record appended: a contiguous view of the bit buffer's vector.
+const SoftBitsView = SubArray{Float32,1,Vector{Float32},Tuple{UnitRange{Int}},true}
+
+# The soft bits of a record built without a signal state: none. Never written to.
+const _NO_SOFT_BITS = Float32[]
+
+@inline _no_soft_bits() = view(_NO_SOFT_BITS, 1:0)
+
 """
 $(SIGNATURES)
 
@@ -39,8 +47,27 @@ time since one origin shared by every satellite of the band. A host whose
 correlator restarts its sample count passes that origin's offset as
 `sample_offset` to the constructor that takes a `CorrelatorOutput`; it is added
 to `sample_index` and `fold_end`.
+
+The rest summarises the signal's [`SignalLoopState`](@ref) after
+[`apply_record`](@ref) folded this record into it, for an estimator that
+decodes or weights by C/N₀ (the vector loop; the scalar loops ignore it):
+
+  - `bit_synced`: whether the bit clock holds the bit or secondary-code sync
+    after this record;
+  - `sync_change`: whether this record found or lost it ([`SyncChange`](@ref));
+  - `blocks_into_symbol`: the code blocks integrated into the current data
+    symbol (`0` before the sync);
+  - `new_soft_bits`: exactly the soft bits *this record* appended — a view of
+    the bit buffer's vector, valid for the duration of the call, so it does not
+    matter when the host drains the buffer;
+  - `cn0_estimator`: the signal's C/N₀ estimator, for [`estimate_cn0`](@ref).
+
+Build such a record with the constructor that takes the state in place of the
+block count: `LoopRecord(signal, filtered_correlator, previous_prompt, output,
+state, sampling_frequency)`. The other constructors leave the bit clock
+unsynchronised, add no soft bits and carry a [`NoCN0Estimator`](@ref).
 """
-struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F}
+struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F,CN0<:AbstractCN0Estimator}
     signal::S
     filtered_correlator::C
     previous_prompt::ComplexF64
@@ -51,6 +78,11 @@ struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F}
     sampling_frequency::F
     prn::Int
     code_phase::Float64
+    bit_synced::Bool
+    sync_change::SyncChange
+    blocks_into_symbol::Int
+    new_soft_bits::SoftBitsView
+    cn0_estimator::CN0
 end
 
 LoopRecord(
@@ -75,6 +107,11 @@ LoopRecord(
     sampling_frequency,
     Int(prn),
     Float64(code_phase),
+    false,
+    SYNC_UNCHANGED,
+    0,
+    _no_soft_bits(),
+    NoCN0Estimator(),
 )
 
 LoopRecord(
@@ -82,7 +119,7 @@ LoopRecord(
     filtered_correlator,
     previous_prompt,
     output::CorrelatorOutput,
-    integrated_code_blocks,
+    integrated_code_blocks::Integer,
     sampling_frequency;
     fold_end = output.sample_index,
     prn::Integer = 0,
@@ -98,13 +135,67 @@ LoopRecord(
     sampling_frequency,
     Int(prn),
     output.code_phase,
+    false,
+    SYNC_UNCHANGED,
+    0,
+    _no_soft_bits(),
+    NoCN0Estimator(),
 )
+
+"""
+    LoopRecord(signal, filtered_correlator, previous_prompt, output::CorrelatorOutput,
+               state::SignalLoopState, sampling_frequency;
+               fold_end = output.sample_index, prn = 0, sample_offset = 0)
+
+The record of `output`, with the summary of the signal's bit clock and its C/N₀
+estimator taken from `state` — the [`SignalLoopState`](@ref) that
+[`apply_record`](@ref) just folded `output` into — along with the blocks the
+record covered. Read `previous_prompt` off the state before `apply_record`
+replaces it.
+"""
+function LoopRecord(
+    signal,
+    filtered_correlator,
+    previous_prompt,
+    output::CorrelatorOutput,
+    state::SignalLoopState,
+    sampling_frequency;
+    fold_end = output.sample_index,
+    prn::Integer = 0,
+    sample_offset::Integer = 0,
+)
+    bit_buffer = state.bit_buffer
+    synced = has_bit_or_secondary_code_been_found(bit_buffer)
+    soft_bits = bit_buffer.soft_bits
+    num_soft_bits = Base.length(soft_bits)
+    first_new = max(1, num_soft_bits - state.last_num_new_soft_bits + 1)
+    LoopRecord(
+        signal,
+        filtered_correlator,
+        ComplexF64(previous_prompt),
+        output.integrated_samples,
+        output.sample_index + Int(sample_offset),
+        Int(fold_end) + Int(sample_offset),
+        state.last_num_code_blocks,
+        sampling_frequency,
+        Int(prn),
+        output.code_phase,
+        synced,
+        state.last_sync_change,
+        synced ? bit_buffer.prompt_accumulator_integrated_code_blocks : 0,
+        view(soft_bits, first_new:num_soft_bits),
+        state.cn0_estimator,
+    )
+end
 
 # ── The conventional PLL/DLL ─────────────────────────────────────────────────
 
 """
 Per-satellite state for the conventional PLL and DLL Doppler estimator.
-Holds initial Doppler values and loop filter states.
+Holds initial Doppler values and loop filter states, and the key of the
+satellite's driver signal, whose records close the loops (see
+[`step_loop`](@ref)), which [`init_estimator_state`](@ref) records. `driver =
+0` takes every record to be the driver's.
 """
 @kwdef struct SatConventionalPLLAndDLL{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     init_carrier_doppler::typeof(1.0Hz)
@@ -113,6 +204,7 @@ Holds initial Doppler values and loop filter states.
     code_loop_filter::CO = SecondOrderBilinearLF()
     carrier_loop_filter_bandwidth::typeof(1.0Hz) = 18.0Hz
     code_loop_filter_bandwidth::typeof(1.0Hz) = 1.0Hz
+    driver::UInt64 = UInt64(0)
 end
 
 function SatConventionalPLLAndDLL(
@@ -135,8 +227,15 @@ function SatConventionalPLLAndDLL(
         isnothing(code_loop_filter_bandwidth) ?
         sat_conventional_pll_and_dll.code_loop_filter_bandwidth :
         code_loop_filter_bandwidth,
+        sat_conventional_pll_and_dll.driver,
     )
 end
+
+# The key a scalar loop's state records its driver by: the signal's id as an
+# integer, so the state stays a plain bits value of one type whatever the driver,
+# and a host can keep the states of satellites with different drivers in one
+# vector.
+@inline _signal_key(signal::AbstractGNSSSignal) = UInt64(objectid(get_signal_id(signal)))
 
 """
 $(SIGNATURES)
@@ -210,7 +309,9 @@ end
 
 Build the per-satellite estimator state for a satellite whose loop is driven
 by `driver_signal` and starts at the given Dopplers. Auto bandwidths (`nothing`
-on the estimator) are resolved here from the driver signal.
+on the estimator) are resolved here from the driver signal. The state records
+the driver, so [`step_loop`](@ref) tells the driver's records from those of
+the satellite's other signals.
 
 This function must be **pure**: Tracking.jl also calls it to build template
 states and to re-seed satellites.
@@ -232,6 +333,7 @@ function init_estimator_state(
         isnothing(estimator.code_loop_filter_bandwidth) ?
         default_code_loop_filter_bandwidth(driver_signal) :
         estimator.code_loop_filter_bandwidth,
+        _signal_key(driver_signal),
     )
 end
 
@@ -258,6 +360,7 @@ function reset_estimator_state(
         _constructorof(typeof(state.code_loop_filter))(),
         state.carrier_loop_filter_bandwidth,
         state.code_loop_filter_bandwidth,
+        state.driver,
     )
 end
 
@@ -270,6 +373,12 @@ filter) discriminators against the filtered prompt, the DLL normalised with the
 code word the record ran on, both bandwidths capped by their stability products
 against the record's integration time, and the Dopplers aided. `landing_sample` is ignored: the conventional loop assumes its
 command acts before the next record.
+
+A host hands every record of a satellite to `step_loop`, the driver's and its
+passengers' alike. Only the driver's — the records of the signal the state was
+initialised with — step the loop. A passenger record leaves the state as it is
+and returns the command in force: the words at the landing sample (at the
+record's end under `NO_LANDING_SAMPLE`), so applying them changes nothing.
 """
 @inline step_loop(
     estimator::ConventionalPLLAndDLL,
@@ -277,7 +386,27 @@ command acts before the next record.
     record::LoopRecord,
     words,
     landing_sample::Int64,
-) = _step_scalar_loop(estimator, state, record, words, landing_sample)
+) =
+    _is_driver_record(state, record) ?
+    _step_scalar_loop(estimator, state, record, words, landing_sample) :
+    _step_passenger(state, record, words, landing_sample)
+
+# Whether `record` belongs to the signal the scalar state was initialised with.
+@inline _is_driver_record(state, record::LoopRecord) =
+    state.driver == 0 || _signal_key(record.signal) == state.driver
+
+# A passenger record through a loop it does not close: the state unchanged and the
+# command already in force where this record's command would land.
+@inline function _step_passenger(state, record::LoopRecord, words, landing_sample::Int64)
+    carrier_doppler, code_doppler = _command_in_force(record, words, landing_sample)
+    state, carrier_doppler, code_doppler
+end
+
+@inline function _command_in_force(record::LoopRecord, words, landing_sample::Int64)
+    landing = landing_sample == NO_LANDING_SAMPLE ? record.sample_index : landing_sample
+    carrier_doppler, code_doppler = mean_nco_word(words, landing, landing)
+    carrier_doppler * Hz, code_doppler * Hz
+end
 
 # The discriminators of one record, as the loop filters are fed them, and what
 # the step needs around them: the per-record integration time, the capped
@@ -436,9 +565,10 @@ end
 
 Per-satellite state of an [`NCOReferencedPLLAndDLL`](@ref): the handover
 Dopplers the loop filters' outputs are offsets from, both filters, their
-bandwidths, and the centre sample of the last record folded (the FLL measures
+bandwidths, the centre sample of the last record folded (the FLL measures
 the mean frequency offset between two prompts' centres, so that is the span its
-replica word is averaged over).
+replica word is averaged over), and the key of the satellite's driver signal,
+whose records close the loops (`0` takes every record to be the driver's).
 """
 struct SatNCOReferencedPLLAndDLL{CA<:ThirdOrderAssistedBilinearLF,CO<:AbstractLoopFilter}
     init_carrier_doppler::typeof(1.0Hz)
@@ -450,6 +580,7 @@ struct SatNCOReferencedPLLAndDLL{CA<:ThirdOrderAssistedBilinearLF,CO<:AbstractLo
     # Device sample at the centre of the last record folded; `NaN` before the
     # first.
     previous_record_center::Float64
+    driver::UInt64
 end
 
 function SatNCOReferencedPLLAndDLL(
@@ -466,6 +597,7 @@ function SatNCOReferencedPLLAndDLL(
         state.carrier_loop_filter_bandwidth,
         state.code_loop_filter_bandwidth,
         something(previous_record_center, state.previous_record_center),
+        state.driver,
     )
 end
 
@@ -489,6 +621,7 @@ function init_estimator_state(
             default_code_loop_filter_bandwidth(driver_signal),
         ),
         NaN,
+        _signal_key(driver_signal),
     )
 end
 
@@ -506,6 +639,7 @@ function reset_estimator_state(
         state.carrier_loop_filter_bandwidth,
         state.code_loop_filter_bandwidth,
         NaN,
+        state.driver,
     )
 end
 
@@ -553,7 +687,10 @@ end
 One record through the NCO-referenced loop. `words` gives the replica words
 the record really ran on; `landing_sample` is where the command computed from
 this record's fold lands (`NO_LANDING_SAMPLE` for a software correlator, where
-it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
+it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref). A
+passenger record — of a signal other than the one the state was initialised
+with — leaves the state as it is and returns the command in force, as for
+the conventional loop.
 """
 @inline step_loop(
     estimator::NCOReferencedPLLAndDLL,
@@ -561,7 +698,10 @@ it acts at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
     record::LoopRecord,
     words,
     landing_sample::Int64,
-) = _step_scalar_loop(estimator, state, record, words, landing_sample)
+) =
+    _is_driver_record(state, record) ?
+    _step_scalar_loop(estimator, state, record, words, landing_sample) :
+    _step_passenger(state, record, words, landing_sample)
 
 @inline function _record_discriminators(
     estimator::NCOReferencedPLLAndDLL,

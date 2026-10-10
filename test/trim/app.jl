@@ -3,7 +3,8 @@
 # that broadcast real navigation bits — bit sync, decoding, the scalar fix, the seed
 # and a steady state through a partial outage — printed so the trimmed executable's
 # output can be compared against a regular Julia session. It is the loop process's
-# workload: `step_loop` on every record of every channel, and nothing else.
+# workload: `apply_record` and `step_loop` on every record of every channel, and
+# nothing else.
 using TrackingLoops, GNSSSignals, StaticArrays, Unitful, LinearAlgebra
 using Unitful: Hz, s, ms
 
@@ -13,11 +14,7 @@ include(joinpath(@__DIR__, "..", "vector_simulation.jl"))
 function step_channels!(rx, sample, outage::Bool)
     for (i, sat) in enumerate(rx.sats)
         sat.in_view = !(outage && i <= 2)
-        while sat.next_end_sample <= sample
-            record_end = sat.next_end_sample
-            pipeline_record!(rx, sat, rx.last_ends[i])
-            rx.last_ends[i] = record_end
-        end
+        step_satellite!(rx, i, sample)
     end
     nothing
 end
@@ -42,7 +39,7 @@ end
 
 function (@main)(args::Vector{String})::Cint
     io = Core.stdout
-    rx = PipelineReceiver()
+    rx = PipelineReceiver(Val(false))
     nav = rx.estimator.navigation
     last_cycle = nav.cycle_id
     sample = 0

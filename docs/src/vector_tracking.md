@@ -22,25 +22,26 @@ and the carrier corrections come from the filter's prediction alone.
 ## One estimator does it all
 
 [`VectorPLLAndDLL`](@ref) is a Doppler estimator like any other: a host builds
-each satellite's state with [`init_estimator_state`](@ref) and steps it record
-by record with [`step_loop`](@ref). Everything vector tracking needs happens
-inside that step, from what the records carry. Every satellite stepped with one
-estimator shares its navigation engine, which
+each satellite's state with [`init_estimator_state`](@ref) and steps it with
+[`step_loop`](@ref) on every record of the satellite, as it steps any other
+loop. Everything vector tracking needs happens inside that step, from what the
+records carry. Every satellite stepped with one estimator shares its navigation
+engine, which
 
-- syncs to each satellite's navigation bits, decodes them and estimates its
-  C/N₀, on the satellite's own bit clock;
+- decodes each satellite's navigation data from the soft bits its records
+  carry;
 - snapshots each satellite at every navigation epoch (every `cycle_time` on the
   records' time grid): the replica's code phase from the last data-symbol edge,
-  the decoder there, the Dopplers, and the discriminators accumulated since the
-  last epoch;
-- runs the epoch's navigation cycle on the record that brings the last satellite
-  past the epoch: the scalar PVT until the filter is seeded, a filter iteration
-  after that;
+  the decoder there, the Dopplers, the C/N₀ and the discriminators accumulated
+  since the last epoch;
+- runs the epoch's navigation cycle on the record that completes the last
+  satellite's snapshot: the scalar PVT until the filter is seeded, a filter
+  iteration after that;
 - leaves the cycle's decisions — admission, release, the corrections — for each
   satellite to take up on its next record, sized for where its command lands.
 
 ```julia
-estimator = VectorPLLAndDLL(GPSL1CA(), GalileoE1B())   # owns decoders, filter and PVT
+estimator = VectorPLLAndDLL(GPSL1CA(), GalileoE1C() => GalileoE1B())   # owns decoders, filter and PVT
 ts = TrackState(; signal = GPSL1CA(), doppler_estimator = estimator)
 for chunk in chunks
     track!(chunk, ts, fs)              # decodes, solves, steers
@@ -55,10 +56,58 @@ until the filter takes it over, and again once the filter lets it go. In the
 vector loop the code filter is frozen, the filter's corrections steer the
 replica, and the discriminators are accumulated for the filter.
 
+## Pilot + data pairs
+
+A signal that carries navigation data is ranged on and decoded alike. A pilot
+carries none, so it is given with its data component, `driver => decoding
+signal`: the satellite ranges on the pilot, whose prompt has no data-bit
+transitions, and decodes the data component — Galileo `GalileoE1C() =>
+GalileoE1B()`, GPS `GPSL5Q() => GPSL5I()`, `GPSL1C_P() => GPSL1C_D()`,
+`GPSL2CL() => GPSL2CM()`, BeiDou `BeiDouB1C_P() => BeiDouB1C_D()`.
+
+- The **driver** closes the loops: its records carry the discriminators, the
+  replica's code phase and the C/N₀ the measurements are weighted by.
+- The **decoding signal** feeds the decoder: its records carry the soft bits
+  and where its bit clock stands. For a plain signal these are the driver's own
+  records.
+
+At an epoch the transmit time is the data symbols the decoding signal has
+counted plus the driver's code phase within the current symbol, which is how
+PositionVelocityTime builds it for a pair. The two codes are aligned at the
+satellite, so their lengths may differ (L2 CL is 1.5 s, L2 CM 20 ms); the
+chip rates must agree. A satellite is in lock when the driver's C/N₀ clears
+`lock_cn0_threshold` and the decoding signal holds its bit sync; a data
+component too weak to decode never completes its decoder, so it never makes the
+satellite ready for the PVT. The solution, the reports and the release reasons
+are keyed by the driver.
+
+The records of the two arrive independently and in any order: a satellite's
+snapshot of an epoch is complete once a record of each has crossed it, and the
+cycle waits for that as it waits for a late satellite. A satellite is dropped
+when either signal has gone two cycles without a record.
+
 ## What the records must carry
 
-The engine derives everything from the records except what only the correlator
-knows, which every [`LoopRecord`](@ref) handed to the estimator must carry:
+The engine runs no bit clock and no C/N₀ estimator of its own. The host holds a
+[`SignalLoopState`](@ref) per signal of every satellite — its bit clock, C/N₀
+estimator and prompt filter — advances it with [`apply_record`](@ref) on every
+record, and builds the record from it:
+
+```julia
+previous_prompt = loop.last_filtered_prompt
+loop, prompt, filtered, blocks, overshoot =
+    apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready, driver_phase)
+record = LoopRecord(signal, filtered, previous_prompt, output, loop, fs; prn)
+state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words, landing_sample)
+```
+
+The record summarises the state: whether the bit clock holds the sync and
+whether this record found or lost it, the code blocks into the current symbol,
+exactly the soft bits this record added — so the host may drain the bit buffer
+after every record or once per call — and the C/N₀ estimator the host chose
+(noise-referenced by default, which reads `-Inf` dB-Hz, out of lock, until the
+host has a noise density). Beyond that, every [`LoopRecord`](@ref) handed to
+the estimator must carry what only the correlator knows:
 
 - `prn`: the satellite;
 - `code_phase`: the replica's code phase in chips at the record's end, from the
@@ -103,18 +152,20 @@ every satellite starts on its scalar loop:
    anew.
 
 A re-acquired satellite — a fresh state on a PRN seen before — gets its old slot
-back: its bit clock restarts, and its decoder restarts its sync but keeps the
-data it had decoded, so it is ready again after the next subframe rather than a
-whole frame.
+back: its decoder restarts its sync but keeps the data it had decoded, so it is
+ready again after the next subframe rather than a whole frame once the host's
+bit clock has found the bit edges again.
 
 ## Stepping the satellites
 
-A cycle runs once every satellite has reached its epoch, and a satellite that
-has gone two cycles without a record is dropped. So a host should step every
-satellite of the estimator at least once per half cycle. Tracking.jl's `track!`
-does, for any chunk shorter than that. A satellite that falls behind holds a
-cycle up only until the others reach the next epoch; then the cycle runs
-without it.
+A cycle runs once every satellite has completed its epoch's snapshot, and a
+satellite that has gone two cycles without a record of one of its signals is
+dropped. So a host should step every signal of every satellite of the estimator
+at least once per half cycle. Tracking.jl's `track!` does, for any chunk
+shorter than that. A satellite that falls behind holds a cycle up only until
+the others reach the next epoch; then the cycle runs without it. A host never
+has to hold a record back or order its channels: each record is stepped as it
+arrives.
 
 ## Under a hardware NCO delay
 
@@ -162,17 +213,15 @@ needed later.
 ## Storage
 
 The estimator allocates the slots of `max_satellites_per_signal` satellites per
-signal at construction: decoders, bit clocks, C/N₀ estimators and the filter's
-buffers. A dropped satellite leaves its slot free with all its storage, for the
+ranging signal at construction: decoders and the filter's buffers. A dropped satellite leaves its slot free with all its storage, for the
 next one to reuse; only past that capacity does a group grow. Once warm, records
 and cycles allocate nothing, and the whole estimator compiles with
 `juliac --trim=safe`.
 
 ## Known limits
 
-- The engine decodes the bits of the signal it steps, so a dataless pilot
-  (GPS L1C-P, Galileo E1C) cannot run vector tracking: the constructor rejects
-  it.
+- A pair ranges on the driver alone: the data component's discriminators are
+  not combined with the pilot's.
 - Lock is a C/N₀ threshold over the bit-synced satellites, not a full lock
   detector.
 - A host must report the record's `prn` and `code_phase`. HardwareLoopCore does
