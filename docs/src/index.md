@@ -39,10 +39,13 @@ which has no Windows build.
 
 Per satellite you hold a Doppler-estimator state and, per tracked signal of
 that satellite, a [`SignalLoopState`](@ref). For every correlator record
-([`CorrelatorOutput`](@ref)) the correlator produced, [`apply_record`](@ref)
-folds the record into the signal's prompt filter, C/N₀ estimator and bit
-buffer, and [`step_loop`](@ref) turns the filtered correlator into the Dopplers
-the next replica runs with:
+([`CorrelatorOutput`](@ref)) the correlator produced, of every signal,
+[`apply_record`](@ref) folds the record into the signal's prompt filter, C/N₀
+estimator and bit buffer, and [`step_loop`](@ref) turns it into the Dopplers
+the next replica runs with. The estimator state knows its satellite's driver
+signal, the one whose records close the loops; a record of another signal of
+the satellite returns the command in force, so the same four calls serve every
+record and every estimator:
 
 ```julia
 using TrackingLoops, GNSSSignals, Unitful
@@ -58,7 +61,7 @@ previous_prompt = loop.last_filtered_prompt   # read before `apply_record` repla
 loop, prompt, filtered, blocks, overshoot =
     apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready)
 overshoot && @warn "record crossed a navigation-bit boundary; bit sync restarted"
-record = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs)
+record = LoopRecord(signal, filtered, previous_prompt, output, loop, fs; prn)
 state, carrier_doppler, code_doppler =
     step_loop(estimator, state, record, FixedNCOWord(carrier_hz, code_hz), NO_LANDING_SAMPLE)
 # program the next replica with carrier_doppler and code_doppler

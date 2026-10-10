@@ -7,6 +7,19 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
+    SyncChange
+
+What one record did to a signal's bit clock (see [`SignalLoopState`](@ref) and
+[`LoopRecord`](@ref)):
+
+  - `SYNC_UNCHANGED`: neither found nor lost the bit or secondary-code sync;
+  - `SYNC_FOUND`: found it;
+  - `SYNC_LOST`: lost it — a post-sync record that overshot the navigation-bit
+    boundary, on which the bit buffer restarted its search.
+"""
+@enum SyncChange::Int8 SYNC_UNCHANGED SYNC_FOUND SYNC_LOST
+
+"""
     SignalLoopState(signal; num_prompts_for_cn0_estimation = 100, cn0_estimator, post_corr_filter)
 
 The per-record state of one signal component on a satellite: its bit buffer,
@@ -14,6 +27,13 @@ C/N₀ estimator, post-correlation filter, the last filtered prompt (which the
 FLL discriminator chains from) and the block count of the last record. An
 immutable value, rebuilt by [`apply_record`](@ref) per record; the estimators
 buffer into vectors they own, so every component needs its own instance.
+
+The host holds one per signal of every satellite — the driver and each
+passenger alike — and advances it with [`apply_record`](@ref) on every record.
+It also remembers what the last record did to the bit clock, which a
+[`LoopRecord`](@ref) built from the state hands to the estimator:
+`last_sync_change` (a [`SyncChange`](@ref)) and `last_num_new_soft_bits`, the
+soft bits that record appended.
 """
 struct SignalLoopState{B<:Unsigned,PCF<:AbstractPostCorrFilter,CN0<:AbstractCN0Estimator}
     bit_buffer::BitBuffer{B}
@@ -21,6 +41,8 @@ struct SignalLoopState{B<:Unsigned,PCF<:AbstractPostCorrFilter,CN0<:AbstractCN0E
     post_corr_filter::PCF
     last_filtered_prompt::ComplexF64
     last_num_code_blocks::Int
+    last_sync_change::SyncChange
+    last_num_new_soft_bits::Int
 end
 
 function SignalLoopState(
@@ -50,6 +72,8 @@ function SignalLoopState(
         post_corr_filter,
         complex(0.0, 0.0),
         1,
+        SYNC_UNCHANGED,
+        0,
     )
 end
 
@@ -98,34 +122,6 @@ end
 # advance the accumulator's block count.
 @inline _drops_pre_sync_prompt(signal::AbstractGNSSSignal, correlated_pre_sync::Bool) =
     correlated_pre_sync && get_secondary_code_length(signal) > 1
-
-# One record into the bit buffer: `bit_block_count` blocks (from
-# `calc_num_code_blocks_for_bit_buffer`) of the de-rotated `bit_prompt`. Shared by
-# `fold_record` and the vector loop's own bit clock, so the two cannot diverge.
-@inline function _advance_bit_buffer(
-    signal::AbstractGNSSSignal,
-    prn::Integer,
-    bit_buffer::BitBuffer,
-    bit_block_count::Integer,
-    bit_prompt,
-    correlated_pre_sync::Bool,
-)
-    drop_prompt = _drops_pre_sync_prompt(signal, correlated_pre_sync)
-    bit_buffer = buffer(
-        signal,
-        prn,
-        bit_buffer,
-        bit_block_count,
-        drop_prompt ? zero(bit_prompt) : bit_prompt,
-    )
-    # Such a record also moves the secondary-code anchor: the code-phase snap
-    # runs after this fold and aligns the *upcoming* integration to
-    # `bit_buffer.secondary_phase`.
-    if correlated_pre_sync
-        bit_buffer = _advance_secondary_phase(signal, bit_buffer, bit_block_count)
-    end
-    bit_buffer
-end
 
 """
     fold_record(signal, prn, bit_buffer, cn0_estimator, post_corr_filter, output,
@@ -199,8 +195,19 @@ Tracking's per-record advance performs, in the same order.
         noise_density_ready,
         output.integrated_samples / sampling_frequency,
     )
-    bit_buffer =
-        _advance_bit_buffer(signal, prn, bit_buffer, bit_block_count, bit_prompt, correlated_pre_sync)
+    bit_buffer = buffer(
+        signal,
+        prn,
+        bit_buffer,
+        bit_block_count,
+        drop_prompt ? zero(bit_prompt) : bit_prompt,
+    )
+    # Such a record also moves the secondary-code anchor: the code-phase snap
+    # runs after this fold and aligns the *upcoming* integration to
+    # `bit_buffer.secondary_phase`.
+    if correlated_pre_sync
+        bit_buffer = _advance_secondary_phase(signal, bit_buffer, bit_block_count)
+    end
     # A post-sync record that carried the accumulator past the bit boundary
     # made `buffer` drop sync and restart the search: report it, so the caller
     # can say so (a receiver logs, a loop process publishes a status event).
@@ -227,7 +234,10 @@ end
 filtered prompt as its `last_filtered_prompt`), the prompt, the filtered
 correlator the discriminators read, the blocks the record covered, and
 whether the record overshot the navigation-bit boundary — on which the bit
-buffer dropped sync and restarted its search. Nothing here logs; report
+buffer dropped sync and restarted its search. The new state also records what
+the record did to the bit clock (`last_sync_change`) and how many soft bits it
+appended (`last_num_new_soft_bits`), for a [`LoopRecord`](@ref) built from it.
+Nothing here logs; report
 `overshoot` the way the caller reports things (Tracking.jl warns once per
 satellite).
 
@@ -248,6 +258,8 @@ half of a pilot/data pair) must be handed the driver's.
     driver_carrier_phase::Real = get_carrier_phase_offset(signal);
     correlated_pre_sync::Bool = false,
 )
+    was_synced = has_bit_or_secondary_code_been_found(state.bit_buffer)
+    num_soft_bits = Base.length(state.bit_buffer.soft_bits)
     bit_buffer, cn0_estimator, post_corr_filter, prompt, filtered_correlator, _, integrated_code_blocks, overshoot =
         fold_record(
             signal,
@@ -262,12 +274,18 @@ half of a pilot/data pair) must be handed the driver's.
             driver_carrier_phase,
             correlated_pre_sync,
         )
+    is_synced = has_bit_or_secondary_code_been_found(bit_buffer)
+    sync_change =
+        !was_synced && is_synced ? SYNC_FOUND :
+        was_synced && !is_synced ? SYNC_LOST : SYNC_UNCHANGED
     new_state = SignalLoopState(
         bit_buffer,
         cn0_estimator,
         post_corr_filter,
         prompt,
         integrated_code_blocks,
+        sync_change,
+        Base.length(bit_buffer.soft_bits) - num_soft_bits,
     )
     new_state, prompt, filtered_correlator, integrated_code_blocks, overshoot
 end
@@ -284,6 +302,8 @@ restart_bit_clock(state::SignalLoopState) = SignalLoopState(
     state.post_corr_filter,
     state.last_filtered_prompt,
     state.last_num_code_blocks,
+    SYNC_UNCHANGED,
+    0,
 )
 
 # An unsynchronised bit buffer that owns `bb`'s vectors: the soft bits are
@@ -322,6 +342,8 @@ reset_signal_state(state::SignalLoopState) = SignalLoopState(
     state.post_corr_filter,
     complex(0.0, 0.0),
     1,
+    SYNC_UNCHANGED,
+    0,
 )
 
 _reset_cn0_estimator(e::NoiseRefCN0Estimator) =

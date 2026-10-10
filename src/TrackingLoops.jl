@@ -19,9 +19,10 @@ allocation-free *loop process* of a hardware correlator:
     both paths;
   - the [`NCOTimeline`](@ref): what a hardware NCO ran and will run;
   - vector tracking: [`VectorPLLAndDLL`](@ref), whose navigation engine
-    decodes every satellite's bits, solves the PVT and then closes every
-    satellite's loops at once with a navigation filter, all from the records
-    it is stepped with.
+    decodes every satellite's bits — of a plain signal, or of the data
+    component of a pilot + data pair it ranges on the pilot of — solves the PVT
+    and then closes every satellite's loops at once with a navigation filter,
+    all from the records it is stepped with.
 
 Tracking.jl depends on this package for its software correlator; the loop
 process's engine (HardwareLoopCore.jl) depends on it without Tracking. Nothing
@@ -196,6 +197,10 @@ export NumAnts,
     init_estimator_state,
     reset_estimator_state,
     LoopRecord,
+    SyncChange,
+    SYNC_UNCHANGED,
+    SYNC_FOUND,
+    SYNC_LOST,
     step_loop,
     SignalLoopState,
     apply_record,
@@ -256,10 +261,15 @@ a hardware correlator's loop process) drives it through that interface alone,
 so the estimators are interchangeable:
 
   - [`init_estimator_state`](@ref)`(estimator, driver_signal, carrier_doppler,
-    code_doppler)` builds a satellite's state;
+    code_doppler)` builds a satellite's state, which records the driver: the
+    signal whose records close the loops;
   - [`step_loop`](@ref)`(estimator, state, record, words, landing_sample)`
     folds one record into it and returns `(state, carrier_doppler,
-    code_doppler)`;
+    code_doppler)`. The host calls it on every record of the satellite, of
+    every signal, each built from that signal's [`SignalLoopState`](@ref):
+    the estimator tells the driver's records from the others' itself, and for
+    a record it has no use for returns the state unchanged and the command in
+    force;
   - [`reset_estimator_state`](@ref)`(estimator, state, carrier_doppler,
     code_doppler)` re-seeds it from converged Dopplers, keeping what the
     estimator chooses to keep.

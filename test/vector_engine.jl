@@ -54,6 +54,35 @@ end
     @test third.slot == 3 && length(group.slots) == 3
 end
 
+# Set `slot` up for a snapshot of epoch 1 by a record ending past it, the driver's and
+# the decoding signal's last records having ended at `end_sample` (the decoding one at
+# `decoding_end`), and take both halves and the snapshot. Returns the decoder's symbol
+# count and the code phase from its last symbol edge.
+function take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fraction, end_sample,
+        driver_phase = fraction, decoding_end = end_sample, code_doppler = 0.0, synced = true)
+    fs = 4e6
+    nav.pending_epoch = 1
+    nav.num_snapshots = 0
+    slot.occupied = true
+    slot.first_epoch = 0
+    slot.driver_epoch = slot.decoding_epoch = slot.snapshot_epoch = typemin(Int)
+    slot.running_decoder = decoder
+    slot.decoding_bit_synced = synced
+    slot.decoding_blocks_into_symbol = blocks
+    slot.decoding_code_phase_fraction = fraction
+    slot.decoding_last_end_sample = decoding_end
+    slot.decoding_last_end_time = decoding_end / fs
+    slot.last_code_phase = driver_phase
+    slot.last_end_sample = end_sample
+    slot.last_end_time = end_sample / fs
+    words = FixedNCOWord(0.0, code_doppler)
+    record = engine_record(3, epoch_sample + 4000; signal = group.signal)
+    TL._snapshot_driver!(nav, group, slot, group.prototype, record, words)
+    TL._snapshot_decoding!(nav, group, slot, record, words)
+    TL._complete_snapshot!(nav, group, slot)
+    slot.decoder.num_bits_after_valid_syncro_sequence, slot.code_phase
+end
+
 @testset "The snapshot reads the code phase from the last symbol edge" begin
     signal = GPSL1CA()
     nav = VectorPLLAndDLL(signal).navigation
@@ -62,23 +91,8 @@ end
     decoder = GNSSDecoderState(GNSSDecoderState(signal, 3); num_bits_after_valid_syncro_sequence = 10)
     code_frequency = 1.023e6
     fs = 4e6
-    function snapshot(blocks, fraction, end_sample, epoch_sample; code_doppler = 0.0)
-        nav.pending_epoch = 1
-        nav.num_snapshots = 0
-        slot.occupied = true
-        slot.first_epoch = 0
-        slot.snapshot_epoch = typemin(Int)
-        slot.running_decoder = decoder
-        slot.bit_buffer = TL.BitBuffer{UInt64}(UInt64(0), 0, true, 0, Int8(1), complex(0.0), blocks,
-            slot.bit_buffer.soft_bits, slot.bit_buffer.phase_acc)
-        slot.last_code_phase_fraction = fraction
-        slot.last_end_sample = end_sample
-        slot.last_end_time = end_sample / fs
-        state = group.prototype
-        record = engine_record(3, epoch_sample + 4000)
-        TL._snapshot_epoch!(nav, group, slot, state, record, FixedNCOWord(0.0, code_doppler))
-        slot.decoder.num_bits_after_valid_syncro_sequence, slot.code_phase
-    end
+    snapshot(blocks, fraction, end_sample, epoch_sample; kw...) =
+        take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fraction, end_sample, kw...)
     # The epoch (sample 400 000) lies 1000 samples past the last record end: five
     # blocks into the symbol, 0.2 chips past the block boundary, and the chips the
     # replica runs on to the epoch.
@@ -102,13 +116,61 @@ end
     num_bits, code_phase = snapshot(19, 0.5, 400_000 - 4000, 400_000)
     @test num_bits == 11
     @test code_phase ≈ 19 * 1023 + 0.5 + 4000 / fs * code_frequency - 20460
+    # Without the replica's code phase the record is taken to end on a block boundary.
+    num_bits, code_phase = snapshot(5, NaN, 399_000, 400_000)
+    @test code_phase ≈ 5 * 1023 + 1000 / fs * code_frequency
+    # Out of sync there is no lock, and no symbol edge to count from.
+    snapshot(5, 0.2, 399_000, 400_000; synced = false)
+    @test !slot.in_lock
     # A record that does not cross the pending epoch takes no snapshot.
     nav.num_snapshots = 0
-    slot.snapshot_epoch = typemin(Int)
-    slot.last_end_sample = 300_000
-    slot.last_end_time = 300_000 / fs
-    TL._snapshot_epoch!(nav, group, slot, group.prototype, engine_record(3, 304_000), FixedNCOWord(0.0, 0.0))
+    slot.driver_epoch = slot.decoding_epoch = slot.snapshot_epoch = typemin(Int)
+    slot.last_end_sample = slot.decoding_last_end_sample = 300_000
+    slot.last_end_time = slot.decoding_last_end_time = 300_000 / fs
+    record = engine_record(3, 304_000)
+    TL._snapshot_driver!(nav, group, slot, group.prototype, record, FixedNCOWord(0.0, 0.0))
+    TL._snapshot_decoding!(nav, group, slot, record, FixedNCOWord(0.0, 0.0))
+    TL._complete_snapshot!(nav, group, slot)
     @test nav.num_snapshots == 0
+    @test slot.driver_epoch == slot.decoding_epoch == typemin(Int)
+end
+
+@testset "A pair's snapshot takes the symbol count from the data, the phase from the pilot" begin
+    # GPS L2C: the satellite ranges on the 1.5 s CL code and decodes CM, whose 20 ms
+    # code is one data symbol. The driver's code phase pins the symbol phase modulo
+    # the CM code, which its 75 times longer code is a multiple of.
+    nav = VectorPLLAndDLL(GPSL2CL() => GPSL2CM()).navigation
+    group = nav.groups[1]
+    @test group.decoding_signal isa GPSL2CM
+    slot = group.slots[1]
+    @test slot.running_decoder isa typeof(GNSSDecoderState(GPSL2CM(), 1))
+    decoder = GNSSDecoderState(GNSSDecoderState(GPSL2CM(), 3); num_bits_after_valid_syncro_sequence = 10)
+    code_frequency = 511.5e3
+    fs = 4e6
+    chips = 1000 / fs * code_frequency
+    snapshot(fraction, driver_phase; kw...) = take_snapshot!(nav, group, slot, decoder, 400_000;
+        blocks = 0, fraction, driver_phase, end_sample = 399_000, kw...)
+    # The data record ended 0.2 chips past a CM code boundary, the pilot's replica
+    # 0.25 chips past one, 3 CM codes into the CL code: the pilot's phase is taken.
+    num_bits, code_phase = snapshot(0.2, 3 * 10230 + 0.25)
+    @test num_bits == 10
+    @test code_phase ≈ 0.25 + chips
+    # At an epoch one sample after the records' end, the data record 0.1 chips past
+    # the boundary but the pilot's replica, at the end of its code, 0.3 chips short of
+    # it: one symbol fewer, read up to the edge.
+    one_sample = code_frequency / fs
+    num_bits, code_phase = take_snapshot!(nav, group, slot, decoder, 400_000;
+        blocks = 0, fraction = 0.1, driver_phase = 767_250 - 0.3, end_sample = 399_999)
+    @test num_bits == 9
+    @test code_phase ≈ 10230 - 0.3 + one_sample
+    # The data record behind the pilot's: its last record ended 4000 samples before the
+    # pilot's, and the symbol it counts in moved on by those chips.
+    num_bits, code_phase = snapshot(0.2, 0.25 + 4000 / fs * code_frequency; decoding_end = 395_000)
+    @test num_bits == 10
+    @test code_phase ≈ 0.25 + 4000 / fs * code_frequency + chips
+    # Without the pilot's code phase the data's count stands.
+    _, code_phase = snapshot(0.2, NaN)
+    @test code_phase ≈ 0.2 + chips
 end
 
 @testset "A satellite without records for two cycles is dropped" begin
@@ -121,16 +183,20 @@ end
         slot.occupied = true
         slot.first_epoch = 0
     end
+    ended!(slot, t) = (slot.last_end_time = slot.decoding_last_end_time = t)
     fresh.snapshot_epoch = 10
-    fresh.last_end_time = 1.0
-    stale.last_end_time = 0.75
-    member.last_end_time = 0.7
+    ended!(fresh, 1.0)
+    ended!(stale, 0.75)
+    ended!(member, 0.7)
     member.estimator_state = TL._enable_vector_tracking(group.prototype)
     # The stale ones are not waited for…
     @test TL._all_snapshotted(true, group, nav, 1.0)
-    stale.last_end_time = 0.85
+    ended!(stale, 0.85)
     @test !TL._all_snapshotted(true, group, nav, 1.0)
-    stale.last_end_time = 0.75
+    # …and a satellite is stale once either of its signals is.
+    stale.decoding_last_end_time = 0.75
+    @test TL._all_snapshotted(true, group, nav, 1.0)
+    ended!(stale, 0.75)
     # …and dropped by the cycle, the member released.
     @test TL._prepare_slots!(false, group, nav, 1.0)
     @test fresh.active && fresh.occupied
@@ -231,4 +297,81 @@ end
     @test b.code_freq_update == 0.0Hz
     @test b.inner.init_carrier_doppler == 120.0Hz
     @test b.inner.init_code_doppler == 0.12Hz
+end
+
+@testset "Vector tracking ranges on drivers and decodes their data components" begin
+    pair = VectorPLLAndDLL(GPSL1CA(), GalileoE1C() => GalileoE1B())
+    groups = pair.navigation.groups
+    @test groups[1].signal isa GPSL1CA && groups[1].decoding_signal isa GPSL1CA
+    @test groups[2].signal isa GalileoE1C && groups[2].decoding_signal isa GalileoE1B
+    @test groups[2].slots[1].running_decoder isa typeof(GNSSDecoderState(GalileoE1B(), 1))
+    @test pair.navigation.layout.signal_id_by_group == [:GPSL1CA, :GalileoE1C]
+    # A dataless driver needs a data component to decode; that one must carry data and
+    # have the driver's chip rate, and no signal may be given twice.
+    @test_throws "pair it with its data component" VectorPLLAndDLL(GalileoE1C())
+    @test_throws "carries none" VectorPLLAndDLL(GPSL5Q() => GalileoE1C())
+    @test_throws "chip rate" VectorPLLAndDLL(GPSL5Q() => GPSL1CA())
+    @test_throws "only once" VectorPLLAndDLL(GPSL1CA(), GPSL1C_P() => GPSL1CA())
+    @test_throws "only once" VectorPLLAndDLL(GalileoE1C() => GalileoE1B(), GalileoE1B())
+    # Code lengths may differ.
+    @test VectorPLLAndDLL(GPSL2CL() => GPSL2CM()) isa VectorPLLAndDLL
+end
+
+@testset "A record of each role" begin
+    estimator = VectorPLLAndDLL(GPSL1C_P() => GPSL1CA())
+    nav = estimator.navigation
+    words = FixedNCOWord(100.0, 0.1)
+    state = init_estimator_state(estimator, GPSL1C_P(), 100.0Hz, 0.1Hz)
+    # The data component's record comes first: it registers the satellite and leaves
+    # its loop alone, returning the command in force.
+    stepped, carrier, code = step_loop(estimator, state, engine_record(7, 4000; signal = GPSL1CA()), words, NO_LANDING_SAMPLE)
+    @test (stepped.slot, stepped.registration) == (1, 1)
+    @test stepped.inner === state.inner
+    @test (carrier, code) == (100.0Hz, 0.1Hz)
+    @test nav.groups[1].slots[1].decoding_last_end_sample == 4000
+    # Under a landing sample the command in force is the one there.
+    timeline = NCOTimeline()
+    reset_timeline!(timeline, 100.0, 0.1)
+    schedule_word!(timeline, 6000, 120.0, 0.12)
+    _, carrier, code = step_loop(estimator, stepped, engine_record(7, 5000; signal = GPSL1CA()), timeline, Int64(7000))
+    @test (carrier, code) == (120.0Hz, 0.12Hz)
+    # The pilot's record steps the loop on the same slot.
+    driven, = step_loop(estimator, stepped, engine_record(7, 40_000; n = 40_000, signal = GPSL1C_P()), words, NO_LANDING_SAMPLE)
+    @test driven.slot == 1 && nav.registrations == 1
+    @test nav.groups[1].slots[1].last_end_sample == 40_000
+    # A passenger the estimator does not decode is ignored; a driver it does not range
+    # on is an error, as is a satellite stepped with another satellite's driver.
+    plain = VectorPLLAndDLL(GPSL1CA())
+    l1 = init_estimator_state(plain, GPSL1CA(), 100.0Hz, 0.1Hz)
+    ignored, carrier, = step_loop(plain, l1, engine_record(7, 4000; signal = GalileoE1B()), words, NO_LANDING_SAMPLE)
+    @test ignored === l1 && carrier == 100.0Hz
+    galileo = init_estimator_state(plain, GalileoE1B(), 100.0Hz, 0.1Hz)
+    @test_throws "not built for GalileoE1B" step_loop(plain, galileo, engine_record(7, 4000; signal = GalileoE1B()), words, NO_LANDING_SAMPLE)
+    @test_throws "ranges on as a driver" step_loop(plain, galileo, engine_record(7, 4000), words, NO_LANDING_SAMPLE)
+end
+
+# A C/N₀ estimator that always reads the same.
+struct FixedCN0Estimator <: AbstractCN0Estimator
+    dbhz::Float64
+end
+TL.update(estimator::FixedCN0Estimator, prompt, context::CN0UpdateContext) = estimator
+TL.estimate_cn0(estimator::FixedCN0Estimator, integration_time) = estimator.dbhz * dBHz
+
+@testset "The C/N₀ is the driver's, from the estimator the host configured" begin
+    for (configured, read) in ((42.0, 42.0), (95.0, 80.0))
+        estimator = VectorPLLAndDLL(GPSL1CA())
+        nav = estimator.navigation
+        loop = SignalLoopState(GPSL1CA(); cn0_estimator = FixedCN0Estimator(configured))
+        state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
+        for k = 1:101
+            output = CorrelatorOutput(engine_correlator(4000.0), 4000, 4000k, 0.0)
+            record = LoopRecord(GPSL1CA(), engine_correlator(), complex(0.0), output, loop, 4e6Hz; prn = 7)
+            state, = step_loop(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
+        end
+        slot = nav.groups[1].slots[1]
+        @test slot.snapshot_epoch == 1
+        # Capped at 80 dB-Hz, and out of lock without the bit sync.
+        @test slot.cn0_dbhz == read
+        @test !slot.in_lock
+    end
 end

@@ -16,6 +16,12 @@ the channel's [`NCOTimeline`](@ref) for a hardware one — and `landing_sample`
 is the sample the new command takes effect at, or [`NO_LANDING_SAMPLE`](@ref)
 for "at the end of each record".
 
+A host steps every record of a satellite, of every signal it tracks. The
+estimator state remembers the driver it was initialised with: the driver's
+records close the loops, and the scalar loops leave any other record — a
+passenger, such as the data component of a pilot + data pair — to the host,
+returning the state unchanged and the command in force.
+
 - [`ConventionalPLLAndDLL`](@ref) — a PLL and a carrier-aided DLL.
 - [`ConventionalAssistedPLLAndDLL`](@ref) — the same, with the PLL assisted by
   an FLL, which pulls in larger initial frequency errors. This is the default

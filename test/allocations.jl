@@ -28,7 +28,7 @@
             output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
             previous = st.last_filtered_prompt
             st, prompt, filtered, blocks = apply_record(st, signal, 7, output, fs, density, true)
-            record = LoopRecord(signal, filtered, previous, output, blocks, fs)
+            record = LoopRecord(signal, filtered, previous, output, st, fs)
             es, carrier, code = step_loop(estimator, es, record, timeline, Int64(4000k + 8000))
             schedule_word!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
             promote_words!(timeline, 4000k - 4000)
@@ -75,15 +75,23 @@ end
         slot = first(group.slots)
         # The pieces of a record that never allocate, as far as AllocCheck sees: not the
         # registration, which may grow a group past its preallocated slots by design, nor
-        # the bit clock's decoding, whose bounded vote tally and logging it cannot see
-        # through. The run below measures the whole record.
+        # the decoding, whose bounded vote tally and logging it cannot see through. The
+        # run below measures the whole record.
         for words_type in (FixedNCOWord, NCOTimeline)
             sig = Tuple{typeof(estimator),typeof(state),typeof(record),words_type,Int64}
             @test isempty(AllocCheck.check_allocs(TrackingLoops._step_satellite, sig; ignore_throw = true))
-            @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_epoch!,
+            @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_driver!,
                 Tuple{typeof(nav),typeof(group),typeof(slot),typeof(state),typeof(record),words_type};
                 ignore_throw = true))
+            @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_decoding!,
+                Tuple{typeof(nav),typeof(group),typeof(slot),typeof(record),words_type};
+                ignore_throw = true))
+            @test isempty(AllocCheck.check_allocs(TrackingLoops._advance_driver!,
+                Tuple{typeof(group),typeof(slot),typeof(record),words_type};
+                ignore_throw = true))
         end
+        @test isempty(AllocCheck.check_allocs(TrackingLoops._complete_snapshot!,
+            Tuple{typeof(nav),typeof(group),typeof(slot)}; ignore_throw = true))
         # A run through the whole estimator, the state kept in a `Ref`: the satellite
         # registers, syncs to nothing and the engine cycles every 100 ms.
         timeline = NCOTimeline()

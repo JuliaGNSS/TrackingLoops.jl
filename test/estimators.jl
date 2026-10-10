@@ -99,6 +99,9 @@ end
     @test conv isa SatConventionalPLLAndDLL
     @test conv.carrier_loop_filter_bandwidth == default_carrier_loop_filter_bandwidth(GalileoE1B())
     @test estimator_state_type(ConventionalAssistedPLLAndDLL(), GPSL1CA()) === typeof(conv)
+    # The state records its driver by key, so it is of one type whatever the driver.
+    @test conv.driver == TrackingLoops._signal_key(GalileoE1B()) != TrackingLoops._signal_key(GPSL1CA())
+    @test SatConventionalPLLAndDLL(; init_carrier_doppler = 0.0Hz, init_code_doppler = 0.0Hz).driver == 0
 end
 
 @testset "Without a landing sample the NCO-referenced loop is the conventional loop" begin
@@ -179,4 +182,54 @@ end
         @test navigation_epoch(estimator) === nothing
         @test satellite_report(estimator, LOOP_SIGNAL, 5) === nothing
     end
+end
+
+@testset "$(nameof(typeof(estimator))) leaves a passenger's record to the host" for estimator in (
+    ConventionalAssistedPLLAndDLL(),
+    NCOReferencedPLLAndDLL(),
+)
+    # GPS L5: the pilot L5Q drives, the data component L5I rides along.
+    driver, passenger = GPSL5Q(), GPSL5I()
+    fs = 25e6Hz
+    n = 25_000
+    state = init_estimator_state(estimator, driver, 100.0Hz, 0.1Hz)
+    output = CorrelatorOutput(loop_epl(0.5, 1.0, 0.5), n, n)
+    record = LoopRecord(passenger, output.correlator, complex(0.0), output, 1, fs; prn = 5)
+    # The state unchanged, and the command in force…
+    stepped, carrier, code = step_loop(estimator, state, record, FixedNCOWord(123.0, 0.12), NO_LANDING_SAMPLE)
+    @test stepped === state
+    @test (carrier, code) == (123.0Hz, 0.12Hz)
+    # …at the landing sample.
+    timeline = NCOTimeline()
+    reset_timeline!(timeline, 100.0, 0.1)
+    schedule_word!(timeline, 2n, 130.0, 0.13)
+    @test step_loop(estimator, state, record, timeline, Int64(3n))[2:3] == (130.0Hz, 0.13Hz)
+    @test step_loop(estimator, state, record, timeline, Int64(n))[2:3] == (100.0Hz, 0.1Hz)
+    # Passenger records interleaved with the driver's leave its Doppler sequence as it
+    # is, to the bit.
+    function dopplers(with_passengers)
+        state = init_estimator_state(estimator, driver, 100.0Hz, 0.1Hz)
+        carrier, code = 100.0, 0.1
+        previous_prompt = complex(0.0, 0.0)
+        sequence = Tuple{typeof(1.0Hz),typeof(1.0Hz)}[]
+        for k = 1:200
+            p = cis(0.3 + 0.002k)
+            output = CorrelatorOutput(loop_epl(0.45p, p, 0.55p), n, n * k)
+            if with_passengers
+                passenger_record = LoopRecord(passenger, output.correlator, complex(0.0), output, 1, fs)
+                state, = step_loop(estimator, state, passenger_record, FixedNCOWord(carrier, code), NO_LANDING_SAMPLE)
+            end
+            record = LoopRecord(driver, output.correlator, previous_prompt, output, 1, fs)
+            state, c, d = step_loop(estimator, state, record, FixedNCOWord(carrier, code), NO_LANDING_SAMPLE)
+            push!(sequence, (c, d))
+            carrier, code = ustrip(Hz, c), ustrip(Hz, d)
+            previous_prompt = p
+        end
+        sequence, state
+    end
+    plain, plain_state = dopplers(false)
+    interleaved, interleaved_state = dopplers(true)
+    @test plain == interleaved
+    @test plain_state == interleaved_state
+    @test navigation_solution(estimator) === nothing
 end

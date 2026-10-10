@@ -23,8 +23,8 @@ end
 # bit of every satellite would allocate otherwise.
 function warm_pipeline()
     rx = deepcopy(WARM_PIPELINE.rx)
-    for slot in rx.vt.groups[1].slots
-        sizehint!(slot.bit_buffer.soft_bits, 64)
+    for sat in rx.sats
+        sizehint!(sat.loop.bit_buffer.soft_bits, 64)
     end
     rx
 end
@@ -42,7 +42,7 @@ end
     # in, and seeded the filter.
     for slot in pipeline_slots(rx)
         @test slot.occupied
-        @test slot.bit_buffer.found
+        @test slot.decoding_bit_synced
         @test TL.is_decoding_completed_for_positioning(slot.running_decoder)
         @test slot.in_lock && slot.pvt_ready
         @test 40 < slot.cn0_dbhz < 50
@@ -274,4 +274,178 @@ end
     @test length(results) == 600
     @test all(r -> r.status.running, results)
     @test rx.allocated[] == 0
+end
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The host's bit clock and C/N₀ estimator, and pilot + data pairs.
+
+using PositionVelocityTime: calc_uncorrected_time
+
+# Per satellite, the transmit time of its latest snapshot minus the true one at that
+# epoch, as a range (m).
+function snapshot_range_errors(rx)
+    nav = rx.vt
+    group = nav.groups[1]
+    map(rx.sats) do sat
+        slot = group.slots[sat.state.slot]
+        t = rx.truth.t0 + TL._epoch_time(nav, slot.snapshot_epoch)
+        u_true = uncorrected_time(sat, first(true_transmit(sat, rx.truth, t)))
+        (calc_uncorrected_time(TL._satellite_state(group.signal, slot)) - u_true) *
+            TL.SPEED_OF_LIGHT
+    end
+end
+
+first_fix(results) = results[findfirst(r -> r.status.enabled, results)]
+
+@testset "A pilot + data pair ranges on the pilot and decodes the data" begin
+    rx = PipelineReceiver(; pilot = true)
+    results, sample, diverged = run_pipeline!(rx, 36.0)
+    @test !diverged
+    estimator = rx.estimator
+    group = rx.vt.groups[1]
+    @test group.signal isa GPSL1C_P && group.decoding_signal isa GPSL1CA
+    # The data's bit clock synced and its bits decoded; the pilot's C/N₀ sets the lock.
+    for sat in rx.sats
+        slot = group.slots[sat.state.slot]
+        @test slot.decoding_bit_synced
+        @test TL.is_decoding_completed_for_positioning(slot.running_decoder)
+        @test slot.in_lock && slot.pvt_ready
+        report = satellite_report(estimator, GPSL1C_P(), sat.decoder.prn)
+        @test report.bit_synced && report.in_vector_loop
+        @test report.cn0_dbhz ≈ ustrip(estimate_cn0(sat.loop, 1ms)) atol = 1.0
+        @test satellite_report(estimator, GPSL1CA(), sat.decoder.prn) === nothing
+        @test release_reason(estimator, GPSL1C_P(), sat.decoder.prn) == VT_NOT_RELEASED
+    end
+    # The first fix comes once every satellite's data is decoded, as on the data alone.
+    seed = findfirst(r -> r.status.enabled, results)
+    @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
+    @test position_error(rx, results[seed]) < 10.0
+    tail = results[seed+50:end]
+    @test all(r -> r.status.running && r.status.num_members == length(rx.sats), tail)
+    @test pipeline_errors(rx, tail) < 3.0
+    @test pipeline_code_errors(tail) < 0.2
+    # The solution and the members are keyed by the driver.
+    @test all(key -> first(key) == :GPSL1C_P, keys(member_sats(estimator)))
+    @test all(key -> first(key) == :GPSL1C_P, keys(navigation_solution(estimator).sats))
+    # Warm, a pair's records step without allocating.
+    for sat in Iterators.flatten((rx.sats, rx.passengers))
+        sizehint!(sat.loop.bit_buffer.soft_bits, 64)
+    end
+    rx.measuring[] = true
+    _, _, diverged = run_pipeline!(rx, 2.0; start_sample = sample)
+    @test !diverged
+    @test rx.allocated[] == 0
+end
+
+@testset "A pair's transmit time is the data's own, on a code $(pilot ? "ten times longer" : "of its own")" for pilot in (false, true)
+    # On a clean signal the snapshot's transmit time is the true one to within the
+    # sample the record ends on, although the pilot's code is ten data codes long: the
+    # data's bit clock counts the symbols, the pilot's replica places the epoch in
+    # one. And the scalar fix is the one the data alone gives.
+    rx = PipelineReceiver(; pilot, cn0_dbhz = 80.0, num_sats = 6)
+    results, _, diverged = run_pipeline!(rx, 27.0)
+    @test !diverged
+    @test all(e -> abs(e) < 1.0, snapshot_range_errors(rx))
+    @test position_error(rx, first_fix(results)) < 2.0
+end
+
+@testset "At an epoch the data's record may come before or after the pilot's" begin
+    # The data's records reach the estimator 25 ms after the pilot's, more than one
+    # 10 ms pilot record late — or the pilot's 25 ms after the data's. Every epoch's
+    # snapshot is the same either way, and so is every scalar fix up to the one that
+    # seeds the filter; the commands land 30 ms after their record, after the late
+    # records, so the replicas do not depend on when the records are stepped. (The
+    # satellites register in the order their first records arrive, so the solve sums
+    # them in another order: the fixes agree to rounding.)
+    kw = (; pilot = true, num_sats = 6, inner = NCOReferencedPLLAndDLL(), delay_records = 30)
+    runs = map(((0, 0), (0, 25), (25, 0))) do (driver_lag_ms, passenger_lag_ms)
+        rx = PipelineReceiver(; kw..., driver_lag_ms, passenger_lag_ms)
+        results, _, diverged = run_pipeline!(rx, 28.0)
+        @test !diverged
+        results
+    end
+    seeds = map(results -> findfirst(r -> r.status.enabled, results), runs)
+    @test seeds[1] !== nothing && allequal(seeds)
+    for results in runs[2:end]
+        @test all(zip(results[1:seeds[1]], runs[1][1:seeds[1]])) do (a, b)
+            norm(a.pvt.position - b.pvt.position) < 1e-6 && Set(a.measured) == Set(b.measured)
+        end
+        @test all(zip(results[1:seeds[1]], runs[1][1:seeds[1]])) do (a, b)
+            a.time == b.time
+        end
+    end
+end
+
+@testset "The soft bits decode the same whenever the host drains them" begin
+    # After every record, as a loop process publishes them, or once per millisecond
+    # of records, as Tracking.jl's `track!` leaves them for its consumer: the engine
+    # decodes exactly the bits each record added, either way.
+    runs = map((true, false)) do drain_per_record
+        rx = PipelineReceiver(; num_sats = 6, drain_per_record)
+        results, _, diverged = run_pipeline!(rx, 28.0)
+        @test !diverged
+        rx, results
+    end
+    (rx1, results1), (rx2, results2) = runs
+    @test any(r -> r.status.enabled, results1)
+    @test [r.pvt.position for r in results1] == [r.pvt.position for r in results2]
+    for (a, b) in zip(rx1.vt.groups[1].slots, rx2.vt.groups[1].slots)
+        @test a.running_decoder.num_bits_after_valid_syncro_sequence ==
+              b.running_decoder.num_bits_after_valid_syncro_sequence
+    end
+end
+
+@testset "The engine reads the C/N₀ estimator the host configured: $name" for (name, cn0_estimator) in (
+    ("moments", () -> MomentsCN0Estimator(100)),
+    ("NWPR", () -> NWPRCN0Estimator()),
+)
+    rx = PipelineReceiver(; num_sats = 6, cn0_estimator)
+    results, _, diverged = run_pipeline!(rx, 28.0)
+    @test !diverged
+    @test any(r -> r.status.enabled, results)
+    for sat in rx.sats
+        @test sat.loop.cn0_estimator isa typeof(cn0_estimator())
+        report = satellite_report(rx.estimator, GPSL1CA(), sat.decoder.prn)
+        @test report.in_lock
+        @test 40 < report.cn0_dbhz < 50
+    end
+end
+
+@testset "Before the noise reference is ready a satellite is out of lock" begin
+    # The noise-referenced C/N₀ estimator reads -Inf dB-Hz until the host has a noise
+    # density for the signal: every satellite decodes, but none is in lock, so there
+    # is no fix until the reference is there.
+    rx = PipelineReceiver(; num_sats = 6, noise_ready_after = 28.0)
+    results, sample, diverged = run_pipeline!(rx, 27.9)
+    @test !diverged
+    @test all(r -> isempty(r.measured) && !r.status.enabled, results)
+    for sat in rx.sats
+        report = satellite_report(rx.estimator, GPSL1CA(), sat.decoder.prn)
+        @test report.bit_synced && !report.in_lock && !report.pvt_ready
+        @test report.cn0_dbhz == -Inf
+        @test TL.is_decoding_completed_for_positioning(report.decoder)
+    end
+    results, _, diverged = run_pipeline!(rx, 1.0; start_sample = sample)
+    @test !diverged
+    @test any(r -> r.status.enabled, results)
+end
+
+@testset "One host loop drives $name" for (name, estimator, pilot) in (
+    ("a scalar loop on pairs", ConventionalAssistedPLLAndDLL(), true),
+    ("a scalar loop on plain signals", NCOReferencedPLLAndDLL(), false),
+    ("the vector loop on plain signals", nothing, false),
+    ("the vector loop on pairs", nothing, true),
+)
+    # `pipeline_record!` calls the same functions on every record of every signal,
+    # whichever estimator it was given.
+    rx = PipelineReceiver(; num_sats = 4, pilot, estimator)
+    results, _, diverged = run_pipeline!(rx, 3.0)
+    @test !diverged
+    if rx.estimator isa VectorPLLAndDLL
+        @test length(results) == 30
+    else
+        @test isempty(results)
+        @test navigation_solution(rx.estimator) === nothing
+        @test navigation_cycle(rx.estimator) === nothing
+    end
 end
