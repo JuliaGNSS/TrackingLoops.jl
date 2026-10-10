@@ -1,5 +1,62 @@
 # Changelog
 
+# [4.0.0](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v3.0.1...v4.0.0) (2026-10-10)
+
+
+* feat(vector)!: range on a pilot and decode its data component ([542765b](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/542765b3338b6a273cf7780a4e2a3623e61146e4)), closes [#36](https://github.com/JuliaGNSS/TrackingLoops.jl/issues/36)
+* fix(loop_filters)!: give the carrier loop its configured bandwidth, by default a capped 18 Hz ([55e764f](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/55e764ffa8c6347aa5405afebd0bcbab44a8c339)), closes [Tracking.jl#244](https://github.com/Tracking.jl/issues/244) [#245](https://github.com/JuliaGNSS/TrackingLoops.jl/issues/245)
+
+
+### Bug Fixes
+
+* **discriminators:** return the FLL discriminator in Hz whatever the integration time's unit ([947ed42](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/947ed429c4e16c2325b252d9920b20cd114dfdfc))
+* **vector:** leave another pair's data component to the satellite it rides on ([1d64a7a](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/1d64a7a625e831c0f5824a8738692df6b0b3f941))
+
+
+### BREAKING CHANGES
+
+* VectorPLLAndDLL reads the bit sync, soft bits and C/N₀ from
+the records, so build them with `LoopRecord(signal, filtered, previous_prompt,
+output, state::SignalLoopState, fs; prn)` after `apply_record`, and call
+`step_loop` on every record of a satellite. Its C/N₀ comes from the host's
+estimator (NoiseRefCN0Estimator by default, out of lock until it has a noise
+density); the `num_prompts_for_cn0_estimation` keyword is gone. A dataless
+signal must be paired with its data component. SatConventionalPLLAndDLL and
+SatNCOReferencedPLLAndDLL gain a trailing `driver` field, the key of the
+driver signal `init_estimator_state` records (`0`, the keyword default, takes
+every record to be the driver's); build states with `init_estimator_state`.
+SignalLoopState and LoopRecord gained fields. A record of a signal the vector
+estimator does not know is ignored unless it is the satellite's driver.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+* carrier loops now have the bandwidth they are configured
+with, and the default is a flat 18 Hz capped at `0.09 / T_int`. Before,
+a loop's actual noise bandwidth was about 5–6× the configured one (about
+105 Hz for a 1 ms GPS L1 C/A loop), and the default was `0.018 / T`
+divided by the number of coherently integrated code blocks. This applies
+to `ConventionalPLLAndDLL`, `ConventionalAssistedPLLAndDLL`,
+`NCOReferencedPLLAndDLL`, the inner loop of `VectorPLLAndDLL` and
+`calculate_carrier_frequency_update`; `pll_disc` is unchanged.
+`default_carrier_loop_filter_bandwidth` returns 18 Hz for every signal,
+e.g. instead of 4.5 Hz for Galileo E1B and 1.8 Hz for GPS L1C, and a
+carrier bandwidth (default or explicit) is no longer divided by N but
+capped at `0.09 / T_int`: an explicit 18 Hz on GPS L1 C/A integrated
+over 20 ms runs at 4.5 Hz instead of 0.9 Hz. The 1 ms loops are about
+5–6× narrower than before, with less thermal jitter but less dynamic
+tolerance, a smaller pull-in range and slower settling. Code that set
+`carrier_loop_filter_bandwidth`, or relied on the defaults, for a given
+dynamic behaviour must re-tune it; to get approximately the previous
+loop back, configure 85 Hz, e.g.
+`ConventionalAssistedPLLAndDLL(; carrier_loop_filter_bandwidth = 85.0Hz)`.
+Code that overrode `default_carrier_loop_filter_bandwidth` assuming its
+value would be divided by N must now return the bandwidth it wants at the
+actual integration length. `MAX_LOOP_BANDWIDTH_TIME_PRODUCT` is removed:
+use `MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT` (the same 0.018) for the code
+loop, and `MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT` (0.09) with
+`effective_carrier_loop_filter_bandwidth` for the carrier loop.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
 ## [3.0.1](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v3.0.0...v3.0.1) (2026-10-06)
 
 
