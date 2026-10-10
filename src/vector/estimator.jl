@@ -54,7 +54,8 @@ The records must also identify their satellite and replica: `prn` and
 `code_phase` on the [`LoopRecord`](@ref), and `sample_index /
 sampling_frequency` on a time grid shared by all satellites. A record without a
 PRN, or of a driver not among `signals`, throws an `ArgumentError`; a record of
-another passenger is ignored. A satellite's snapshot of a navigation epoch
+another passenger is ignored — also when it is the decoding signal of a pair
+that does not drive this satellite. A satellite's snapshot of a navigation epoch
 needs a record of its driver and one of its decoding signal across the epoch,
 in either order. The host should step every satellite at least once per
 `cycle_time / 2`: a cycle runs once every satellite has completed its epoch's
@@ -142,6 +143,8 @@ end
 
 _is_driver_record(state::SatVectorPLLAndDLL, record::LoopRecord) =
     _is_driver_record(state.inner, record)
+_is_driven_by(state::SatVectorPLLAndDLL, signal::AbstractGNSSSignal) =
+    _is_driven_by(state.inner, signal)
 
 # A satellite with the vector interface empty — out of the loop or just joined —
 # on the slot of `registration`.
