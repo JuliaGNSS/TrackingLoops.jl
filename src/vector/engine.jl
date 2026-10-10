@@ -133,7 +133,8 @@ loop the driver's Dopplers are `step_loop(estimator.inner, …)`'s exactly.
 # Find the group the record's signal drives or is decoded on — by type, so the search
 # folds at compile time — and run the record on it in that role. A record of a signal
 # the estimator was not built for is a passenger it ignores, unless it is the
-# satellite's driver.
+# satellite's driver; so is a record of a group's decoding signal on a satellite that
+# group does not drive.
 @inline function _step_vector_record(estimator, nav, ::Tuple{}, g, state, record::LoopRecord, words, landing_sample)
     _is_driver_record(state, record) && _throw_unknown_driver(record)
     _step_passenger(state, record, words, landing_sample)
@@ -153,6 +154,10 @@ end
         _is_driver_record(state, record) || _throw_foreign_driver(state, record)
         _step_vector_record(estimator, nav, group, g, state, record, words, landing_sample, true, group.decoding_signal isa S)
     elseif group.decoding_signal isa S
+        # The group's decoding signal, but of a satellite another group's signal
+        # drives: a passenger of that satellite, which this group must not take.
+        _is_driven_by(state, group.signal) ||
+            return _step_passenger(state, record, words, landing_sample)
         _step_vector_record(estimator, nav, group, g, state, record, words, landing_sample, false, true)
     else
         _step_vector_record(estimator, nav, Base.tail(groups), g + 1, state, record, words, landing_sample)

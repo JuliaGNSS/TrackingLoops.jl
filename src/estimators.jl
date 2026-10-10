@@ -392,8 +392,12 @@ record's end under `NO_LANDING_SAMPLE`), so applying them changes nothing.
     _step_passenger(state, record, words, landing_sample)
 
 # Whether `record` belongs to the signal the scalar state was initialised with.
-@inline _is_driver_record(state, record::LoopRecord) =
-    state.driver == 0 || _signal_key(record.signal) == state.driver
+@inline _is_driver_record(state, record::LoopRecord) = _is_driven_by(state, record.signal)
+
+# Whether the scalar state's satellite is driven by `signal` (any signal, for a state
+# without a recorded driver).
+@inline _is_driven_by(state, signal::AbstractGNSSSignal) =
+    state.driver == 0 || _signal_key(signal) == state.driver
 
 # A passenger record through a loop it does not close: the state unchanged and the
 # command already in force where this record's command would land.

@@ -350,6 +350,32 @@ end
     @test_throws "ranges on as a driver" step_loop(plain, galileo, engine_record(7, 4000), words, NO_LANDING_SAMPLE)
 end
 
+@testset "Another pair's data component is a passenger, not a decoding record" begin
+    # L1C-D is the data component the L1C pair decodes, but here it rides along on a
+    # satellite L1 C/A drives: its records must leave the L1C group alone, or the
+    # satellite would re-register on the two groups by turns.
+    estimator = VectorPLLAndDLL(GPSL1CA(), GPSL1C_P() => GPSL1C_D())
+    nav = estimator.navigation
+    words = FixedNCOWord(100.0, 0.1)
+    state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
+    state, = step_loop(estimator, state, engine_record(7, 4000), words, NO_LANDING_SAMPLE)
+    for k = 1:300
+        passenger = engine_record(7, 40_000k; n = 40_000, signal = GPSL1C_D())
+        stepped, carrier, code = step_loop(estimator, state, passenger, words, NO_LANDING_SAMPLE)
+        @test stepped === state
+        @test (carrier, code) == (100.0Hz, 0.1Hz)
+        for j = 1:10
+            state, = step_loop(estimator, state, engine_record(7, 40_000(k - 1) + 4000j), words, NO_LANDING_SAMPLE)
+        end
+    end
+    @test nav.registrations == 1
+    @test (state.slot, state.registration) == (1, 1)
+    @test !any(slot -> slot.occupied, nav.groups[2].slots)
+    # The satellite keeps snapshotting the epochs, so its cycles keep running: one
+    # every 100 ms up to the last record, 3 s in.
+    @test nav.groups[1].slots[1].snapshot_epoch == nav.cycle_epoch == 29
+end
+
 # A C/N₀ estimator that always reads the same.
 struct FixedCN0Estimator <: AbstractCN0Estimator
     dbhz::Float64
