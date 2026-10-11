@@ -166,7 +166,9 @@ Fields (all length `period` once seeded; empty before the first block):
     (overlay-wiped for the secondary-code detector).
   - `mean_bin_energy` / `bin_energy_sum_of_squared_deviations` — Welford running mean and
     sum of squared deviations (`M₂ = Σ(energyᵢ − mean)²`) of the hypothesis's
-    *completed*-bin energies, for a numerically stable variance. The bin
+    *completed*-bin energies, for a numerically stable variance. Beyond
+    `BIN_ENERGY_VARIANCE_MEMORY` bins `M₂` forgets: `M₂ / (bins − 1)` is then an
+    exponentially weighted variance over about that many recent bins. The bin
     count is not stored — it is `div(num_blocks - hypothesis, period)`.
   - `last_bin_polarity` — sign (`±1`, `0` before the first bin) of the most
     recently completed bin's real part, i.e. the lock polarity.
@@ -197,6 +199,52 @@ function _seed_phase_accumulators!(accumulators::PhaseAccumulators, blocks_per_b
     end
     _reset_phase_accumulators!(accumulators)
 end
+
+# How many completed bins the bin-energy variance remembers — one second of
+# L1 C/A bits. The mean energy of a hypothesis — the timing statistic — averages
+# every bin, but its variance — the CFAR noise scale — forgets: up to this many
+# bins it is the plain sample variance, after that an exponentially weighted one
+# with this memory. A transient during the search (a carrier loop pulling in, a
+# blockage, a fade) makes the bin energies swing for every hypothesis alike; it
+# barely moves the gap between them, but it would inflate a variance that never
+# forgets for the rest of the search and hold the lock off for tens of seconds.
+const BIN_ENERGY_VARIANCE_MEMORY = 50
+
+# Fold the energy of a hypothesis's `bin_count`-th completed bin into its running
+# mean (every bin alike) and sum of squared deviations (forgetting, see
+# `BIN_ENERGY_VARIANCE_MEMORY`). The sum is kept such that `M₂ / (bin_count − 1)`
+# is the variance `σ²ₙ = (1 − α) σ²ₙ₋₁ + α δ δ′` with the weight
+# `α = max(1 / (bin_count − 1), 1 / BIN_ENERGY_VARIANCE_MEMORY)`: for the first
+# `BIN_ENERGY_VARIANCE_MEMORY + 1` bins this is exactly Welford's update.
+@inline function _fold_bin_energy!(
+    accumulators::PhaseAccumulators,
+    i::Int,
+    bin_energy,
+    bin_count::Int,
+)
+    @inbounds begin
+        energy_delta = bin_energy - accumulators.mean_bin_energy[i]
+        accumulators.mean_bin_energy[i] += energy_delta / bin_count
+        squared_deviation = energy_delta * (bin_energy - accumulators.mean_bin_energy[i])
+        if bin_count <= BIN_ENERGY_VARIANCE_MEMORY + 1
+            accumulators.bin_energy_sum_of_squared_deviations[i] += squared_deviation
+        else
+            α = 1 / BIN_ENERGY_VARIANCE_MEMORY
+            accumulators.bin_energy_sum_of_squared_deviations[i] =
+                (bin_count - 1) * (
+                    (1 - α) * accumulators.bin_energy_sum_of_squared_deviations[i] /
+                    (bin_count - 2) + α * squared_deviation
+                )
+        end
+    end
+    nothing
+end
+
+# The degrees of freedom of the forgetting bin-energy variance over `bin_count`
+# bins: those of the sample variance, capped at those of the exponential weights,
+# whose effective sample size is `2 · BIN_ENERGY_VARIANCE_MEMORY − 1`.
+@inline _bin_energy_variance_dof(bin_count::Int) =
+    min(bin_count - 1, 2 * BIN_ENERGY_VARIANCE_MEMORY - 2)
 
 # Zero the accumulators in place, keeping their current length. Used by the
 # boundary-overshoot resync (`_resync_bit_buffer`), where `_is_seeded` is
@@ -234,13 +282,12 @@ function _update_phase_accumulators!(
         accumulators.open_bin_sum[phase+1] += prompt
         if (block_index - phase) % blocks_per_bit == blocks_per_bit - 1
             bin_sum = accumulators.open_bin_sum[phase+1]
-            bin_energy = abs2(bin_sum)
-            # Welford update of this phase's completed-bin energy mean / M₂.
-            completed_bin_count = div(block_index + 1 - phase, blocks_per_bit)
-            energy_delta = bin_energy - accumulators.mean_bin_energy[phase+1]
-            accumulators.mean_bin_energy[phase+1] += energy_delta / completed_bin_count
-            accumulators.bin_energy_sum_of_squared_deviations[phase+1] +=
-                energy_delta * (bin_energy - accumulators.mean_bin_energy[phase+1])
+            _fold_bin_energy!(
+                accumulators,
+                phase + 1,
+                abs2(bin_sum),
+                div(block_index + 1 - phase, blocks_per_bit),
+            )
             accumulators.last_bin_polarity[phase+1] = real(bin_sum) < 0 ? Int8(-1) : Int8(1)
             accumulators.open_bin_sum[phase+1] = zero(ComplexF64)
         end
@@ -405,7 +452,7 @@ asymmetry keeps `z_score` bounded and never locks.
     # accumulate, forcing enough integration before a lock (which also lets the
     # carrier settle) while leaving mature clean locks (many bins ⇒ t ≈ normal)
     # unchanged.
-    z_threshold = _t_quantile(quantile_argument, peak_bin_count - 1)
+    z_threshold = _t_quantile(quantile_argument, _bin_energy_variance_dof(peak_bin_count))
     z_score < z_threshold && return (false, peak_index, peak_bin_count)
 
     (true, peak_index, peak_bin_count)
@@ -512,13 +559,7 @@ function _update_secondary_accumulators!(
         accumulators.open_bin_sum[d+1] += prompt * overlay
         if chip == N - 1
             bin_sum = accumulators.open_bin_sum[d+1]
-            bin_energy = abs2(bin_sum)
-            # Welford update of this rotation's completed-bin energy mean / M₂.
-            completed_bin_count = div(block_index + 1 - d, N)
-            energy_delta = bin_energy - accumulators.mean_bin_energy[d+1]
-            accumulators.mean_bin_energy[d+1] += energy_delta / completed_bin_count
-            accumulators.bin_energy_sum_of_squared_deviations[d+1] +=
-                energy_delta * (bin_energy - accumulators.mean_bin_energy[d+1])
+            _fold_bin_energy!(accumulators, d + 1, abs2(bin_sum), div(block_index + 1 - d, N))
             accumulators.last_bin_polarity[d+1] = real(bin_sum) < 0 ? Int8(-1) : Int8(1)
             accumulators.open_bin_sum[d+1] = zero(ComplexF64)
         end
