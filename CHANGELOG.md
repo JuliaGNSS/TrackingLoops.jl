@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.1](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v4.0.0...v4.0.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **bit_buffer:** let the bit-edge noise scale forget a transient ([e7b36e1](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/e7b36e1ffe75497e81a991bd8ebacecc7598dd40))
+
 # [4.0.0](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v3.0.1...v4.0.0) (2026-10-10)
 
 
