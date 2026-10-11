@@ -11,6 +11,8 @@ using TrackingLoops:
     _detect_secondary_code_cfar,
     _seed_phase_accumulators!,
     _update_phase_accumulators!,
+    _fold_bin_energy!,
+    BIN_ENERGY_VARIANCE_MEMORY,
     _update_secondary_accumulators!,
     _secondary_code_search,
     _packed_secondary_code,
@@ -175,6 +177,49 @@ end
         end
     end
     @test !found
+end
+
+@testset "The bin-energy variance is the sample variance, then forgets" begin
+    rng = MersenneTwister(3)
+    accumulators = PhaseAccumulators()
+    _seed_phase_accumulators!(accumulators, 1)
+    variance_after(bin_count) =
+        accumulators.bin_energy_sum_of_squared_deviations[1] / (bin_count - 1)
+    energies = [100 * rand(rng) for _ = 1:(BIN_ENERGY_VARIANCE_MEMORY+1)]
+    for (bin_count, energy) in enumerate(energies)
+        _fold_bin_energy!(accumulators, 1, energy, bin_count)
+    end
+    # Exactly Welford over the first `BIN_ENERGY_VARIANCE_MEMORY + 1` bins.
+    @test accumulators.mean_bin_energy[1] ≈ sum(energies) / length(energies)
+    @test variance_after(length(energies)) ≈
+          sum(abs2, energies .- sum(energies) / length(energies)) / (length(energies) - 1)
+    # A long steady stretch afterwards: the mean still averages every bin, but
+    # the variance forgets the wild start.
+    bin_count = length(energies)
+    for _ = 1:(20*BIN_ENERGY_VARIANCE_MEMORY)
+        bin_count += 1
+        _fold_bin_energy!(accumulators, 1, 50 + rand(rng), bin_count)
+    end
+    @test variance_after(bin_count) < 1
+    @test accumulators.mean_bin_energy[1] ≈ 50.5 atol = 2
+end
+
+@testset "A transient early in the search doesn't hold the bit-edge lock off" begin
+    # The amplitude fades at random over the first second — a carrier loop
+    # pulling in, a blockage — and is steady afterwards. A variance that never
+    # forgot the fade held the lock off for over 20 s.
+    for seed = 1:3
+        rng = MersenneTwister(seed)
+        bits = [div(k, 2) % 2 for k = 0:749]
+        gains = [k <= 50 ? 3 * rand(rng) : 1.0 for k in eachindex(bits)]
+        prompts = ComplexF64[
+            gains[k] * (bits[k] == 1 ? 1.0 : -1.0) + 0.3 * complex(randn(rng), randn(rng))
+            for k in eachindex(bits) for _ = 1:BB_L1CA_BLOCKS_PER_BIT
+        ]
+        lock_block = _bb_detect_over(prompts, 0.999)
+        @test 0 < lock_block <= 10_000
+        @test lock_block % BB_L1CA_BLOCKS_PER_BIT == 0
+    end
 end
 
 @testset "The CFAR decision core compares the peak against its runner-up" begin
