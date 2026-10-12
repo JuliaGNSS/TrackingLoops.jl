@@ -108,12 +108,8 @@ end
     for i = 1:n
         prompt = cis(φ + σ_n * randn(rng))
         correlator = EarlyPromptLateCorrelator(SVector(prompt, prompt, prompt), 0.5)
-        freq_update, loop_filter = filter_loop(
-            loop_filter,
-            TrackingLoops._phase_error_in_cycles(pll_disc(gpsl1, correlator)),
-            T,
-            bandwidth,
-        )
+        freq_update, loop_filter =
+            filter_loop(loop_filter, pll_disc(gpsl1, correlator), T, bandwidth)
         φ -= 2π * Float64(freq_update * T)
         i > settle && (acc += φ^2)
     end

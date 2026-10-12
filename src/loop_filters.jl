@@ -103,12 +103,6 @@ function aid_dopplers(
     init_carrier_doppler + carrier_doppler, init_code_doppler + code_doppler
 end
 
-# The carrier filter's coefficients assume consistent units, so it is fed the
-# phase error in cycles and the FLL error in Hz (cycles per second) to output a
-# Doppler in Hz. Fed `pll_disc`'s radians, the loop gain was 2π too high, and
-# the loop's noise bandwidth about 5–6× the configured one.
-@inline _phase_error_in_cycles(phase_error_in_radians) = phase_error_in_radians / 2π
-
 """
     calculate_code_frequency_update(signal, code_loop_filter, correlator, code_doppler, sampling_frequency, integration_time, loop_bandwidth)
         -> (code_freq_update, code_loop_filter)

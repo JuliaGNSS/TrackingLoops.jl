@@ -15,9 +15,9 @@ using TrackingLoops: _boc11_envelope, _boc11_envelope_slope, _veml_discriminator
         0.5,
     )
     gpsl1 = GPSL1CA()
-    @test @inferred(pll_disc(gpsl1, correlator_minus60off)) == -π / 3  #-60°
+    @test @inferred(pll_disc(gpsl1, correlator_minus60off)) ≈ -1 / 6  #-60°
     @test @inferred(pll_disc(gpsl1, correlator_0off)) == 0
-    @test @inferred(pll_disc(gpsl1, correlator_plus60off)) == π / 3  #+60°
+    @test @inferred(pll_disc(gpsl1, correlator_plus60off)) ≈ 1 / 6  #+60°
 end
 
 @testset "FLL discriminator" begin
