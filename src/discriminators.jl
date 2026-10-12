@@ -120,23 +120,54 @@ end
 $(SIGNATURES)
 
 Calculates the carrier phase error in cycles, the unit the carrier loop filter
-takes alongside the FLL's Hz. It is the two-quadrant (Costas) discriminator
-`atan(Q / I) / 2π`, which reads a prompt and its negation alike, so a data bit
-flipping the prompt's sign does not disturb it; its range is ±1/4 cycle.
+takes alongside the FLL's Hz. With the prompt's sign unknown, `polarity = 0`
+(the default), it is the two-quadrant (Costas) discriminator `atan(Q / I) / 2π`:
+it reads a prompt and its negation alike, so a data bit or secondary-code chip
+flipping the prompt's sign does not disturb it, at the price of a range of only
+±1/4 cycle. Given the prompt's sign as `polarity` (±1), it is the four-quadrant
+discriminator `atan(Q, I) / 2π` of the prompt times `polarity`, over ±1/2
+cycle, which is worth up to 6 dB of tracking threshold. A wrong `polarity`
+reads as a phase error of half a cycle, so pass ±1 only where the prompt's sign
+is known: a dataless signal, synced to its secondary code.
+
+See: Kaplan & Hegarty, "Understanding GPS: Principles and Applications", 2nd ed.,
+Tables 5.2 and 5.3.
 """
-function pll_disc(signal::AbstractGNSSSignal, correlator)
+function pll_disc(signal::AbstractGNSSSignal, correlator; polarity::Real = 0)
     p = get_prompt(correlator)
-    atan(imag(p) / real(p)) / 2π
+    iszero(polarity) && return atan(imag(p) / real(p)) / 2π
+    q = polarity * p
+    atan(imag(q), real(q)) / 2π
 end
 
 """
 $(SIGNATURES)
 
-Calculates the carrier frequency error in Hz.
+Calculates the carrier frequency error in Hz from the rotation between the
+previous and the current prompt. By default it is the two-quadrant
+discriminator `atan(cross / dot)`: like `pll_disc(signal, correlator)` with
+`polarity = 0`, the default, it reads the rotation whether or not a sign flip
+separates the two prompts, and its range is ±1 / (4 · `integration_time`). Given
+the prompts' sign as `polarity` (±1), like `pll_disc`, it is the four-quadrant
+`atan(cross, dot)`, over ±1 / (2 · `integration_time`). That needs both prompts
+to share that sign, as a flip between them reads as half a cycle of rotation: a
+dataless signal, synced to its secondary code. Which sign they share does not
+matter, as it cancels in the product, so only whether `polarity` is nonzero
+does.
 
-The result is always in `Hz`, whatever unit the integration time carries.
+The result is always in `Hz`, whatever unit the integration time carries, and
+zero without a previous prompt.
+
+See: Kaplan & Hegarty, "Understanding GPS: Principles and Applications", 2nd ed.,
+Table 5.4.
 """
-function fll_disc(signal::AbstractGNSSSignal, correlator, previous_prompt, integration_time)
+function fll_disc(
+    signal::AbstractGNSSSignal,
+    correlator,
+    previous_prompt,
+    integration_time;
+    polarity::Real = 0,
+)
     if previous_prompt == 0
         # return 0 when there is no previous prompt
         return uconvert(Hz, 0.0/integration_time)
@@ -149,5 +180,6 @@ function fll_disc(signal::AbstractGNSSSignal, correlator, previous_prompt, integ
     dot = real(result)
 
     # atan(+-Int) produces valid outputs (+-π / 2)
-    return uconvert(Hz, atan(cross / dot) / (2 * pi * integration_time))
+    rotation = iszero(polarity) ? atan(cross / dot) : atan(cross, dot)
+    return uconvert(Hz, rotation / (2 * pi * integration_time))
 end
