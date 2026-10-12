@@ -119,11 +119,14 @@ end
 """
 $(SIGNATURES)
 
-Calculates the carrier phase error in radians.
+Calculates the carrier phase error in cycles, the unit the carrier loop filter
+takes alongside the FLL's Hz. It is the two-quadrant (Costas) discriminator
+`atan(Q / I) / 2π`, which reads a prompt and its negation alike, so a data bit
+flipping the prompt's sign does not disturb it; its range is ±1/4 cycle.
 """
 function pll_disc(signal::AbstractGNSSSignal, correlator)
     p = get_prompt(correlator)
-    atan(imag(p) / real(p))
+    atan(imag(p) / real(p)) / 2π
 end
 
 """

@@ -103,18 +103,12 @@ function aid_dopplers(
     init_carrier_doppler + carrier_doppler, init_code_doppler + code_doppler
 end
 
-# The carrier filter's coefficients assume consistent units, so it is fed the
-# phase error in cycles and the FLL error in Hz (cycles per second) to output a
-# Doppler in Hz. Fed `pll_disc`'s radians, the loop gain was 2π too high, and
-# the loop's noise bandwidth about 5–6× the configured one.
-@inline _phase_error_in_cycles(phase_error_in_radians) = phase_error_in_radians / 2π
-
 """
     calculate_carrier_frequency_update(signal, carrier_loop_filter, correlator, previous_prompt, integration_time, loop_bandwidth)
         -> (carrier_freq_update, carrier_loop_filter)
 
 One carrier-loop step: the PLL discriminator ([`pll_disc`](@ref)) of
-`correlator`, converted to cycles, filtered by `carrier_loop_filter` at
+`correlator`, in cycles, filtered by `carrier_loop_filter` at
 `loop_bandwidth`. An FLL-assisted filter (`ThirdOrderAssistedBilinearLF`) is
 additionally fed the FLL discriminator ([`fll_disc`](@ref)) between
 `previous_prompt` and this record's prompt. Returns the carrier-frequency
@@ -128,7 +122,7 @@ function calculate_carrier_frequency_update(
     integration_time,
     loop_bandwidth,
 )
-    pll_discriminator = _phase_error_in_cycles(pll_disc(signal, correlator))
+    pll_discriminator = pll_disc(signal, correlator)
     fll_discriminator = fll_disc(signal, correlator, previous_prompt, integration_time)
     filter_loop(
         carrier_loop_filter,
@@ -146,7 +140,7 @@ function calculate_carrier_frequency_update(
     integration_time,
     loop_bandwidth,
 )
-    pll_discriminator = _phase_error_in_cycles(pll_disc(signal, correlator))
+    pll_discriminator = pll_disc(signal, correlator)
     filter_loop(carrier_loop_filter, pll_discriminator, integration_time, loop_bandwidth)
 end
 

@@ -87,7 +87,7 @@ end
         assisted,
         # The phase error in cycles, the FLL error in Hz.
         (
-            pll_disc(gpsl1, correlator) / 2π,
+            pll_disc(gpsl1, correlator),
             fll_disc(gpsl1, correlator, previous_prompt, integration_time),
         ),
         integration_time,
@@ -106,7 +106,7 @@ end
         integration_time,
         18.0Hz,
     )
-    expected = filter_loop(plain, pll_disc(gpsl1, correlator) / 2π, integration_time, 18.0Hz)
+    expected = filter_loop(plain, pll_disc(gpsl1, correlator), integration_time, 18.0Hz)
     @test update_plain == expected[1]
     @test filter_plain == expected[2]
     @test update_plain != 0.0Hz
