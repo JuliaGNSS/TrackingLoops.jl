@@ -63,7 +63,7 @@ end
     @test effective_code_loop_filter_bandwidth(0.25Hz, 20 * l1ca_period) == 0.25Hz
 end
 
-@testset "Carrier and code frequency updates run the discriminators through the filter" begin
+@testset "The code frequency update runs the DLL discriminator through the filter" begin
     gpsl1 = GPSL1CA()
     sampling_frequency = 5e6Hz
     integration_time = 1ms
@@ -71,47 +71,6 @@ end
         SVector(1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im),
         0.5,
     )
-    previous_prompt = 1900.0 + 50im
-
-    # FLL-assisted third-order PLL: fed the (PLL, FLL) discriminator pair.
-    assisted = ThirdOrderAssistedBilinearLF()
-    update_assisted, filter_assisted = @inferred calculate_carrier_frequency_update(
-        gpsl1,
-        assisted,
-        correlator,
-        previous_prompt,
-        integration_time,
-        18.0Hz,
-    )
-    expected = filter_loop(
-        assisted,
-        # The phase error in cycles, the FLL error in Hz.
-        (
-            pll_disc(gpsl1, correlator) / 2π,
-            fll_disc(gpsl1, correlator, previous_prompt, integration_time),
-        ),
-        integration_time,
-        18.0Hz,
-    )
-    @test update_assisted == expected[1]
-    @test filter_assisted == expected[2]
-
-    # Any other loop filter: the PLL discriminator alone.
-    plain = SecondOrderBilinearLF()
-    update_plain, filter_plain = @inferred calculate_carrier_frequency_update(
-        gpsl1,
-        plain,
-        correlator,
-        previous_prompt,
-        integration_time,
-        18.0Hz,
-    )
-    expected = filter_loop(plain, pll_disc(gpsl1, correlator) / 2π, integration_time, 18.0Hz)
-    @test update_plain == expected[1]
-    @test filter_plain == expected[2]
-    @test update_plain != 0.0Hz
-
-    # Code loop: the DLL discriminator through the code filter.
     code_filter = SecondOrderBilinearLF()
     update_code, filter_code = @inferred calculate_code_frequency_update(
         gpsl1,
@@ -149,11 +108,9 @@ end
     for i = 1:n
         prompt = cis(φ + σ_n * randn(rng))
         correlator = EarlyPromptLateCorrelator(SVector(prompt, prompt, prompt), 0.5)
-        freq_update, loop_filter = calculate_carrier_frequency_update(
-            gpsl1,
+        freq_update, loop_filter = filter_loop(
             loop_filter,
-            correlator,
-            prompt,
+            TrackingLoops._phase_error_in_cycles(pll_disc(gpsl1, correlator)),
             T,
             bandwidth,
         )
