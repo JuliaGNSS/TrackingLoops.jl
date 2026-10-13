@@ -18,9 +18,10 @@
 #      integrates in whole primary code blocks, so a 64.5 µs block would mean a
 #      15.5 kHz loop update rate. E5a-QP therefore integrates a whole 31-block
 #      code cycle — 10230 chips, exactly 2 ms — by default, which puts the loop
-#      at 500 Hz with the default 18 Hz carrier bandwidth. That is the
-#      "short-period integration policy" of issue #236, expressed as the two
-#      integration-length traits rather than as a special case in `track`.
+#      at 500 Hz against the default carrier bandwidths of 18 Hz narrow and,
+#      capped for 2 ms, 45 Hz wide. That is the "short-period integration
+#      policy" of issue #236, expressed as the two integration-length traits
+#      rather than as a special case in `track`.
 #
 # What E5a-QP is *not* is a third component of the E5a composite. It runs at
 # half the E5a-I/E5a-Q chip rate, so it cannot share a satellite's

@@ -135,7 +135,9 @@ every satellite starts on its scalar loop:
    and clock biases, with the covariance the fix's geometry gives them, so a fix
    of poor geometry (a high DOP) starts the filter as uncertain as it is. The
    fix's satellites join the vector loop, and take their first corrections,
-   computed at the seeded state, on their next record.
+   computed at the seeded state, on their next record. In the loop a satellite
+   runs its carrier loop at the narrow PLL bandwidth, whatever
+   [Carrier-loop staging](@ref) stage its scalar loop had reached.
 3. While it runs, a satellite is admitted once it is decoded, healthy, in lock
    and a degree above the horizon. A member out of lock stays in the loop,
    unmeasured, and is predicted through the outage. A member that misses an
@@ -144,7 +146,8 @@ every satellite starts on its scalar loop:
    VTReleaseReason)) — which includes a satellite without a record for two
    cycles, whose slot is freed — or drops below the horizon
    ([`VT_BELOW_HORIZON`](@ref VTReleaseReason)). Its scalar loop is re-seeded
-   from the replica at its landing.
+   from the replica at its landing and its carrier-loop staging restarts, so
+   it pulls in afresh, FLL-assisted at the wide bandwidth.
 5. After `insufficient_meas_timeout` of unsolvable cycles, or with no member
    left, every member is released ([`VT_FALLBACK`](@ref VTReleaseReason)) and
    the next cycle solves the scalar PVT again, until a fresh fix seeds the filter

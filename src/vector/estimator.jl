@@ -69,7 +69,11 @@ releases it. While a satellite is in the vector loop:
   - its carrier filter always runs, with the PLL branch fed by the satellite's
     own phase discriminator and the FLL branch fed by the filter's carrier
     correction (the filter integrates it as a frequency error; it is not added
-    to the Doppler directly);
+    to the Doppler directly), at the narrow PLL bandwidth with the FLL branch's
+    tied to it, whatever [`CarrierLoopStage`](@ref) its scalar loop had
+    reached, which [`carrier_loop_stage`](@ref) reports as `NARROW_PLL`. The
+    satellite is released into a restarted staging, FLL-assisted again, so the
+    scalar loop pulls in afresh;
   - its code filter is frozen, and the filter's code correction replaces its
     output: `code_doppler = init_code_doppler + code_freq_update +
     carrier_filter_output · code_center_frequency_ratio`;
@@ -100,9 +104,12 @@ struct VectorPLLAndDLL{E<:AbstractDopplerEstimator,N} <: AbstractDopplerEstimato
     navigation::N
 end
 
-_is_fll_assisted(::AbstractDopplerEstimator) = false
-_is_fll_assisted(::ConventionalPLLAndDLL{<:ThirdOrderAssistedBilinearLF}) = true
-_is_fll_assisted(::NCOReferencedPLLAndDLL) = true
+# Whether an estimator's carrier filter has an FLL path, as `_has_fll_path` of a
+# carrier filter type: the FLL-assisted conventional loop and the NCO-referenced
+# loop.
+_has_fll_path(::AbstractDopplerEstimator) = false
+_has_fll_path(::ConventionalPLLAndDLL{CA}) where {CA} = _has_fll_path(CA)
+_has_fll_path(::NCOReferencedPLLAndDLL) = true
 
 """
     SatVectorPLLAndDLL
@@ -249,6 +256,12 @@ reset_estimator_state(
     state.cycle_id,
 )
 
+# In the vector loop the carrier loop runs at the narrow PLL, whatever stage the
+# inner loop's staging has reached; out of it, the inner loop's stage.
+carrier_loop_stage(state::SatVectorPLLAndDLL) =
+    state.vt_on ? NARROW_PLL : carrier_loop_stage(state.inner)
+phase_lock_indicator(state::SatVectorPLLAndDLL) = phase_lock_indicator(state.inner)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # What the navigation engine does to a satellite's state. Each keeps the
 # satellite's place in the engine.
@@ -266,7 +279,9 @@ _disable_vector_tracking(state::SatVectorPLLAndDLL) =
 
 # `_disable_vector_tracking` with the inner loop re-seeded from the Dopplers the
 # replica runs at — what `reset_estimator_state` does — so the scalar loop takes over
-# from where the vector loop steered the replica, without a transient.
+# from where the vector loop steered the replica, without a transient. Unlike a reset,
+# the release restarts the carrier loop's staging: the scalar loop pulls in again,
+# FLL-assisted at the wide bandwidth, which keeps a satellite the vector loop let go.
 _release_from_vector_tracking(state::SatVectorPLLAndDLL, carrier_doppler, code_doppler) =
     SatVectorPLLAndDLL(
         _reseed_inner(state.inner, carrier_doppler, code_doppler),
@@ -279,9 +294,15 @@ _release_from_vector_tracking(state::SatVectorPLLAndDLL, carrier_doppler, code_d
 # The inner reset reads the per-satellite state only, never the estimator's
 # configuration, so a default-configured estimator stands in for it.
 _reseed_inner(state::SatConventionalPLLAndDLL, carrier_doppler, code_doppler) =
-    reset_estimator_state(ConventionalPLLAndDLL(), state, carrier_doppler, code_doppler)
+    SatConventionalPLLAndDLL(
+        reset_estimator_state(ConventionalPLLAndDLL(), state, carrier_doppler, code_doppler);
+        staging = CarrierLoopStaging(typeof(state.carrier_loop_filter)),
+    )
 _reseed_inner(state::SatNCOReferencedPLLAndDLL, carrier_doppler, code_doppler) =
-    reset_estimator_state(NCOReferencedPLLAndDLL(), state, carrier_doppler, code_doppler)
+    SatNCOReferencedPLLAndDLL(
+        reset_estimator_state(NCOReferencedPLLAndDLL(), state, carrier_doppler, code_doppler);
+        staging = CarrierLoopStaging(typeof(state.carrier_loop_filter)),
+    )
 
 # The filter's NCO corrections for this satellite, taking over at `landing_lead`
 # after the filter's cycle epoch. The code correction joins the front of
@@ -381,12 +402,15 @@ end
     code_freq_update,
     carrier_freq_update,
 )
-    discriminators = _record_discriminators(estimator, state, record, words, landing_sample)
+    discriminators = _record_discriminators(estimator, state, record, words, landing_sample; form_fll = true)
+    integration_time = discriminators.integration_time
+    # At the narrow PLL bandwidth, whatever the inner loop's stage, with the FLL
+    # branch's tied to it.
     carrier_filter_output, carrier_loop_filter = filter_loop(
         state.carrier_loop_filter,
         (discriminators.phase_error, carrier_freq_update),
-        discriminators.integration_time,
-        discriminators.carrier_bandwidth,
+        integration_time,
+        effective_carrier_loop_filter_bandwidth(state.bandwidths.narrow_carrier, integration_time),
     )
     carrier_doppler, code_doppler = aid_dopplers(
         record.signal,
@@ -395,7 +419,16 @@ end
         carrier_filter_output,
         code_freq_update,
     )
-    _stepped_state(state, carrier_loop_filter, state.code_loop_filter, discriminators.center),
+    # The staging keeps advancing only so that `phase_lock_indicator` stays live:
+    # in the vector loop the carrier filter runs at the narrow bandwidth whatever
+    # the stage, and a release restarts the staging.
+    _stepped_state(
+        state,
+        carrier_loop_filter,
+        state.code_loop_filter,
+        discriminators.center,
+        _advance_staging(state.staging, record),
+    ),
     carrier_doppler,
     code_doppler,
     discriminators.code_error,
