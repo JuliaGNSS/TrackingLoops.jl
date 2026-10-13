@@ -114,16 +114,23 @@ combined either way and only their partition changes: at a true 25 dB-Hz, going
 from a 5-record to a 20-record window buys 0.8 dB of spread. The cost does not
 saturate. Residual phase noise makes the coherent sum lose power, which is a
 *bias* — the one error more averaging cannot remove. In the loop at a true
-25 dB-Hz, with the conventional PLL at 1 ms records:
+25 dB-Hz, GPS L1 C/A at 1 ms records, the median C/N₀ reported:
 
-| window        | 2 records | 5    | 10   | 20 (one full L1 C/A bit) |
-|:------------- | ---------:| ----:| ----:| ------------------------:|
-| reported C/N₀ | 24.6      | 22.9 | 19.8 | 15.9                     |
+| window                          | 2 records | 5    | 10   | 20 (one full bit) |
+|:------------------------------- | ---------:| ----:| ----:| -----------------:|
+| conventional PLL before staging | 24.6      | 22.9 | 19.8 | 15.9              |
+| staged loop, narrowed (48 runs) | 24.6      | 24.6 | 24.7 | 24.7              |
 
-so the default cap is deliberately short (~5 ms of code blocks, see
-[`default_cn0_estimator`](@ref)). Raise it for a pilot, a narrow carrier loop or
-a signal that is never weak; the ideal-coherence estimate improves monotonically
-with it.
+The staged carrier loop (see [`CarrierLoopStage`](@ref)), once it has dropped
+the FLL and narrowed on phase lock, holds the phase over a whole navigation bit
+at 25 dB-Hz, so there the window length hardly matters; the runs, locked at
+45 dB-Hz and faded to 25 dB-Hz, spread a little less with a longer window
+(tenth percentile 22.0 dB-Hz at 5 records, 22.5 at 20). The loop before it, the
+first row, did not, and nor does any loop that has not narrowed yet or does not
+hold phase over a bit. The default cap is short (~5 ms of code blocks, see
+[`default_cn0_estimator`](@ref)) for those, at no measurable cost to the
+narrowed loop. Raise it for a pilot, a narrow carrier loop or a signal that is
+never weak; the ideal-coherence estimate improves monotonically with it.
 
 Where no window is admissible at all the `fallback` estimator's value is
 reported instead — a *different* estimator, with a different bias and, at the
@@ -244,9 +251,11 @@ Construct an [`NWPRCN0Estimator`](@ref) whose coherent window is sized for
 `signal`: the whole code blocks covering about 5 ms, at least two of them — 5
 blocks for a 1 ms code, 2 for GPS L1C-P's 10 ms one.
 
-About 5 ms is what a coherent sum survives with the default 18 Hz carrier loop
-at the low C/N₀ this estimator exists for; see [`NWPRCN0Estimator`](@ref) for
-the measurements and for when to raise it. The window is what caps the coherent
+About 5 ms is what a coherent sum survives at the low C/N₀ this estimator
+exists for with a carrier loop that does not hold phase over a navigation bit,
+as one that has not narrowed yet; the narrowed loop holds it over a whole bit,
+and loses nothing to the shorter window. See [`NWPRCN0Estimator`](@ref) for the
+measurements and for when to raise it. The window is what caps the coherent
 sum for a data-bearing signal (whose windows tile the navigation bit) and is the
 window outright for a pilot, so sizing it in *blocks* without knowing the code
 period gets it wrong by the period's ratio.

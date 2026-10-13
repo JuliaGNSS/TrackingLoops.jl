@@ -38,19 +38,23 @@ end
     # Auto bandwidths resolve from the driver signal, sized exactly like the
     # inner (scalar fallback) loop.
     state = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 100.0Hz, 0.0Hz)
-    @test state.inner.carrier_loop_filter_bandwidth == 18.0Hz
-    @test state.inner.code_loop_filter_bandwidth == 1.0Hz
+    @test state.inner.bandwidths.wide_carrier == 50.0Hz
+    @test state.inner.bandwidths.narrow_carrier == 18.0Hz
+    @test state.inner.bandwidths.fll_assist == 5.0Hz
+    @test state.inner.bandwidths.code == 1.0Hz
     @test state.inner.init_carrier_doppler == 100.0Hz
-    explicit = ConventionalAssistedPLLAndDLL(; carrier_loop_filter_bandwidth = 12.0Hz, code_loop_filter_bandwidth = 1.0Hz)
+    @test carrier_loop_stage(state) == FLL_ASSISTED_PLL
+    explicit = ConventionalAssistedPLLAndDLL(; narrow_carrier_loop_filter_bandwidth = 12.0Hz, code_loop_filter_bandwidth = 1.0Hz)
     explicit_state = init_estimator_state(VectorPLLAndDLL(GPSL1CA(); inner = explicit), GPSL1CA(), 100.0Hz, 0.0Hz)
-    @test explicit_state.inner.carrier_loop_filter_bandwidth == 12.0Hz
-    @test explicit_state.inner.code_loop_filter_bandwidth == 1.0Hz
-    bumped = VectorPLLAndDLL(GPSL1CA(); inner = ConventionalPLLAndDLL(explicit; carrier_loop_filter_bandwidth = 15.0Hz))
-    @test bumped.inner.carrier_loop_filter_bandwidth == 15.0Hz
+    @test explicit_state.inner.bandwidths.narrow_carrier == 12.0Hz
+    @test explicit_state.inner.bandwidths.code == 1.0Hz
+    bumped = VectorPLLAndDLL(GPSL1CA(); inner = ConventionalPLLAndDLL(explicit; narrow_carrier_loop_filter_bandwidth = 15.0Hz))
+    @test bumped.inner.narrow_carrier_loop_filter_bandwidth == 15.0Hz
     @test bumped.inner.code_loop_filter_bandwidth == 1.0Hz
     referenced = init_estimator_state(VectorPLLAndDLL(GalileoE1B(); inner = NCOReferencedPLLAndDLL()), GalileoE1B(), 0.0Hz, 0.0Hz)
     @test referenced.inner isa SatNCOReferencedPLLAndDLL
-    @test referenced.inner.carrier_loop_filter_bandwidth == default_carrier_loop_filter_bandwidth(GalileoE1B())
+    @test referenced.inner.bandwidths.narrow_carrier ==
+          default_narrow_carrier_loop_filter_bandwidth(GalileoE1B())
 end
 
 @testset "A vector loop needs an FLL-assisted inner loop" begin
@@ -265,7 +269,7 @@ end
 end
 
 @testset "Resetting keeps the vector flag and stops applying the corrections" begin
-    estimator = VectorPLLAndDLL(GPSL1CA(); inner = ConventionalAssistedPLLAndDLL(; carrier_loop_filter_bandwidth = 12.0Hz))
+    estimator = VectorPLLAndDLL(GPSL1CA(); inner = ConventionalAssistedPLLAndDLL(; narrow_carrier_loop_filter_bandwidth = 12.0Hz))
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     record = vector_record(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
     state = TL._set_vector_corrections(TL._enable_vector_tracking(state), 0.5Hz, 4.0Hz)
@@ -287,7 +291,9 @@ end
     @test TrackingLoops.code_phase_advance(reset, 0.1) == TrackingLoops.code_phase_advance(state, 0.1)
     @test TrackingLoops.code_phase_advance(reset, 0.1) != 0.0
     @test reset.inner.carrier_loop_filter == ThirdOrderAssistedBilinearLF()
-    @test reset.inner.carrier_loop_filter_bandwidth == 12.0Hz
+    @test reset.inner.bandwidths.narrow_carrier == 12.0Hz
+    # In the vector loop the carrier loop stays at the narrow PLL.
+    @test carrier_loop_stage(reset) == NARROW_PLL
     @test reset.inner.init_carrier_doppler == 150.0Hz
     @test reset.inner.init_code_doppler == 0.2Hz
     # With nothing applied, the code Doppler is the re-seeded one plus the carrier aiding.
@@ -297,8 +303,8 @@ end
 end
 
 @testset "Releasing re-seeds the inner loop, with $(nameof(typeof(inner)))" for inner in (
-    ConventionalAssistedPLLAndDLL(; carrier_loop_filter_bandwidth = 12.0Hz),
-    NCOReferencedPLLAndDLL(; carrier_loop_filter_bandwidth = 12.0Hz),
+    ConventionalAssistedPLLAndDLL(; narrow_carrier_loop_filter_bandwidth = 12.0Hz),
+    NCOReferencedPLLAndDLL(; narrow_carrier_loop_filter_bandwidth = 12.0Hz),
 )
     estimator = VectorPLLAndDLL(GPSL1CA(); inner)
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
@@ -309,11 +315,21 @@ end
     @test released isa typeof(state)
     @test !released.vt_on
     # The inner loop starts over from the handed-over replica, with its own
-    # configuration kept: the per-satellite state carries it.
-    @test released.inner == reset_estimator_state(inner, state.inner, 150.0Hz, 0.2Hz)
+    # configuration kept: the per-satellite state carries it. Unlike a reset, the
+    # release restarts the staging.
+    reset_inner = reset_estimator_state(inner, state.inner, 150.0Hz, 0.2Hz)
+    @test released.inner == Base.typename(typeof(reset_inner)).wrapper(
+        reset_inner;
+        staging = TL.CarrierLoopStaging(typeof(reset_inner.carrier_loop_filter)),
+    )
+    @test reset_inner.staging == state.inner.staging
     @test released.inner.init_carrier_doppler == 150.0Hz
     @test released.inner.init_code_doppler == 0.2Hz
-    @test released.inner.carrier_loop_filter_bandwidth == 12.0Hz
+    @test released.inner.bandwidths.narrow_carrier == 12.0Hz
+    # The carrier loop pulls in afresh, FLL-assisted, after the narrow PLL it ran
+    # at in the vector loop.
+    @test carrier_loop_stage(state) == NARROW_PLL
+    @test carrier_loop_stage(released) == FLL_ASSISTED_PLL
     # Nothing the vector loop owned survives.
     @test released.code_discr_acc == (0, 0.0)
     @test released.carrier_discr_acc == (0, 0.0Hz)

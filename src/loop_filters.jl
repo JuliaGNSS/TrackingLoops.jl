@@ -22,19 +22,76 @@ destabilizes only around `BL · Δt ≈ 0.4` (Stephens & Thomas 1995,
 const MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT = 0.018
 
 """
+    MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT
+
+The largest bandwidth–update interval product `BL · Δt` of the FLL path of an
+FLL-assisted carrier filter: `0.02`.
+[`effective_fll_assist_loop_filter_bandwidth`](@ref) caps the FLL-assist
+bandwidth at `0.02 / Δt`: 5 Hz up to 4 ms records, 2 Hz at 10 ms.
+"""
+const MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT = 0.02
+
+# The signal-independent default loop-filter bandwidths: what the generic
+# `default_*_loop_filter_bandwidth` methods return, and what a `LoopBandwidths`
+# built without a signal holds.
+const _DEFAULT_WIDE_CARRIER_LOOP_FILTER_BANDWIDTH = 50.0Hz
+const _DEFAULT_NARROW_CARRIER_LOOP_FILTER_BANDWIDTH = 18.0Hz
+const _DEFAULT_FLL_ASSIST_LOOP_FILTER_BANDWIDTH = 5.0Hz
+const _DEFAULT_CODE_LOOP_FILTER_BANDWIDTH = 1.0Hz
+
+"""
 $(SIGNATURES)
 
-Recommended carrier-loop-filter bandwidth for `signal`: a flat 18 Hz, the
-third-order PLL bandwidth of the literature (Kaplan & Hegarty, Pany). It is the
-loop's one-sided noise bandwidth `BL`, seeded for every satellite whose
-estimator leaves `carrier_loop_filter_bandwidth` as `nothing`, and capped at
-filter time by [`effective_carrier_loop_filter_bandwidth`](@ref).
+Recommended wide carrier-loop-filter bandwidth for `signal`: 50 Hz, the
+third-order PLL's noise bandwidth `BL` while the loop pulls in, FLL-assisted,
+and until phase lock has held (see [`CarrierLoopStage`](@ref)). Seeded for every
+satellite whose estimator leaves `wide_carrier_loop_filter_bandwidth` as
+`nothing`, and capped at filter time by
+[`effective_carrier_loop_filter_bandwidth`](@ref): 50 Hz for 1 ms records,
+22.5 Hz for 4 ms and 9 Hz for 10 ms. The [`NCOReferencedPLLAndDLL`](@ref) does
+not read it: its wide default is the narrow one,
+[`default_narrow_carrier_loop_filter_bandwidth`](@ref), for its tolerance of
+command delay.
 
 Override by defining a method for your signal type, or pass
-`carrier_loop_filter_bandwidth =` to the estimator.
+`wide_carrier_loop_filter_bandwidth =` to the estimator.
 """
-function default_carrier_loop_filter_bandwidth(signal::AbstractGNSSSignal)
-    18.0Hz
+function default_wide_carrier_loop_filter_bandwidth(signal::AbstractGNSSSignal)
+    _DEFAULT_WIDE_CARRIER_LOOP_FILTER_BANDWIDTH
+end
+
+"""
+$(SIGNATURES)
+
+Recommended narrow carrier-loop-filter bandwidth for `signal`: 18 Hz, the
+third-order PLL bandwidth of the literature (Kaplan & Hegarty, Pany), which the
+loop narrows to once phase lock has held (see [`CarrierLoopStage`](@ref)) and
+the vector loop runs at. Capped at filter time by
+[`effective_carrier_loop_filter_bandwidth`](@ref): 18 Hz up to 5 ms records,
+9 Hz for 10 ms and 4.5 Hz for 20 ms.
+
+Override by defining a method for your signal type, or pass
+`narrow_carrier_loop_filter_bandwidth =` to the estimator.
+"""
+function default_narrow_carrier_loop_filter_bandwidth(signal::AbstractGNSSSignal)
+    _DEFAULT_NARROW_CARRIER_LOOP_FILTER_BANDWIDTH
+end
+
+"""
+$(SIGNATURES)
+
+Recommended FLL-assist bandwidth for `signal`: 5 Hz, the noise bandwidth of the
+second-order FLL path of an FLL-assisted carrier filter while it is
+FLL-assisted, set independently of the PLL's (the filter's `(pll, fll)`
+bandwidth pair). Capped at filter time by
+[`effective_fll_assist_loop_filter_bandwidth`](@ref): 5 Hz up to 4 ms records,
+2 Hz for 10 ms.
+
+Override by defining a method for your signal type, or pass
+`fll_assist_loop_filter_bandwidth =` to the estimator.
+"""
+function default_fll_assist_loop_filter_bandwidth(signal::AbstractGNSSSignal)
+    _DEFAULT_FLL_ASSIST_LOOP_FILTER_BANDWIDTH
 end
 
 """
@@ -50,18 +107,53 @@ independent of the signal. Capped at filter time by
 Override by defining a method for your signal type.
 """
 function default_code_loop_filter_bandwidth(signal::AbstractGNSSSignal)
-    1.0Hz
+    _DEFAULT_CODE_LOOP_FILTER_BANDWIDTH
 end
+
+"""
+    LoopBandwidths(; wide_carrier = 50Hz, narrow_carrier = 18Hz, fll_assist = 5Hz,
+                     code = 1Hz)
+    LoopBandwidths(signal; wide_carrier, narrow_carrier, fll_assist, code)
+
+The loop-filter bandwidths of a scalar estimator's per-satellite state:
+`wide_carrier` for the PLL until it narrows and `narrow_carrier` after (see
+[`CarrierLoopStage`](@ref)), `fll_assist` for the FLL path while the loop is
+FLL-assisted, and `code` for the DLL. Given a `signal`, each bandwidth not given
+defaults to the signal's ([`default_wide_carrier_loop_filter_bandwidth`](@ref),
+[`default_narrow_carrier_loop_filter_bandwidth`](@ref),
+[`default_fll_assist_loop_filter_bandwidth`](@ref),
+[`default_code_loop_filter_bandwidth`](@ref)), so methods of those for a signal
+type apply; without one, to the generic defaults. [`init_estimator_state`](@ref)
+resolves them from the estimator's, each `nothing` there from the driver
+signal's default. Each is capped against the record's integration time at
+filter time (see [`effective_carrier_loop_filter_bandwidth`](@ref),
+[`effective_fll_assist_loop_filter_bandwidth`](@ref),
+[`effective_code_loop_filter_bandwidth`](@ref)).
+"""
+@kwdef struct LoopBandwidths
+    wide_carrier::typeof(1.0Hz) = _DEFAULT_WIDE_CARRIER_LOOP_FILTER_BANDWIDTH
+    narrow_carrier::typeof(1.0Hz) = _DEFAULT_NARROW_CARRIER_LOOP_FILTER_BANDWIDTH
+    fll_assist::typeof(1.0Hz) = _DEFAULT_FLL_ASSIST_LOOP_FILTER_BANDWIDTH
+    code::typeof(1.0Hz) = _DEFAULT_CODE_LOOP_FILTER_BANDWIDTH
+end
+
+LoopBandwidths(
+    signal::AbstractGNSSSignal;
+    wide_carrier = default_wide_carrier_loop_filter_bandwidth(signal),
+    narrow_carrier = default_narrow_carrier_loop_filter_bandwidth(signal),
+    fll_assist = default_fll_assist_loop_filter_bandwidth(signal),
+    code = default_code_loop_filter_bandwidth(signal),
+) = LoopBandwidths(wide_carrier, narrow_carrier, fll_assist, code)
 
 """
 $(SIGNATURES)
 
-Effective carrier-loop bandwidth for a record that integrated for
-`integration_time`: the configured bandwidth, capped at
+Effective PLL bandwidth for a record that integrated for `integration_time`,
+wide or narrow alike: the configured bandwidth, capped at
 `MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT / integration_time` to keep the loop
-stable on long integrations. The default 18 Hz runs unchanged up to 5 ms of
-integration, at 9 Hz for 10 ms and 4.5 Hz for 20 ms. The cap only ever narrows
-a loop, an explicit bandwidth as much as the default.
+stable on long integrations. The default narrow 18 Hz runs unchanged up to
+5 ms of integration, at 9 Hz for 10 ms and 4.5 Hz for 20 ms. The cap only ever
+narrows a loop, an explicit bandwidth as much as the default.
 """
 @inline function effective_carrier_loop_filter_bandwidth(bandwidth, integration_time)
     min(
@@ -82,6 +174,20 @@ its noise floor depend on it. At the default 1 Hz the cap binds only past
 """
 @inline function effective_code_loop_filter_bandwidth(bandwidth, integration_time)
     min(bandwidth, uconvert(Hz, MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT / integration_time))
+end
+
+"""
+$(SIGNATURES)
+
+Effective FLL-assist bandwidth for a record that integrated for
+`integration_time`: the configured bandwidth, capped at
+`MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT / integration_time`.
+"""
+@inline function effective_fll_assist_loop_filter_bandwidth(bandwidth, integration_time)
+    min(
+        bandwidth,
+        uconvert(Hz, MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT / integration_time),
+    )
 end
 
 """

@@ -93,13 +93,16 @@ function _sig_test_correlator(signal, C)
     @test get_default_correlator(signal) == C(; num_ants = NumAnts(1))
 end
 
-# `carrier` is the default carrier bandwidth as capped for one primary code period.
+# `carrier` is the default narrow carrier bandwidth as capped for one primary code
+# period.
 function _sig_test_bandwidths(signal, carrier)
-    @test @inferred(default_carrier_loop_filter_bandwidth(signal)) == 18.0Hz
+    @test @inferred(default_wide_carrier_loop_filter_bandwidth(signal)) == 50.0Hz
+    @test @inferred(default_narrow_carrier_loop_filter_bandwidth(signal)) == 18.0Hz
+    @test @inferred(default_fll_assist_loop_filter_bandwidth(signal)) == 5.0Hz
     primary_period = get_code_length(signal) / get_code_frequency(signal)
     @test @inferred(
         effective_carrier_loop_filter_bandwidth(
-            default_carrier_loop_filter_bandwidth(signal),
+            default_narrow_carrier_loop_filter_bandwidth(signal),
             primary_period,
         )
     ) ≈ carrier
