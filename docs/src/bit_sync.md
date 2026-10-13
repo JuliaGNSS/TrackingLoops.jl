@@ -8,7 +8,10 @@ integrations, and a per-signal detector
 Once [`has_bit_or_secondary_code_been_found`](@ref) returns `true`, longer
 coherent integrations become available (see
 [`calc_num_code_blocks_to_integrate`](@ref)) and the buffer accumulates the
-decoded soft bits, which [`get_soft_bits`](@ref) returns.
+decoded soft bits, which [`get_soft_bits`](@ref) returns. For a pilot, the
+secondary-code sync also gives the prompt's sign, which a record's
+`carrier_phase_polarity` hands to the four-quadrant carrier discriminators (see
+[`LoopRecord`](@ref)).
 
 Detectors exist for every GPS, Galileo and BeiDou signal that GNSSSignals.jl
 models. How a signal is synchronised is a method of

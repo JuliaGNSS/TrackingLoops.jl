@@ -127,6 +127,7 @@ export NumAnts,
     PhaseAccumulators,
     SyncResult,
     has_bit_or_secondary_code_been_found,
+    is_dataless_with_secondary_code,
     get_soft_bits,
     get_code_block_buffer_type,
     detect_bit_or_secondary_code_sync,
@@ -218,7 +219,7 @@ export NumAnts,
     word_changes_within,
     nco_word_at,
     mean_nco_word,
-    wrap_half_cycle
+    wrap_phase_error
 
 const Maybe{T} = Union{T,Nothing}
 

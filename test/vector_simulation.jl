@@ -632,11 +632,10 @@ function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample,
     raw = EarlyPromptLateCorrelator(
         get_accumulators(correlator) .* (rotation * num_samples * get_code_amplitude(sat.signal)), 0.5)
     output = CorrelatorOutput(raw, num_samples, sample_index, code_phase)
-    previous_prompt = sat.loop.last_filtered_prompt
     noise_ready = sim_time(receiver, sample_index) - receiver.truth.t0 >= receiver.noise_ready_after
     sat.loop, _, filtered, _, _ = apply_record(sat.loop, sat.signal, sat.decoder.prn, output, SIM_FS,
         sat.noise_density / Hz, noise_ready, driver_phase)
-    record = LoopRecord(sat.signal, filtered, previous_prompt, output, sat.loop, SIM_FS;
+    record = LoopRecord(sat.signal, filtered, output, sat.loop, SIM_FS;
         prn = sat.decoder.prn)
     owner.state, new_carrier, new_code = if receiver.measuring[]
         step_measured!(receiver.allocated, receiver.estimator, owner.state, record, words, landing)

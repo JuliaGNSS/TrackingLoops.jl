@@ -35,6 +35,14 @@ the last record of the fold this record belongs to, which is what a landing
 sample is measured against (every record of a fold maps onto the delay-free
 loop's record the same distance ahead).
 
+The four-quadrant FLL reads a sign flip between the previous and this record's
+prompt as half a cycle of rotation. A record whose `carrier_phase_polarity`
+differs from the previous record's therefore comes without a previous prompt
+(`0`), and the FLL gives no reading for it, as for the first record. The
+constructor that takes a [`SignalLoopState`](@ref) takes the previous prompt
+from the state (its `last_previous_prompt`), which applies this; a host that
+builds records otherwise passes `0` itself.
+
 Two fields identify the record to an estimator that keeps per-satellite state
 of its own, as [`VectorPLLAndDLL`](@ref) does:
 
@@ -62,10 +70,18 @@ decodes or weights by C/N₀ (the vector loop; the scalar loops ignore it):
     matter when the host drains the buffer;
   - `cn0_estimator`: the signal's C/N₀ estimator, for [`estimate_cn0`](@ref).
 
+`carrier_phase_polarity` says how the carrier discriminators read the record:
+the sign of its prompt where the replica wiped every sign modulation off it — a
+dataless signal synced to its secondary code — and `0` where it is unknown.
+Nonzero, the PLL and the FLL read it four-quadrant (`pll_disc(...; polarity)`,
+`fll_disc(...; polarity)`); `0`, both stay two-quadrant.
+
 Build such a record with the constructor that takes the state in place of the
-block count: `LoopRecord(signal, filtered_correlator, previous_prompt, output,
-state, sampling_frequency)`. The other constructors leave the bit clock
-unsynchronised, add no soft bits and carry a [`NoCN0Estimator`](@ref).
+block count and the previous prompt: `LoopRecord(signal, filtered_correlator,
+output, state, sampling_frequency)`. The other constructors leave the bit clock
+unsynchronised, add no soft bits, carry a [`NoCN0Estimator`](@ref) and take
+`carrier_phase_polarity` as a keyword, `0` by default: a host with its own
+per-signal state passes the one `fold_record` returned for the record.
 """
 struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F,CN0<:AbstractCN0Estimator}
     signal::S
@@ -83,6 +99,7 @@ struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F,CN0<:AbstractCN0
     blocks_into_symbol::Int
     new_soft_bits::SoftBitsView
     cn0_estimator::CN0
+    carrier_phase_polarity::Int8
 end
 
 LoopRecord(
@@ -96,6 +113,7 @@ LoopRecord(
     sampling_frequency;
     prn::Integer = 0,
     code_phase::Real = NaN,
+    carrier_phase_polarity::Integer = 0,
 ) = LoopRecord(
     signal,
     filtered_correlator,
@@ -112,6 +130,7 @@ LoopRecord(
     0,
     _no_soft_bits(),
     NoCN0Estimator(),
+    Int8(carrier_phase_polarity),
 )
 
 LoopRecord(
@@ -124,6 +143,7 @@ LoopRecord(
     fold_end = output.sample_index,
     prn::Integer = 0,
     sample_offset::Integer = 0,
+    carrier_phase_polarity::Integer = 0,
 ) = LoopRecord(
     signal,
     filtered_correlator,
@@ -140,23 +160,24 @@ LoopRecord(
     0,
     _no_soft_bits(),
     NoCN0Estimator(),
+    Int8(carrier_phase_polarity),
 )
 
 """
-    LoopRecord(signal, filtered_correlator, previous_prompt, output::CorrelatorOutput,
+    LoopRecord(signal, filtered_correlator, output::CorrelatorOutput,
                state::SignalLoopState, sampling_frequency;
                fold_end = output.sample_index, prn = 0, sample_offset = 0)
 
-The record of `output`, with the summary of the signal's bit clock and its C/N₀
-estimator taken from `state` — the [`SignalLoopState`](@ref) that
-[`apply_record`](@ref) just folded `output` into — along with the blocks the
-record covered. Read `previous_prompt` off the state before `apply_record`
-replaces it.
+The record of `output`, with the summary of the signal's bit clock, its C/N₀
+estimator and its carrier phase polarity taken from `state` — the
+[`SignalLoopState`](@ref) that [`apply_record`](@ref) just folded `output` into
+— along with the blocks the record covered, and the previous prompt its FLL
+compares with: the state's `last_previous_prompt`, `0` where the record does not
+follow on from the one before it (see `LoopRecord`).
 """
 function LoopRecord(
     signal,
     filtered_correlator,
-    previous_prompt,
     output::CorrelatorOutput,
     state::SignalLoopState,
     sampling_frequency;
@@ -172,7 +193,7 @@ function LoopRecord(
     LoopRecord(
         signal,
         filtered_correlator,
-        ComplexF64(previous_prompt),
+        state.last_previous_prompt,
         output.integrated_samples,
         output.sample_index + Int(sample_offset),
         Int(fold_end) + Int(sample_offset),
@@ -185,6 +206,7 @@ function LoopRecord(
         synced ? bit_buffer.prompt_accumulator_integrated_code_blocks : 0,
         view(soft_bits, first_new:num_soft_bits),
         state.cn0_estimator,
+        state.last_carrier_phase_polarity,
     )
 end
 
@@ -433,12 +455,17 @@ end
     record_start = record.sample_index - record.integrated_samples
     _, applied_code = mean_nco_word(words, record_start, record.sample_index)
     filtered_correlator = record.filtered_correlator
-    frequency_error =
-        fll_disc(signal, filtered_correlator, record.previous_prompt, integration_time)
+    frequency_error = fll_disc(
+        signal,
+        filtered_correlator,
+        record.previous_prompt,
+        integration_time;
+        polarity = record.carrier_phase_polarity,
+    )
     (;
         integration_time,
         carrier_bandwidth = _carrier_bandwidth(state, integration_time),
-        phase_error = pll_disc(signal, filtered_correlator),
+        phase_error = pll_disc(signal, filtered_correlator; polarity = record.carrier_phase_polarity),
         frequency_error,
         raw_frequency_error = frequency_error,
         code_error = dll_disc(
@@ -648,21 +675,25 @@ function reset_estimator_state(
 end
 
 """
-    wrap_half_cycle(phase)
+    wrap_phase_error(phase_error; polarity = 0)
 
-Fold a carrier-phase error (in cycles) into `[−1/4, 1/4]`, the range a
-BPSK prompt — and therefore [`pll_disc`](@ref) — can tell the phase in, since
-a data bit flip turns the prompt by half a cycle. Exact for any phase already
+Fold a carrier-phase error (in cycles) into the range [`pll_disc`](@ref) reads
+it in with the same `polarity`: ±1/4 cycle for the Costas PLL (`polarity = 0`),
+whose prompt a data bit flip turns by half a cycle, and ±1/2 cycle for the
+four-quadrant PLL (a known `polarity`). Exact for any phase error already
 inside it.
 """
-wrap_half_cycle(phase) = rem(phase, 0.5, RoundNearest)
+wrap_phase_error(phase_error; polarity::Real = 0) =
+    rem(phase_error, iszero(polarity) ? 0.5 : 1.0, RoundNearest)
 
 # The phase error a record would show `shift` samples later, under the words
-# the NCO will run in between: the mean phase sits at the record's centre, so
+# the NCO will run in between, folded into the range of the record's PLL
+# discriminator: the mean phase sits at the record's centre, so
 # the ramp is integrated from there. The signal's Doppler is the filter's own
 # estimate, before this record's innovation.
 @inline function _predict_landing_phase_error(
     phase_error,
+    polarity,
     state::SatNCOReferencedPLLAndDLL,
     words,
     center,
@@ -682,7 +713,7 @@ wrap_half_cycle(phase) = rem(phase, 0.5, RoundNearest)
         ),
     )
     ramp_word = first(mean_nco_word(words, center, center + shift))
-    wrap_half_cycle(phase_error + shift * (f_hat - ramp_word) / sampling_freq_hz)
+    wrap_phase_error(phase_error + shift * (f_hat - ramp_word) / sampling_freq_hz; polarity)
 end
 
 """
@@ -735,14 +766,20 @@ the conventional loop.
     # Discriminators against the applied replica. The phase error is that by
     # construction; the frequency error is the mean offset from the replica
     # between the two prompts' centres.
-    phase_error = pll_disc(signal, filtered_correlator)
-    raw_frequency_error =
-        fll_disc(signal, filtered_correlator, record.previous_prompt, integration_time)
+    phase_error = pll_disc(signal, filtered_correlator; polarity = record.carrier_phase_polarity)
+    raw_frequency_error = fll_disc(
+        signal,
+        filtered_correlator,
+        record.previous_prompt,
+        integration_time;
+        polarity = record.carrier_phase_polarity,
+    )
     frequency_error = raw_frequency_error
 
     if estimator.predict_landing && shift > 0
         phase_error = _predict_landing_phase_error(
             phase_error,
+            record.carrier_phase_polarity,
             state,
             words,
             center,

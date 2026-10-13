@@ -1449,7 +1449,7 @@ and it is read exactly once: by the code-phase snap
 (Tracking.jl's `_snap_code_phase_from_synced_signal`), which runs after the whole
 chunk has been folded. The detector reports it for the block right after the
 syncing record, so every further record folded in the same chunk — the ones
-`_apply_correlator_output` marks `correlated_pre_sync`, correlated with the
+`_apply_correlator_output` marks as not `overlay_wiped`, correlated with the
 pre-sync (un-wiped) replica — moves that anchor along by the blocks it covers.
 Without this the snap anchors the replica `num_code_blocks` chips early, the
 post-sync replica bakes the wrong overlay chip into every block, and the

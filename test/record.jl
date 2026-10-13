@@ -1,3 +1,5 @@
+using Random: MersenneTwister
+
 @testset "apply_record advances the bit buffer, C/N0 and prompt filter" begin
     signal = GPSL1CA()
     fs = 4e6Hz
@@ -75,7 +77,7 @@ end
         output = CorrelatorOutput(epl(p), 4000, 4000k, 0.0)
         previous_prompt = state.last_filtered_prompt
         state, _, filtered, = apply_record(state, signal, 7, output, fs, 1e-6 / Hz, true)
-        record = LoopRecord(signal, filtered, previous_prompt, output, state, fs; prn = 7)
+        record = LoopRecord(signal, filtered, output, state, fs; prn = 7)
         @test record.previous_prompt == previous_prompt
         @test record.integrated_code_blocks == state.last_num_code_blocks
         @test record.cn0_estimator === state.cn0_estimator
@@ -115,11 +117,152 @@ end
     for k = 1:7
         output = CorrelatorOutput(epl(6000.0), 12_000, 800_000 + 12_000k, 0.0)
         state, _, filtered, = apply_record(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true)
-        record = LoopRecord(signal, filtered, 0.0, output, state, 4e6Hz)
+        record = LoopRecord(signal, filtered, output, state, 4e6Hz)
         if !has_bit_or_secondary_code_been_found(state)
             @test record.sync_change == SYNC_LOST && !record.bit_synced
             break
         end
         @test record.sync_change == SYNC_UNCHANGED
+    end
+end
+
+@testset "A synced pilot's records carry the prompt's sign for the four-quadrant discriminators" begin
+    # Galileo E1C, whose secondary chip 0 is negative for every PRN: before the
+    # sync the replica is primary-only, so the prompts carry the overlay; after it
+    # the replica wipes the overlay.
+    signal = GalileoE1C()
+    fs = 4e6Hz
+    code = get_secondary_code(signal)
+    epl(p) = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
+    rng = MersenneTwister(2)
+    for prn in (1, 3), sign in (1.0, -1.0)
+        chip(k) = GNSSSignals.secondary_value(code, prn, mod(k, 25))
+        @test chip(0) == -1
+        state = SignalLoopState(signal)
+        synced_records = 0
+        for k = 0:300
+            synced = has_bit_or_secondary_code_been_found(state)
+            p = (synced ? sign : sign * chip(k)) * 4000.0 * cis(0.05) +
+                200 * randn(rng, ComplexF64)
+            output = CorrelatorOutput(epl(p), 16_000, 16_000 * (k + 1))
+            state, _, filtered, = apply_record(state, signal, prn, output, fs, 1e-6 / Hz, true)
+            record = LoopRecord(signal, filtered, output, state, fs; prn)
+            if synced
+                synced_records += 1
+                # The prompt's sign, so the four-quadrant PLL reads the small error.
+                @test record.carrier_phase_polarity == sign
+                @test pll_disc(signal, filtered; polarity = record.carrier_phase_polarity) ≈
+                      0.05 / 2π atol = 0.02
+                # The first wiped-off record does not chain from a prompt correlated
+                # before the sync.
+                @test iszero(record.previous_prompt) == (synced_records == 1)
+            else
+                @test record.carrier_phase_polarity == 0
+            end
+        end
+        @test synced_records > 100
+        # A host whose replica has not wiped the overlay under a record says so.
+        output = CorrelatorOutput(epl(sign * 4000.0), 16_000, 16_000 * 302)
+        unwiped, = apply_record(state, signal, prn, output, fs, 1e-6 / Hz, true; overlay_wiped = false)
+        @test unwiped.last_carrier_phase_polarity == 0
+    end
+end
+
+@testset "The prompt's sign is known only for a dataless signal synced to its secondary code" begin
+    synced(signal, polarity) = TrackingLoops.BitBuffer{get_code_block_buffer_type(signal)}(
+        zero(get_code_block_buffer_type(signal)),
+        0,
+        true,
+        0,
+        Int8(polarity),
+        complex(0.0),
+        0,
+        Float32[],
+        TrackingLoops.PhaseAccumulators(),
+    )
+    polarity(signal, bit_buffer, overlay_wiped = true) =
+        TrackingLoops._carrier_phase_polarity(signal, bit_buffer, overlay_wiped)
+    # The sync polarity, whatever the overlay's chip 0 (positive for GPS L5Q,
+    # negative for Galileo E1C).
+    @test polarity(GPSL5Q(), synced(GPSL5Q(), -1)) == -1
+    @test polarity(GPSL5Q(), synced(GPSL5Q(), 1)) == 1
+    @test polarity(GalileoE1C(), synced(GalileoE1C(), 1)) == 1
+    @test polarity(GalileoE1C(), synced(GalileoE1C(), -1)) == -1
+    # Not yet synced, or the overlay not wiped under the record.
+    @test polarity(GPSL5Q(), TrackingLoops.BitBuffer{get_code_block_buffer_type(GPSL5Q())}()) == 0
+    @test polarity(GPSL5Q(), synced(GPSL5Q(), 1), false) == 0
+    # Data signals, and (for now) a pilot without a secondary code.
+    @test polarity(GPSL5I(), synced(GPSL5I(), 1)) == 0
+    @test polarity(GPSL1CA(), synced(GPSL1CA(), 1)) == 0
+    @test polarity(GalileoE5aQP(), synced(GalileoE5aQP(), 1)) == 0
+    @test @inferred(polarity(GPSL5Q(), synced(GPSL5Q(), 1))) isa Int8
+end
+
+@testset "A record whose replica has not wiped the overlay yet stays out of the bit sum" begin
+    # GPS L5I, synced to its NH10 secondary code, 1 ms records at 10.23 MHz.
+    signal = GPSL5I()
+    B = get_code_block_buffer_type(signal)
+    synced = TrackingLoops.BitBuffer{B}(
+        zero(B),
+        0,
+        true,
+        3,
+        Int8(1),
+        complex(0.0),
+        0,
+        Float32[],
+        TrackingLoops.PhaseAccumulators(),
+    )
+    output = CorrelatorOutput(
+        EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5) .* 10230, 0.5),
+        10230,
+        10230,
+    )
+    fold(overlay_wiped) = TrackingLoops.fold_record(
+        signal,
+        1,
+        synced,
+        NoCN0Estimator(),
+        DefaultPostCorrFilter(),
+        output,
+        10.23e6Hz,
+        1.0 / Hz,
+        true,
+        get_carrier_phase_offset(signal);
+        overlay_wiped,
+    )
+    wiped = first(fold(true))
+    unwiped = first(fold(false))
+    # Wiped, the prompt joins the bit's coherent sum; not yet wiped, only its
+    # block counts, and the secondary-code anchor moves along.
+    @test wiped.prompt_accumulator != 0
+    @test unwiped.prompt_accumulator == 0
+    @test wiped.prompt_accumulator_integrated_code_blocks ==
+          unwiped.prompt_accumulator_integrated_code_blocks == 1
+    @test wiped.secondary_phase == 3
+    @test unwiped.secondary_phase == 4
+    # By default the record follows the sync with its overlay wiped.
+    @test first(TrackingLoops.fold_record(
+        signal,
+        1,
+        synced,
+        NoCN0Estimator(),
+        DefaultPostCorrFilter(),
+        output,
+        10.23e6Hz,
+        1.0 / Hz,
+        true,
+        get_carrier_phase_offset(signal),
+    )).prompt_accumulator == wiped.prompt_accumulator
+end
+
+@testset "The dataless signals with a secondary code" begin
+    for signal in (GPSL1C_P(), GPSL5Q(), GalileoE1C(), GalileoE5aQ(), GalileoE5bQ(),
+        GalileoE6C(), BeiDouB1C_P(), BeiDouB2aQ())
+        @test @inferred(is_dataless_with_secondary_code(signal))
+    end
+    for signal in (GPSL1CA(), GPSL5I(), GalileoE1B(), GalileoE5aI(), BeiDouB1I(),
+        GPSL2CL(), GalileoE5aQP())
+        @test !is_dataless_with_secondary_code(signal)
     end
 end

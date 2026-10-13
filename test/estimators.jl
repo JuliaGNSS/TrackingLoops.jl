@@ -31,7 +31,7 @@ function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, p
         mean_phase = phase + π * (f_true - w) * dt
         phase += 2π * (f_true - w) * dt
         # In radians, folded as the Costas discriminator reads it.
-        push!(phases, 2π * wrap_half_cycle(mean_phase / 2π))
+        push!(phases, 2π * wrap_phase_error(mean_phase / 2π))
         push!(words, w)
         p = cis(mean_phase)
         output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, b)
@@ -233,4 +233,39 @@ end
     @test plain == interleaved
     @test plain_state == interleaved_state
     @test navigation_solution(estimator) === nothing
+end
+
+@testset "$(nameof(typeof(estimator))) reads a record of known sign four-quadrant" for estimator in (
+    ConventionalAssistedPLLAndDLL(),
+    NCOReferencedPLLAndDLL(),
+)
+    state = init_estimator_state(estimator, LOOP_SIGNAL, 0.0Hz, 0.0Hz)
+    # The prompt 0.4 cycles ahead of the replica and of the previous prompt.
+    output = CorrelatorOutput(loop_epl(0.5, cis(0.8π), 0.5), LOOP_N, LOOP_N)
+    integration_time = LOOP_N / LOOP_FS
+    discriminators(; kwargs...) = TrackingLoops._record_discriminators(
+        estimator,
+        state,
+        LoopRecord(LOOP_SIGNAL, output.correlator, complex(1.0), output, 1, LOOP_FS; kwargs...),
+        FixedNCOWord(0.0, 0.0),
+        NO_LANDING_SAMPLE,
+    )
+    costas = discriminators()
+    @test costas.phase_error ≈ -0.1
+    @test costas.frequency_error ≈ -0.1 / integration_time
+    four_quadrant = discriminators(; carrier_phase_polarity = 1)
+    @test four_quadrant.phase_error ≈ 0.4
+    @test four_quadrant.frequency_error ≈ 0.4 / integration_time
+    @test four_quadrant.raw_frequency_error ≈ 0.4 / integration_time
+    # The prompt's sign negative: the error read around the inverted prompt.
+    @test discriminators(; carrier_phase_polarity = -1).phase_error ≈ -0.1
+end
+
+@testset "A phase error is folded into the PLL discriminator's range" begin
+    # The Costas PLL reads ±1/4 cycle, the four-quadrant one ±1/2.
+    @test @inferred(wrap_phase_error(0.3)) ≈ -0.2
+    @test wrap_phase_error(0.1) == 0.1
+    @test @inferred(wrap_phase_error(0.3; polarity = Int8(1))) ≈ 0.3
+    @test wrap_phase_error(-0.3; polarity = -1) ≈ -0.3
+    @test wrap_phase_error(0.7; polarity = 1) ≈ -0.3
 end

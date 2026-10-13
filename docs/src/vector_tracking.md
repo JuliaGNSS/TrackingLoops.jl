@@ -94,10 +94,9 @@ estimator and prompt filter — advances it with [`apply_record`](@ref) on every
 record, and builds the record from it:
 
 ```julia
-previous_prompt = loop.last_filtered_prompt
 loop, prompt, filtered, blocks, overshoot =
     apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready, driver_phase)
-record = LoopRecord(signal, filtered, previous_prompt, output, loop, fs; prn)
+record = LoopRecord(signal, filtered, output, loop, fs; prn)
 state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words, landing_sample)
 ```
 

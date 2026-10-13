@@ -391,7 +391,7 @@ TL.estimate_cn0(estimator::FixedCN0Estimator, integration_time) = estimator.dbhz
         state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
         for k = 1:101
             output = CorrelatorOutput(engine_correlator(4000.0), 4000, 4000k, 0.0)
-            record = LoopRecord(GPSL1CA(), engine_correlator(), complex(0.0), output, loop, 4e6Hz; prn = 7)
+            record = LoopRecord(GPSL1CA(), engine_correlator(), output, loop, 4e6Hz; prn = 7)
             state, = step_loop(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
         end
         slot = nav.groups[1].slots[1]
