@@ -6,15 +6,12 @@ A C/N₀ estimator is advanced once per record with the record's prompt
 
 - [`MomentsCN0Estimator`](@ref) — the moments method on a window of prompts;
 - [`NWPRCN0Estimator`](@ref) — the narrow-to-wideband power ratio, summing
-  prompts coherently over one navigation symbol once the bit grid is known;
+  prompts coherently over short windows, aligned to the bit grid once known;
 - [`NoiseRefCN0Estimator`](@ref) — divides the prompt power by a noise density
   measured independently of the signal (see [Noise estimation](@ref));
 - [`NoCN0Estimator`](@ref) — for a component whose C/N₀ is not needed.
 
-[`default_cn0_estimator`](@ref) says which one a signal gets by default. A
-custom estimator subtypes [`AbstractCN0Estimator`](@ref) and implements
-`TrackingLoops.update` and [`estimate_cn0`](@ref), plus
-[`requires_noise_density`](@ref) if it reads a measured noise floor.
+[`default_cn0_estimator`](@ref) says which one a signal gets by default.
 
 ```@autodocs
 Modules = [TrackingLoops]
