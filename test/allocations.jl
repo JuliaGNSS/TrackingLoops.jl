@@ -19,16 +19,15 @@
     # the enclosing scope captures and boxes that variable, and the boxed
     # dispatch would be charged to the fold.
     function run_records!(state_ref, est_ref, first_k, n)
-        local sgn, p, output, previous, prompt, filtered, blocks, record, carrier, code
+        local sgn, p, output, prompt, filtered, blocks, record, carrier, code
         st = state_ref[]
         es = est_ref[]
         for k = first_k:(first_k+n-1)
             sgn = isodd(div(k - 1, 20)) ? -1.0 : 1.0
             p = 2000.0 * sgn * cis(0.01)
             output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
-            previous = st.last_filtered_prompt
             st, prompt, filtered, blocks = apply_record(st, signal, 7, output, fs, density, true)
-            record = LoopRecord(signal, filtered, previous, output, st, fs)
+            record = LoopRecord(signal, filtered, output, st, fs)
             es, carrier, code = step_loop(estimator, es, record, timeline, Int64(4000k + 8000))
             schedule_word!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
             promote_words!(timeline, 4000k - 4000)

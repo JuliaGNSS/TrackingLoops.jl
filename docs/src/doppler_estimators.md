@@ -48,6 +48,40 @@ Pages = ["record.jl"]
 Private = false
 ```
 
+## Two- and four-quadrant discriminators
+
+The carrier discriminators are two-quadrant (Costas) by default: they read a
+prompt and its negation alike, so a data bit or secondary-code chip flipping
+the prompt's sign does not disturb them, over ±1/4 cycle for the PLL and
+±1/(4T) for the FLL. Where the replica wipes every sign modulation off the
+prompt — a dataless signal synced to its secondary code — the prompt's sign is
+known, and the estimators switch to the four-quadrant discriminators, over ±1/2
+cycle and ±1/(2T), worth up to 6 dB of tracking threshold. The record says so
+with its `carrier_phase_polarity`, the prompt's sign, which
+[`apply_record`](@ref) computes into the [`SignalLoopState`](@ref) and a
+[`LoopRecord`](@ref) built from that state carries, for the scalar loops and the
+vector loop alike. A record whose carrier phase polarity differs from the
+previous record's comes without a previous prompt, so the four-quadrant FLL
+never compares prompts across the switch.
+
+GPS L1C-P and L5Q, Galileo E1C, E5a-Q, E5b-Q and E6-C, and BeiDou B1C-P and
+B2a-Q switch once their secondary code is synced. Data signals never do, nor,
+for now, do the pilots without a secondary code (GPS L2 CL, Galileo E5a-QP),
+whose sync reads no sign.
+The NCO-referenced loop folds its predicted phase error into whichever range
+the record's PLL reads.
+
+The sign rests on a contract with whoever correlates the records: until the
+sync, the records of these signals
+([`is_dataless_with_secondary_code`](@ref)) are primary-only, correlated with
+a replica that carries no secondary code. A replica that carries the same
+secondary chip on every block is fine once the host multiplies the records by
+that chip (Tracking.jl's carries chip 0, and multiplies by it). An external
+producer, a hardware correlator say, must keep to this as well. If its
+pre-sync replica carries a negative chip it does not multiply out, the sync
+reads the wrong sign, and on the switch the four-quadrant PLL pulls the
+carrier phase over by half a cycle.
+
 ## Estimators
 
 ```@autodocs
