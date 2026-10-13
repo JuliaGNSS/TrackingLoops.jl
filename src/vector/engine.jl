@@ -709,9 +709,9 @@ end
 
 # A decoding-signal record: the soft bits it added into the decoder — exactly those, so
 # the host may drain its bit buffer whenever it likes — and where the bit clock stands
-# at its end. A record of the fold a sync was found in, correlated before it (it
-# follows the record that found it), does not anchor the symbol count: the bit clock
-# counts as unsynchronised there until the next fold.
+# at its end. A record that follows the one that found a sync in the same fold, its
+# replica still the pre-sync one (see `fold_record`'s `overlay_wiped`), does not anchor
+# the symbol count: the bit clock counts as unsynchronised there until the next fold.
 function _advance_decoding!(group::VTSlotGroup, slot::VTSlot, record::LoopRecord)
     soft_bits = record.new_soft_bits
     if !isempty(soft_bits)
@@ -722,12 +722,12 @@ function _advance_decoding!(group::VTSlotGroup, slot::VTSlot, record::LoopRecord
     elseif !record.bit_synced
         slot.sync_fold_end = typemin(Int)
     end
-    correlated_pre_sync = record.sync_change != SYNC_FOUND && record.fold_end == slot.sync_fold_end
+    unwiped_after_sync = record.sync_change != SYNC_FOUND && record.fold_end == slot.sync_fold_end
     code_length = get_code_length(group.decoding_signal)
     fs = _sampling_frequency_hz(record)
     slot.decoding_last_end_sample = record.sample_index
     slot.decoding_last_end_time = record.sample_index / fs
-    slot.decoding_bit_synced = record.bit_synced && !correlated_pre_sync
+    slot.decoding_bit_synced = record.bit_synced && !unwiped_after_sync
     slot.decoding_blocks_into_symbol = record.blocks_into_symbol
     slot.decoding_code_phase_fraction =
         isnan(record.code_phase) ? NaN :
