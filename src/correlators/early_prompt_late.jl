@@ -1,11 +1,8 @@
 """
 $(SIGNATURES)
 
-EarlyPromptLateCorrelator holding a user defined number of correlation values.
-The code is shifted in samples. Hence, the specified code shift is actually a
-preferred code shift, because depending on sampling frequency and
-code frequency the specified code shift might not be the actual code shift. It is as
-close as possible, though. The algorithm makes sure that at least one sample is shifted.
+Correlator with early, prompt and late taps. The code shift is a preferred shift:
+rounded to whole samples for the sampling and code frequency, at least one.
 """
 struct EarlyPromptLateCorrelator{M,T} <: AbstractEarlyPromptLateCorrelator{M}
     accumulators::SVector{3,T}
@@ -27,7 +24,7 @@ end
 """
 $(SIGNATURES)
 
-EarlyPromptLateCorrelator constructor.
+Construct a zeroed [`EarlyPromptLateCorrelator`](@ref).
 """
 function EarlyPromptLateCorrelator(;
     num_ants::NumAnts = NumAnts(1),
@@ -54,9 +51,7 @@ end
 """
 $(SIGNATURES)
 
-Calculate the replica phase offset required for the correlator with
-respect to the prompt correlator, expressed in samples. The shifts are
-ordered from latest to earliest replica.
+Replica shifts relative to the prompt in samples, from latest to earliest replica.
 """
 function get_correlator_sample_shifts(
     correlator::EarlyPromptLateCorrelator,

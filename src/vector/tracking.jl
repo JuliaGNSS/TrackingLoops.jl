@@ -1,17 +1,15 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Vector tracking: the navigation engine that closes all loops
 #
-# One `VectorNavigation` is shared by every satellite a `VectorPLLAndDLL` steps.
-# It keeps one slot per satellite, which the per-record step fills from the
-# records themselves: the decoder, from the soft bits of the satellite's decoding
-# signal, and at every navigation epoch a snapshot of the driver's replica, its
-# C/N₀ and the accumulated discriminators, with the decoding signal's symbol
-# count. Once every satellite has completed an epoch's snapshot, the cycle runs:
-# before vector tracking it is a scalar PVT solve, whose first fix seeds the
-# navigation filter; from then on it is one filter iteration. The cycle leaves
-# its decisions in the slots — admission, release, the corrections — and each
-# satellite takes them up on its next record. Nothing here knows a correlator:
-# the software receiver and a hardware loop process step the same estimator.
+# One `VectorNavigation` is shared by every satellite a `VectorPLLAndDLL` steps. Each
+# satellite's slot is filled by its records: the decoder from the soft bits of its
+# decoding signal and, at every navigation epoch, a snapshot of the driver's replica,
+# C/N₀ and accumulated discriminators, with the decoding signal's symbol count. Once
+# every satellite has completed the epoch's snapshot the cycle runs: a scalar PVT solve
+# until its first fix seeds the filter, one filter iteration after. The cycle leaves its
+# decisions (admission, release, corrections) in the slots for each satellite to take
+# up on its next record. Nothing here knows a correlator, so software and hardware
+# loops step the same estimator.
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
@@ -23,14 +21,13 @@ Why the latest navigation cycle handed a satellite back to its scalar loop
   - `VT_NOT_RELEASED`: it was not;
   - `VT_INELIGIBLE`: no longer tracked (no record for two navigation cycles),
     decoded for positioning, or healthy;
-  - `VT_BELOW_HORIZON`: below the horizon at the updated position. It is not
-    admitted again until it stands a degree above the horizon, so a satellite
-    at the horizon is not admitted and released every cycle;
+  - `VT_BELOW_HORIZON`: below the horizon at the updated position; re-admitted
+    only one degree above it (hysteresis);
   - `VT_FALLBACK`: vector tracking stopped (starvation timeout, or no member
     left).
 
 A receiver that forces released satellites out of lock does so for the first
-two, and not for a fallback.
+two, not for a fallback.
 """
 @enum VTReleaseReason VT_NOT_RELEASED VT_INELIGIBLE VT_BELOW_HORIZON VT_FALLBACK
 
@@ -38,28 +35,24 @@ two, and not for a fallback.
     SatelliteReport
 
 What a [`VectorPLLAndDLL`](@ref) knows of one satellite (see
-[`satellite_report`](@ref)), so a consumer need not decode its bits or estimate
-its C/N₀ again:
+[`satellite_report`](@ref)), so a consumer need not decode or estimate C/N₀ again:
 
-  - `prn`, and `tracked`: whether a satellite is stepped on it now (`false` once
-    it went two cycles without a record; the rest then describes it as it was);
-  - `decoder`: its navigation-message decoder, up to the last record of its
-    decoding signal — the ephemeris, health and time of week. It shares its
-    buffers with the one the estimator keeps decoding into, so copy
-    (`copy(decoder)`) what is needed after the next record;
-  - `bit_synced`: whether its decoding signal's bit clock held the bit sync at
+  - `prn`, and `tracked`: whether it is stepped now (`false` after two cycles
+    without a record; the rest then describes it as it was);
+  - `decoder`: its navigation-message decoder up to the last record of its
+    decoding signal. It shares buffers with the running decoder, so `copy` it to
+    keep it past the next record;
+  - `bit_synced`: whether the decoding signal's bit clock held the bit sync at
     that signal's last record;
-  - at the latest epoch it was snapshotted at (`epoch`, on the records' time
-    grid, `nothing` before the first): `cn0_dbhz`, the driver's, from the C/N₀
-    estimator the host configured for it, `in_lock` (the decoding signal
-    synced and the driver's C/N₀ above the lock threshold) and `pvt_ready` (in
-    lock, decoded for positioning and healthy);
-  - `in_vector_loop`: whether the latest cycle has it in the vector loop, and
-    `release_reason` whether and why that cycle released it.
+  - at its latest snapshot (`epoch`, on the records' time grid, `nothing` before
+    the first): `cn0_dbhz` (the driver's, from the host's C/N₀ estimator),
+    `in_lock` (decoding signal synced and the driver's C/N₀ above the lock
+    threshold) and `pvt_ready` (in lock, decoded for positioning and healthy);
+  - `in_vector_loop` and `release_reason`: the latest cycle's decision.
 
-The report is the estimator's own object, one per satellite slot, refreshed by
-every `satellite_report` call, which therefore allocates nothing: copy out what
-is needed beyond the next call.
+The report is the estimator's own object, refreshed in place by every
+`satellite_report` call (no allocation): copy out what is needed beyond the next
+call.
 """
 mutable struct SatelliteReport{D}
     prn::Int
@@ -77,16 +70,16 @@ end
 SatelliteReport(decoder) =
     SatelliteReport(0, false, decoder, false, nothing, NaN, false, false, false, VT_NOT_RELEASED)
 
-# One satellite of the navigation engine. A slot is never deleted: a satellite that is
-# dropped leaves it free with all its storage, for the next satellite to reuse.
+# One satellite of the navigation engine. A slot is never deleted: a dropped satellite
+# leaves it, with its storage, for the next one to reuse.
 mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     prn::Int
     occupied::Bool
-    # The registration that holds the slot; a state of an older one registers again.
+    # The registration holding the slot; a state of an older one registers again.
     registration::Int
-    # Whether the slot snapshotted the epoch of the running cycle.
+    # Whether the slot snapshotted the running cycle's epoch.
     active::Bool
-    # The decoder, advanced by every record of the decoding signal.
+    # Advanced by every record of the decoding signal.
     running_decoder::D
     # The driver's last record end.
     last_end_sample::Int
@@ -120,10 +113,9 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     epoch_symbol_phase::Float64
     # The driver's replica code phase at the epoch (chips; `NaN` if not reported).
     epoch_driver_code_phase::Float64
-    # The snapshot at the epoch: what the cycle reads, and partly writes. The decoder
-    # is the one at the record end before the epoch, the replica moved on to the
-    # epoch; `estimator_state` is the satellite's state there, with the
-    # discriminators accumulated up to it, and carries the cycle's decisions.
+    # The snapshot the cycle reads and partly writes: the decoder at the last record
+    # end before the epoch, the replica moved on to the epoch, and the state there
+    # with the discriminators accumulated up to it, carrying the cycle's decisions.
     decoder::D
     estimator_state::E
     code_phase::Float64 # chips since the last decoded data symbol
@@ -191,9 +183,8 @@ function VTSlot(decoding_signal::AbstractGNSSSignal, prn::Integer, state::SatVec
     )
 end
 
-# The slots of one ranging signal: the driver the satellites range on, the signal
-# whose navigation data they decode (the driver itself for a plain signal), and a
-# fresh satellite state to fill a new slot with.
+# The slots of one driver signal, the signal whose navigation data they decode (the
+# driver itself for a plain signal) and the `prototype` state a new slot starts from.
 struct VTSlotGroup{S<:AbstractGNSSSignal,DS<:AbstractGNSSSignal,V<:VTSlot,E<:SatVectorPLLAndDLL}
     signal::S
     decoding_signal::DS
@@ -214,11 +205,11 @@ What the latest navigation cycle of a [`VectorPLLAndDLL`](@ref) did (see
 
   - `running`: vector tracking is running after this cycle;
   - `position_std`, `clock_std`: the filter's 1σ 3-D position and primary-clock
-    uncertainties (`NaN` while not running). A degenerate geometry shows up
-    here rather than in the starvation timer;
-  - `time_with_insufficient_meas`: how long the filter has been coasting on
-    epochs it could not solve, counted against `insufficient_meas_timeout`;
-    nonzero means the loop is on its way out, paid back at half rate;
+    uncertainties (`NaN` while not running); a degenerate geometry shows here,
+    not in the starvation timer;
+  - `time_with_insufficient_meas`: the starvation timer, grown by unsolvable
+    epochs, paid back at half rate otherwise, and checked against
+    `insufficient_meas_timeout`;
   - `num_members`: satellites in the vector loop after this cycle;
   - the events `enabled` (a fresh scalar fix seeded the filter), `fell_back`
     (vector tracking stopped) and `released` (some satellite was released; see
@@ -239,8 +230,7 @@ end
 
 VTStatus() = VTStatus(false, NaN * m, NaN * m, 0.0s, 0, false, false, false)
 
-# The buffers of one measurement count: the unscented update's intermediate and
-# the measurement vector and noise covariance it is handed.
+# The unscented update's buffers (intermediate, `z`, `R`) for one measurement count.
 struct MeasurementBuffers{I}
     intermediate::I
     z::Vector{Float64}
@@ -255,8 +245,8 @@ MeasurementBuffers(num_states, num_measurements) = MeasurementBuffers{_UKFMU}(
     zeros(num_measurements, num_measurements),
 )
 
-# Everything a cycle works in, sized at construction for the preallocated slots. The
-# vectors grow past that with `push!` / `resize!`, the design matrix by replacement.
+# A cycle's scratch, sized for the preallocated slots; vectors grow past that with
+# `push!` / `resize!`, the design matrix by replacement.
 mutable struct VTBuffers{SB<:Tuple}
     # Per group, the `SatelliteState`s whose rows are collected.
     states::SB
@@ -328,8 +318,7 @@ function VTBuffers(states::Tuple, num_states, layout::NavFilterLayout, max_membe
         [0.0],
         ObservabilityWorkspace(max_members),
         KFTUIntermediate(Float64, num_states),
-        # One per measurement count the slots can produce, so a change of membership
-        # never builds one mid-run.
+        # One per possible measurement count, so a membership change never builds one.
         Union{Nothing,MeasurementBuffers{_UKFMU}}[
             MeasurementBuffers(num_states, k) for k = 1:max_measurements
         ],
@@ -346,16 +335,13 @@ end
     VectorNavigation
 
 The navigation engine of a [`VectorPLLAndDLL`](@ref), shared by every satellite
-it steps: the slots, the bias layout of its signals, the navigation filter's
-process model, state and covariance, and every buffer a cycle needs.
+it steps: the slots, the bias layout, the navigation filter's model, state and
+covariance, and every buffer a cycle needs.
 
-It holds the latest solution (`pvt`, a `PVTSolution` whose containers every
-cycle reuses) and the per-member report of the latest cycle (`member_sats`):
-every member of the loop, measured *and* coasted, keyed exactly as `pvt.sats`
-is, each with the satellite position, transmit time and post-fit residuals that
-update produced. `pvt.sats` carries only the members the update measured, so
-the difference between the two key sets is what the filter predicted through
-an obscuration. Emptied while the scalar solve is in control.
+It holds the latest solution (`pvt`, whose containers every cycle reuses) and
+`member_sats` (see [`member_sats`](@ref)). `pvt.sats` carries only the members
+the update measured, so the keys missing from it are the members the filter
+coasted through an obscuration.
 """
 mutable struct VectorNavigation{G<:Tuple,SB<:Tuple}
     const config::VectorTracking
@@ -367,12 +353,12 @@ mutable struct VectorNavigation{G<:Tuple,SB<:Tuple}
     running::Bool
     # The clock-bias state the solution is reported against.
     primary_clock_index::Int
-    # The epoch the pseudoranges are referenced to — always on the GPS Time count (see
-    # `VTMember.time_gpst_count`), so it does not move when the primary clock changes.
+    # The pseudoranges' reference epoch, on the GPS Time count (see
+    # `VTMember.time_gpst_count`) so it does not move when the primary clock changes.
     reference_time::typeof(1.0s)
     time_with_insufficient_meas::typeof(1.0s)
-    # Constant part of the reported epoch (seconds), cached once resolved — see
-    # `time_epoch_offset`. `nothing` until a primary-system member has been measured.
+    # Constant part (s) of the reported epoch (see `time_epoch_offset`); `nothing`
+    # until a primary-system member has been measured.
     time_epoch_offset::Union{Nothing,Int}
     const member_sats::Dictionary{Tuple{Symbol,Int},SatInfo}
     pvt::PVTSolution
@@ -385,12 +371,11 @@ mutable struct VectorNavigation{G<:Tuple,SB<:Tuple}
     const groups::G
     const cycle_time::typeof(1.0s)
     const lock_cn0_threshold::Float64 # dB-Hz
-    # The epoch (a multiple of `cycle_time` on the records' time grid) the slots
-    # snapshot next, and how many have.
+    # The epoch (in `cycle_time`s on the records' time grid) the slots snapshot next,
+    # and how many have.
     pending_epoch::Int
     num_snapshots::Int
-    # The latest cycle: its id, its epoch and the integration time its
-    # corrections were sized with.
+    # The latest cycle's id, epoch and the integration time its corrections assume.
     cycle_id::Int
     cycle_epoch::Int
     cycle_integration_time::Float64 # s
@@ -457,16 +442,15 @@ _satellite_state_buffer(group::VTSlotGroup{S,DS,<:VTSlot{D}}) where {S,DS,D} =
 """
     position_uncertainty(estimator::VectorPLLAndDLL)
 
-The navigation filter's own 1σ uncertainty (m) of the 3-D position. Meaningful
-once the filter has been seeded.
+The navigation filter's 1σ 3-D position uncertainty (m), once seeded.
 """
 position_uncertainty(estimator::VectorPLLAndDLL) = position_uncertainty(estimator.navigation)
 
 """
     clock_uncertainty(estimator::VectorPLLAndDLL)
 
-The navigation filter's own 1σ uncertainty (m) of the clock bias the solution is
-referenced to. Meaningful once the filter has been seeded.
+The navigation filter's 1σ uncertainty (m) of the solution's reference clock
+bias, once seeded.
 """
 clock_uncertainty(estimator::VectorPLLAndDLL) = clock_uncertainty(estimator.navigation)
 
@@ -480,9 +464,8 @@ end
 """
     navigation_solution(estimator::VectorPLLAndDLL) -> PVTSolution
 
-The latest navigation solution: the scalar PVT's until the filter is seeded,
-the filter's while vector tracking runs. Its containers are reused by the next
-cycle, so copy out what is needed later.
+The latest navigation solution: the scalar PVT's until the filter is seeded, the
+filter's after. The next cycle reuses its containers; copy out what is needed.
 """
 navigation_solution(estimator::VectorPLLAndDLL) = estimator.navigation.pvt
 
@@ -531,10 +514,10 @@ end
 """
     member_sats(estimator::VectorPLLAndDLL)
 
-The per-member report of the latest cycle: every member of the vector loop,
-measured *and* coasted, keyed `(signal_id, prn)` as the solution's `sats` are,
-each with the satellite position, transmit time and post-fit residuals. Empty
-while the scalar solve is in control.
+The latest cycle's per-member report: every member of the vector loop, measured
+*and* coasted, keyed `(signal_id, prn)` like the solution's `sats`, each with the
+satellite position, transmit time and post-fit residuals. Empty while the scalar
+solve is in control.
 """
 member_sats(estimator::VectorPLLAndDLL) = estimator.navigation.member_sats
 
@@ -561,10 +544,9 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Walking the groups
 
-# `f(accumulator, group, g, buffer, args...)` over the groups, in order, with the
-# group's position `g` and its entry of the per-group `buffers`; returns the final
-# accumulator. Recursion over the tuples keeps every group's call statically
-# dispatched, however heterogeneous the groups are.
+# Fold `f(acc, group, g, buffer, args...)` over the groups in order, `g` the group's
+# index and `buffer` its entry of `buffers`. Recursing over the tuples keeps every
+# call statically dispatched, however heterogeneous the groups.
 @inline _fold_groups(f::F, acc, ::Tuple{}, ::Tuple{}, g, args...) where {F} = acc
 @inline _fold_groups(f::F, acc, groups::Tuple, buffers::Tuple, g, args...) where {F} =
     _fold_groups(
@@ -576,7 +558,6 @@ end
         args...,
     )
 
-# The per-group `SignalGroup`s over `buffers`, for the PVT collection pass.
 _signal_groups(groups, buffers) =
     map((group, buffer) -> SignalGroup(group.signal, buffer), groups, buffers)
 
@@ -600,8 +581,8 @@ end
     carrier_phase = sat.carrier_phase,
 )
 
-# The scalar PVT over the satellites marked `pvt_ready`, into the state's solution:
-# a fresh fix is a new object, a failed epoch the solution itself.
+# The scalar PVT over the `pvt_ready` satellites: a fresh fix is a new object, a
+# failed epoch returns the old solution.
 function _solve_scalar_pvt!(vt::VectorNavigation, groups)
     buffers = vt.buffers.states
     _fold_groups(_collect_pvt_ready!, nothing, groups, buffers, 1)
@@ -626,18 +607,14 @@ function _reset_release_reasons!(acc, group, g, buffer)
     acc
 end
 
-# Hand `sat` back to its scalar loop for `reason`. The satellite takes it up on its
-# next record, re-seeding its scalar loop from the replica where that lands
-# (`_take_up_cycle`).
+# Hand `sat` back to its scalar loop; taken up on its next record (`_take_up_cycle`).
 function _release!(sat::VTSlot, reason::VTReleaseReason)
     sat.estimator_state = _disable_vector_tracking(sat.estimator_state)
     sat.release_reason = reason
     nothing
 end
 
-# Whether the slot is a member of the vector loop this cycle: it snapshotted the
-# epoch, and its state at the epoch is in the loop. A member that missed the
-# epoch sits the cycle out.
+# A member that missed the epoch sits the cycle out.
 _is_member(sat::VTSlot) = sat.active && sat.estimator_state.vt_on
 
 _is_eligible(sat::VTSlot) =
@@ -645,33 +622,26 @@ _is_eligible(sat::VTSlot) =
     is_decoding_completed_for_positioning(sat.decoder) &&
     is_sat_healthy(sat.decoder)
 
-# The elevation a satellite has to reach before it is admitted, above the horizon at
-# which a member is released: the hysteresis keeps a satellite near the horizon from
-# being admitted and released, its scalar loop re-seeded, every cycle. One degree is a
-# few minutes of a rising satellite.
+# Admission elevation, above the horizon that releases a member: the hysteresis keeps a
+# satellite near the horizon from being admitted and released every cycle. One degree
+# is a few minutes of a rising satellite.
 const ADMISSION_ELEVATION = deg2rad(1.0)
 
-# Whether a satellite stands at least `ADMISSION_ELEVATION` above the horizon of
-# `enu_from_ecef`, at its transmit time.
+# Evaluated at the satellite's transmit time.
 function _is_above_admission_mask(signal, sat::VTSlot, enu_from_ecef)
     orbit = calc_satellite_position_and_velocity(_satellite_state(signal, sat))
     get_sat_enu(enu_from_ecef, _ecef(get_sat_position(orbit))).ϕ >= ADMISSION_ELEVATION
 end
 
-# Admit the satellites that are eligible (tracked, decoded for positioning, healthy),
-# in lock and above the admission mask at the filter's position (`enu_from_ecef`), and
-# release the members that are no longer eligible. Returns whether anything was
-# released.
+# Admit eligible satellites that are in lock and above the admission mask at the
+# filter's position, and release members no longer eligible. Returns whether any was
+# released. A member out of lock stays in the loop, unmeasured, and keeps receiving
+# corrections.
 #
-# NOTE: admission is deliberately gated on `in_lock` and not on a stricter
-# ranging-ready flag, even though admitting a satellite whose code phase is still tens
-# of metres out into the navigation filter is a real question. One list serves two
-# purposes at once — the admission and, through `in_lock`, the measurement eligibility
-# of the members — so gating it would also withhold discriminators from *existing*
-# members, which is wrong. The two uses need separating first.
-#
-# A member out of lock is not released: it stays in the loop, unmeasured, and keeps
-# receiving corrections.
+# NOTE: admission is gated on `in_lock`, not a stricter ranging-ready flag, although a
+# satellite whose code phase is still tens of metres out may then enter the filter.
+# `in_lock` also decides the members' measurement eligibility, so a stricter gate would
+# withhold discriminators from existing members; the two uses need separating first.
 function _update_membership!(released, group, g, buffer, enu_from_ecef)
     for sat in group.slots
         sat.active || continue
@@ -692,7 +662,6 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Measurement gathering
 
-# The members' satellite states at the epoch, in member order.
 function _collect_member_states!(acc, group, g, buffer)
     empty!(buffer)
     for sat in group.slots
@@ -701,8 +670,7 @@ function _collect_member_states!(acc, group, g, buffer)
     acc
 end
 
-# One member per satellite in the loop, from its row; returns the running member
-# index.
+# One `VTMember` per satellite in the loop, from its row; returns the running index.
 function _collect_members!(j, group, g, buffer, vt, T)
     layout = vt.layout
     buffers = vt.buffers
@@ -747,8 +715,8 @@ function _collect_members!(j, group, g, buffer, vt, T)
     j
 end
 
-# Gather this cycle's members: the satellites in the loop, their rows at the epoch, and
-# the per-member model pieces. Returns the ionospheric correction the rows select.
+# Gather this cycle's members, their rows at the epoch and per-member model pieces.
+# Returns the ionospheric correction the rows select.
 function _gather_members!(vt::VectorNavigation, groups, T)
     buffers = vt.buffers
     _fold_groups(_collect_member_states!, nothing, groups, buffers.states, 1)
@@ -757,8 +725,8 @@ function _gather_members!(vt::VectorNavigation, groups, T)
         _signal_groups(groups, buffers.states);
         approximate_year = vt.approximate_year,
     )
-    # Every member is decoded and healthy, which is exactly what the collection pass
-    # keeps, so the rows are the members in order.
+    # The collection pass keeps exactly the decoded, healthy satellites, i.e. every
+    # member, so rows and members align.
     num_rows = length(buffers.rows)
     num_members = mapreduce(length, +, buffers.states; init = 0)
     num_rows == num_members || throw(
@@ -778,8 +746,8 @@ function _gather_members!(vt::VectorNavigation, groups, T)
     ionospheric_correction
 end
 
-# The atmosphere-corrected pseudoranges of every member against `reference_tow`, with
-# the delays predicted at the state `x`.
+# Every member's atmosphere-corrected pseudorange against `reference_tow`, the delays
+# predicted at `vt.x`.
 function _measure_pseudoranges!(vt::VectorNavigation, ionospheric_correction, reference_tow)
     buffers = vt.buffers
     members = buffers.members
@@ -788,11 +756,9 @@ function _measure_pseudoranges!(vt::VectorNavigation, ionospheric_correction, re
     delays = resize!(buffers.delays, num_members)
     if num_members > 0 &&
        (vt.enable_ionospheric_correction || vt.enable_tropospheric_correction)
-        # The Niell mapping's seasonal term takes the day of year, derived the way
-        # `calc_pvt` derives it: from a decoded satellite's absolute week plus the time of
-        # week. Any member dates the epoch — every member has finished decoding and the
-        # time systems differ by at most their defined scale offset, 14 s for BDT, against
-        # a one-year period — so the first one serves.
+        # Day of year for the Niell mapping, as `calc_pvt` derives it. Any member dates
+        # the epoch (time systems differ by at most 14 s, BDT, against a one-year
+        # period), so the first serves.
         doy = day_of_year(rows[1].system_start_time, rows[1].week, reference_tow)
         position_and_bias_vector!(buffers.ξ, vt.x, vt.model.idxs)
         predict_atmospheric_delays!(
@@ -820,8 +786,7 @@ end
 function _measurement_buffers!(buffers::VTBuffers, num_states, num_measurements)
     cache = buffers.measurement_updates
     if num_measurements > length(cache)
-        # The element type is not isbits: every new slot must be filled, or it is
-        # `#undef` for a later, smaller count.
+        # Not isbits: fill the new entries, or they stay `#undef`.
         num_cached = length(cache)
         resize!(cache, num_measurements)
         fill!(view(cache, (num_cached+1):num_measurements), nothing)
@@ -833,8 +798,8 @@ function _measurement_buffers!(buffers::VTBuffers, num_states, num_measurements)
     new_buffers
 end
 
-# Fuse the candidates' measurements at the predicted state `vt.x`, leaving the posterior
-# in `vt.x` and `vt.P`.
+# Fuse the candidates' measurements at the predicted `vt.x`; posterior into `vt.x`,
+# `vt.P`.
 function _measurement_update!(vt::VectorNavigation, T)
     buffers = vt.buffers
     members = buffers.members
@@ -867,8 +832,7 @@ function _measurement_update!(vt::VectorNavigation, T)
             R[num_sats+k, num_sats+k] = pseudorange_rate_noise_variance(member, T)
         end
     end
-    # Each clock collapse rides along as one extra measurement row, appended after the
-    # satellite rows.
+    # Each clock collapse is one extra measurement row after the satellite rows.
     offset = num_sats + num_rate_rows
     for (i, (_, _, isb)) in enumerate(constraints)
         z[offset+i] = isb
@@ -891,8 +855,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Loop closure
 
-# The predictions of every member at the state `vt.x` — the updated one — and their
-# post-fit residuals.
+# Every member's predictions at the updated `vt.x`, and post-fit residuals.
 function _predict_members!(vt::VectorNavigation)
     buffers = vt.buffers
     members = buffers.members
@@ -924,9 +887,8 @@ function _predict_members!(vt::VectorNavigation)
     nothing
 end
 
-# Leave every active member its share of this cycle's corrections: the satellite
-# evaluates them where its own command lands, on its next record
-# (`_correction_at_landing`), against this cycle's posterior and member buffers.
+# Point every active member at this cycle's corrections; the satellite evaluates them
+# where its command lands, on its next record (`_correction_at_landing`).
 function _close_loops!(acc, group, g, buffer, vt)
     buffers = vt.buffers
     for (j, member) in enumerate(buffers.members)
@@ -938,16 +900,11 @@ function _close_loops!(acc, group, g, buffer, vt)
     acc
 end
 
-# The NCO corrections of member `j` (of slot `sat`), evaluated where its command lands:
-# `τ` after the epoch, at the state `vt.x` propagated by `τ` and against the range the
-# replica will realise there — the transmit time from the code phase at landing (the
-# epoch's corrected transmit time moved on by the `chips` the replica advances from the
-# epoch to the landing; the satellite clock correction changes by picoseconds in `τ`),
-# the satellite at that time, the receive time `reference_tow + τ`, the epoch's
-# atmospheric delay (it moves by millimetres in `τ`). The code correction removes the
-# range error (the TOW-based, atmosphere-corrected range, no discriminator term), the
-# carrier correction the rate error against the replica's own Doppler at landing,
-# `carrier_doppler` (Hz; no FLL term). Returns both in Hz.
+# The NCO corrections (Hz) of member `j`, evaluated where its command lands, `τ` after
+# the epoch (see `_predict_at_landing`). The code correction removes the range error
+# (TOW-based, atmosphere-corrected, no discriminator term), the carrier correction the
+# rate error against the replica's Doppler at landing, `carrier_doppler` (Hz; no FLL
+# term).
 function _member_corrections(vt::VectorNavigation, sat::VTSlot, j, τ, chips, carrier_doppler)
     member = vt.buffers.members[j]
     predicted_pseudorange, predicted_rate, measured_pseudorange =
@@ -963,9 +920,11 @@ function _member_corrections(vt::VectorNavigation, sat::VTSlot, j, τ, chips, ca
     code_update, carrier_update
 end
 
-# The predicted pseudorange and rate of member `j` where its command lands, `τ` after
-# the epoch and `chips` on from the epoch's code phase, at the state propagated there,
-# and the pseudorange its replica realises there.
+# Member `j`'s predicted pseudorange and rate at landing, `τ` after the epoch, from
+# `vt.x` propagated by `τ`, and the pseudorange its replica realises there: transmit
+# time moved on by the `chips` the replica advances (the satellite clock correction
+# changes by picoseconds in `τ`), receive time `reference_tow + τ`, and the epoch's
+# atmospheric delay (it moves by millimetres in `τ`).
 function _predict_at_landing(vt::VectorNavigation, sat::VTSlot, member::VTMember, j, reference_tow, τ, chips)
     buffers = vt.buffers
     idxs = vt.model.idxs
@@ -1002,8 +961,8 @@ function _predict_at_landing(vt::VectorNavigation, sat::VTSlot, member::VTMember
     predicted_pseudorange, predicted_rate, measured_pseudorange
 end
 
-# Release the members of this group whose `active` flag equals `which`, for `reason`.
-# Returns whether any was released.
+# Release the group's members whose `active` flag equals `which`, for `reason`; returns
+# whether any was.
 function _release_members!(released, group, g, buffer, vt, which::Bool, reason::VTReleaseReason)
     buffers = vt.buffers
     for (j, member) in enumerate(buffers.members)
@@ -1035,10 +994,9 @@ function _enable_fix_satellites!(num_enabled, group, g, buffer, vt)
     num_enabled
 end
 
-# Satellites still in the loop when a fix seeds it — kept by a host across a fallback
-# — carry the old filter's accumulators and corrections. The ineligible ones would have
-# no measurement row and are released, as a running cycle releases them; the others
-# start over in the loop, like a satellite joining. Returns whether any was released.
+# Members kept by a host across a fallback carry the old filter's accumulators and
+# corrections when a fix seeds the loop: release the ineligible ones (no measurement
+# row), restart the others as if joining. Returns whether any was released.
 function _restart_stale_members!(released, group, g, buffer, vt)
     for sat in group.slots
         _is_member(sat) || continue
@@ -1054,9 +1012,8 @@ function _restart_stale_members!(released, group, g, buffer, vt)
     released
 end
 
-# Scale the seeded covariance by the geometry of the fix (`seed_fix_covariance!`): the
-# design matrix of the members the fix solved with, at the seeded position. The
-# candidates are rebuilt by every cycle, so they serve as scratch here.
+# Scale the seeded covariance by the fix's geometry (`seed_fix_covariance!`) at the
+# seeded position. `candidates` serves as scratch; every cycle rebuilds it.
 function _seed_fix_covariance!(vt::VectorNavigation)
     buffers = vt.buffers
     members = buffers.members
@@ -1101,12 +1058,10 @@ function _seed_fix_covariance!(vt::VectorNavigation)
     )
 end
 
-# Switch from scalar to vector tracking off the fresh scalar fix in `vt.pvt`: promote the
-# fix's satellites into the vector loop, seed the navigation filter from the fix, and close
-# the loops a first time so the NCOs already steer toward the navigation solution — with
-# no measurement update and no accumulator reset. A fresh fix always has satellites, and
-# every one of them is an active slot (only those enter the scalar solve), so there is
-# always a member to seed from. Returns whether a stale member was released.
+# Switch to vector tracking off the fresh fix in `vt.pvt`: admit its satellites, seed the
+# filter from it and close the loops once (no measurement update, no accumulator reset).
+# The fix's satellites are all active slots, so there is always a member to seed from.
+# Returns whether a stale member was released.
 function _seed!(vt::VectorNavigation, groups, cycle_time)
     buffers = vt.buffers
     model = vt.model
@@ -1119,16 +1074,13 @@ function _seed!(vt::VectorNavigation, groups, cycle_time)
     ionospheric_correction = _gather_members!(vt, groups, T)
     _seed_fix_covariance!(vt)
     members = buffers.members
-    # The pseudorange reference epoch is the latest transmit time corrected by the fix's
-    # receiver clock bias, matching how `calc_pvt` timestamps the fix.
+    # The latest transmit time corrected by the fix's clock bias, as `calc_pvt` stamps it.
     latest = -Inf
     for member in members
         latest = max(latest, member.time_gpst_count)
     end
     reference_tow = latest - ustrip(m, pvt.time_correction) / SPEED_OF_LIGHT
     _measure_pseudoranges!(vt, ionospheric_correction, reference_tow)
-    # First loop closure: the filter is seeded exactly at the fix, so the NCO corrections
-    # are the prediction residuals at the seeded state.
     _predict_members!(vt)
     resize!(buffers.active, length(members))
     fill!(buffers.active, true)
@@ -1137,9 +1089,8 @@ function _seed!(vt::VectorNavigation, groups, cycle_time)
     vt.running = true
     vt.reference_time = reference_tow * s
     vt.time_with_insufficient_meas = 0.0s
-    # The epoch offset is re-read with the reference epoch it anchors: one cached by an
-    # earlier run would be a week stale if the scalar solve was in control across a
-    # week rollover, which no running cycle saw.
+    # Re-read: a cached offset would be a week stale after a rollover under the scalar
+    # solve, which no running cycle saw.
     vt.time_epoch_offset = _primary_time_epoch_offset(vt, eachindex(members))
     released
 end
@@ -1147,10 +1098,9 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # One cycle
 
-# One navigation-filter cycle: predict, fuse the accumulated discriminators as
-# pseudorange (and, for VDFLL, pseudorange-rate) measurements, close every member's loops
-# with fresh NCO corrections, and manage the membership (admission, availability,
-# release, fallback to scalar tracking). Returns `(released, fell_back)`.
+# One filter cycle: predict, fuse the accumulated discriminators as pseudorange (and,
+# for VDFLL, rate) measurements, close the loops and manage membership. Returns
+# `(released, fell_back)`.
 function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
     config = vt.config
     buffers = vt.buffers
@@ -1158,12 +1108,9 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
     idxs = model.idxs
     T = ustrip(s, cycle_time)
     ensure_nav_filter_integration_time!(model, config, cycle_time)
-    # Advance the receive time-of-week, wrapping at the 604800 s week boundary so it
-    # stays a valid seconds-of-week for the pseudorange differencing, the atmospheric
-    # time-of-week and the solution's week/second split. The wrap is remembered: the
-    # week it drops has to be added to the cached epoch offset
-    # (`rolled_over_time_epoch_offset`), which is the only other place the run's
-    # absolute epoch is held.
+    # Advance the receive TOW, wrapping at the week so it stays a valid seconds-of-week.
+    # The dropped week goes into the cached epoch offset (`rolled_over_time_epoch_offset`),
+    # the only other place the absolute epoch is held.
     advanced_reference_time = vt.reference_time + cycle_time
     week_rollover = advanced_reference_time >= SECONDS_PER_WEEK * s
     reference_time = mod(advanced_reference_time, SECONDS_PER_WEEK * s)
@@ -1177,25 +1124,21 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
     members = buffers.members
     num_members = length(members)
 
-    # Navigation filter prediction, then the measurements at the predicted state.
     time_update!(buffers.time_update, vt.x, vt.P, model.F, model.Q)
     _measure_pseudoranges!(vt, ionospheric_correction, reference_tow)
 
-    # Measurement candidates: members whose signal is currently available (the
-    # discriminators of an obscured satellite carry no information).
+    # Candidates: members with an available signal (an obscured one carries no
+    # information).
     candidates = empty!(buffers.candidates)
     for (j, member) in enumerate(members)
         member.available && push!(candidates, j)
     end
-    # What this epoch must supply to determine the state, decided below from the bias
-    # layout actually in force. Until a measurement set is gathered it is the bare floor —
-    # 3 position components and one clock, from four distinct satellites none of which are
-    # there — so an epoch with no candidates at all counts as unsolvable.
+    # The bare floor (position and one clock from four satellites), so an epoch without
+    # candidates counts as unsolvable.
     observability = BiasObservability(4, 4, 0)
-    # The innovation gate GNSSReceiver once had is gone: the observability watchdog below
-    # catches a diverging solution, and a gate could release a healthy satellite whose
-    # large-but-explained innovation the Kalman update would have absorbed (e.g. the first
-    # measurements of a not-yet-observed constellation).
+    # No innovation gate: the observability watchdog catches divergence, and a gate
+    # could release a healthy satellite whose large but explained innovation the update
+    # would absorb (e.g. a constellation's first measurements).
     if !isempty(candidates)
         observability =
             assess_bias_observability!(buffers.observability, vt.layout, members, candidates)
@@ -1203,22 +1146,17 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
     end
     num_included = length(candidates)
 
-    # The measurement model at the *updated* state, for every member: the post-fit
-    # residuals, and — unless the loop falls back — the NCO corrections.
     _predict_members!(vt)
 
-    # Starvation watchdog: grow the timer whenever the epoch could not determine the
-    # navigation state — too few measurements, or too few distinct satellites among them,
-    # for the bias layout in force — and pay it back down (at half rate) otherwise. How
-    # certain the filter is of the solution it did produce is not policed here; it is
-    # reported as `VTStatus`'s `position_std`.
+    # Starvation watchdog (see `VTStatus`): solvability only; the solution's certainty is
+    # reported as `position_std`, not policed.
     time_with_insufficient_meas =
         is_epoch_solvable(observability, num_included) ?
         max(0.0s, vt.time_with_insufficient_meas - cycle_time / 2) :
         vt.time_with_insufficient_meas + cycle_time
 
-    # Elevation mask: release members that dropped below the horizon, at the updated
-    # position — before the corrections, so every remaining member gets one.
+    # Elevation mask at the updated position, before the corrections so every remaining
+    # member gets one.
     active = resize!(buffers.active, num_members)
     fill!(active, true)
     user_pos, _, _ = nav_filter_states(vt.x, idxs)
@@ -1239,9 +1177,6 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
         VT_BELOW_HORIZON,
     )
 
-    # Fall back to scalar tracking when the filter has coasted too long or no members
-    # remain; otherwise close every member's loops with fresh corrections toward the
-    # updated solution.
     fell_back = time_with_insufficient_meas > config.insufficient_meas_timeout || num_active == 0
     if fell_back
         released = _fold_groups(
@@ -1275,13 +1210,11 @@ end
 
 _ecef(v) = ECEF(v[1], v[2], v[3])
 
-# The epoch offset from a measured member of the primary system, or the cached one.
 _resolve_time_epoch_offset(vt::VectorNavigation) =
     isnothing(vt.time_epoch_offset) ?
     _primary_time_epoch_offset(vt, vt.buffers.candidates) : vt.time_epoch_offset
 
-# The epoch offset read off the first of the members at `indices` of the primary system,
-# `nothing` if there is none.
+# From the first primary-system member among `indices`; `nothing` if none.
 function _primary_time_epoch_offset(vt::VectorNavigation, indices)
     members = vt.buffers.members
     for j in indices
@@ -1306,11 +1239,9 @@ function _write_solution!(vt::VectorNavigation, groups)
     primary_clock_bias = x[idxs.clock_biases[vt.primary_clock_index]]
     included = buffers.candidates
 
-    # Geometry of the satellites this update measured, or `nothing` when there is none to
-    # report: no measurements at all, or a rank-deficient design for which `calc_DOP!`
-    # returns its all-`-1` sentinel. That sentinel stays inside: `calc_pvt` never emits
-    # one either (it rejects the epoch instead), so a solution's `dop` is always either a
-    # real geometry or absent.
+    # DOP of the measured satellites, or `nothing` without measurements or for a
+    # rank-deficient design (`calc_DOP!`'s all-`-1` sentinel, which `calc_pvt` never
+    # emits either).
     dop = nothing
     if !isempty(included)
         columns, primary_column = dense_bias_columns!(
@@ -1338,11 +1269,8 @@ function _write_solution!(vt::VectorNavigation, groups)
         candidate.GDOP < 0 || (dop = candidate)
     end
 
-    # The solution reports the satellites that determined it — the members this update
-    # measured — which is what `calc_pvt` reports for a scalar solve, so a consumer reads
-    # `pvt.sats` the same way under either tracking mode and `pvt.dop` above describes
-    # exactly this set. The coasted members are reported, with their own post-fit
-    # residuals, in `member_sats`.
+    # `pvt.sats` holds the measured members only, as `calc_pvt` does, so it matches
+    # `pvt.dop`; coasted members are in `member_sats`.
     solution = empty_keeping_capacity!(vt.pvt)
     sats = solution.sats
     for j in included
@@ -1353,10 +1281,8 @@ function _write_solution!(vt::VectorNavigation, groups)
         set!(member_sats, _member_key(layout, members[j]), _member_info(buffers, j))
     end
 
-    # Only the biases this update measured, as `calc_pvt` reports only the ones it
-    # estimated: a time system or band without a measurement coasts on its process noise
-    # (or was never seeded at all), and a consumer could not tell its value from a
-    # measured one.
+    # Only measured biases, as in `calc_pvt`: an unmeasured one coasts on process noise
+    # (or was never seeded) and would be indistinguishable from a measured one.
     inter_system_biases = solution.inter_system_biases
     for (index, time_system) in enumerate(layout.time_systems)
         index == vt.primary_clock_index && continue
@@ -1387,7 +1313,6 @@ function _write_solution!(vt::VectorNavigation, groups)
     nothing
 end
 
-# Whether one of the members at `included` satisfies `predicate`.
 function _is_measured(predicate::F, members, included) where {F}
     for j in included
         predicate(members[j]) && return true

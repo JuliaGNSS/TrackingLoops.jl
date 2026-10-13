@@ -1,25 +1,15 @@
-# Running sums over a `CorrelatorNoiseEstimator`'s window, so that neither
-# appending to it nor reading it has to walk it. `span` answers "does the window
-# still cover `window_duration`?" for the trim, and `weighted_density / looks` is
-# `get_noise_density` outright.
+# Running sums over a `CorrelatorNoiseEstimator`'s window so neither appending nor
+# reading walks it: `span` drives the trim, `weighted_density / looks` is
+# `get_noise_density`.
 #
-# `stale` counts appends since the last exact recomputation. Incremental
-# add/subtract on `Float64` drifts, and `append_noise_observation!` is public — a
-# producer may legitimately mix a 0.2 s pre-averaged entry with 1 ms ones, so the
-# magnitudes are not guaranteed comparable and the cancellation is not purely
-# hypothetical. Rebuilding once per window's worth of appends bounds the drift to
-# one window of operations while staying O(1) amortised.
+# `stale` counts appends since the last exact recomputation. Incremental `Float64`
+# add/subtract drifts, and a producer may mix e.g. a 0.2 s pre-averaged entry with
+# 1 ms ones, so the totals are rebuilt once per window's worth of appends (O(1)
+# amortised).
 #
-# An ordinary immutable value, rebuilt whole on every change and stored in the
-# estimator's single `Ref`. Immutable rather than a mutable struct because
-# nothing in `src` is one — that is what lets per-signal state live in an
-# immutable `TrackState` — and one `Ref` of a four-field value rather than four
-# `Ref`s of a field each: it is isbits, so the box holds it inline and an update
-# is one write to one cache line instead of four chases to four heap objects.
-#
-# The estimator itself is still never rebuilt. Only this cache is, and it is a
-# cache of `buffered`'s contents — derived state with an anchor, recomputed from
-# it exactly (see `stale`) — not the free-floating scalar the design rules out.
+# Immutable and isbits, held in the estimator's single `Ref`: an update is one write
+# to one cache line, and the estimator itself is never rebuilt. It is a cache derived
+# exactly from `buffered`, not independent state.
 struct NoiseWindowTotals{D,T}
     span::T
     weighted_density::D
@@ -32,147 +22,76 @@ NoiseWindowTotals{D,T}() where {D,T} = NoiseWindowTotals{D,T}(zero(T), zero(D), 
 """
 $(SIGNATURES)
 
-The signal's noise reference, measured by **despreading an untracked PRN** — the
-only [`AbstractNoiseEstimator`](@ref) Tracking ships, and the one to configure on
-a hardware path too (you simply fill it with
-[`append_noise_observation!`](@ref) instead of letting [`update_noise!`](@ref)
-fill it).
+The signal's noise reference, measured by **despreading an untracked PRN**. The
+only shipped [`AbstractNoiseEstimator`](@ref); on a hardware path fill it with
+[`append_noise_observation!`](@ref) instead of [`update_noise!`](@ref).
 
 # Why a despread and not a power meter
 
-The reference traverses the **identical** quantise → downconvert → despread →
-accumulate path as the prompt, reusing the same kernel, the same replica
-generator and — because the estimator is keyed by signal — the same *code*. So
-the measured `N₀` already contains every imperfection of that chain — the 1-bit /
-2-bit quantisation loss, the quantiser's operating point under load, the input
-scaling an AGC step moves, the code amplitude of a CBOC replica — with no
-per-backend model and no closed-form correction. A `Σ|x|²` power meter would need
-one line per backend and would still miss the second-order coupling where a
-strong signal shifts that operating point.
+The reference runs the same quantise → downconvert → despread → accumulate path as
+the prompt, with the same kernel and (keyed by signal) the same code. So the
+measured `N₀` already contains quantisation loss, the quantiser's operating point
+under load, AGC scaling and a CBOC replica's code amplitude, with no per-backend
+model; and the despread evaluates the signal's own `∫ S_I(f)·|G(f)|² df` (see
+[Noise estimation](@ref)). A `Σ|x|²` power meter gets both wrong.
 
-It is also what makes the spectral weighting right rather than assumed. Sharing
-the consumer's code means the despread evaluates that signal's own
-`∫ S_I(f)·|G(f)|² df` — the coloured-interference case a power meter, or a
-reference despread with some *other* signal's code, both get wrong. See
-[`AbstractNoiseEstimator`](@ref).
+# Open loop
 
-# It is open-loop
+No feedback of any kind: the reference runs at the band's nominal IF plus a random
+dither, at a random code phase, rotating over **all** PRNs of the family. It reads
+nothing from satellite state, so it works with zero satellites tracked, and on an
+FPGA a noise channel is a subset of a tracking channel.
 
-The reference has **no feedback of any kind**: it runs at the band's nominal IF,
-at a randomly dithered offset from zero Doppler, with a random code phase and a
-rotating PRN. There is no discriminator, no loop filter and no NCO update ever
-written to it — and, since the randomisation removed the need to know which PRNs
-are in use, it reads **nothing** from satellite state, not even the tracked key
-set. It is therefore correct with **zero satellites tracked**, and on an FPGA a
-noise channel is a strict subset of a tracking channel rather than an addition to
-one.
+# Why code phase and Doppler are randomised
 
-# Why the code phase and the Doppler are randomised
+At a fixed code phase and zero Doppler, the relative phase against an untracked but
+present signal (spoofed, or visible and not acquired) is frozen, since it drifts
+only at the code Doppler `f_d/1540`. Such a signal has a `3 × 1.5 / 1023 ≈ 0.44 %`
+chance per PRN of sitting in one of the three taps and then adds
+`T·(C/N₀)/3 ≈ 10.5·N₀` (45 dB-Hz) to every observation on that PRN indefinitely
+(≈ +1.5 dB on `N̂₀` after the rotation's dilution). Fresh draws per sub-integration
+turn that into independent per-observation trials: ≈ 0.07 dB residual for a full
+sky at 45 dB-Hz. Hitting a tracked satellite's peak (≈ 0.6 %, ≈ 0.045 dB) is an
+order of magnitude below that, hence no untracked-PRN restriction; a constant
+32-PRN pool also keeps the dilution from worsening as more satellites are acquired.
 
-A reference at a *fixed* code phase and *exactly* zero Doppler is a stationary
-target, and the failure that matters is not an attacker — it is that a hit never
-goes away. The replica is re-anchored to code phase 0 on a grid running at the
-**nominal** chip rate, so the relative phase against any incoming signal at zero
-Doppler is frozen: whatever it lands on, it stays. A signal that is present but
-untracked — a spoofed PRN, or simply a visible satellite the receiver has not
-acquired — has a `3 × 1.5 / 1023 ≈ 0.44 %` chance per PRN of sitting inside one
-of the three taps, and if it does it contributes `T·(C/N₀)/3 ≈ 10.5·N₀` at
-45 dB-Hz to every observation on that PRN, **indefinitely** (≈+1.5 dB on `N̂₀`
-after the rotation's dilution). Worse, the geometry is perverse: relative phase
-drifts only at the signal's own code Doppler (`f_d/1540`), so *low* Doppler is
-both what makes a hit possible and what makes it permanent.
-
-Drawing a fresh code phase and a fresh carrier offset per sub-integration turns
-that standing bias into an independent per-observation trial. For a full sky at
-45 dB-Hz the residual is `≈0.07 dB` — a handful of 1 %-sized outliers scattered
-through a 1000-entry window, rather than a permanent shift of the floor — and,
-because a hit now needs *both* draws to land, the two randomisations multiply.
-
-It also makes the untracked-PRN restriction unnecessary, which is why the
-reference now rotates over **all** PRNs of the family: a random phase lands
-within ±1 chip of a tracked satellite's peak with probability `≈0.6 %`, worth
-`10.5/1000 ≈ 0.045 dB` for the one observation it touches — an order of magnitude
-under the whole-sky leakage the estimator already carries uncorrected. A constant
-32-PRN pool also stops the rotation from shortening (and the dilution from
-worsening) exactly as the receiver acquires more satellites.
-
-Neither draw biases the measurement. `N̂₀ = |B|²/(N·A_c²·f_s)` is unbiased for
-any starting phase, and for the carrier the reference measures the same noise
-power wherever it sits; `carrier_dither` of ±5 kHz smears the spectral weighting
-`∫ S_I(f)·|G(f)|² df` by 0.25 % of a 2 MHz main lobe, which no coloured
-interferer resolves. On an FPGA an arbitrary code phase is *easier* than phase 0
-— a free-running code generator gives you one, where phase 0 needs a reset.
+Neither draw biases the measurement: `N̂₀ = |B|²/(N·A_c²·f_s)` is unbiased for any
+phase, and a ±5 kHz dither smears the spectral weighting by 0.25 % of a 2 MHz main
+lobe. On an FPGA a free-running code generator gives an arbitrary phase for free.
 
 # Fields / configuration
 
-  - `window_duration` — how far back the sliding window reaches (1 s by
-    default). The one genuine tunable, because it trades: longer means lower
-    variance, but a longer smear across AGC changes. At the default and one
-    sub-integration per code period the window holds `K_n ≈ 1000` looks per tap,
-    which costs ≤0.08 dB against a variance-free reference at every C/N₀ — below
-    which no further tuning is warranted.
+  - `window_duration`: how far back the sliding window reaches (1 s). Longer means
+    lower variance but more smear across AGC changes. The default holds
+    `K_n ≈ 1000` looks per tap at one sub-integration per code period, ≤ 0.08 dB
+    from a variance-free reference at every C/N₀.
+  - `tap_code_shift`: tap spacing in chips (1.5). Taps help only if independent:
+    `corr(|Bᵢ|²,|Bⱼ|²) = |ρᵢⱼ|²`, so at ±0.5 chip three taps are worth 2.25 looks,
+    at ≥ 1 chip 2.98. 1.5 chips sits in the autocorrelation null, clear of the 1-
+    and 2-chip sidelobes.
+  - `carrier_dither`: half-width of the uniform offset added to the nominal IF per
+    sub-integration (5 kHz, the terrestrial Doppler spread). Zero is useful only to
+    isolate the code-phase draw in a test.
+  - `rng`: source of both draws, seeded `Xoshiro(0)` by default and advanced in
+    place. Scattering the draws is the whole requirement (an attacker cannot
+    observe the chunk grid), so a seeded, repeatable default costs nothing. Pass
+    `Random.default_rng()` for a task-local stream (e.g. across threads).
+    Repeatable on one Julia version only: do not tune a tolerance to a particular
+    draw; design against the `1/√(3K)` spread of `N̂₀` over `K` observations.
+  - `buffered`: the sliding window, a length-managed FIFO written in place, so the
+    struct is never rebuilt and per-signal state can live in an immutable
+    `Tracking.TrackState`.
+  - `totals`: running sums of the window (see `NoiseWindowTotals`), keeping append
+    and read **O(1)**; an O(K) scan per call would make each chunk's cost grow with
+    the `K` (≈ 2500 at 1 s and 0.4 ms chunks) the accuracy is bought with.
 
-  - `tap_code_shift` — the reference correlator's tap spacing in chips (1.5 by
-    default). Taps are only worth having if they are statistically independent,
-    and at the *tracking* default of ±0.5 chip they are not: for jointly circular
-    Gaussian accumulations `corr(|Bᵢ|²,|Bⱼ|²) = |ρᵢⱼ|²`, and the sampled-code
-    correlation at half a chip is ≈0.5, so three taps are worth 2.25 independent
-    looks. At ≥1 chip they are worth 2.98. 1.5 chips sits in the autocorrelation
-    null and clear of both the 1- and 2-chip sidelobe values.
-
-  - `carrier_dither` — half-width of the uniform offset added to the band's
-    nominal IF, per sub-integration (5 kHz by default, i.e. the terrestrial GNSS
-    Doppler spread). Zero pins the reference at the IF exactly, which restores
-    half of the stationary target described above — useful to isolate the
-    code-phase draw in a test, and not otherwise.
-
-  - `rng` — the source of the code-phase and carrier draws, **seeded** by default
-    (`Xoshiro(0)`, one stream per estimator, advanced in place like `buffered` so
-    the struct is never rebuilt). What the randomisation has to defeat is a
-    *stationary* reference, not a reader: an attacker cannot observe the chunk
-    grid the phase would be measured against, so scattering the draws is the whole
-    requirement and unpredictability buys nothing on top. A seeded default keeps a
-    run repeatable, which is worth having in a library whose other guarantees are
-    phrased as bit-identical arithmetic. Pass `rng = Random.default_rng()` for a
-    task-local stream (also the one to use if you ever share an estimator across
-    threads).
-
-    Repeatable **on one Julia version**, and no further: `Xoshiro`'s stream is not
-    part of Julia's compatibility guarantee and does change across releases. Do
-    not build a tolerance around a particular draw — size the window so the
-    assertion holds for *any* draw. Every `N̂₀` here is a `1/√(3K)` estimate over
-    `K` observations, and that is the number to design against.
-
-  - `buffered` — the sliding window itself, a **length-managed FIFO** written in
-    place. The `Vector`'s own length is the position, so there is no ring index
-    to write back and the struct is never rebuilt — which is what lets per-signal
-    state live in an immutable `Tracking.TrackState`.
-
-  - `totals` — the window's running sums (span, `M`-weighted density, looks),
-    maintained as entries are pushed and dropped. They are what keeps both
-    `append_noise_observation!` and `get_noise_density` **O(1)**; recomputing
-    them per call made each an O(K) scan, and since the whole design buys its
-    variance by making `K` large (≈2500 entries at a 1 s window and a 0.4 ms
-    chunk), that put a per-chunk cost directly proportional to the accuracy
-    asked for. Written in place through `Ref` cells, exactly as `buffered` is,
-    so the "never rebuilt" property still holds — and a *cache* of `buffered`
-    rather than state of its own, recomputed from it exactly often enough that
-    the incremental arithmetic cannot drift.
-
-The sub-integration length is deliberately **not** a field: it is the primary
-code period of the signal it measures, derived rather than configured.
-Coherent integration buys nothing for noise-power estimation — one dump carries
-100 % relative error however long it is, because `Var(|B|²) = (E|B|²)²` — so all
-the information lives in the *number* of looks, and shortening the dump is the
-only way to buy more of them. Three things say not to: SIMD (64 kernel calls per
-1 ms chunk instead of one, and a shorter dump would need a new kernel variant,
-forfeiting the bit-identical-arithmetic property the whole approach rests on),
-DC balance (a full-period Gold code is balanced, `E[(Σc)²] ≈ 1`; any sub-period
-window behaves like iid signs, ≈16 at 16 chips, so an ADC offset biases a short
-despread and not a full-period one), and cadence parity with a hardware
-correlator, which naturally dumps on the code epoch. The variance is bought back
-with `window_duration` instead, which is nearly free — a 1 s window is ~1000
-`Float64` densities per signal.
+The sub-integration length is **not** a field: it is the signal's primary code
+period. Coherent integration buys nothing for noise power (`Var(|B|²) = (E|B|²)²`),
+so only the number of looks matters, yet shorter dumps would cost SIMD efficiency
+and a new kernel (losing bit-identical arithmetic), lose the full-period Gold code's
+DC balance (an ADC offset would bias the despread), and break cadence parity with a
+hardware correlator dumping on the code epoch. A long window buys the variance back
+cheaply (~1000 `Float64` per signal per second).
 """
 struct CorrelatorNoiseEstimator{D,T,R<:AbstractRNG} <: AbstractNoiseEstimator
     window_duration::typeof(1.0s)
@@ -186,30 +105,17 @@ end
 """
 $(SIGNATURES)
 
-Construct a [`CorrelatorNoiseEstimator`](@ref) averaging over the last
-`window_duration` of observations, with the reference correlator's taps spaced
-`tap_code_shift` chips apart and its carrier dithered by up to `carrier_dither`
-either side of the band's nominal IF. See the type's docstring for what the
-parameters buy and why nothing else is configurable.
+Construct a [`CorrelatorNoiseEstimator`](@ref); see the type for the parameters.
 
-`rng` is drawn from for the per-sub-integration code phase and carrier offset. It
-defaults to a **seeded** `Xoshiro(0)`, so a run repeats on a given Julia version;
-pass `Random.default_rng()` for a task-local stream. See the type's docstring for
-why scattering the draws — rather than making them unguessable — is the whole
-requirement, and for why the seed is not something to calibrate against.
+The window is `sizehint!`-ed to 4× the code-period observations it expects: with
+less headroom Julia periodically shifts the FIFO's front offset back and
+reallocates, so `push!`/`popfirst!` would not be allocation-free.
 
-The window is `sizehint!`-ed to four times the number of code-period
-observations it expects to hold. The headroom is what makes the FIFO's
-`push!`/`popfirst!` pair measure **exactly** zero bytes: at 1× or 2× Julia
-periodically shifts the front offset back and reallocates.
-
-`num_ants` must match the antenna count of the signal group this estimator is
-keyed to. At `NumAnts(1)` the window holds scalar densities; above it, the
-`M×M` spatial covariance `R̂` of the array's noise, which each satellite reduces
-to its own scalar floor through its own beamforming weights (`wᴴR̂w`, see
-[`update_noise!`](@ref) and [`AbstractPostCorrFilter`](@ref)). `TrackState`
-provisions the right count automatically when `noise_estimators` is left at
-`nothing`, and rejects a mismatch when the estimators are passed explicitly.
+`num_ants` must match the antenna count of the signal group. Above `NumAnts(1)` the
+window holds the `M×M` noise covariance `R̂`, which each satellite reduces to its
+own floor `wᴴR̂w` through its beamforming weights (see [`update_noise!`](@ref),
+[`AbstractPostCorrFilter`](@ref)). `TrackState` provisions the count when
+`noise_estimators` is `nothing` and rejects a mismatch otherwise.
 """
 function CorrelatorNoiseEstimator(;
     window_duration = 1.0s,
@@ -226,8 +132,7 @@ function CorrelatorNoiseEstimator(;
         throw(ArgumentError("carrier_dither must not be negative, got $carrier_dither"))
     D = _density_type_for_num_ants(num_ants)
     buffered = NoiseObservation{D,typeof(1.0s)}[]
-    # Four times the count a 1 ms sub-integration would put in the window; see
-    # the docstring for why the headroom rather than an exact fit.
+    # 4× the 1 ms sub-integration count; see the docstring.
     sizehint!(buffered, 4 * max(1, round(Int, window_duration / 1.0ms)) + 1)
     CorrelatorNoiseEstimator(
         uconvert(s, float(window_duration)),
@@ -239,9 +144,7 @@ function CorrelatorNoiseEstimator(;
     )
 end
 
-# The antenna count this estimator despreads, recovered from its density type.
-# Stored nowhere: `D` already determines it, and one source of truth means a
-# window and its reference correlator cannot disagree.
+# The antenna count, derived from `D` so window and correlator cannot disagree.
 @inline _num_ants(::CorrelatorNoiseEstimator{D}) where {D} = _num_ants_of_density_type(D)
 
 """
@@ -249,20 +152,15 @@ $(SIGNATURES)
 
 Append `observation` to the signal's sliding window, dropping entries off the
 front while the remainder still spans `window_duration`. Returns `estimator`.
+Amortised **O(1)**.
 
-The window is bounded in **time**, not in observation count, which is what lets
-one producer report 16-chip accumulations and another a single pre-averaged
-0.2 s figure under the same configuration and with no scalar state — the span
-is a property of the FIFO rather than of a configured count.
+The window is bounded in **time**, not count, so one producer may report 16-chip
+accumulations and another a single pre-averaged 0.2 s figure under the same
+configuration.
 
-**O(1)** per call, amortised, whatever the window holds — see `totals` in the
-type's docstring for why that matters here rather than being a micro-optimisation.
-
-Any [`NoiseObservation`](@ref) is accepted and retyped onto the window's own field
-types, which costs nothing for one the builders produced (they already emit the
-canonical pair) and is what keeps a hand-assembled or `Float32` one from matching
-no method here and falling through to the abstract no-op — where it would be
-**dropped silently** and leave the window empty forever.
+Any [`NoiseObservation`](@ref) is converted to the window's field types (free for
+builder output), so a hand-assembled or `Float32` one is not silently dropped by
+falling through to the abstract no-op.
 """
 function append_noise_observation!(
     estimator::CorrelatorNoiseEstimator{D,T},
@@ -300,11 +198,8 @@ end
     nothing
 end
 
-# Drop entries off the front while what is left still spans `window_duration`,
-# keeping the window minimal but never shorter than the configured span (and
-# never empty, so a single observation longer than the window still counts).
-# The span comes from `totals` rather than being re-summed, so an append that
-# drops one entry does O(1) work rather than walking the whole window.
+# Keep the window minimal but never shorter than `window_duration`, and never empty
+# (a single observation longer than the window still counts).
 @inline function _trim_noise_window!(
     buffered::Vector{<:NoiseObservation},
     totals::Base.RefValue{<:NoiseWindowTotals},
@@ -318,9 +213,7 @@ end
     nothing
 end
 
-# Recompute the totals exactly, once per window's worth of appends. See
-# `NoiseWindowTotals` for why the incremental sums cannot simply be trusted
-# forever; the O(K) walk every K appends is O(1) amortised.
+# Exact recomputation once per window's worth of appends; see `NoiseWindowTotals`.
 @inline function _refresh_totals_if_stale!(
     buffered::Vector{<:NoiseObservation},
     totals::Base.RefValue{<:NoiseWindowTotals},
@@ -351,17 +244,11 @@ end
 """
 $(SIGNATURES)
 
-The window's `M`-weighted mean density, or `nothing` while it is empty.
+The window's mean density weighted by `num_sub_integrations` (`M`), or `nothing`
+while it is empty. **O(1)**, read off the running totals.
 
-Weighted by `num_sub_integrations` because that is the number of independent
-looks each entry represents: the density itself needs only the sample count, but
-its relative variance is `1/M`, so a one-dump entry and a 64-dump entry combine
-correctly only when weighted this way.
-
-Read straight off the window's running totals, so this is **O(1)**. It is called
-once per signal per chunk from the Doppler-estimator fold, which is why it may
-not walk the window: doing so charged every chunk for the window length, i.e.
-for the very `K` the estimator's accuracy is bought with.
+An entry's relative variance is `1/M` (its independent looks), so entries of
+different dump counts combine correctly only weighted by `M`.
 """
 function get_noise_density(estimator::CorrelatorNoiseEstimator)
     totals = estimator.totals[]
@@ -371,16 +258,14 @@ end
 
 noise_density_type(::CorrelatorNoiseEstimator{D}) where {D} = D
 
-# The window already tracks this: `looks` is the running sum of every buffered
-# observation's `num_sub_integrations`, which is exactly the independent-look count
-# the density is averaged over. See `noise_window_looks` for what reads it.
+# `looks` is the running sum of `num_sub_integrations`, the independent-look count.
 noise_window_looks(estimator::CorrelatorNoiseEstimator) = estimator.totals[].looks
 
 """
 $(SIGNATURES)
 
-Number of observations currently in the signal's window. Diagnostic only — the
-window is bounded in time, so this varies with the producer's dump cadence.
+Number of observations in the window. Diagnostic only: it varies with the
+producer's dump cadence.
 """
 Base.length(estimator::CorrelatorNoiseEstimator) = length(estimator.buffered)
 
@@ -388,14 +273,9 @@ Base.length(estimator::CorrelatorNoiseEstimator) = length(estimator.buffered)
 $(SIGNATURES)
 
 Measure this signal's noise over samples `first_sample:last_sample` of
-`measurement` and append the resulting observations, returning `estimator`.
-
-The measurement itself — despreading an untracked PRN through the caller's own
-correlator kernel — is the software receiver's, so it lives with the software
-backends: this method forwards to [`despread_noise!`](@ref) on
-`context.downconvert_and_correlator`, which Tracking.jl implements for its
-backends. A loop process fills the window through
-[`append_noise_observation!`](@ref) instead and never reaches this method.
+`measurement`, append the observations and return `estimator`. Forwards to
+[`despread_noise!`](@ref) on `context.downconvert_and_correlator`; a loop process
+uses [`append_noise_observation!`](@ref) instead.
 """
 update_noise!(
     estimator::CorrelatorNoiseEstimator,
@@ -416,17 +296,13 @@ update_noise!(
     despread_noise!(backend, estimator, measurement, first_sample, last_sample, context)
 
 The software fill path of a [`CorrelatorNoiseEstimator`](@ref): despread an
-untracked PRN over the slice with `backend`'s own kernel and append the
-observations. Implemented by Tracking.jl for its downconvert-and-correlate
-backends; declared here so the estimator type can live without them.
+untracked PRN over the slice with `backend`'s kernel and append the observations.
+Implemented by Tracking.jl for its backends.
 """
 function despread_noise! end
 
-# Pool the taps of one open-loop despread. At ≥1 chip spacing they are
-# independent looks at the same noise, so nothing about their relative values
-# means anything — the opposite of the prompt path, where the taps' differences
-# are the code and carrier discriminants. Single antenna: the scalar power; an
-# array: the spatial covariance one dimension up.
+# Pool the taps of one despread (independent looks at ≥ 1 chip spacing): the scalar
+# power for one antenna, the spatial covariance for an array.
 @inline function _pool_taps(accumulators, ::NumAnts{1})
     power = 0.0
     for tap in accumulators
@@ -443,8 +319,7 @@ end
     covariance
 end
 
-# Which PRN the reference borrows a code from next: the window carries the
-# rotation position in its newest observation, so an empty window starts at 1.
+# Next PRN of the rotation, carried in the newest observation (1 when empty).
 @inline function _next_noise_prn(
     estimator::CorrelatorNoiseEstimator,
     signal_type::AbstractGNSSSignal,

@@ -1,9 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# The per-record fold of one signal component: normalise the record, filter the
-# prompt, advance the C/N₀ estimator and the bit buffer. This is the arithmetic
-# `Tracking._apply_correlator_output` runs on a `TrackedSignal`, lifted onto the
-# component's bare state so a loop process without Tracking runs the same code
-# — and so the record history the receiver mirrors is identical on both paths.
+# The per-record fold of one signal component (normalise, filter, C/N₀, bit buffer):
+# `Tracking._apply_correlator_output`'s arithmetic on bare state, so a loop process
+# without Tracking runs the same code and produces the same record history.
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
@@ -20,25 +18,22 @@ What one record did to a signal's bit clock (see [`SignalLoopState`](@ref) and
 @enum SyncChange::Int8 SYNC_UNCHANGED SYNC_FOUND SYNC_LOST
 
 """
-    SignalLoopState(signal; num_prompts_for_cn0_estimation = 100, cn0_estimator, post_corr_filter)
+    SignalLoopState(signal; num_prompts_for_cn0_estimation = 100, cn0_estimator,
+                    post_corr_filter)
 
-The per-record state of one signal component on a satellite: its bit buffer,
-C/N₀ estimator, post-correlation filter, the last filtered prompt (which the
-FLL discriminator chains from) and the block count of the last record. An
-immutable value, rebuilt by [`apply_record`](@ref) per record; the estimators
-buffer into vectors they own, so every component needs its own instance.
+The per-record state of one signal component on a satellite: bit buffer, C/N₀
+estimator, post-correlation filter, the last filtered prompt (the FLL chains from
+it) and the last record's block count. Immutable, rebuilt per record by
+[`apply_record`](@ref); the estimators own their buffers, so every component needs
+its own instance. The host holds one per signal of every satellite, driver and
+passengers alike, and advances it on every record.
 
-The host holds one per signal of every satellite — the driver and each
-passenger alike — and advances it with [`apply_record`](@ref) on every record.
-It also remembers what the last record did to the bit clock, which a
-[`LoopRecord`](@ref) built from the state hands to the estimator:
-`last_sync_change` (a [`SyncChange`](@ref)) and `last_num_new_soft_bits`, the
-soft bits that record appended; `last_previous_prompt`, the prompt the FLL
-compares that record's prompt with: the one before it, or `0` where the two
-records have another carrier phase polarity (see [`LoopRecord`](@ref)); and
-`last_carrier_phase_polarity`, the sign of that record's prompt where the
-replica wiped every sign modulation off it, `0` where it is unknown, which the
-four-quadrant carrier discriminators read it with.
+It also keeps what the last record did, for a [`LoopRecord`](@ref) built from it:
+`last_sync_change` (a [`SyncChange`](@ref)), `last_num_new_soft_bits` (the soft bits
+it appended), `last_previous_prompt` (the prompt the FLL compares its prompt with:
+the one before, or `0` across a change of carrier phase polarity) and
+`last_carrier_phase_polarity` (its prompt's sign, `0` where unknown; see
+`fold_record`).
 """
 struct SignalLoopState{B<:Unsigned,PCF<:AbstractPostCorrFilter,CN0<:AbstractCN0Estimator}
     bit_buffer::BitBuffer{B}
@@ -62,12 +57,10 @@ function SignalLoopState(
     post_corr_filter::AbstractPostCorrFilter = DefaultPostCorrFilter(),
 )
     bit_buffer = BitBuffer{get_code_block_buffer_type(signal)}()
-    # Room for the soft bits a fold can complete before its consumer drains
-    # them, so the first bit after sync does not grow the vector.
+    # So the first soft bits after sync do not grow the vector.
     sizehint!(bit_buffer.soft_bits, 64)
-    # Seed the sync detector's per-hypothesis accumulators now, at the length
-    # the signal's detector uses, so the first record after an arm — and every
-    # re-arm and bit-clock restart, which zero them in place — allocates nothing.
+    # Seed the sync accumulators at the detector's length so no later record,
+    # re-arm or bit-clock restart (they zero in place) allocates.
     if uses_soft_bit_edge_detection(signal)
         _seed_phase_accumulators!(bit_buffer.phase_acc, _calc_num_code_blocks_that_form_a_bit(signal))
     elseif uses_soft_secondary_code_detection(signal)
@@ -92,11 +85,9 @@ get_soft_bits(state::SignalLoopState) = get_soft_bits(state.bit_buffer)
 estimate_cn0(state::SignalLoopState, integration_time) =
     estimate_cn0(state.cn0_estimator, integration_time)
 
-# Build the context and fold the record into one signal's CN0 estimator, or skip
-# it where the estimator needs a density that signal has not measured yet. Both
-# branches return the same concrete estimator type, so this stays type-stable
-# and allocation-free; the `requires_noise_density` half of the condition folds
-# away at compile time.
+# Fold the record into the C/N₀ estimator, or skip it while a required noise density
+# is not measured yet. Both branches return the same type; `requires_noise_density`
+# folds away at compile time.
 @inline function _update_cn0_estimator(
     estimator::AbstractCN0Estimator,
     prompt,
@@ -126,9 +117,9 @@ estimate_cn0(state::SignalLoopState, integration_time) =
     )
 end
 
-# Keep the prompt of a record after the sync whose replica has not wiped the
-# overlay yet out of a secondary-coded signal's coherent sum, as the sync changed
-# the replica under it, but always let it advance the accumulator's block count.
+# Whether a record's prompt is kept out of a secondary-coded signal's coherent sum:
+# one after the sync whose replica has not wiped the overlay yet (the sync changed
+# the replica under it). Its blocks are credited all the same.
 @inline _drops_unwiped_prompt(
     signal::AbstractGNSSSignal,
     synced_before::Bool,
@@ -138,36 +129,25 @@ end
 """
     is_dataless_with_secondary_code(signal) -> Bool
 
-Whether `signal` is a dataless signal with a secondary code: GPS L1C-P and L5Q,
-Galileo E1C, E5a-Q, E5b-Q and E6-C, BeiDou B1C-P and B2a-Q. Once synced to its
-secondary code and correlated with the overlay wiped, such a signal's prompt
-keeps the sign the sync read, which the four-quadrant carrier discriminators
-read it with (see `fold_record`'s carrier phase polarity). These are the signals
-whose pre-sync prompts must be primary-only, so a host that multiplies its
-pre-sync records by a secondary chip asks this to pick them.
+Whether `signal` is dataless with a secondary code: GPS L1C-P and L5Q, Galileo E1C,
+E5a-Q, E5b-Q and E6-C, BeiDou B1C-P and B2a-Q. Synced and correlated with the overlay
+wiped, such a signal's prompt keeps the sign the sync read, so the four-quadrant
+carrier discriminators apply (see `fold_record`). Its pre-sync prompts must be
+primary-only: a host whose pre-sync replica carries a secondary chip uses this to
+pick the records to multiply by that chip.
 """
 is_dataless_with_secondary_code(signal::AbstractGNSSSignal) =
     iszero(get_data_frequency(signal)) && get_secondary_code_length(signal) > 1
 
-# The carrier phase polarity of a record: the sign of its prompt, which the
-# four-quadrant carrier discriminators read it with (`pll_disc(...; polarity)`,
-# `fll_disc(...; polarity)`), or `0` where it is unknown and they stay
-# two-quadrant. It is known where the replica wiped every sign modulation off the
-# prompt: a dataless signal with a secondary code, its overlay wiped at the synced
-# phase (`overlay_wiped`). `bit_buffer` is the one the record was correlated with,
-# before the record is folded into it. For these signals pre-sync prompts are
-# primary-only, so the sync reads its polarity off the overlay's sign in them,
-# which is the sign the prompt keeps once the replica wipes the overlay. For any
-# other signal the sync polarity only fixes the sign of the soft bits, which the
-# Costas loop leaves ambiguous anyway. If the Costas loop slipped half a cycle
-# between the sync and the switch, the four-quadrant PLL pulls the carrier phase
-# over by half a cycle, after which the prompt agrees with the sign again.
-#
-# Data signals give `0`, and so, for now, do the pilots without a secondary code
-# (GPS L2 CL, Galileo E5a-QP). That is not a given restriction, only not yet
-# implemented: their consecutive prompts share their sign, so their FLL could be
-# four-quadrant from the start, and their PLL with the sign the Costas loop holds,
-# though no sync resolves that sign.
+# A record's carrier phase polarity (see `fold_record`). `bit_buffer` is the one the
+# record was correlated with, before the fold. The sync read its polarity off the
+# overlay's sign in the primary-only pre-sync prompts, the sign the prompt keeps once
+# the overlay is wiped. A Costas slip between the sync and the switch is a half-cycle
+# jump the four-quadrant PLL then pulls over. Data signals give `0`, and so, for now,
+# do the pilots without a secondary code (GPS L2 CL, Galileo E5a-QP). Not a given
+# restriction: their prompts share a sign, so their FLL could be four-quadrant from the
+# start and their PLL could take the sign the Costas loop holds, though no sync
+# resolves it.
 @inline _carrier_phase_polarity(
     signal::AbstractGNSSSignal,
     bit_buffer::BitBuffer,
@@ -184,41 +164,33 @@ is_dataless_with_secondary_code(signal::AbstractGNSSSignal) =
         -> (bit_buffer, cn0_estimator, post_corr_filter, prompt, filtered_correlator,
             bit_block_count, integrated_code_blocks, overshoot, carrier_phase_polarity)
 
-Apply one completed record to the bare per-record state of a signal component:
-normalize the record's raw correlator by its sample count and code amplitude,
-update and apply the post-correlation filter, advance the C/N₀ estimator and the
-bit buffer. Returns the new state values plus the filtered correlator and block
-counts the loop-filter step needs.
+Apply one completed record to a signal component's bare state: normalize the raw
+correlator by sample count and code amplitude, update and apply the
+post-correlation filter, advance the C/N₀ estimator and the bit buffer.
 
-The bit accumulator is credited with the blocks *actually* integrated
-(`calc_num_code_blocks_for_bit_buffer`), recovered from the record's sample
-count. `overshoot` reports a post-sync record that carried the bit
-accumulator past the navigation-bit boundary, on which the bit buffer dropped
-sync and restarted its search (issue #238). `carrier_phase_polarity` is the
-sign of the record's prompt where the replica wiped every sign modulation off it
-— a dataless signal with a secondary code, its overlay wiped — and `0` where it
-is unknown; a [`LoopRecord`](@ref) carries it to the carrier discriminators.
-Everything here is the arithmetic Tracking's per-record advance performs, in the
-same order.
+The bit buffer is credited with the blocks actually integrated
+(`calc_num_code_blocks_for_bit_buffer`), recovered from the sample count. Everything
+here is Tracking's per-record arithmetic, in the same order. `overshoot` is true
+when a post-sync record carried the accumulator past the bit boundary, so the buffer
+dropped sync and restarted its search (JuliaGNSS/Tracking.jl#238).
+`carrier_phase_polarity` is the sign of the record's prompt where the replica wiped
+every sign modulation off it (a dataless signal with a secondary code, overlay
+wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminators.
 
 For a dataless signal with a secondary code
-([`is_dataless_with_secondary_code`](@ref): GPS L1C-P and L5Q, Galileo E1C,
-E5a-Q, E5b-Q and E6-C, BeiDou B1C-P and B2a-Q), pre-sync prompts are
-primary-only: correlated with a replica that carries no secondary code, so
-that the sync's polarity is the sign of the prompt once the overlay is wiped,
-which the carrier phase polarity takes. A host whose pre-sync replica carries
-a secondary chip on every block multiplies such a signal's pre-sync records by
-that chip. For any other signal the sync polarity only fixes the sign of the
-soft bits, which the Costas loop leaves ambiguous anyway, so a pre-sync
-replica that carries a fixed secondary chip is fine. `overlay_wiped` says
-whether the replica under this record wiped the secondary code at the synced
-phase; it defaults to the bit buffer having synced before the record. A record
-after the sync whose replica did not wipe the overlay yet, e.g. one that
-follows a sync detected earlier in the same fold, passes `overlay_wiped =
-false`: its prompt is kept out of the coherent bit accumulation of a
-secondary-coded signal, though its blocks are credited, it moves the
-secondary-code anchor along, and its carrier phase polarity is `0`. For a
-signal without a secondary code it makes no difference.
+([`is_dataless_with_secondary_code`](@ref)) pre-sync prompts must be primary-only,
+so that the sync's polarity is the prompt's sign once the overlay is wiped; a host
+whose pre-sync replica carries a secondary chip on every block multiplies such a
+signal's pre-sync records by that chip. For any other signal the sync polarity only
+fixes the soft bits' sign, which the Costas loop leaves ambiguous anyway, so a fixed
+secondary chip in the pre-sync replica is fine.
+
+`overlay_wiped` says whether the record's replica wiped the secondary code at the
+synced phase; it defaults to the buffer having synced before the record. Pass
+`false` for a record after a sync it was not correlated for yet (e.g. one found
+earlier in the same fold): for a secondary-coded signal its prompt is kept out of
+the coherent sum, though its blocks are credited, it moves the secondary-code anchor
+and its polarity is `0`.
 """
 @inline function fold_record(
     signal::AbstractGNSSSignal,
@@ -238,9 +210,7 @@ signal without a secondary code it makes no difference.
     normalized_correlator =
         normalize(output.correlator, output.integrated_samples, get_code_amplitude(signal))
     post_corr_filter = update(post_corr_filter, get_prompt(normalized_correlator))
-    # The filter's weights, read once and used twice: to combine the antennas
-    # here, and to reduce the shared noise covariance to *this* satellite's
-    # floor below.
+    # Used twice: to combine the antennas and to reduce the noise covariance.
     weights = get_weights(post_corr_filter, _num_ants_val(normalized_correlator))
     filtered_correlator = _combine_correlator(normalized_correlator, weights)
     prompt = get_prompt(filtered_correlator)
@@ -250,11 +220,9 @@ signal without a secondary code it makes no difference.
         sampling_frequency,
         synced_before,
     )
-    # Blocks this record actually covered. The floor at 1 covers the
-    # fractional-block record right after a sync phase-snap accumulator reset.
+    # Floor at 1 for the fractional-block record right after a sync phase snap.
     integrated_code_blocks = max(1, bit_block_count)
-    # De-rotate the prompt onto the driver's (real) phase frame before both the
-    # sync search and the coherent bit accumulation.
+    # Onto the driver's (real) phase frame for sync search and bit accumulation.
     bit_prompt = prompt * _carrier_phase_derotation(driver_carrier_phase, signal)
     drop_prompt = _drops_unwiped_prompt(signal, synced_before, overlay_wiped)
     scalar_noise_density = _reduce_noise_density(noise_density, weights)
@@ -276,15 +244,11 @@ signal without a secondary code it makes no difference.
         bit_block_count,
         drop_prompt ? zero(bit_prompt) : bit_prompt,
     )
-    # Such a record also moves the secondary-code anchor: the code-phase snap
-    # runs after this fold and aligns the *upcoming* integration to
+    # The code-phase snap after this fold aligns the *upcoming* integration to
     # `bit_buffer.secondary_phase`.
     if synced_before && !overlay_wiped
         bit_buffer = _advance_secondary_phase(signal, bit_buffer, bit_block_count)
     end
-    # A post-sync record that carried the accumulator past the bit boundary
-    # made `buffer` drop sync and restart the search: report it, so the caller
-    # can say so (a receiver logs, a loop process publishes a status event).
     overshoot = has_bit_or_secondary_code_been_found(bit_buffer_before) &&
         !has_bit_or_secondary_code_been_found(bit_buffer)
     return bit_buffer,
@@ -305,26 +269,18 @@ end
                  overlay_wiped = has_bit_or_secondary_code_been_found(state))
         -> (state, prompt, filtered_correlator, integrated_code_blocks, overshoot)
 
-`fold_record` on a [`SignalLoopState`](@ref): the new state (with the filtered
-prompt as its `last_filtered_prompt`), the prompt, the filtered correlator the
-discriminators read, the blocks the record covered, and whether the record
-overshot the navigation-bit boundary — on which the bit buffer dropped sync and
-restarted its search. The new state also records what the record did to the bit
-clock (`last_sync_change`) and how many soft bits it appended
-(`last_num_new_soft_bits`), the prompt the FLL compares its prompt with
-(`last_previous_prompt`) and its prompt's sign (`last_carrier_phase_polarity`),
-for a [`LoopRecord`](@ref) built from it.
-Nothing here logs; report
-`overshoot` the way the caller reports things (Tracking.jl warns once per
+`fold_record` on a [`SignalLoopState`](@ref). Returns the new state, the prompt,
+the filtered correlator the discriminators read, the blocks the record covered and
+whether it overshot the bit boundary (see `fold_record`). The new state keeps the
+filtered prompt and what the record did, for a [`LoopRecord`](@ref) built from it.
+Nothing here logs; the caller reports `overshoot` (Tracking.jl warns once per
 satellite).
 
-`driver_carrier_phase` is the carrier-phase offset of the satellite's
-estimator-driver signal (`get_carrier_phase_offset`), against which this
-component's bit-buffer prompt is de-rotated. It defaults to the signal's own
-offset — a no-op, right for the driver itself; a passenger component (the data
-half of a pilot/data pair) must be handed the driver's. `overlay_wiped` is as
-for `fold_record`, and so is the convention for pre-sync prompts: primary-only
-for a dataless signal with a secondary code.
+`driver_carrier_phase` is the carrier-phase offset (`get_carrier_phase_offset`) of
+the satellite's estimator-driver signal; the bit-buffer prompt is de-rotated against
+it. The default (the signal's own) suits the driver; a passenger component (the data
+half of a pilot/data pair) must be handed the driver's. `overlay_wiped` is as for
+`fold_record`.
 """
 @inline function apply_record(
     state::SignalLoopState,
@@ -383,8 +339,8 @@ end
 """
     restart_bit_clock(state::SignalLoopState) -> SignalLoopState
 
-The state with a fresh, unsynchronised bit buffer — what a lost record costs a
-satellite (its bit clock is rebuilt from the signal), everything else kept.
+The state with a fresh, unsynchronised bit buffer (what a lost record costs),
+everything else kept.
 """
 restart_bit_clock(state::SignalLoopState) = SignalLoopState(
     _fresh_bit_buffer(state.bit_buffer),
@@ -398,8 +354,7 @@ restart_bit_clock(state::SignalLoopState) = SignalLoopState(
     state.last_carrier_phase_polarity,
 )
 
-# An unsynchronised bit buffer that owns `bb`'s vectors: the soft bits are
-# emptied and the sync accumulators zeroed in place, so nothing is allocated.
+# An unsynchronised bit buffer reusing `bb`'s vectors, emptied in place.
 function _fresh_bit_buffer(bb::BitBuffer{B}) where {B}
     empty!(bb.soft_bits)
     BitBuffer{B}(
@@ -418,15 +373,14 @@ end
 """
     reset_signal_state(state::SignalLoopState) -> SignalLoopState
 
-The state a freshly armed channel starts from — no sync, empty soft bits, an
-empty C/N₀ estimator, no previous prompt — reusing the vectors the previous
-occupant's state owned, so a re-arm allocates nothing. The post-correlation
-filter is kept as it is: it is configuration (a beamformer, say), not history,
-and a filter that adapts must be reset by whoever owns it.
+The state a freshly armed channel starts from (no sync, no soft bits, empty C/N₀
+estimator, no previous prompt), reusing the old vectors so a re-arm allocates
+nothing. The post-correlation filter is kept: it is configuration, not history;
+an adaptive filter must be reset by its owner.
 
-A custom [`AbstractCN0Estimator`](@ref) that carries history has to add a
-method to `TrackingLoops._reset_cn0_estimator`; without one this throws rather
-than hand the new satellite the old one's C/N₀.
+A custom [`AbstractCN0Estimator`](@ref) with history needs a
+`TrackingLoops._reset_cn0_estimator` method; without one this throws rather than
+hand the new satellite the old one's C/N₀.
 """
 reset_signal_state(state::SignalLoopState) = SignalLoopState(
     _fresh_bit_buffer(state.bit_buffer),

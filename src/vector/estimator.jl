@@ -1,16 +1,5 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# The per-record vector loop: a scalar FLL-assisted PLL/DLL of the user's
-# choice, which a vector-tracking filter can take over.
-#
-# In vector tracking a central navigation filter closes every satellite's loops
-# at once (see `VectorTracking`). Per record, the satellite's own loop still
-# runs its PLL, but its DLL and FLL outputs are only *accumulated* for the
-# filter, and the filter's per-satellite NCO corrections steer the replica:
-# the code correction replaces the code filter's output, the carrier
-# correction drives the FLL branch of the carrier filter. Before the filter
-# takes a satellite over (and after it lets it go) the satellite runs the
-# scalar loop it wraps, bit for bit.
-# ─────────────────────────────────────────────────────────────────────────────
+# The per-record vector loop: a scalar FLL-assisted PLL/DLL that a vector-tracking
+# filter can take over (see `VectorPLLAndDLL`).
 
 """
     VectorPLLAndDLL(signals...; inner = ConventionalAssistedPLLAndDLL(),
@@ -20,93 +9,67 @@
                     enable_ionospheric_correction = true,
                     enable_tropospheric_correction = true)
 
-Vector-tracking Doppler estimator for the ranging `signals`. Each is a signal
-that carries navigation data, ranged on and decoded alike (`GPSL1CA()`), or a
-pilot + data pair, `driver => decoding_signal` (`GalileoE1C() => GalileoE1B()`,
-`GPSL5Q() => GPSL5I()`): the satellite ranges on the pilot, whose prompt has no
-data-bit transitions, and decodes the data component. A decoding signal must
-carry data and have its driver's chip rate; the code lengths may differ (GPS
-`GPSL2CL() => GPSL2CM()`). No signal may be given twice.
+Vector-tracking Doppler estimator for the ranging `signals`: each a signal that carries
+navigation data (`GPSL1CA()`) or a pilot + data pair `driver => decoding_signal`
+(`GalileoE1C() => GalileoE1B()`; see [Pilot + data pairs](@ref)). A decoding signal
+must carry data and have its driver's chip rate. No signal may be given twice.
 
-It does the whole pipeline inside [`step_loop`](@ref), from what the records
-carry: every satellite stepped with this estimator shares one navigation
-engine, which decodes the navigation data, solves the scalar PVT, seeds the
-navigation filter from its first fix and from then on runs one filter cycle
-every `cycle_time`, taking satellites over and handing them back. A host needs
-no vector-specific code: it builds a satellite's state with
-[`init_estimator_state`](@ref) for its driver and steps it with every record of
-the satellite, like any other loop's. Read the results with
+All satellites stepped with this estimator share one navigation engine which, inside
+[`step_loop`](@ref), decodes the navigation data, solves the scalar PVT, seeds the
+navigation filter from its first fix and then runs one filter cycle every
+`cycle_time`, taking satellites over and handing them back. A host needs no
+vector-specific code: it builds a satellite's state with
+[`init_estimator_state`](@ref) for its driver and steps it with every record of the
+satellite. Read the results, keyed by the driver, with
 [`navigation_solution`](@ref), [`navigation_status`](@ref),
-[`release_reason`](@ref), [`member_sats`](@ref), [`position_uncertainty`](@ref)
-and [`clock_uncertainty`](@ref), all keyed by the driver.
+[`release_reason`](@ref), [`member_sats`](@ref), [`position_uncertainty`](@ref) and
+[`clock_uncertainty`](@ref).
 
-The engine runs no bit clock and no C/N₀ estimator of its own: it reads the
-host's, from records built from each signal's [`SignalLoopState`](@ref) (see
-[`LoopRecord`](@ref)). The decoding signal's records carry the soft bits the
-engine decodes and where its bit clock stands; the driver's carry the C/N₀
-estimator the host configured, read at each navigation epoch for the lock and
-the measurement weights (capped at 80 dB-Hz). A satellite is in lock when the
-driver's C/N₀ is at least `lock_cn0_threshold` and the decoding signal holds
-its bit sync. A noise-referenced estimator reads `-Inf` dB-Hz until the host
-has a noise density, so until then the satellite is out of lock.
+The engine reads the host's bit clock and C/N₀ estimator from the records (see
+[What the records must carry](@ref)); the C/N₀, read at each navigation epoch for the
+lock and the measurement weights, is capped at 80 dB-Hz. A record without a PRN, or
+of a driver not among `signals`, throws an `ArgumentError`; any other passenger is
+ignored, also the decoding signal of a pair that does not drive this satellite. Step
+every signal of every satellite at least once per `cycle_time / 2` (see
+[Stepping the satellites](@ref)).
 
-The records must also identify their satellite and replica: `prn` and
-`code_phase` on the [`LoopRecord`](@ref), and `sample_index /
-sampling_frequency` on a time grid shared by all satellites. A record without a
-PRN, or of a driver not among `signals`, throws an `ArgumentError`; a record of
-another passenger is ignored — also when it is the decoding signal of a pair
-that does not drive this satellite. A satellite's snapshot of a navigation epoch
-needs a record of its driver and one of its decoding signal across the epoch,
-in either order. The host should step every satellite at least once per
-`cycle_time / 2`: a cycle runs once every satellite has completed its epoch's
-snapshot, and a satellite of which one signal has not stepped for
-`2 · cycle_time` is dropped.
+Every driver record runs `inner` until the filter takes the satellite over, and again
+once it is released. In the vector loop:
 
-Per satellite, every driver record runs `inner` — the scalar loop the
-satellite uses until the filter takes it over, and again once the filter
-releases it. While a satellite is in the vector loop:
-
-  - its carrier filter always runs, with the PLL branch fed by the satellite's
-    own phase discriminator and the FLL branch fed by the filter's carrier
-    correction (the filter integrates it as a frequency error; it is not added
-    to the Doppler directly), at the narrow PLL bandwidth with the FLL branch's
-    tied to it, whatever [`CarrierLoopStage`](@ref) its scalar loop had
-    reached, which [`carrier_loop_stage`](@ref) reports as `NARROW_PLL`. The
-    satellite is released into a restarted staging, FLL-assisted again, so the
-    scalar loop pulls in afresh;
-  - its code filter is frozen, and the filter's code correction replaces its
-    output: `code_doppler = init_code_doppler + code_freq_update +
+  - the carrier filter runs at the narrow PLL bandwidth, the FLL branch's tied to it,
+    whatever [`CarrierLoopStage`](@ref) the scalar loop had reached
+    ([`carrier_loop_stage`](@ref) reports `NARROW_PLL`); its PLL branch is fed by the
+    satellite's own phase discriminator, its FLL branch by the filter's carrier
+    correction (integrated as a frequency error, not added to the Doppler). A release
+    restarts the staging, FLL-assisted, so the scalar loop pulls in afresh;
+  - the code filter is frozen and the filter's code correction replaces its output:
+    `code_doppler = init_code_doppler + code_freq_update +
     carrier_filter_output · code_center_frequency_ratio`;
-  - the DLL output (chips) and the raw FLL discriminator (Hz) are accumulated
-    for the filter to read.
+  - the DLL output (chips) and raw FLL discriminator (Hz) are accumulated for the
+    filter.
 
-Each satellite picks up the corrections of the latest cycle on its next driver
-record, sized for where they land: at `landing_sample`, or at the record's end
-under `NO_LANDING_SAMPLE`. A record of any other signal returns the command in
-force there.
+The latest cycle's corrections are taken up on the next driver record, sized for
+where they land: at `landing_sample`, or at the record's end under
+`NO_LANDING_SAMPLE`. A record of any other signal returns the command in force there.
 
-`inner` must have an FLL-assisted carrier filter, since that is the only input
-path the carrier correction has into the loop: a
-`ConventionalPLLAndDLL{ThirdOrderAssistedBilinearLF}` (what
+`inner` must have an FLL-assisted carrier filter, the carrier correction's only way
+into the loop: a `ConventionalPLLAndDLL{ThirdOrderAssistedBilinearLF}` (what
 [`ConventionalAssistedPLLAndDLL`](@ref) builds) or an
-[`NCOReferencedPLLAndDLL`](@ref). With the latter the phase discriminator keeps
-its prediction to the landing sample in the vector loop too. Anything else
-throws an `ArgumentError`, as does a dataless signal given alone (a pilot such
-as GPS L1C-P or Galileo E1C must be paired with its data component).
-`config = nothing` only ever solves the scalar PVT.
+[`NCOReferencedPLLAndDLL`](@ref), whose phase discriminator keeps its prediction to
+the landing sample in the vector loop too. Anything else throws an `ArgumentError`,
+as does a dataless signal given alone (pair a pilot such as GPS L1C-P or Galileo E1C
+with its data component). `config = nothing` only ever solves the scalar PVT.
 
-Storage is allocated at construction for `max_satellites_per_signal`
-satellites per ranging signal and only grows past that: a satellite that is
-dropped leaves its storage to the next one.
+Storage is allocated for `max_satellites_per_signal` satellites per ranging signal
+and grows only past that; a dropped satellite leaves its storage to the next one.
 """
 struct VectorPLLAndDLL{E<:AbstractDopplerEstimator,N} <: AbstractDopplerEstimator
     inner::E
     navigation::N
 end
 
-# Whether an estimator's carrier filter has an FLL path, as `_has_fll_path` of a
-# carrier filter type: the FLL-assisted conventional loop and the NCO-referenced
-# loop.
+# Whether an estimator's carrier filter has an FLL path: the FLL-assisted
+# conventional loop and the NCO-referenced loop.
 _has_fll_path(::AbstractDopplerEstimator) = false
 _has_fll_path(::ConventionalPLLAndDLL{CA}) where {CA} = _has_fll_path(CA)
 _has_fll_path(::NCOReferencedPLLAndDLL) = true
@@ -114,25 +77,20 @@ _has_fll_path(::NCOReferencedPLLAndDLL) = true
 """
     SatVectorPLLAndDLL
 
-Per-satellite state of a [`VectorPLLAndDLL`](@ref): the inner scalar loop's
-state and, on top, the interface to the vector-tracking filter.
+Per-satellite state of a [`VectorPLLAndDLL`](@ref): the inner loop's state plus the
+interface to the vector-tracking filter.
 
-  - `vt_on`: whether the filter controls this satellite's NCOs. While `false`
-    the satellite runs the inner loop and nothing is accumulated.
-  - `code_discr_acc` / `carrier_discr_acc`: `(count, sum)` of the DLL output
-    (chips) and the raw FLL discriminator (Hz) since the filter last read them.
-  - `code_freq_update` / `carrier_freq_update`: the corrections the per-record
-    step applies, set from the filter's latest cycle.
-  - `code_freq_update_history` and `code_update_landing_lead`: the last three
-    code corrections the filter set, newest first, and how long after the
-    filter's cycle epoch the newest reached the replica. The filter's next
-    code measurement needs them to move the mid-cycle mean discriminator to
-    the epoch. They record what the replica was steered by, so a
-    [`reset_estimator_state`](@ref), which folds the newest correction into
-    the inner loop's Dopplers, keeps them.
-  - `slot`, `registration` and `cycle_id`: where the navigation engine keeps
-    this satellite (`0` until its first record), and the latest cycle it has
-    taken up.
+  - `vt_on`: whether the filter controls this satellite's NCOs; while `false` the inner
+    loop runs and nothing is accumulated.
+  - `code_discr_acc` / `carrier_discr_acc`: `(count, sum)` of the DLL output (chips)
+    and raw FLL discriminator (Hz) since the filter last read them.
+  - `code_freq_update` / `carrier_freq_update`: the corrections from the latest cycle.
+  - `code_freq_update_history` / `code_update_landing_lead`: the last three code
+    corrections, newest first, and how long after the cycle epoch the newest reached
+    the replica; the next code measurement uses them to move the mid-cycle mean
+    discriminator to the epoch. Kept by [`reset_estimator_state`](@ref) (see there).
+  - `slot`, `registration`, `cycle_id`: where the navigation engine keeps this
+    satellite (`0` until its first record), and the latest cycle it has taken up.
 """
 struct SatVectorPLLAndDLL{S}
     inner::S
@@ -153,8 +111,7 @@ _is_driver_record(state::SatVectorPLLAndDLL, record::LoopRecord) =
 _is_driven_by(state::SatVectorPLLAndDLL, signal::AbstractGNSSSignal) =
     _is_driven_by(state.inner, signal)
 
-# A satellite with the vector interface empty — out of the loop or just joined —
-# on the slot of `registration`.
+# A satellite with the vector interface empty, on the slot of `registration`.
 SatVectorPLLAndDLL(inner, vt_on::Bool, slot::Int = 0, registration::Int = 0, cycle_id::Int = -1) =
     SatVectorPLLAndDLL(
         inner,
@@ -192,8 +149,7 @@ function SatVectorPLLAndDLL(
     )
 end
 
-# The state on a fresh slot `slot` of `registration`, owing the pick-up of the
-# latest cycle.
+# The state on a fresh slot, owing the pick-up of the latest cycle.
 _registered(state::SatVectorPLLAndDLL{S}, slot::Int, registration::Int) where {S} =
     SatVectorPLLAndDLL{S}(
         state.inner,
@@ -229,13 +185,11 @@ init_estimator_state(
 """
     reset_estimator_state(estimator::VectorPLLAndDLL, state, carrier_doppler, code_doppler)
 
-Re-seed the inner loop from the converged Dopplers, zero both accumulators and
-stop applying the corrections, keeping `vt_on` and the satellite's place in the
-navigation engine. The corrections must leave the NCO words with the re-seed:
-the converged Dopplers already contain the last correction, so keeping it
-would apply it twice. The replica is still steered by it, though, so the
-correction history and its landing lead, which the next code measurement is
-moved to the epoch with, are kept.
+Re-seed the inner loop from the converged Dopplers, zero the accumulators and drop
+the corrections, keeping `vt_on` and the satellite's place in the navigation engine.
+The converged Dopplers already contain the last correction, so keeping it would apply
+it twice; the replica was still steered by it, so the correction history and landing
+lead are kept.
 """
 reset_estimator_state(
     estimator::VectorPLLAndDLL,
@@ -256,32 +210,29 @@ reset_estimator_state(
     state.cycle_id,
 )
 
-# In the vector loop the carrier loop runs at the narrow PLL, whatever stage the
-# inner loop's staging has reached; out of it, the inner loop's stage.
+# `NARROW_PLL` in the vector loop (see `VectorPLLAndDLL`), else the inner loop's stage.
 carrier_loop_stage(state::SatVectorPLLAndDLL) =
     state.vt_on ? NARROW_PLL : carrier_loop_stage(state.inner)
 phase_lock_indicator(state::SatVectorPLLAndDLL) = phase_lock_indicator(state.inner)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# What the navigation engine does to a satellite's state. Each keeps the
-# satellite's place in the engine.
+# What the navigation engine does to a satellite's state; each keeps its place in
+# the engine.
 
-# Put the satellite into the vector loop. A satellite joining starts with empty
-# accumulators and no corrections; one already in the loop is returned unchanged.
+# Into the vector loop with empty accumulators and no corrections; a no-op if in it.
 _enable_vector_tracking(state::SatVectorPLLAndDLL) =
     state.vt_on ? state :
     SatVectorPLLAndDLL(state.inner, true, state.slot, state.registration, state.cycle_id)
 
-# Hand the satellite back to its inner scalar loop, with the accumulators and
-# corrections zeroed so a later re-enable never runs on stale values.
+# Back to the inner loop, accumulators and corrections zeroed so a later re-enable
+# never runs on stale values.
 _disable_vector_tracking(state::SatVectorPLLAndDLL) =
     SatVectorPLLAndDLL(state.inner, false, state.slot, state.registration, state.cycle_id)
 
-# `_disable_vector_tracking` with the inner loop re-seeded from the Dopplers the
-# replica runs at — what `reset_estimator_state` does — so the scalar loop takes over
-# from where the vector loop steered the replica, without a transient. The re-seed
-# restarts the carrier loop's staging: the scalar loop pulls in again, FLL-assisted
-# at the wide bandwidth, which keeps a satellite the vector loop let go.
+# `_disable_vector_tracking` with the inner loop re-seeded from the replica's Dopplers
+# (as `reset_estimator_state`), so the scalar loop takes over without a transient. The
+# re-seed restarts the staging: FLL-assisted at the wide bandwidth, which keeps a
+# satellite the vector loop let go.
 _release_from_vector_tracking(state::SatVectorPLLAndDLL, carrier_doppler, code_doppler) =
     SatVectorPLLAndDLL(
         _reseed_inner(state.inner, carrier_doppler, code_doppler),
@@ -291,16 +242,14 @@ _release_from_vector_tracking(state::SatVectorPLLAndDLL, carrier_doppler, code_d
         state.cycle_id,
     )
 
-# The inner reset reads the per-satellite state only, never the estimator's
-# configuration, so a default-configured estimator stands in for it.
+# The inner reset reads only the state, so a default estimator stands in.
 _reseed_inner(state::SatConventionalPLLAndDLL, carrier_doppler, code_doppler) =
     reset_estimator_state(ConventionalPLLAndDLL(), state, carrier_doppler, code_doppler)
 _reseed_inner(state::SatNCOReferencedPLLAndDLL, carrier_doppler, code_doppler) =
     reset_estimator_state(NCOReferencedPLLAndDLL(), state, carrier_doppler, code_doppler)
 
-# The filter's NCO corrections for this satellite, taking over at `landing_lead`
-# after the filter's cycle epoch. The code correction joins the front of
-# `code_freq_update_history`.
+# Set the filter's corrections, landing `landing_lead` after the cycle epoch; the code
+# correction is pushed onto `code_freq_update_history`.
 function _set_vector_corrections(
     state::SatVectorPLLAndDLL{S},
     code_freq_update,
@@ -323,12 +272,11 @@ function _set_vector_corrections(
     )
 end
 
-# Empty both discriminator accumulators, once the filter has read them.
+# Empty both accumulators once the filter has read them.
 _reset_discriminator_accumulators(state::SatVectorPLLAndDLL) =
     SatVectorPLLAndDLL(state; code_discr_acc = (0, 0.0), carrier_discr_acc = (0, 0.0Hz))
 
-# The mean DLL output (chips) and raw FLL discriminator (Hz) accumulated since the
-# last reset, or `nothing` if nothing has been accumulated.
+# The accumulated mean DLL output (chips) / raw FLL discriminator (Hz), or `nothing`.
 function _mean_code_discriminator(state::SatVectorPLLAndDLL)
     count, discr_sum = state.code_discr_acc
     count == 0 ? nothing : discr_sum / count
@@ -339,8 +287,8 @@ function _mean_carrier_discriminator(state::SatVectorPLLAndDLL)
     count == 0 ? nothing : discr_sum / count
 end
 
-# One record through the satellite's loop: the inner loop out of the vector loop,
-# the vector step with the discriminators accumulated in it.
+# One record through the inner loop, or in the vector loop through `_step_vector_loop`
+# with its discriminators accumulated.
 @inline function _step_satellite(
     estimator::VectorPLLAndDLL,
     state::SatVectorPLLAndDLL,
@@ -365,10 +313,9 @@ end
         )
     code_count, code_sum = state.code_discr_acc
     carrier_count, carrier_sum = state.carrier_discr_acc
-    # A record without a previous prompt (the first after a (re)start) has an
-    # FLL discriminator of 0 Hz and still counts, as in Tracking: the first
-    # cycle's mean is then pulled toward 0 Hz, and the member counts as
-    # measured although it has no real frequency measurement yet.
+    # A record without a previous prompt (see `LoopRecord`) reads 0 Hz on the FLL and
+    # still counts, as in Tracking.jl: it pulls the first cycle's mean toward 0 Hz, and
+    # the member counts as measured without a real frequency measurement.
     SatVectorPLLAndDLL(
         state;
         inner,
@@ -379,14 +326,11 @@ end
     code_doppler
 end
 
-# The inner loop's record, in the vector loop: the discriminators exactly as the
-# inner loop measures them (`_record_discriminators`; the NCO-referenced loop's
-# phase error keeps its prediction to the landing sample), the carrier filter
-# stepped with the filter's carrier correction in its FLL slot, the code filter
-# frozen and the code correction in place of its output. Returns the inner
-# state, both Dopplers and the two discriminators to accumulate: the DLL and the
-# raw FLL — the mean offset from the replica that ran between the two prompts'
-# centres, before any re-basing onto a landing word.
+# The inner loop's step in the vector loop (see `VectorPLLAndDLL`), with the
+# discriminators as the inner loop measures them. Returns the inner state, both
+# Dopplers, and the DLL and raw FLL readings to accumulate; the raw FLL is the mean
+# offset from the replica between the two prompts' centres, before any re-basing
+# onto a landing word.
 @inline function _step_vector_loop(
     estimator,
     state,
@@ -398,8 +342,7 @@ end
 )
     discriminators = _record_discriminators(estimator, state, record, words, landing_sample; form_fll = true)
     integration_time = discriminators.integration_time
-    # At the narrow PLL bandwidth, whatever the inner loop's stage, with the FLL
-    # branch's tied to it.
+    # Narrow bandwidth whatever the stage, the FLL slot carrying the carrier correction.
     carrier_filter_output, carrier_loop_filter = filter_loop(
         state.carrier_loop_filter,
         (discriminators.phase_error, carrier_freq_update),
@@ -413,9 +356,7 @@ end
         carrier_filter_output,
         code_freq_update,
     )
-    # The staging keeps advancing only so that `phase_lock_indicator` stays live:
-    # in the vector loop the carrier filter runs at the narrow bandwidth whatever
-    # the stage, and a release restarts the staging.
+    # The staging advances only to keep `phase_lock_indicator` live.
     _stepped_state(
         state,
         carrier_loop_filter,

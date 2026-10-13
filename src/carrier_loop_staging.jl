@@ -1,53 +1,44 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# The carrier loop's staging: the scalar loops start as an FLL-assisted PLL at a
-# wide bandwidth, drop the FLL once a phase-lock indicator has confirmed lock,
-# and narrow the PLL once lock has held on. The stages only advance; a reset of
-# the estimator state restarts them. The vector loop runs at the narrow PLL
-# whatever the stage.
-# ─────────────────────────────────────────────────────────────────────────────
+# The scalar loops' carrier-loop staging; see `CarrierLoopStage`.
 
 """
     CarrierLoopStage
 
-The stage of a satellite's carrier loop, held in the scalar estimators'
-per-satellite state (see [`carrier_loop_stage`](@ref)):
+The stage of a satellite's carrier loop in the scalar estimators' per-satellite
+state (see [`carrier_loop_stage`](@ref)):
 
-  - `FLL_ASSISTED_PLL`: the FLL-assisted PLL at the wide bandwidth
-    ([`default_wide_carrier_loop_filter_bandwidth`](@ref)), its FLL path at the
-    FLL-assist bandwidth ([`default_fll_assist_loop_filter_bandwidth`](@ref)),
-    until the phase-lock indicator ([`phase_lock_indicator`](@ref)) has read lock
-    for one time constant of its averages: the carrier phase is locked, so its
-    Doppler has converged;
-  - `WIDE_PLL`: the PLL alone at the wide bandwidth, until the indicator has read
-    lock for another four time constants;
-  - `NARROW_PLL`: the PLL alone at the narrow bandwidth
+  - `FLL_ASSISTED_PLL`: FLL-assisted PLL at the wide bandwidth
+    ([`default_wide_carrier_loop_filter_bandwidth`](@ref)), its FLL path at
+    [`default_fll_assist_loop_filter_bandwidth`](@ref), until the phase-lock
+    indicator ([`phase_lock_indicator`](@ref)) has read lock for one time constant
+    of its averages: phase lock implies a converged Doppler;
+  - `WIDE_PLL`: PLL alone at the wide bandwidth, until lock has held for another
+    four time constants;
+  - `NARROW_PLL`: PLL alone at the narrow bandwidth
     ([`default_narrow_carrier_loop_filter_bandwidth`](@ref)).
 
-A carrier filter without an FLL path starts at `WIDE_PLL`. Dropping the FLL
-feeds the FLL-assisted filter a zero FLL input, which is exactly the
-third-order PLL (same state, same coefficients), so the switch is free (Kaplan
-& Hegarty §5.5). Dropping the FLL and narrowing are separate steps: narrowing
-while the loop still settles from the FLL's last correction risks the lock.
+A filter without an FLL path starts at `WIDE_PLL`. Dropping the FLL feeds the
+assisted filter a zero FLL input, which is exactly the third-order PLL (same state,
+same coefficients), so the switch is free (Kaplan & Hegarty §5.5); the FLL
+discriminator is then no longer formed. Dropping the FLL and narrowing are separate
+steps: narrowing while the loop still settles from the FLL's last correction risks
+the lock.
 
-The stages only advance. [`reset_estimator_state`](@ref) restarts them, as does
-a satellite's release from the vector loop. While a satellite is in the vector
-loop its carrier loop runs at the narrow bandwidth, and
-[`carrier_loop_stage`](@ref) reports `NARROW_PLL`.
+Stages only advance; [`reset_estimator_state`](@ref) restarts them, as does a
+satellite's release from the vector loop. In the vector loop the carrier loop runs
+at the narrow bandwidth and [`carrier_loop_stage`](@ref) reports `NARROW_PLL`.
 """
 @enum CarrierLoopStage FLL_ASSISTED_PLL WIDE_PLL NARROW_PLL
 
-# How long the phase-lock indicator must read lock without a break, in time
-# constants of its averages, to drop the FLL, and then, counted afresh, to narrow
-# the loop.
+# Unbroken lock, in time constants of the indicator's averages, that drops the FLL
+# and then, counted afresh, narrows the loop.
 const _FLL_DROP_TIME_CONSTANTS = 1
 const _NARROWING_TIME_CONSTANTS = 4
 
-# The time constant of the phase-lock indicator's averages, in records of
-# `num_code_blocks` primary code blocks of `signal`: 0.1 s, and at least 25
-# records, so that the signal power it is normalised with is averaged over enough
-# of them (100 records of 1 ms, 25 of 4 ms or longer, so 0.25 s for 10 ms and
-# 0.5 s for 20 ms). Taken from the nominal record length, counted in chips, so it
-# is exact and does not move with a record's sample jitter.
+# Time constant of the phase-lock indicator's averages, in records of
+# `num_code_blocks` primary code blocks: 0.1 s but at least 25 records, so its
+# signal-power normaliser is averaged over enough records (100 of 1 ms, 25 of 4 ms
+# or longer: 0.25 s at 10 ms, 0.5 s at 20 ms). Counted in chips from the nominal
+# record length, so it does not move with a record's sample jitter.
 const _PHASE_LOCK_TIME_CONSTANT = 0.1s
 const _MIN_PHASE_LOCK_RECORDS = 25
 
@@ -56,44 +47,37 @@ const _MIN_PHASE_LOCK_RECORDS = 25
     max(cld(chips, num_code_blocks * get_code_length(signal)), _MIN_PHASE_LOCK_RECORDS)
 end
 
-# The phase-lock indicator's threshold of lock: an RMS phase error of about 30°.
+# The phase-lock indicator's lock threshold: an RMS phase error of about 30°.
 const _PHASE_LOCK_THRESHOLD = 0.5
 
 """
     CarrierLoopStaging(carrier_loop_filter)
 
-A scalar estimator's carrier-loop staging, in its per-satellite state: the
-[`CarrierLoopStage`](@ref) and the phase-lock indicator that moves it on. Read
-them off the state with [`carrier_loop_stage`](@ref) and
-[`phase_lock_indicator`](@ref). `CarrierLoopStaging(carrier_loop_filter)` starts
-it, FLL-assisted where `carrier_loop_filter` has an FLL path, at the wide PLL
-where it has none; the staging then advances with every record of the loop's
-driver.
+A scalar estimator's [`CarrierLoopStage`](@ref) and the phase-lock indicator that
+moves it on, read with [`carrier_loop_stage`](@ref) and
+[`phase_lock_indicator`](@ref). `CarrierLoopStaging(carrier_loop_filter)` starts it
+(FLL-assisted if the filter has an FLL path, else at the wide PLL); it then advances
+with every driver record.
 """
 struct CarrierLoopStaging
     stage::CarrierLoopStage
-    # The phase-lock indicator `⟨I² − Q²⟩ / A²`, an estimate of `cos 2φ`: 1 in
-    # phase lock, 0 for a spinning phase. Its averages are exponential, updated
-    # every record of the loop's driver over `_phase_lock_time_constant` records,
-    # and the signal power `A²` comes from the prompt's moments averaged alike,
-    # `√(2 M₂² − M₄)` with `Mₖ` the average of `|P|ᵏ`, which the noise cancels
-    # from: unlike `⟨I² − Q²⟩ / ⟨I² + Q²⟩` the indicator does not read low at low
-    # C/N₀ while the loop is locked. `power_difference` averages `I² − Q²` (Van
-    # Dierendonck's narrowband difference, NBD), `power` and `squared_power`
-    # average `|P|²` and `|P|⁴` (M₂ and M₄).
+    # Exponential averages over `_phase_lock_time_constant` driver records of the
+    # indicator `⟨I² − Q²⟩ / A²` (see `phase_lock_indicator`): `power_difference`
+    # of `I² − Q²` (Van Dierendonck's narrowband difference, NBD), `power` and
+    # `squared_power` of `|P|²` and `|P|⁴` (M₂, M₄). `A² = √(2 M₂² − M₄)`, which
+    # the noise cancels from, so unlike `⟨I² − Q²⟩ / ⟨I² + Q²⟩` the indicator does
+    # not read low at low C/N₀ while locked.
     power_difference::Float64
     power::Float64
     squared_power::Float64
     num_records::Int
-    # The latest reading, `NaN` until the averages span one time constant, and
-    # for how many consecutive records it has read lock, counted afresh at each
-    # stage and no longer once the loop has narrowed, the last stage.
+    # The latest reading (`NaN` until the averages span one time constant) and the
+    # consecutive records it has read lock, restarted at each stage and no longer
+    # counted once narrowed.
     phase_lock_indicator::Float64
     num_locked_records::Int
 end
 
-# The staging a carrier loop starts with: FLL-assisted where its filter has an
-# FLL path, the wide PLL where it has none.
 CarrierLoopStaging(carrier_loop_filter::AbstractLoopFilter) = CarrierLoopStaging(
     _has_fll_path(typeof(carrier_loop_filter)) ? FLL_ASSISTED_PLL : WIDE_PLL,
     0.0,
@@ -104,20 +88,18 @@ CarrierLoopStaging(carrier_loop_filter::AbstractLoopFilter) = CarrierLoopStaging
     0,
 )
 
-# Whether a carrier loop filter type has an FLL path (see the methods for the
-# estimators in `vector/estimator.jl`).
+# Whether a carrier loop filter type has an FLL path (more methods in
+# `vector/estimator.jl`).
 @inline _has_fll_path(::Type{<:ThirdOrderAssistedBilinearLF}) = true
 @inline _has_fll_path(::Type{<:AbstractLoopFilter}) = false
 
-# One step of an exponential mean over `time_constant` samples with the weight
-# `max(1/n, 1/time_constant)`: the plain mean of the first `time_constant`
-# samples, so it starts unbiased, then exponential.
+# Exponential mean with weight `max(1/n, 1/time_constant)`: the plain mean of the
+# first `time_constant` samples, so it starts unbiased.
 @inline _exponential_mean(mean, x, n, time_constant) =
     mean + (x - mean) / min(n, time_constant)
 
-# The staging after one record of the driver (a `LoopRecord`): its prompt
-# advances the phase-lock indicator, and for how many records that has read lock
-# moves the stage on for the next record.
+# The staging after one driver `LoopRecord`: its prompt advances the indicator,
+# whose lock count moves the stage on for the next record.
 @inline function _advance_staging(staging::CarrierLoopStaging, record)
     time_constant = _phase_lock_time_constant(record.signal, record.integrated_code_blocks)
     prompt = get_prompt(record.filtered_correlator)
