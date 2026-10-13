@@ -163,10 +163,22 @@ export NumAnts,
     calc_num_code_blocks_for_bit_buffer,
     MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT,
     MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT,
-    default_carrier_loop_filter_bandwidth,
+    MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT,
+    default_wide_carrier_loop_filter_bandwidth,
+    default_narrow_carrier_loop_filter_bandwidth,
+    default_fll_assist_loop_filter_bandwidth,
     default_code_loop_filter_bandwidth,
     effective_carrier_loop_filter_bandwidth,
+    effective_fll_assist_loop_filter_bandwidth,
     effective_code_loop_filter_bandwidth,
+    LoopBandwidths,
+    CarrierLoopStage,
+    CarrierLoopStaging,
+    FLL_ASSISTED_PLL,
+    WIDE_PLL,
+    NARROW_PLL,
+    carrier_loop_stage,
+    phase_lock_indicator,
     aid_dopplers,
     calculate_carrier_frequency_update,
     calculate_code_frequency_update,
@@ -312,6 +324,7 @@ include("beidou/b2b.jl")
 include("beidou/b1c.jl")
 include("sample_parameters.jl")
 include("loop_filters.jl")
+include("carrier_loop_staging.jl")
 include("record.jl")
 include("nco_timeline.jl")
 include("estimators.jl")

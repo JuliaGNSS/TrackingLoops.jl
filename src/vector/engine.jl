@@ -52,7 +52,7 @@ function VectorPLLAndDLL(
     enable_ionospheric_correction::Bool = true,
     enable_tropospheric_correction::Bool = true,
 )
-    _is_fll_assisted(inner) || throw(
+    _has_fll_path(inner) || throw(
         ArgumentError(
             "the vector loop drives the carrier through the FLL branch of an " *
             "FLL-assisted carrier filter; use `ConventionalAssistedPLLAndDLL()` " *
