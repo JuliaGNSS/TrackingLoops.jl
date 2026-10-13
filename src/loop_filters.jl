@@ -210,49 +210,6 @@ function aid_dopplers(
 end
 
 """
-    calculate_carrier_frequency_update(signal, carrier_loop_filter, correlator, previous_prompt, integration_time, loop_bandwidth)
-        -> (carrier_freq_update, carrier_loop_filter)
-
-One carrier-loop step: the PLL discriminator ([`pll_disc`](@ref)) of
-`correlator`, in cycles, filtered by `carrier_loop_filter` at
-`loop_bandwidth`. An FLL-assisted filter (`ThirdOrderAssistedBilinearLF`) is
-additionally fed the FLL discriminator ([`fll_disc`](@ref)) between
-`previous_prompt` and this record's prompt, its FLL path at the bandwidth tied
-to `loop_bandwidth`. Returns the carrier-frequency correction in Hz and the
-advanced filter. It does not stage the carrier loop: the estimators'
-[`step_loop`](@ref) does (see [`CarrierLoopStage`](@ref)).
-"""
-function calculate_carrier_frequency_update(
-    signal::AbstractGNSSSignal,
-    carrier_loop_filter::ThirdOrderAssistedBilinearLF,
-    correlator::AbstractCorrelator,
-    previous_prompt::Complex,
-    integration_time,
-    loop_bandwidth,
-)
-    pll_discriminator = pll_disc(signal, correlator)
-    fll_discriminator = fll_disc(signal, correlator, previous_prompt, integration_time)
-    filter_loop(
-        carrier_loop_filter,
-        (pll_discriminator, fll_discriminator),
-        integration_time,
-        loop_bandwidth,
-    )
-end
-
-function calculate_carrier_frequency_update(
-    signal::AbstractGNSSSignal,
-    carrier_loop_filter::AbstractLoopFilter,
-    correlator::AbstractCorrelator,
-    previous_prompt::Complex,
-    integration_time,
-    loop_bandwidth,
-)
-    pll_discriminator = pll_disc(signal, correlator)
-    filter_loop(carrier_loop_filter, pll_discriminator, integration_time, loop_bandwidth)
-end
-
-"""
     calculate_code_frequency_update(signal, code_loop_filter, correlator, code_doppler, sampling_frequency, integration_time, loop_bandwidth)
         -> (code_freq_update, code_loop_filter)
 
