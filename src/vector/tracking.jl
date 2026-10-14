@@ -46,7 +46,13 @@ its C/N₀ again:
   - `decoder`: its navigation-message decoder, up to the last record of its
     decoding signal — the ephemeris, health and time of week. It shares its
     buffers with the one the estimator keeps decoding into, so copy
-    (`copy(decoder)`) what is needed after the next record;
+    (`copy(decoder)`) what is needed after the next record. It is the
+    estimator's, to read only: never reset or decode into it (e.g.
+    `reset_decoder_state!`, `decode!`), as that changes the estimator's own
+    decoder in place. Once the satellite's slot is freed, the slot's buffers
+    are reused for whichever satellite registers on it next, so a decoder kept
+    past that point shares them with another satellite's: a consumer that needs
+    a decoder of its own for a satellite builds a fresh one;
   - `bit_synced`: whether its decoding signal's bit clock held the bit sync at
     that signal's last record;
   - at the latest epoch it was snapshotted at (`epoch`, on the records' time
