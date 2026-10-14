@@ -1,5 +1,106 @@
 # Changelog
 
+# [5.0.0](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v4.0.1...v5.0.0) (2026-10-14)
+
+
+* feat(estimators)!: read a synced pilot's records with the four-quadrant discriminators ([0479192](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/047919249e30b8c007e1550fc5a2e0d0d92d7d78))
+* feat(estimators)!: stage the carrier loop on phase lock with wide, narrow and FLL-assist bandwidths ([5541252](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/55412526b18844f3cd0c0e32475ddae1d41823b5))
+* refactor(discriminators)!: return the PLL phase error in cycles ([24bd911](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/24bd9114eff13964635b42584ef342e9e39bb4a3))
+* refactor(loop_filters)!: remove calculate_carrier_frequency_update ([8f92ab0](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/8f92ab0241c3aa65ee25e2081266138ba2bc2923))
+
+
+### Features
+
+* **discriminators:** add four-quadrant PLL and FLL discriminators ([4f28322](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/4f283227b865535322645f9fead24bbf9a786aa1))
+
+
+### BREAKING CHANGES
+
+* the carrier bandwidth is split by the stage it applies to.
+The estimator keyword and field carrier_loop_filter_bandwidth of
+ConventionalPLLAndDLL, ConventionalAssistedPLLAndDLL and
+NCOReferencedPLLAndDLL becomes wide_carrier_loop_filter_bandwidth, next to
+the new narrow_carrier_loop_filter_bandwidth and
+fll_assist_loop_filter_bandwidth; their all-positional constructors take
+(wide, narrow, fll_assist, code), and NCOReferencedPLLAndDLL's
+predict_landing after them. default_carrier_loop_filter_bandwidth is
+replaced by default_wide_carrier_loop_filter_bandwidth (50 Hz),
+default_narrow_carrier_loop_filter_bandwidth (18 Hz) and
+default_fll_assist_loop_filter_bandwidth (5 Hz); a method of the first does
+not widen the NCO-referenced loop, which pulls in at the narrow default.
+SatConventionalPLLAndDLL's and SatNCOReferencedPLLAndDLL's
+carrier_loop_filter_bandwidth and code_loop_filter_bandwidth fields become
+one field bandwidths::LoopBandwidths: read state.bandwidths.wide_carrier,
+.narrow_carrier, .fll_assist and .code, and pass bandwidths =
+LoopBandwidths(...) to SatConventionalPLLAndDLL's keyword constructors. Both
+gain a trailing staging field, read with carrier_loop_stage(state) and
+phase_lock_indicator(state), which their keyword constructors start; code
+building them positionally must pass the bandwidths and the staging,
+TrackingLoops.CarrierLoopStaging(typeof(carrier_loop_filter)) (not
+exported). The loops no
+longer run the PLL at one 18 Hz with the FLL fed on every record: they pull
+in at 50 Hz FLL-assisted, drop the FLL and narrow to 18 Hz on phase lock, so
+tracking results differ. For one PLL bandwidth throughout, pass the same
+wide and narrow bandwidth. reset_estimator_state keeps the staging, so after
+it the loop runs on at the stage it had reached; a release from the vector
+loop restarts it. A wider loop tolerates
+less command delay: at the default 50 Hz the conventional loop holds through
+three records of delay, and at 85 Hz the NCO-referenced loop through five
+instead of six once the FLL is dropped.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+* fold_record and apply_record take the pre-sync prompts of a
+dataless signal with a secondary code (GPS L1C-P and L5Q, Galileo E1C,
+E5a-Q, E5b-Q and E6-C, BeiDou B1C-P and B2a-Q) as primary-only, correlated
+with a replica that carries no secondary code; a host whose pre-sync replica
+carries a secondary chip on every block (as Tracking.jl's carries chip 0)
+multiplies such a signal's pre-sync records by that chip, or the
+four-quadrant PLL reads a half-cycle error for the PRNs whose chip is
+negative. The new is_dataless_with_secondary_code(signal) picks those
+signals, so that a host and the carrier phase polarity agree on them. Other
+signals need no change. fold_record's positional argument
+correlated_pre_sync and apply_record's keyword correlated_pre_sync are
+replaced by the keyword overlay_wiped, which defaults to the bit buffer
+having synced before the record: pass overlay_wiped = false where
+correlated_pre_sync = true was passed, drop correlated_pre_sync = false, and
+drop the positional argument from a fold_record call. The LoopRecord
+constructor that takes a SignalLoopState no longer takes a previous prompt:
+call LoopRecord(signal, filtered_correlator, output, state,
+sampling_frequency) in place of LoopRecord(signal, filtered_correlator,
+previous_prompt, output, state, sampling_frequency), and drop the read of
+state.last_filtered_prompt before apply_record. LoopRecord gains the
+trailing field carrier_phase_polarity::Int8, and SignalLoopState the
+trailing fields last_previous_prompt::ComplexF64 and
+last_carrier_phase_polarity::Int8; code calling their all-positional
+constructors must append Int8(0), respectively a zero prompt and Int8(0).
+The other LoopRecord constructors default the polarity. The new
+SignalLoopState(state; bit_buffer, cn0_estimator, ...) replaces the fields
+passed and keeps the others, so code that rebuilds a state to swap a part of
+it can use it and need not list every field. A host that builds
+records without a SignalLoopState passes carrier_phase_polarity as the ninth
+value fold_record returns, and a zero previous prompt where it differs from
+the previous record's, to get the four-quadrant discriminators; without it
+it tracks as before. Code destructuring fold_record's result positionally
+receives the additional value last. wrap_half_cycle is renamed
+wrap_phase_error and no longer exported, as only the NCO-referenced loop
+needs it: call TrackingLoops.wrap_phase_error(x), which folds into ±1/4
+cycle as wrap_half_cycle(x) did, and TrackingLoops.wrap_phase_error(x;
+polarity) with a nonzero polarity into ±1/2 cycle.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+* pll_disc returns the carrier phase error in cycles (±1/4
+cycle) instead of radians (±π/2). Multiply its result by 2π where radians
+are needed, and drop a division by 2π where it was fed to a loop filter.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+* calculate_carrier_frequency_update is removed. Step a
+carrier loop through an estimator's step_loop, or call the loop filter
+directly: filter_loop(carrier_loop_filter, phase_error, integration_time,
+bandwidth) with the PLL discriminator's phase error in cycles, and with
+(phase_error, fll_disc(...)) as the input of a ThirdOrderAssistedBilinearLF.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
 ## [4.0.1](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v4.0.0...v4.0.1) (2026-10-11)
 
 
