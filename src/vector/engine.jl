@@ -458,7 +458,7 @@ function _snapshot_driver!(
     slot.early_late_spacing = slot.last_early_late_spacing
     slot.chips_since_epoch = -chips_to_epoch
     slot.driver_epoch = nav.pending_epoch
-    _reset_discriminator_accumulators(state)
+    _reset_code_and_carrier_accumulators(state)
 end
 
 # The decoding signal's half of the snapshot at the pending epoch `E`, if this record

@@ -25,11 +25,13 @@ function _test_member(;
     available = true,
     time = 0.0,
     sat_position = SVector(2.6e7, 0.0, 0.0),
+    code_discriminator = 0.0,
+    pseudorange_rate = 0.0,
+    # The rate's instant and the satellite there; by default the epoch's.
+    rate_epoch_offset = 0.0,
     sat_velocity = SVector(0.0, 0.0, 0.0),
     sat_clock_drift = 0.0,
-    pseudorange_rate = 0.0,
-    code_discriminator = 0.0,
-    carrier_discriminator = 0.0,
+    rate_sat_position = sat_position,
     cn0 = 10^4.5, # 45 dB-Hz
     early_late_spacing = 1.0,
     coherent_integration_time = nothing,
@@ -56,11 +58,12 @@ function _test_member(;
         # signal's defined scale offset (0 for GPST/GST, −14 s for BDT).
         time - time_scale_offset_to_gpst(get_time_system(signal)),
         sat_position,
+        code_discriminator,
+        pseudorange_rate,
+        rate_epoch_offset,
+        rate_sat_position,
         sat_velocity,
         sat_clock_drift,
-        pseudorange_rate,
-        code_discriminator,
-        carrier_discriminator,
         cn0,
         early_late_spacing,
         tcoh,
@@ -368,11 +371,15 @@ end
     )
     @test rate_with_drift ≈ 990.0 atol = 1e-6
 
-    # The measurement model writes the pseudoranges, then the rates, then one row per
-    # hub constraint: the difference of the two clock states.
+    # The measurement model writes the pseudoranges, then the rates of the candidate
+    # members, then one row per hub constraint: the difference of the two clock states.
     constraints = [(2, 1, -0.3)]
-    velocities = [SVector(-1000.0, 0.0, 0.0), SVector(0.0, 0.0, 0.0)]
-    h! = TL.VTMeasurementModel(idxs, zeros(length(ξ)), positions, velocities, [0.0, 0.0],
+    rate_members = [
+        _test_member(; prn = 1, clock_bias_index = 1, sat_position = SVector(2.6e7, 0.0, 0.0),
+            sat_velocity = SVector(-1000.0, 0.0, 0.0)),
+        members[2],
+    ]
+    h! = TL.VTMeasurementModel(idxs, zeros(length(ξ)), positions, rate_members, [1, 2],
         bias_columns, true, constraints)
     y = zeros(5)
     h!(y, x)
@@ -381,11 +388,48 @@ end
     @test y[4] ≈ 0.0 atol = 1e-9
     @test y[5] == 200.0 - 100.0
     # Without the rates the hub row follows the pseudoranges directly.
-    h_vdll! = TL.VTMeasurementModel(idxs, zeros(length(ξ)), positions, velocities, [0.0, 0.0],
+    h_vdll! = TL.VTMeasurementModel(idxs, zeros(length(ξ)), positions, rate_members, [1, 2],
         bias_columns, false, constraints)
     y = zeros(3)
     h_vdll!(y, x)
     @test y == [psr; 100.0]
+end
+
+@testset "The rate is predicted at its own instant" begin
+    # A member's rate is a mean over the cycle, `rate_epoch_offset` before the epoch the
+    # state is at: the prediction moves the state back there kinematically and takes the
+    # satellite of that instant, which the member carries.
+    layout = TL.NavFilterLayout((GPSL1CA(),))
+    sat_position = SVector(2.6e7, 0.0, 0.0)
+    user_pos = SVector(6.378e6, 0.0, 0.0)
+    for order in (1, 2, 3)
+        idxs = TL.NavFilterIndices(VectorTracking(; motion_model_order = order), layout)
+        x = zeros(TL.num_nav_states(VectorTracking(; motion_model_order = order), layout))
+        x[idxs.pos] = user_pos
+        order >= 2 && (x[idxs.vel] = [3.0, 4.0, 0.0])
+        order >= 3 && (x[idxs.acc] = [5.0, 0.0, 0.0])
+        x[idxs.clock_drift] = 10.0
+        member = _test_member(; sat_position, rate_epoch_offset = 0.05,
+            rate_sat_position = sat_position + SVector(0.0, 50.0, 0.0),
+            sat_velocity = SVector(-1000.0, 0.0, 0.0), sat_clock_drift = 1e-9)
+        x_back = TL.propagate_state!(similar(x), x, idxs, -0.05)
+        pos, vel, drift = TL.nav_filter_states(x_back, idxs)
+        @test TL.nav_filter_states_at(x, idxs, -0.05) == (pos, vel, drift)
+        @test TL.predict_pseudorange_rate(x, idxs, member) ==
+              TL.predict_pseudorange_rate(pos, vel, drift, member.rate_sat_position,
+                  member.rate_sat_velocity, member.rate_sat_clock_drift)
+    end
+    # Under a line-of-sight acceleration the rate half a cycle back is the epoch's less
+    # the acceleration times the offset.
+    idxs = TL.NavFilterIndices(VectorTracking(; motion_model_order = 3), layout)
+    x = zeros(TL.num_nav_states(VectorTracking(; motion_model_order = 3), layout))
+    x[idxs.pos] = user_pos
+    x[idxs.vel] = [2.0, 0.0, 0.0]
+    x[idxs.acc] = [5.0, 0.0, 0.0]
+    at_epoch = TL.predict_pseudorange_rate(x, idxs, _test_member(; sat_position))
+    back = TL.predict_pseudorange_rate(x, idxs, _test_member(; sat_position, rate_epoch_offset = 0.052))
+    @test at_epoch ≈ 2.0
+    @test at_epoch - back ≈ 5.0 * 0.052
 end
 
 @testset "Measurement noise" begin
@@ -837,16 +881,12 @@ end
 @testset "Post-fit pseudorange and range-rate residuals" begin
     # Two members: one whose replica the loop has steered onto the navigation solution
     # (the model at the updated state reproduces both its measured pseudorange and its
-    # replica's own Doppler), and one the solution predicts 30 m short and 2 m/s slow of
-    # what it measures.
-    steered = _test_member(;
-        prn = 4,
-        pseudorange_rate = 800.0,
-        code_discriminator = 0.02,   # chips
-        carrier_discriminator = 5.0, # Hz
-    )
+    # replica's own Doppler, 800 m/s, against which its FLL reads 5 Hz), and one the
+    # solution predicts 30 m short and 2 m/s slow of what it measures.
+    steered = _test_member(; prn = 4, code_discriminator = 0.02) # chips
+    steered = @set steered.pseudorange_rate = 800.0 + 5.0 * steered.wavelength
     diverged = _test_member(; prn = 9, pseudorange_rate = -600.0)
-    residual, rate_residual = TL.vt_post_fit_residuals(steered, 2.05e7, 2.05e7, steered.pseudorange_rate)
+    residual, rate_residual = TL.vt_post_fit_residuals(steered, 2.05e7, 2.05e7, 800.0)
     # Both go straight into `SatInfo`'s unit-typed fields, so the units are part of the
     # contract: metres and metres per second.
     @test residual isa typeof(1.0u"m")
@@ -867,18 +907,24 @@ end
 end
 
 @testset "FLL discriminator sign into the rate measurement" begin
-    # `fll_disc` measures f_incoming − f_replica, so a positive mean residual must
-    # ADD to the pseudorange-rate measurement (`λ · carrier_doppler + λ · mean_fll`);
-    # the discriminator enters with its own sign, not flipped. Pins the sign so a
+    # `fll_disc` measures f_incoming − f_replica, so a positive reading must ADD to the
+    # replica's advance in the incoming carrier phase the rate is measured from; the
+    # discriminator enters with its own sign, not flipped. Pins the sign so a
     # re-introduced negation is caught.
     base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
-    # Mean = sum / count: (2, 6 Hz) → +3 Hz, (1, −4 Hz) → −4 Hz.
-    pos = SatVectorPLLAndDLL(base; carrier_discr_acc = (2, 6.0Hz))
-    neg = SatVectorPLLAndDLL(base; carrier_discr_acc = (1, -4.0Hz))
-    empty_acc = SatVectorPLLAndDLL(base; carrier_discr_acc = (0, 0.0Hz))
-    @test TL.accumulated_carrier_discriminator(pos) ≈ 3.0
-    @test TL.accumulated_carrier_discriminator(neg) ≈ -4.0
-    @test TL.accumulated_carrier_discriminator(empty_acc) == 0.0
+    correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
+    record = LoopRecord(GPSL1CA(), correlator, cis(0.1), CorrelatorOutput(correlator, 5000, 10000), 1, 5e6Hz)
+    # A 1 ms span on a 20 Hz replica, half of it in each of two records.
+    span(fll) = TL._accumulate_carrier_phase(TL.CarrierPhaseAccumulator(), (0.01, 0.0005s),
+        (first = (0.01, 0.0005s), second = (0.01, 0.0005s), center = 0.0015s), fll, record)
+    pos = SatVectorPLLAndDLL(base; carrier_phase_acc = span(3.0Hz))
+    neg = SatVectorPLLAndDLL(base; carrier_phase_acc = span(-4.0Hz))
+    empty_acc = SatVectorPLLAndDLL(base; carrier_phase_acc = TL.CarrierPhaseAccumulator())
+    @test first(TL.accumulated_carrier_doppler(pos, 0.0)) ≈ 23.0
+    @test first(TL.accumulated_carrier_doppler(neg, 0.0)) ≈ 16.0
+    # The span runs from 0.5 ms to 1.5 ms, so the mean refers to 1 ms.
+    @test last(TL.accumulated_carrier_doppler(pos, 0.1)) ≈ 0.099
+    @test TL.accumulated_carrier_doppler(empty_acc, 0.1) == (0.0, 0.0)
     # The DLL mean enters negated.
     @test TL.accumulated_code_discriminator(SatVectorPLLAndDLL(base; code_discr_acc = (2, 0.1)), 0.1) ≈ -0.05
 end
@@ -913,19 +959,26 @@ end
     end
 end
 
-@testset "A cycle without an accumulated discriminator withholds the member" begin
+@testset "A cycle without both a code and a carrier measurement withholds the member" begin
     # The `accumulated_*` helpers substitute a zero when nothing was accumulated, which the
     # navigation filter cannot distinguish from a genuine zero residual measured at full
-    # weight. `has_accumulated_discriminators` is the guard that keeps such a member out of
-    # the measurement set.
+    # weight. `has_code_and_carrier_measurements` is the guard that keeps such a member
+    # out of the measurement set.
     base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
-    accumulated = SatVectorPLLAndDLL(base; code_discr_acc = (3, 0.06), carrier_discr_acc = (3, 6.0Hz))
-    nothing_accumulated = SatVectorPLLAndDLL(base; code_discr_acc = (0, 0.0), carrier_discr_acc = (0, 0.0Hz))
-    @test TL.has_accumulated_discriminators(accumulated)
-    @test !TL.has_accumulated_discriminators(nothing_accumulated)
+    accumulated = SatVectorPLLAndDLL(base; code_discr_acc = (3, 0.06),
+        carrier_phase_acc = TL.CarrierPhaseAccumulator(3, 0.06, 0.003s, 0.0s^2))
+    nothing_accumulated = SatVectorPLLAndDLL(base; code_discr_acc = (0, 0.0),
+        carrier_phase_acc = TL.CarrierPhaseAccumulator())
+    @test TL.has_code_and_carrier_measurements(accumulated)
+    @test !TL.has_code_and_carrier_measurements(nothing_accumulated)
+    # A cycle whose records opened no carrier span — its only record the first after a
+    # (re)start — has no rate to measure, and is withheld too.
+    no_span = SatVectorPLLAndDLL(base; code_discr_acc = (1, 0.02),
+        carrier_phase_acc = TL.CarrierPhaseAccumulator())
+    @test !TL.has_code_and_carrier_measurements(no_span)
     # The zero the helpers would otherwise hand to the filter is indistinguishable from a
     # measured zero — which is exactly why the guard is needed rather than the fallback.
-    @test TL.accumulated_carrier_discriminator(nothing_accumulated) == 0.0
+    @test TL.accumulated_carrier_doppler(nothing_accumulated, 0.1) == (0.0, 0.0)
     @test TL.accumulated_code_discriminator(nothing_accumulated, 0.1) == 0.0
 end
 

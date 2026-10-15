@@ -77,8 +77,9 @@ releases it. While a satellite is in the vector loop:
   - its code filter is frozen, and the filter's code correction replaces its
     output: `code_doppler = init_code_doppler + code_freq_update +
     carrier_filter_output · code_center_frequency_ratio`;
-  - the DLL output (chips) and the raw FLL discriminator (Hz) are accumulated
-    for the filter to read.
+  - the DLL output (chips) and the carrier phase the incoming signal advanced
+    by between the prompts — the replica's own advance plus the FLL's rotation —
+    are accumulated for the filter to read.
 
 Each satellite picks up the corrections of the latest cycle on its next driver
 record, sized for where they land: at `landing_sample`, or at the record's end
@@ -112,33 +113,75 @@ _has_fll_path(::ConventionalPLLAndDLL{CA}) where {CA} = _has_fll_path(CA)
 _has_fll_path(::NCOReferencedPLLAndDLL) = true
 
 """
+    CarrierPhaseAccumulator
+
+What a satellite in the vector loop accumulates for the navigation filter's
+pseudorange-rate measurement: per pair of consecutive prompts of its driver,
+the carrier phase the incoming signal advanced by between their centres — the
+replica's own advance over that span plus the FLL discriminator's rotation, the
+incoming signal's advance against it — and the span. Over a navigation cycle
+the spans tile the time between the centres of the cycle's last record and the
+previous cycle's, so consecutive cycles share their boundary prompt and the sum
+of the cycles' measurements is the incoming carrier phase, at the noise of two
+prompt phases.
+
+  - `count`: the spans accumulated;
+  - `cycles`: the incoming carrier phase over them (cycles);
+  - `duration`: their total length;
+  - `time_moment`: their lengths times their midpoints, summed, on the
+    records' time grid (`sample_index / sampling_frequency`), so
+    `time_moment / duration` is the time the mean Doppler
+    `cycles / duration` refers to.
+"""
+struct CarrierPhaseAccumulator
+    count::Int
+    cycles::Float64
+    duration::typeof(1.0s)
+    time_moment::typeof(1.0s^2)
+end
+
+CarrierPhaseAccumulator() = CarrierPhaseAccumulator(0, 0.0, 0.0s, 0.0s^2)
+
+"""
     SatVectorPLLAndDLL
 
-Per-satellite state of a [`VectorPLLAndDLL`](@ref): the inner scalar loop's
-state and, on top, the interface to the vector-tracking filter.
-
-  - `vt_on`: whether the filter controls this satellite's NCOs. While `false`
-    the satellite runs the inner loop and nothing is accumulated.
-  - `code_discr_acc` / `carrier_discr_acc`: `(count, sum)` of the DLL output
-    (chips) and the raw FLL discriminator (Hz) since the filter last read them.
-  - `code_freq_update` / `carrier_freq_update`: the corrections the per-record
-    step applies, set from the filter's latest cycle.
-  - `code_freq_update_history` and `code_update_landing_lead`: the last three
-    code corrections the filter set, newest first, and how long after the
-    filter's cycle epoch the newest reached the replica. The filter's next
-    code measurement needs them to move the mid-cycle mean discriminator to
-    the epoch. They record what the replica was steered by, so a
-    [`reset_estimator_state`](@ref), which folds the newest correction into
-    the inner loop's Dopplers, keeps them.
-  - `slot`, `registration` and `cycle_id`: where the navigation engine keeps
-    this satellite (`0` until its first record), and the latest cycle it has
-    taken up.
+Per-satellite state of a [`VectorPLLAndDLL`](@ref), produced by
+[`init_estimator_state`](@ref) and advanced by [`step_loop`](@ref). Its fields
+are internal and may change in any release. Use [`phase_lock_indicator`](@ref)
+and [`carrier_loop_stage`](@ref) to inspect it, and [`satellite_report`](@ref)
+for what the navigation engine knows of the satellite.
 """
 struct SatVectorPLLAndDLL{S}
+    # The inner scalar loop's state and, on top, the interface to the vector-tracking
+    # filter:
+    #
+    #   - `vt_on`: whether the filter controls this satellite's NCOs. While `false`
+    #     the satellite runs the inner loop and nothing is accumulated.
+    #   - `code_discr_acc`: `(count, sum)` of the DLL output (chips) since the
+    #     filter last read it.
+    #   - `carrier_phase_acc`: the incoming carrier phase between consecutive
+    #     prompts since the filter last read it, a `CarrierPhaseAccumulator`.
+    #   - `previous_replica_half`: `(cycles, duration)` the replica's carrier advanced
+    #     by over the second half of the driver's last record, and that half's length,
+    #     `NaN` before the first record. It carries the accumulation across the
+    #     filter's reads and across a hand-over between the loops.
+    #   - `code_freq_update` / `carrier_freq_update`: the corrections the per-record
+    #     step applies, set from the filter's latest cycle.
+    #   - `code_freq_update_history` and `code_update_landing_lead`: the last three
+    #     code corrections the filter set, newest first, and how long after the
+    #     filter's cycle epoch the newest reached the replica. The filter's next
+    #     code measurement needs them to move the mid-cycle mean discriminator to
+    #     the epoch. They record what the replica was steered by, so a
+    #     `reset_estimator_state`, which folds the newest correction into the inner
+    #     loop's Dopplers, keeps them.
+    #   - `slot`, `registration` and `cycle_id`: where the navigation engine keeps
+    #     this satellite (`0` until its first record), and the latest cycle it has
+    #     taken up.
     inner::S
     vt_on::Bool
     code_discr_acc::Tuple{Int,Float64}
-    carrier_discr_acc::Tuple{Int,typeof(1.0Hz)}
+    carrier_phase_acc::CarrierPhaseAccumulator
+    previous_replica_half::Tuple{Float64,typeof(1.0s)}
     code_freq_update::typeof(1.0Hz)
     carrier_freq_update::typeof(1.0Hz)
     code_freq_update_history::NTuple{3,typeof(1.0Hz)}
@@ -154,13 +197,22 @@ _is_driven_by(state::SatVectorPLLAndDLL, signal::AbstractGNSSSignal) =
     _is_driven_by(state.inner, signal)
 
 # A satellite with the vector interface empty — out of the loop or just joined —
-# on the slot of `registration`.
-SatVectorPLLAndDLL(inner, vt_on::Bool, slot::Int = 0, registration::Int = 0, cycle_id::Int = -1) =
+# on the slot of `registration`. The replica's last half record is not the vector
+# interface's but the replica's, so it is kept.
+SatVectorPLLAndDLL(
+    inner,
+    vt_on::Bool,
+    slot::Int = 0,
+    registration::Int = 0,
+    cycle_id::Int = -1;
+    previous_replica_half::Tuple{Float64,typeof(1.0s)} = (NaN, NaN * s),
+) =
     SatVectorPLLAndDLL(
         inner,
         vt_on,
         (0, 0.0),
-        (0, 0.0Hz),
+        CarrierPhaseAccumulator(),
+        previous_replica_half,
         0.0Hz,
         0.0Hz,
         (0.0Hz, 0.0Hz, 0.0Hz),
@@ -174,14 +226,16 @@ function SatVectorPLLAndDLL(
     state::SatVectorPLLAndDLL{S};
     inner::Maybe{S} = nothing,
     code_discr_acc::Maybe{Tuple{Int,Float64}} = nothing,
-    carrier_discr_acc::Maybe{Tuple{Int,typeof(1.0Hz)}} = nothing,
+    carrier_phase_acc::Maybe{CarrierPhaseAccumulator} = nothing,
+    previous_replica_half::Maybe{Tuple{Float64,typeof(1.0s)}} = nothing,
     cycle_id::Maybe{Int} = nothing,
 ) where {S}
     SatVectorPLLAndDLL{S}(
         something(inner, state.inner),
         state.vt_on,
         something(code_discr_acc, state.code_discr_acc),
-        something(carrier_discr_acc, state.carrier_discr_acc),
+        something(carrier_phase_acc, state.carrier_phase_acc),
+        something(previous_replica_half, state.previous_replica_half),
         state.code_freq_update,
         state.carrier_freq_update,
         state.code_freq_update_history,
@@ -199,7 +253,8 @@ _registered(state::SatVectorPLLAndDLL{S}, slot::Int, registration::Int) where {S
         state.inner,
         state.vt_on,
         state.code_discr_acc,
-        state.carrier_discr_acc,
+        state.carrier_phase_acc,
+        state.previous_replica_half,
         state.code_freq_update,
         state.carrier_freq_update,
         state.code_freq_update_history,
@@ -246,7 +301,8 @@ reset_estimator_state(
     reset_estimator_state(estimator.inner, state.inner, carrier_doppler, code_doppler),
     state.vt_on,
     (0, 0.0),
-    (0, 0.0Hz),
+    CarrierPhaseAccumulator(),
+    state.previous_replica_half,
     0.0Hz,
     0.0Hz,
     state.code_freq_update_history,
@@ -270,12 +326,26 @@ phase_lock_indicator(state::SatVectorPLLAndDLL) = phase_lock_indicator(state.inn
 # accumulators and no corrections; one already in the loop is returned unchanged.
 _enable_vector_tracking(state::SatVectorPLLAndDLL) =
     state.vt_on ? state :
-    SatVectorPLLAndDLL(state.inner, true, state.slot, state.registration, state.cycle_id)
+    SatVectorPLLAndDLL(
+        state.inner,
+        true,
+        state.slot,
+        state.registration,
+        state.cycle_id;
+        state.previous_replica_half,
+    )
 
 # Hand the satellite back to its inner scalar loop, with the accumulators and
 # corrections zeroed so a later re-enable never runs on stale values.
 _disable_vector_tracking(state::SatVectorPLLAndDLL) =
-    SatVectorPLLAndDLL(state.inner, false, state.slot, state.registration, state.cycle_id)
+    SatVectorPLLAndDLL(
+        state.inner,
+        false,
+        state.slot,
+        state.registration,
+        state.cycle_id;
+        state.previous_replica_half,
+    )
 
 # `_disable_vector_tracking` with the inner loop re-seeded from the Dopplers the
 # replica runs at — what `reset_estimator_state` does — so the scalar loop takes over
@@ -288,7 +358,8 @@ _release_from_vector_tracking(state::SatVectorPLLAndDLL, carrier_doppler, code_d
         false,
         state.slot,
         state.registration,
-        state.cycle_id,
+        state.cycle_id;
+        state.previous_replica_half,
     )
 
 # The inner reset reads the per-satellite state only, never the estimator's
@@ -318,7 +389,8 @@ function _set_vector_corrections(
         state.inner,
         state.vt_on,
         state.code_discr_acc,
-        state.carrier_discr_acc,
+        state.carrier_phase_acc,
+        state.previous_replica_half,
         code_freq_update,
         carrier_freq_update,
         (code_freq_update, newest, previous),
@@ -329,20 +401,77 @@ function _set_vector_corrections(
     )
 end
 
-# Empty both discriminator accumulators, once the filter has read them.
-_reset_discriminator_accumulators(state::SatVectorPLLAndDLL) =
-    SatVectorPLLAndDLL(state; code_discr_acc = (0, 0.0), carrier_discr_acc = (0, 0.0Hz))
+# Empty both accumulators, once the filter has read them. The replica's last half
+# record stays: the next cycle's first span starts from it.
+_reset_code_and_carrier_accumulators(state::SatVectorPLLAndDLL) = SatVectorPLLAndDLL(
+    state;
+    code_discr_acc = (0, 0.0),
+    carrier_phase_acc = CarrierPhaseAccumulator(),
+)
 
-# The mean DLL output (chips) and raw FLL discriminator (Hz) accumulated since the
-# last reset, or `nothing` if nothing has been accumulated.
+# The mean DLL output (chips) accumulated since the last reset, or `nothing` if
+# nothing has been accumulated.
 function _mean_code_discriminator(state::SatVectorPLLAndDLL)
     count, discr_sum = state.code_discr_acc
     count == 0 ? nothing : discr_sum / count
 end
 
-function _mean_carrier_discriminator(state::SatVectorPLLAndDLL)
-    count, discr_sum = state.carrier_discr_acc
-    count == 0 ? nothing : discr_sum / count
+# The mean incoming carrier Doppler over the spans accumulated since the last reset
+# and the time it refers to (on the records' grid), or `nothing` if none was.
+function _mean_carrier_doppler(state::SatVectorPLLAndDLL)
+    acc = state.carrier_phase_acc
+    acc.count == 0 && return nothing
+    uconvert(Hz, acc.cycles / acc.duration), acc.time_moment / acc.duration
+end
+
+# The carrier phase (cycles) the replica advanced by over the first and the second
+# half of `record`, each with the half's length, as `(cycles, duration)`, and the
+# record's centre, from the words it ran on (Hz).
+@inline function _replica_halves(record::LoopRecord, words)
+    fs = record.sampling_frequency
+    record_end = record.sample_index
+    half_samples = record.integrated_samples / 2
+    center = record_end - half_samples
+    first_word, _ = mean_nco_word(words, record_end - record.integrated_samples, center)
+    second_word, _ = mean_nco_word(words, center, record_end)
+    half_duration = convert(typeof(1.0s), half_samples / fs)
+    first_cycles = Float64(uconvert(NoUnits, first_word * Hz * half_duration))
+    second_cycles = Float64(uconvert(NoUnits, second_word * Hz * half_duration))
+    (
+        first = (first_cycles, half_duration),
+        second = (second_cycles, half_duration),
+        center = convert(typeof(1.0s), center / fs),
+    )
+end
+
+# The accumulator with the span from the previous record's prompt to this one's
+# added: the replica's advance over it — the second half of the previous record and
+# the first of this one — plus the FLL's rotation, the incoming signal's advance
+# against the replica over the same span. `fll_disc` divides the rotation by the
+# record's integration time, so multiplying by it gives the rotation back. A record
+# without a previous prompt (the first one, or one whose carrier phase polarity
+# changed) has no rotation, and one without a previous half record no replica
+# advance: either span is left out rather than taken as a zero.
+@inline function _accumulate_carrier_phase(
+    acc::CarrierPhaseAccumulator,
+    previous_replica_half,
+    replica_halves,
+    fll_discriminator,
+    record::LoopRecord,
+)
+    previous_cycles, previous_duration = previous_replica_half
+    first_cycles, first_duration = replica_halves.first
+    (iszero(record.previous_prompt) || isnan(previous_cycles)) && return acc
+    integration_time = record.integrated_samples / record.sampling_frequency
+    rotation = Float64(uconvert(NoUnits, fll_discriminator * integration_time))
+    duration = previous_duration + first_duration
+    midpoint = replica_halves.center - duration / 2
+    CarrierPhaseAccumulator(
+        acc.count + 1,
+        acc.cycles + previous_cycles + first_cycles + rotation,
+        acc.duration + duration,
+        acc.time_moment + duration * midpoint,
+    )
 end
 
 # One record through the satellite's loop: the inner loop out of the vector loop,
@@ -354,10 +483,14 @@ end
     words,
     landing_sample::Int64,
 )
+    replica_halves = _replica_halves(record, words)
+    previous_replica_half = replica_halves.second
     if !state.vt_on
         inner, carrier_doppler, code_doppler =
             step_loop(estimator.inner, state.inner, record, words, landing_sample)
-        return SatVectorPLLAndDLL(state; inner), carrier_doppler, code_doppler
+        return SatVectorPLLAndDLL(state; inner, previous_replica_half),
+        carrier_doppler,
+        code_doppler
     end
     inner, carrier_doppler, code_doppler, dll_discriminator, fll_discriminator =
         _step_vector_loop(
@@ -369,17 +502,18 @@ end
             state.code_freq_update,
             state.carrier_freq_update,
         )
-    code_count, code_sum = state.code_discr_acc
-    carrier_count, carrier_sum = state.carrier_discr_acc
-    # A record without a previous prompt (the first after a (re)start) has an
-    # FLL discriminator of 0 Hz and still counts, as in Tracking: the first
-    # cycle's mean is then pulled toward 0 Hz, and the member counts as
-    # measured although it has no real frequency measurement yet.
     SatVectorPLLAndDLL(
         state;
         inner,
-        code_discr_acc = (code_count + 1, code_sum + dll_discriminator),
-        carrier_discr_acc = (carrier_count + 1, carrier_sum + fll_discriminator),
+        code_discr_acc = state.code_discr_acc .+ (1, dll_discriminator),
+        carrier_phase_acc = _accumulate_carrier_phase(
+            state.carrier_phase_acc,
+            state.previous_replica_half,
+            replica_halves,
+            fll_discriminator,
+            record,
+        ),
+        previous_replica_half,
     ),
     carrier_doppler,
     code_doppler
