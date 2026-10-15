@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.0.1](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v5.0.0...v5.0.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* **vector:** require GNSSDecoder 5.0.3 so a B1C slot taken over by another satellite syncs on its PRN ([c064408](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/c0644081bec58479e432e902e9a8a9270a21e259)), closes [JuliaGNSS/GNSSDecoder.jl#105](https://github.com/JuliaGNSS/GNSSDecoder.jl/issues/105)
+
 # [5.0.0](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v4.0.1...v5.0.0) (2026-10-14)
 
 
