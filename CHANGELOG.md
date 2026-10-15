@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.0.2](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v5.0.1...v5.0.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **vector:** measure the pseudorange rate from the replica's phase advance over the cycle ([271eda3](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/271eda3ee0e88bc94be4153e2e6b14691eb9934b))
+
 ## [5.0.1](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v5.0.0...v5.0.1) (2026-10-15)
 
 
