@@ -279,8 +279,6 @@ mutable struct VTBuffers{SB<:Tuple}
     positions::Vector{SVector{3,Float64}}
     member_columns::BiasColumns
     candidate_positions::Vector{SVector{3,Float64}}
-    candidate_velocities::Vector{SVector{3,Float64}}
-    candidate_clock_drifts::Vector{Float64}
     candidate_columns::BiasColumns
     ξ::Vector{Float64}
     ξ_model::Vector{Float64}
@@ -322,8 +320,6 @@ function VTBuffers(states::Tuple, num_states, layout::NavFilterLayout, max_membe
         _capacity_vector(SVector{3,Float64}, max_members),
         BiasColumns(_capacity_vector(Int, max_members), num_clocks, _capacity_vector(Int, max_members), num_ifbs),
         _capacity_vector(SVector{3,Float64}, max_members),
-        _capacity_vector(SVector{3,Float64}, max_members),
-        _capacity_vector(Float64, max_members),
         BiasColumns(_capacity_vector(Int, max_members), num_clocks, _capacity_vector(Int, max_members), num_ifbs),
         zeros(num_lsq),
         zeros(num_lsq),
@@ -718,11 +714,18 @@ function _collect_members!(j, group, g, buffer, vt, T)
     wavelength = SPEED_OF_LIGHT / ustrip(Hz, get_center_frequency(signal))
     clock_bias_index = layout.clock_bias_index_by_group[g]
     ifb_index = layout.ifb_index_by_group[g]
+    epoch_time = _epoch_time(vt, vt.pending_epoch)
     for (slot, sat) in enumerate(group.slots)
         _is_member(sat) || continue
         state = sat.estimator_state
         j += 1
         row = buffers.rows[j]
+        doppler, rate_epoch_offset = accumulated_carrier_doppler(state, epoch_time)
+        # The satellite at the transmit time of the rate's instant: the receive time is
+        # `rate_epoch_offset` earlier, and the transmit time with it, to within the
+        # range rate's 10⁻⁵ of that.
+        rate_time = row.time - rate_epoch_offset
+        rate_orbit = calc_satellite_position_and_velocity(sat.decoder, rate_time)
         push!(
             buffers.members,
             VTMember(
@@ -734,15 +737,16 @@ function _collect_members!(j, group, g, buffer, vt, T)
                 chip_length,
                 wavelength,
                 code_frequency,
-                sat.in_lock && has_accumulated_discriminators(state),
+                sat.in_lock && has_code_and_carrier_measurements(state),
                 row.time,
                 row.time - row.count_offset_to_gpst,
                 row.position,
-                row.velocity,
-                row.clock_drift,
-                wavelength * ustrip(Hz, sat.carrier_doppler),
                 accumulated_code_discriminator(state, T),
-                accumulated_carrier_discriminator(state),
+                wavelength * doppler,
+                rate_epoch_offset,
+                get_sat_position(rate_orbit),
+                get_sat_velocity(rate_orbit),
+                calc_satellite_clock_drift(sat.decoder, rate_time),
                 linear_cn0_floor(sat.cn0_dbhz),
                 sat.early_late_spacing,
                 ustrip(s, sat.coherent_integration_time),
@@ -850,12 +854,8 @@ function _measurement_update!(vt::VectorNavigation, T)
     use_rates = vt.config.use_pseudorange_rates
     num_sats = length(candidates)
     resize!(buffers.candidate_positions, num_sats)
-    resize!(buffers.candidate_velocities, num_sats)
-    resize!(buffers.candidate_clock_drifts, num_sats)
     for (k, j) in enumerate(candidates)
         buffers.candidate_positions[k] = members[j].sat_position
-        buffers.candidate_velocities[k] = members[j].sat_velocity
-        buffers.candidate_clock_drifts[k] = members[j].sat_clock_drift
     end
     vt_bias_columns!(buffers.candidate_columns, members, candidates)
     num_rate_rows = use_rates ? num_sats : 0
@@ -868,8 +868,7 @@ function _measurement_update!(vt::VectorNavigation, T)
         z[k] = measured[j] + member.code_discriminator * member.chip_length
         R[k, k] = pseudorange_noise_variance(member, T)
         if use_rates
-            z[num_sats+k] =
-                member.pseudorange_rate + member.carrier_discriminator * member.wavelength
+            z[num_sats+k] = member.pseudorange_rate
             R[num_sats+k, num_sats+k] = pseudorange_rate_noise_variance(member, T)
         end
     end
@@ -884,8 +883,8 @@ function _measurement_update!(vt::VectorNavigation, T)
         vt.model.idxs,
         buffers.ξ_model,
         buffers.candidate_positions,
-        buffers.candidate_velocities,
-        buffers.candidate_clock_drifts,
+        members,
+        candidates,
         buffers.candidate_columns,
         use_rates,
         constraints,
@@ -910,16 +909,8 @@ function _predict_members!(vt::VectorNavigation)
     rates = resize!(buffers.predicted_pseudorange_rates, num_members)
     residuals = resize!(buffers.residuals, num_members)
     rate_residuals = resize!(buffers.rate_residuals, num_members)
-    user_pos, user_vel, user_clock_drift = nav_filter_states(vt.x, idxs)
     for (j, member) in enumerate(members)
-        rates[j] = predict_pseudorange_rate(
-            user_pos,
-            user_vel,
-            user_clock_drift,
-            member.sat_position,
-            member.sat_velocity,
-            member.sat_clock_drift,
-        )
+        rates[j] = predict_pseudorange_rate(vt.x, idxs, member)
         residuals[j], rate_residuals[j] = vt_post_fit_residuals(
             member,
             buffers.measured_pseudoranges[j],
@@ -958,14 +949,14 @@ function _member_corrections(vt::VectorNavigation, sat::VTSlot, j, τ, chips, ca
     member = vt.buffers.members[j]
     predicted_pseudorange, predicted_rate, measured_pseudorange =
         _predict_at_landing(vt, sat, member, j, ustrip(s, vt.reference_time), τ, chips)
-    measured_rate = member.wavelength * carrier_doppler
+    replica_rate = member.wavelength * carrier_doppler
     code_update = nco_code_correction(
         predicted_pseudorange,
         measured_pseudorange,
         member.code_frequency,
         vt.cycle_integration_time,
     )
-    carrier_update = nco_carrier_correction(predicted_rate, measured_rate, member.wavelength)
+    carrier_update = nco_carrier_correction(predicted_rate, replica_rate, member.wavelength)
     code_update, carrier_update
 end
 

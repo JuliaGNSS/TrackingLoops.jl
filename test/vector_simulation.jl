@@ -313,7 +313,7 @@ function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_loc
     slot.occupied = true
     slot.decoder = epoch_state.decoder
     slot.estimator_state = sat.state
-    sat.state = TrackingLoops._reset_discriminator_accumulators(sat.state)
+    sat.state = TrackingLoops._reset_code_and_carrier_accumulators(sat.state)
     slot.code_phase = epoch_state.code_phase
     carrier, code = mean_nco_word(sim_words(sat, landing_sample), epoch_sample, epoch_sample)
     slot.carrier_doppler = carrier * Hz

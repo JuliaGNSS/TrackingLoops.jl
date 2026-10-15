@@ -130,8 +130,13 @@ end
         @test slot.member_index == j
         measured = TL.pseudorange_from_tows(ustrip(s, vt.reference_time), member.time_gpst_count) -
                    buffers.delays[j]
-        rate = TL.predict_pseudorange_rate(user_pos, user_vel, user_drift,
-            member.sat_position, member.sat_velocity, member.sat_clock_drift)
+        # The carrier correction is the rate predicted where it lands — at the epoch,
+        # with the satellite there — against the replica's own word there; the
+        # measured rate, a mean over the past cycle, does not enter it.
+        orbit = calc_satellite_position_and_velocity(slot.decoder, member.time)
+        rate_at_epoch = TL.predict_pseudorange_rate(user_pos, user_vel, user_drift,
+            member.sat_position, orbit.velocity, calc_satellite_clock_drift(slot.decoder, member.time))
+        @test SVector{3,Float64}(orbit.position) == member.sat_position
         # The measurement the last update fused against the one the corrections use.
         @test measured === buffers.measured_pseudoranges[j]
         # The satellite took the corrections up where its command lands, at the epoch:
@@ -139,9 +144,10 @@ end
         @test sat.state.code_freq_update ≈
               TL.nco_code_correction(predicted[j], measured, member.code_frequency, T) * Hz atol = 1e-6Hz
         @test sat.state.carrier_freq_update ≈
-              TL.nco_carrier_correction(buffers.predicted_pseudorange_rates[j],
-                  member.pseudorange_rate, member.wavelength) * Hz atol = 1e-6Hz
-        @test buffers.predicted_pseudorange_rates[j] ≈ rate atol = 1e-9
+              TL.nco_carrier_correction(rate_at_epoch,
+                  member.wavelength * ustrip(Hz, slot.carrier_doppler), member.wavelength) * Hz atol = 1e-6Hz
+        # The post-fit rate is predicted at the measurement's own instant.
+        @test buffers.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.x, idxs, member) atol = 1e-9
         @test sat.state.code_update_landing_lead == 0.0s
         # The accumulators were emptied at the epoch's snapshot.
         @test sat.state.code_discr_acc == (0, 0.0)

@@ -5,6 +5,7 @@
 # for. `vector_pipeline.jl` closes the loop on records alone.
 
 using Accessors: @set
+using Statistics: mean, std
 
 # A Galileo decoder that has decoded a GGTO of zero, the offset the simulated time
 # scales have: the fixtures were captured without one.
@@ -189,6 +190,56 @@ end
     # the epoch loses the loop.
     _, results, diverged = run(25; ignore_delay = true)
     @test diverged || !results[end].status.running
+end
+
+@testset "The fused rates are continuous across cycles and weighted as they are noisy" begin
+    # Galileo E1 at 45 dB-Hz, the C/N₀ the slots report. Each member's rate measurement,
+    # against the incoming carrier its records really saw, has the noise the filter
+    # weights it with and the −1/2 lag-1 autocorrelation of measurements that share their
+    # boundary prompts; summed over the cycles, it stays at the carrier-phase noise.
+    # With the replica read at the end of each cycle, its PLL jitter made the residuals
+    # nearly five times `√R`, their autocorrelation −0.15, and the integrated error walk
+    # by decimetres.
+    rx = SimReceiver(; signals = (GalileoE1B(),))
+    noise_std = sqrt(1 / (2 * 10^4.5 * 1e-3))
+    foreach(sat -> sat.noise_std = noise_std, rx.sats)
+    T = 0.1
+    residuals = [Float64[] for _ in rx.sats]
+    variances = Float64[]
+    true_cycles = zeros(length(rx.sats))
+    max_code_error = 0.0
+    all_measured = true
+    sample = 0
+    for cycle = 1:400
+        fill!(true_cycles, 0.0)
+        for k = 4:4:100
+            sample_index = sample + k * SAMPLES_PER_MS
+            for (i, sat) in enumerate(rx.sats)
+                phase_error, carrier = sat.phase_error, sat.carrier_doppler
+                code_error = simulate_record!(sat, rx.estimator, rx.truth, sim_time(rx, sample_index),
+                    4 * SAMPLES_PER_MS, sample_index, NO_LANDING_SAMPLE)
+                max_code_error = max(max_code_error, abs(code_error))
+                true_cycles[i] += sat.phase_error - phase_error + carrier * 0.004
+            end
+        end
+        sample += 100 * SAMPLES_PER_MS
+        run_cycle!(rx, sample, fill_slot!)
+        cycle > 50 || continue
+        for member in rx.vt.buffers.members
+            all_measured &= member.available
+            push!(residuals[member.slot], member.pseudorange_rate - member.wavelength * true_cycles[member.slot] / T)
+            push!(variances, TL.pseudorange_rate_noise_variance(member, T))
+        end
+    end
+    @test max_code_error < 0.05
+    @test all_measured
+    sqrt_R = sqrt(mean(variances))
+    for r in residuals
+        @test std(r) / sqrt_R ≈ 1.0 atol = 0.25
+        y = r .- mean(r)
+        @test sum(y[1:end-1] .* y[2:end]) / sum(abs2, y) ≈ -0.5 atol = 0.12
+        @test maximum(abs, cumsum(r) .* T) < 0.03
+    end
 end
 
 @testset "The filter corrects the atmospheric delays" begin
