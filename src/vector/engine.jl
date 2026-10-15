@@ -322,7 +322,8 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
 end
 
 # A decoder for satellite `prn` on the containers of `decoder`: its sync restarted, the
-# vote tally of the old satellite's data emptied, no data decoded.
+# vote tally of the old satellite's data emptied, no data decoded. GNSSDecoder keeps
+# everything PRN-specific in `state.prn`, so the containers serve any satellite.
 function _rebind_decoder(decoder::GNSSDecoderState{D}, prn::Int) where {D}
     restarted = reset_decoder_state!(decoder)
     _clear_vote_tally!(restarted.cache)
