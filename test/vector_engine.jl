@@ -1,6 +1,6 @@
 # The per-record side of the navigation engine piece by piece: the epoch grid, the
 # snapshot of a satellite at an epoch, registration and the slots, staleness.
-using GNSSDecoder: GNSSDecoderState
+using GNSSDecoder: GNSSDecoder, GNSSDecoderState, decode!
 
 engine_correlator(p = 1.0 + 0.0im) = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
 
@@ -52,6 +52,33 @@ end
     third = init_estimator_state(estimator, GPSL1CA(), 10.0Hz, 0.0Hz)
     third, = step_loop(estimator, third, engine_record(11, 12_000), words, NO_LANDING_SAMPLE)
     @test third.slot == 3 && length(group.slots) == 3
+end
+
+# B-CNAV1 subframe 1 of satellite `prn` at SOH `soh`: its BCH PRN and SOH codewords as
+# ±1 soft symbols, the first symbol each codeword's bit 0.
+b1c_subframe1(prn, soh) = Float32[
+    (bit -> bit ? -1 : 1).(digits(Bool, GNSSDecoder.b1c_prn_codeword(prn); base = 2, pad = 21))
+    (bit -> bit ? -1 : 1).(digits(Bool, GNSSDecoder.b1c_soh_codeword(soh); base = 2, pad = 51))
+]
+
+@testset "A satellite taking over another's slot decodes on its own PRN" begin
+    # The slot's decoder is rebuilt on the containers of the satellite that held it.
+    # B1C syncs on a PRN codeword, which must be the new satellite's.
+    estimator = VectorPLLAndDLL(BeiDouB1C_P() => BeiDouB1C_D(); max_satellites_per_signal = 1)
+    group = estimator.navigation.groups[1]
+    words = FixedNCOWord(100.0, 0.1)
+    state = init_estimator_state(estimator, BeiDouB1C_P(), 100.0Hz, 0.1Hz)
+    state, = step_loop(estimator, state, engine_record(19, 4000; signal = BeiDouB1C_P()), words, NO_LANDING_SAMPLE)
+    slot = group.slots[1]
+    @test slot.running_decoder.prn == 19
+    slot.occupied = false
+    other = init_estimator_state(estimator, BeiDouB1C_P(), 100.0Hz, 0.1Hz)
+    other, = step_loop(estimator, other, engine_record(30, 8000; signal = BeiDouB1C_P()), words, NO_LANDING_SAMPLE)
+    @test other.slot == 1 && slot.running_decoder.prn == 30
+    # Subframe 1 at both ends of a frame is all the sync reads.
+    frame = [b1c_subframe1(30, 10); ones(Float32, 1728); b1c_subframe1(30, 11)]
+    decoder = decode!(slot.running_decoder, frame, length(frame))
+    @test decoder.raw_data.soh == 10
 end
 
 # Set `slot` up for a snapshot of epoch 1 by a record ending past it, the driver's and
