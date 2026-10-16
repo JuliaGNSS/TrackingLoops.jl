@@ -169,6 +169,31 @@ the others reach the next epoch; then the cycle runs without it. A host never
 has to hold a record back or order its channels: each record is stepped as it
 arrives.
 
+## [The FLL branch's bandwidth](@id vector-fll-bandwidth)
+
+In the vector loop ([`VectorPLLAndDLL`](@ref)) the FLL path of a satellite's
+carrier filter is fed the navigation filter's carrier correction instead of
+the FLL discriminator. The correction is set once per navigation cycle and
+held over the cycle, so the loop it closes is sampled at the cycle time `T`.
+It runs at its own bandwidth, `vector_fll_loop_filter_bandwidth`, 1 Hz by
+default ([`default_vector_fll_loop_filter_bandwidth`](@ref)), capped against
+the cycle ([`effective_vector_fll_loop_filter_bandwidth`](@ref)):
+
+```julia
+BL_vector_fll = min(BL_vector_fll_configured, 0.1 / T)
+```
+
+That sampled loop diverges at `BL · T ≈ 0.75`. At `0.1` its noise bandwidth runs
+18 % over the configured one, 43 % at `0.2`. At the default 100 ms cycle the
+correction updates at 10 Hz, and 1 Hz keeps the FLL path well below that
+rate's 5 Hz Nyquist frequency and well below the 18 Hz PLL. On a
+`1/T`-sampled correction a wider FLL path would raise the replica's phase
+noise at a few hertz. Up to 5.0.2 the FLL path was tied to the PLL
+(`ω₀ / 4`, 2.9 Hz at 18 Hz), which lifted the carrier phase jitter at 2–3 Hz,
+to 1.6 times the PLL's alone on Galileo E1 in simulation; at 1 Hz it is
+1.08 times. The FLL-assist bandwidth is a pull-in setting and is not used in
+the vector loop.
+
 ## Under a hardware NCO delay
 
 With a hardware correlator, the command computed from a record only takes
