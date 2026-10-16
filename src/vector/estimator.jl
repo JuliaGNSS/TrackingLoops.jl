@@ -18,7 +18,8 @@
                     lock_cn0_threshold = 30dBHz, max_satellites_per_signal = 16,
                     approximate_year = year(now(UTC)),
                     enable_ionospheric_correction = true,
-                    enable_tropospheric_correction = true)
+                    enable_tropospheric_correction = true,
+                    vector_fll_loop_filter_bandwidth = nothing)
 
 Vector-tracking Doppler estimator for the ranging `signals`. Each is a signal
 that carries navigation data, ranged on and decoded alike (`GPSL1CA()`), or a
@@ -67,13 +68,18 @@ satellite uses until the filter takes it over, and again once the filter
 releases it. While a satellite is in the vector loop:
 
   - its carrier filter always runs, with the PLL branch fed by the satellite's
-    own phase discriminator and the FLL branch fed by the filter's carrier
-    correction (the filter integrates it as a frequency error; it is not added
-    to the Doppler directly), at the narrow PLL bandwidth with the FLL branch's
-    tied to it, whatever [`CarrierLoopStage`](@ref) its scalar loop had
-    reached, which [`carrier_loop_stage`](@ref) reports as `NARROW_PLL`. The
-    satellite is released into a restarted staging, FLL-assisted again, so the
-    scalar loop pulls in afresh;
+    own phase discriminator at the narrow PLL bandwidth, whatever
+    [`CarrierLoopStage`](@ref) its scalar loop had reached, which
+    [`carrier_loop_stage`](@ref) reports as `NARROW_PLL`. The FLL branch is fed
+    the filter's carrier correction, which it integrates as a frequency error
+    (the correction is not added to the Doppler directly). It runs at its own
+    bandwidth, `vector_fll_loop_filter_bandwidth`, 1 Hz by default
+    ([`default_vector_fll_loop_filter_bandwidth`](@ref)) and capped against
+    `cycle_time` ([`effective_vector_fll_loop_filter_bandwidth`](@ref)). The
+    correction is set once per cycle and held for the cycle, so the FLL branch
+    sits well below the 5 Hz Nyquist frequency of the default 10 Hz cycle and
+    well below the PLL. The satellite is released into a restarted staging,
+    FLL-assisted again, so the scalar loop pulls in afresh;
   - its code filter is frozen, and the filter's code correction replaces its
     output: `code_doppler = init_code_doppler + code_freq_update +
     carrier_filter_output · code_center_frequency_ratio`;
@@ -103,6 +109,9 @@ dropped leaves its storage to the next one.
 struct VectorPLLAndDLL{E<:AbstractDopplerEstimator,N} <: AbstractDopplerEstimator
     inner::E
     navigation::N
+    # The FLL branch's bandwidth in the vector loop; `nothing` takes the driver
+    # signal's default, resolved into each satellite's `LoopBandwidths`.
+    vector_fll_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
 end
 
 # Whether an estimator's carrier filter has an FLL path, as `_has_fll_path` of a
@@ -268,7 +277,9 @@ _registered(state::SatVectorPLLAndDLL{S}, slot::Int, registration::Int) where {S
     init_estimator_state(estimator::VectorPLLAndDLL, driver_signal, carrier_doppler, code_doppler)
 
 The inner loop's state with the vector interface empty: out of the vector
-loop, nothing accumulated, no corrections. The satellite joins the navigation
+loop, nothing accumulated, no corrections. The estimator's
+`vector_fll_loop_filter_bandwidth`, or the driver signal's default where it is
+`nothing`, becomes the inner state's `bandwidths.vector_fll`. The satellite joins the navigation
 engine on its first record.
 """
 init_estimator_state(
@@ -277,9 +288,26 @@ init_estimator_state(
     carrier_doppler,
     code_doppler,
 ) = SatVectorPLLAndDLL(
-    init_estimator_state(estimator.inner, driver_signal, carrier_doppler, code_doppler),
+    _with_vector_fll_bandwidth(
+        init_estimator_state(estimator.inner, driver_signal, carrier_doppler, code_doppler),
+        something(
+            estimator.vector_fll_loop_filter_bandwidth,
+            default_vector_fll_loop_filter_bandwidth(driver_signal),
+        ),
+    ),
     false,
 )
+
+# The inner state with the vector FLL bandwidth resolved into its bandwidths.
+@inline function _with_vector_fll_bandwidth(inner, vector_fll)
+    b = inner.bandwidths
+    bandwidths = LoopBandwidths(b.wide_carrier, b.narrow_carrier, b.fll_assist, b.code, vector_fll)
+    _with_bandwidths(inner, bandwidths)
+end
+_with_bandwidths(state::SatConventionalPLLAndDLL, bandwidths) =
+    SatConventionalPLLAndDLL(state; bandwidths)
+_with_bandwidths(state::SatNCOReferencedPLLAndDLL, bandwidths) =
+    SatNCOReferencedPLLAndDLL(state; bandwidths)
 
 """
     reset_estimator_state(estimator::VectorPLLAndDLL, state, carrier_doppler, code_doppler)
@@ -501,6 +529,7 @@ end
             landing_sample,
             state.code_freq_update,
             state.carrier_freq_update,
+            estimator.navigation.cycle_time,
         )
     SatVectorPLLAndDLL(
         state;
@@ -522,8 +551,9 @@ end
 # The inner loop's record, in the vector loop: the discriminators exactly as the
 # inner loop measures them (`_record_discriminators`; the NCO-referenced loop's
 # phase error keeps its prediction to the landing sample), the carrier filter
-# stepped with the filter's carrier correction in its FLL slot, the code filter
-# frozen and the code correction in place of its output. Returns the inner
+# stepped with the filter's carrier correction in its FLL slot at the vector FLL
+# bandwidth, capped against the navigation `cycle_time`, the code filter frozen
+# and the code correction in place of its output. Returns the inner
 # state, both Dopplers and the two discriminators to accumulate: the DLL and the
 # raw FLL — the mean offset from the replica that ran between the two prompts'
 # centres, before any re-basing onto a landing word.
@@ -535,16 +565,20 @@ end
     landing_sample::Int64,
     code_freq_update,
     carrier_freq_update,
+    cycle_time,
 )
     discriminators = _record_discriminators(estimator, state, record, words, landing_sample; form_fll = true)
     integration_time = discriminators.integration_time
     # At the narrow PLL bandwidth, whatever the inner loop's stage, with the FLL
-    # branch's tied to it.
+    # branch at the vector FLL's own, capped against the cycle that sets its input.
     carrier_filter_output, carrier_loop_filter = filter_loop(
         state.carrier_loop_filter,
         (discriminators.phase_error, carrier_freq_update),
         integration_time,
-        effective_carrier_loop_filter_bandwidth(state.bandwidths.narrow_carrier, integration_time),
+        (
+            effective_carrier_loop_filter_bandwidth(state.bandwidths.narrow_carrier, integration_time),
+            effective_vector_fll_loop_filter_bandwidth(state.bandwidths.vector_fll, cycle_time),
+        ),
     )
     carrier_doppler, code_doppler = aid_dopplers(
         record.signal,

@@ -43,6 +43,8 @@ end
     @test state.inner.bandwidths.narrow_carrier == 18.0Hz
     @test state.inner.bandwidths.fll_assist == 5.0Hz
     @test state.inner.bandwidths.code == 1.0Hz
+    @test state.inner.bandwidths.vector_fll == 1.0Hz ==
+          default_vector_fll_loop_filter_bandwidth(GPSL1CA())
     @test state.inner.init_carrier_doppler == 100.0Hz
     @test carrier_loop_stage(state) == FLL_ASSISTED_PLL
     explicit = ConventionalAssistedPLLAndDLL(; narrow_carrier_loop_filter_bandwidth = 12.0Hz, code_loop_filter_bandwidth = 1.0Hz)
@@ -56,6 +58,37 @@ end
     @test referenced.inner isa SatNCOReferencedPLLAndDLL
     @test referenced.inner.bandwidths.narrow_carrier ==
           default_narrow_carrier_loop_filter_bandwidth(GalileoE1B())
+    # The vector FLL's bandwidth is the vector estimator's, resolved into the inner
+    # state, for either inner loop; the inner loop's own bandwidths stay.
+    for inner in (explicit, NCOReferencedPLLAndDLL())
+        estimator = VectorPLLAndDLL(GPSL1CA(); inner, vector_fll_loop_filter_bandwidth = 0.5Hz)
+        vector_state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.0Hz)
+        inner_state = init_estimator_state(inner, GPSL1CA(), 100.0Hz, 0.0Hz)
+        @test vector_state.inner.bandwidths.vector_fll == 0.5Hz
+        b = inner_state.bandwidths
+        @test vector_state.inner.bandwidths ==
+              LoopBandwidths(b.wide_carrier, b.narrow_carrier, b.fll_assist, b.code, 0.5Hz)
+    end
+end
+
+@testset "The vector FLL runs at its own bandwidth, capped by the cycle" begin
+    # One record in the vector loop with a carrier correction alone: the FLL branch at
+    # the configured bandwidth, or at `0.1 / cycle_time` on a longer cycle.
+    signal = GPSL1CA()
+    fs = 5e6Hz
+    record = vector_record(signal, (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im), 5000, fs)
+    words = FixedNCOWord(100.0, 0.0)
+    pll_discriminator = pll_disc(signal, record.filtered_correlator)
+    for (cycle_time, vector_fll, applied) in
+        ((100.0ms, 1.0Hz, 1.0Hz), (100.0ms, 0.4Hz, 0.4Hz), (100.0ms, 3.0Hz, 1.0Hz), (1.0s, 1.0Hz, 0.1Hz))
+        estimator = VectorPLLAndDLL(signal; cycle_time, vector_fll_loop_filter_bandwidth = vector_fll)
+        state = init_estimator_state(estimator, signal, 100.0Hz, 0.0Hz)
+        state = TL._set_vector_corrections(TL._enable_vector_tracking(state), 0.0Hz, 5.0Hz)
+        _, carrier_doppler, _ = step_satellite(estimator, state, record, words, NO_LANDING_SAMPLE)
+        expected, _ = filter_loop(ThirdOrderAssistedBilinearLF(), (pll_discriminator, 5.0Hz), 1.0ms, (18.0Hz, applied))
+        @test carrier_doppler ≈ 100.0Hz + expected
+        @test effective_vector_fll_loop_filter_bandwidth(vector_fll, cycle_time) ≈ applied
+    end
 end
 
 @testset "A vector loop needs an FLL-assisted inner loop" begin
@@ -127,12 +160,13 @@ end
     integration_time = num_samples / sampling_frequency
     pll_discriminator = pll_disc(gpsl1, normalized_correlator)
     dll_discriminator = dll_disc(gpsl1, normalized_correlator, init_code_doppler, sampling_frequency)
-    # The FLL branch is driven by the vector loop's carrier update.
+    # The FLL branch is driven by the vector loop's carrier update, at its own 1 Hz
+    # beside the 18 Hz PLL.
     expected_carrier_freq_update, _ = filter_loop(
         ThirdOrderAssistedBilinearLF(),
         (pll_discriminator, nav_carrier_freq_update),
         integration_time,
-        18.0Hz,
+        (18.0Hz, 1.0Hz),
     )
     @test new_carrier_doppler == carrier_doppler + expected_carrier_freq_update
     # The code Doppler follows the vector loop's update directly, plus the
