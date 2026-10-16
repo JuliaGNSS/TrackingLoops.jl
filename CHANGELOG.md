@@ -1,5 +1,12 @@
 # Changelog
 
+# [5.1.0](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v5.0.2...v5.1.0) (2026-10-16)
+
+
+### Features
+
+* **vector:** run the vector loop's FLL branch at its own 1 Hz bandwidth ([f033f58](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/f033f58246d080caa62e90ce1dc7240dd8f0d4c9))
+
 ## [5.0.2](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v5.0.1...v5.0.2) (2026-10-15)
 
 
