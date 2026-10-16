@@ -461,7 +461,7 @@ record's end under `NO_LANDING_SAMPLE`), so applying them changes nothing.
     landing_sample::Int64,
 ) =
     _is_driver_record(state, record) ?
-    _step_scalar_loop(estimator, state, record, words, landing_sample) :
+    Base.front(_step_scalar_loop(estimator, state, record, words, landing_sample)) :
     _step_passenger(state, record, words, landing_sample)
 
 # Whether `record` belongs to the signal the scalar state was initialised with.
@@ -489,10 +489,12 @@ end
 # step needs around them: the per-record integration time and the record's centre
 # sample. Shared by the scalar step and the vector step (`_step_vector_loop`), so
 # the two cannot drift apart. `phase_error` (cycles) and `frequency_error` (Hz)
-# are what the scalar loop's carrier filter is fed. The FLL error is formed only
-# where `form_fll` asks for it — the scalar loop while it uses the FLL — and is
-# zero otherwise. The DLL output `code_error` is normalised with the code word the
-# record ran on.
+# are what the scalar loop's carrier filter is fed; `prompt_phase_error` (cycles)
+# is the PLL discriminator as measured, against the replica that produced the
+# prompt, before any prediction to a landing sample — what the vector loop's rate
+# measurement reads. The FLL error is formed only where `form_fll` asks for it —
+# the scalar loop while it uses the FLL — and is zero otherwise. The DLL output
+# `code_error` is normalised with the code word the record ran on.
 @inline function _record_discriminators(
     ::ConventionalPLLAndDLL,
     state::SatConventionalPLLAndDLL,
@@ -515,9 +517,11 @@ end
             integration_time;
             polarity = record.carrier_phase_polarity,
         ) : 0.0Hz
+    phase_error = pll_disc(signal, filtered_correlator; polarity = record.carrier_phase_polarity)
     (;
         integration_time,
-        phase_error = pll_disc(signal, filtered_correlator; polarity = record.carrier_phase_polarity),
+        phase_error,
+        prompt_phase_error = phase_error,
         frequency_error,
         code_error = dll_disc(
             signal,
@@ -566,7 +570,9 @@ end
 # One record through a scalar loop: the carrier filter fed its discriminators at
 # the bandwidths of its stage, the FLL's only while it uses it, the code filter
 # the DLL with its bandwidth capped by its stability product against the
-# record's integration time, the Dopplers aided and the staging advanced.
+# record's integration time, the Dopplers aided and the staging advanced. Returns
+# the state, both Dopplers and the prompt's phase error (`prompt_phase_error` of
+# `_record_discriminators`), which the vector loop keeps out of it.
 @inline function _step_scalar_loop(estimator, state, record::LoopRecord, words, landing_sample::Int64)
     discriminators = _record_discriminators(
         estimator,
@@ -610,7 +616,8 @@ end
         _advance_staging(state.staging, record),
     ),
     carrier_doppler,
-    code_doppler
+    code_doppler,
+    discriminators.prompt_phase_error
 end
 
 # ── The NCO-referenced (delay-aware) PLL/DLL ─────────────────────────────────
@@ -834,7 +841,7 @@ the conventional loop.
     landing_sample::Int64,
 ) =
     _is_driver_record(state, record) ?
-    _step_scalar_loop(estimator, state, record, words, landing_sample) :
+    Base.front(_step_scalar_loop(estimator, state, record, words, landing_sample)) :
     _step_passenger(state, record, words, landing_sample)
 
 @inline function _record_discriminators(
@@ -866,7 +873,8 @@ the conventional loop.
     # construction; the frequency error is the mean offset from the replica
     # between the two prompts' centres; it is formed only where `form_fll` asks for
     # it, as for the conventional loop.
-    phase_error = pll_disc(signal, filtered_correlator; polarity = record.carrier_phase_polarity)
+    prompt_phase_error = pll_disc(signal, filtered_correlator; polarity = record.carrier_phase_polarity)
+    phase_error = prompt_phase_error
     frequency_error =
         form_fll ?
         fll_disc(
@@ -901,6 +909,7 @@ the conventional loop.
     (;
         integration_time,
         phase_error,
+        prompt_phase_error,
         frequency_error,
         # The DLL normalises with the code word the replica actually ran on.
         code_error = dll_disc(signal, filtered_correlator, applied_code * Hz, sampling_frequency),

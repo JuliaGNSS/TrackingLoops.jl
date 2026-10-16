@@ -500,14 +500,13 @@ end
 end
 
 # The raw PLL phase error (cycles) of `record`'s prompt against the replica that
-# produced it, and the carrier phase polarity it was read with: the Costas or the
-# four-quadrant discriminator the inner loop reads it with, but never the
-# NCO-referenced loop's prediction to the landing sample, which refers to another
-# replica.
-@inline _prompt_phase_error(record::LoopRecord) = (
-    Float64(pll_disc(record.signal, record.filtered_correlator; polarity = record.carrier_phase_polarity)),
-    record.carrier_phase_polarity,
-)
+# produced it, as the inner loop measured it (`prompt_phase_error` of
+# `_record_discriminators`), and the carrier phase polarity it was read with: the
+# Costas or the four-quadrant discriminator the inner loop reads it with, but
+# never the NCO-referenced loop's prediction to the landing sample, which refers
+# to another replica.
+@inline _prompt_phase_error(record::LoopRecord, phase_error) =
+    (Float64(phase_error), record.carrier_phase_polarity)
 
 # The accumulator with the span from the previous record's prompt to this one's
 # added: the replica's advance over it — the second half of the previous record and
@@ -561,15 +560,17 @@ end
 )
     replica_halves = _replica_halves(record, words)
     previous_replica_half = replica_halves.second
-    previous_phase_error = _prompt_phase_error(record)
     if !state.vt_on
-        inner, carrier_doppler, code_doppler =
-            step_loop(estimator.inner, state.inner, record, words, landing_sample)
+        # A driver record — the engine steps no other through here — so the inner
+        # loop's own step, which also hands back the prompt's phase error.
+        inner, carrier_doppler, code_doppler, phase_error =
+            _step_scalar_loop(estimator.inner, state.inner, record, words, landing_sample)
+        previous_phase_error = _prompt_phase_error(record, phase_error)
         return SatVectorPLLAndDLL(state; inner, previous_replica_half, previous_phase_error),
         carrier_doppler,
         code_doppler
     end
-    inner, carrier_doppler, code_doppler, dll_discriminator = _step_vector_loop(
+    inner, carrier_doppler, code_doppler, dll_discriminator, phase_error = _step_vector_loop(
         estimator.inner,
         state.inner,
         record,
@@ -579,6 +580,7 @@ end
         state.carrier_freq_update,
         estimator.navigation.cycle_time,
     )
+    previous_phase_error = _prompt_phase_error(record, phase_error)
     SatVectorPLLAndDLL(
         state;
         inner,
@@ -604,8 +606,9 @@ end
 # stepped with the filter's carrier correction in its FLL slot at the vector FLL
 # bandwidth, capped against the navigation `cycle_time`, the code filter frozen
 # and the code correction in place of its output. Returns the inner state, both
-# Dopplers and the DLL discriminator to accumulate. The FLL is not formed: its
-# slot takes the filter's correction.
+# Dopplers, the DLL discriminator to accumulate and the prompt's raw phase error
+# (`prompt_phase_error`). The FLL is not formed: its slot takes the filter's
+# correction.
 @inline function _step_vector_loop(
     estimator,
     state,
@@ -648,5 +651,6 @@ end
     ),
     carrier_doppler,
     code_doppler,
-    discriminators.code_error
+    discriminators.code_error,
+    discriminators.prompt_phase_error
 end
