@@ -148,14 +148,14 @@ function replica_satellite_state(sat::SimSat, u)
     SatelliteState(; decoder, system = sat.signal, code_phase, carrier_doppler = sat.carrier_doppler * Hz)
 end
 
-# The true corrected transmit time, satellite position, velocity and clock drift for
-# a receiver clock reading `t` (seconds of week).
-function true_transmit(sat::SimSat, truth::SimTruth, t)
+# The true transmit time solved from `t_t` on for a receiver clock reading `t` (seconds
+# of week), the satellite position and velocity there, and the range PositionVelocityTime
+# models (m): the Earth-rotation-corrected geometric range plus the receiver clock bias.
+function solve_transmit(sat::SimSat, truth::SimTruth, t, t_t)
     r = truth_position(truth, t)
     ξ = [r[1], r[2], r[3], truth_clock_bias(truth, t)]
     columns = BiasColumns([1], 1, [0], 0)
     ρ = [0.0]
-    t_t = sat.transmit_time
     position = velocity = zero(SVector{3,Float64})
     for _ = 1:4
         orbit = calc_satellite_position_and_velocity(sat.decoder, t_t)
@@ -164,22 +164,27 @@ function true_transmit(sat::SimSat, truth::SimTruth, t)
         delay = sat.range_bias + atmospheric_delay(sat, r, SVector{3,Float64}(position), t)
         t_t = t - (ρ[1] + delay) / TrackingLoops.SPEED_OF_LIGHT
     end
-    sat.transmit_time = t_t
-    t_t, SVector{3,Float64}(position), SVector{3,Float64}(velocity),
-    calc_satellite_clock_drift(sat.decoder, t_t)
+    t_t, SVector{3,Float64}(position), SVector{3,Float64}(velocity), ρ[1]
 end
 
-# The true carrier Doppler (Hz) at receiver time `t`.
-function true_doppler(sat::SimSat, truth::SimTruth, t)
-    _, position, velocity, drift = true_transmit(sat, truth, t)
-    rate = TrackingLoops.predict_pseudorange_rate(
-        truth_position(truth, t),
-        truth.velocity,
-        truth.clock_drift,
-        position,
-        velocity,
-        drift,
-    )
+# The true corrected transmit time, satellite position, velocity and clock drift for
+# a receiver clock reading `t` (seconds of week).
+function true_transmit(sat::SimSat, truth::SimTruth, t)
+    t_t, position, velocity, _ = solve_transmit(sat, truth, t, sat.transmit_time)
+    sat.transmit_time = t_t
+    t_t, position, velocity, calc_satellite_clock_drift(sat.decoder, t_t)
+end
+
+# The true carrier Doppler (Hz) at receiver time `t`: the rate of the range the code is
+# generated from — the central difference of the modelled range — plus the satellite
+# clock drift. Not the filter's own rate model, so the carrier the records see stays
+# consistent with their code wherever that model falls short.
+function true_doppler(sat::SimSat, truth::SimTruth, t; h = 0.01)
+    _, _, _, ρ_after = solve_transmit(sat, truth, t + h, sat.transmit_time)
+    _, _, _, ρ_before = solve_transmit(sat, truth, t - h, sat.transmit_time)
+    t_t, = solve_transmit(sat, truth, t, sat.transmit_time)
+    rate = -(ρ_after - ρ_before) / 2h +
+           calc_satellite_clock_drift(sat.decoder, t_t) * TrackingLoops.SPEED_OF_LIGHT
     rate / (TrackingLoops.SPEED_OF_LIGHT / sat.center_frequency)
 end
 

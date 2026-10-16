@@ -30,10 +30,14 @@ tail_code_errors(results) = maximum(r -> maximum(abs, r.code_errors), results)
     tail = results[51:end]
     @test tail_errors(rx, tail) < 0.2
     @test tail_code_errors(tail) < 0.005
-    for r in tail
-        velocity = SVector(r.pvt.velocity.x, r.pvt.velocity.y, r.pvt.velocity.z)
-        @test norm(velocity - rx.truth.velocity) < 0.02
+    velocity_errors = map(tail) do r
+        SVector(r.pvt.velocity.x, r.pvt.velocity.y, r.pvt.velocity.z) - rx.truth.velocity
     end
+    @test all(e -> norm(e) < 0.02, velocity_errors)
+    # Without a bias: the rate model leaving the satellite velocity in the frame of
+    # transmission while it rotated the line of sight biased the velocity by 7 mm/s;
+    # rotating it but leaving out the rate of the rotation and the light time, 0.6 mm/s.
+    @test norm(mean(velocity_errors)) < 5e-4
     # The pseudorange-only loop (VDLL) closes as well.
     rx = SimReceiver(; config = VectorTracking(; use_pseudorange_rates = false))
     results, _, diverged = run_simulation!(rx, 100)
@@ -151,7 +155,9 @@ end
     # simulated signals moves the solution by tens. With the satellite clocks held at
     # their initial broadcast correction, the solution drifted off by about 0.17 m/s
     # after a few hundred cycles, beyond 10 m by cycle 1200, while the reported
-    # uncertainty levelled off (JuliaGNSS/TrackingLoops.jl#25).
+    # uncertainty levelled off (JuliaGNSS/TrackingLoops.jl#25). With the rate model short
+    # of the derivative of the pseudorange model by the Earth rotation of the satellite
+    # velocity, the tail was 7 m off.
     rx = SimReceiver(; signals = (GPSL1CA(),), num_sats = (4,))
     results, _, diverged = run_simulation!(rx, 1200)
     @test !diverged
