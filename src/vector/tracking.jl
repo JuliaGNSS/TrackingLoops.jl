@@ -983,7 +983,8 @@ function _predict_at_landing(vt::VectorNavigation, sat::VTSlot, member::VTMember
     )
     predicted_pseudorange = buffers.landing_range[1]
     user_pos, user_vel, user_clock_drift = nav_filter_states(buffers.x_landing, idxs)
-    predicted_rate = predict_pseudorange_rate(
+    # Doppler-signed, as `predict_pseudorange_rate`.
+    predicted_rate = -calc_pseudorange_rate(
         user_pos,
         user_vel,
         user_clock_drift,
