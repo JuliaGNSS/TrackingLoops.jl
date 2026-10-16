@@ -906,19 +906,20 @@ end
     @test ustrip(u"m/s", rate_residual) ≈ -2.0
 end
 
-@testset "FLL discriminator sign into the rate measurement" begin
-    # `fll_disc` measures f_incoming − f_replica, so a positive reading must ADD to the
-    # replica's advance in the incoming carrier phase the rate is measured from; the
-    # discriminator enters with its own sign, not flipped. Pins the sign so a
+@testset "Phase error sign into the rate measurement" begin
+    # `pll_disc` measures φ_incoming − φ_replica, so a phase error that grows must ADD
+    # to the replica's advance in the incoming carrier phase the rate is measured from;
+    # its change enters with its own sign, not flipped. Pins the sign so a
     # re-introduced negation is caught.
     base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
     correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
     record = LoopRecord(GPSL1CA(), correlator, cis(0.1), CorrelatorOutput(correlator, 5000, 10000), 1, 5e6Hz)
-    # A 1 ms span on a 20 Hz replica, half of it in each of two records.
-    span(fll) = TL._accumulate_carrier_phase(TL.CarrierPhaseAccumulator(), (0.01, 0.0005s),
-        (first = (0.01, 0.0005s), second = (0.01, 0.0005s), center = 0.0015s), fll, record)
-    pos = SatVectorPLLAndDLL(base; carrier_phase_acc = span(3.0Hz))
-    neg = SatVectorPLLAndDLL(base; carrier_phase_acc = span(-4.0Hz))
+    # A 1 ms span on a 20 Hz replica, half of it in each of two records, over which
+    # the phase error moves by `change` cycles.
+    span(change) = TL._accumulate_carrier_phase(TL.CarrierPhaseAccumulator(), (0.01, 0.0005s), (0.01, Int8(0)),
+        (first = (0.01, 0.0005s), second = (0.01, 0.0005s), center = 0.0015s), (0.01 + change, Int8(0)), record)
+    pos = SatVectorPLLAndDLL(base; carrier_phase_acc = span(0.003))
+    neg = SatVectorPLLAndDLL(base; carrier_phase_acc = span(-0.004))
     empty_acc = SatVectorPLLAndDLL(base; carrier_phase_acc = TL.CarrierPhaseAccumulator())
     @test first(TL.accumulated_carrier_doppler(pos, 0.0)) ≈ 23.0
     @test first(TL.accumulated_carrier_doppler(neg, 0.0)) ≈ 16.0

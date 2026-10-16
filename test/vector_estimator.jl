@@ -26,6 +26,7 @@ end
     @test state.code_discr_acc == (0, 0.0)
     @test state.carrier_phase_acc == TL.CarrierPhaseAccumulator()
     @test all(isnan, state.previous_replica_half)
+    @test isnan(first(state.previous_phase_error))
     @test state.code_freq_update == 0.0Hz
     @test state.carrier_freq_update == 0.0Hz
     @test state.code_freq_update_history == (0.0Hz, 0.0Hz, 0.0Hz)
@@ -124,9 +125,10 @@ end
     @test new_vector_state.inner == new_inner_state
     @test new_vector_state.code_discr_acc == (0, 0.0)
     @test new_vector_state.carrier_phase_acc == TL.CarrierPhaseAccumulator()
-    # The replica's last half record is kept, for the span a later vector loop opens
-    # with: half of the 1 ms record on the 100 Hz word.
+    # The replica's last half record and its prompt's phase error are kept, for the
+    # span a later vector loop opens with: half of the 1 ms record on the 100 Hz word.
     @test new_vector_state.previous_replica_half == (100.0 * 0.0005, 0.0005s)
+    @test new_vector_state.previous_phase_error == (pll_disc(signal, record.filtered_correlator), Int8(0))
     @test new_vector_state.code_freq_update == 0.5Hz
     @test new_vector_state.carrier_freq_update == 2.0Hz
     @test vector_carrier != 100.0Hz
@@ -205,41 +207,98 @@ end
     estimator = VectorPLLAndDLL(GPSL1CA())
     state = TL._enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
     previous = cis(0.2)
-    accumulators = (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im)
-    records = [vector_record(signal, accumulators, 5000, fs; previous_prompt = previous, sample_index = 5000k)
-               for k = 1:3]
-    fll = fll_disc(signal, records[1].filtered_correlator, previous, 5000 / fs)
-    @test fll != 0.0Hz
-    # The first record has no replica half record before it, so it only leaves its own.
+    # Prompts 0.02, 0.05 and 0.03 cycles ahead of the replica.
+    prompts = cis.(2π .* (0.02, 0.05, 0.03))
+    record(p, previous, k; kwargs...) = LoopRecord(signal, loop_epl(0.5p, p, 0.5p), previous, 5000, 5000k, 5000k, 1, fs; kwargs...)
+    records = [record(prompts[k], k == 1 ? previous : prompts[k - 1], k) for k = 1:3]
+    # The first record has no replica half record before it, so it only leaves its own,
+    # and its prompt's phase error.
     state, = step_satellite(estimator, state, records[1], FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
     @test state.carrier_phase_acc == TL.CarrierPhaseAccumulator()
     @test state.previous_replica_half == (0.05, 0.0005s)
+    @test state.previous_phase_error[1] ≈ 0.02
+    @test state.previous_phase_error[2] == 0
     # Each later one adds the span between the two prompts' centres: the replica's
-    # advance over it, half a record on each word, plus the FLL's rotation.
+    # advance over it, half a record on each word, plus the change of the phase error.
     state, = step_satellite(estimator, state, records[2], FixedNCOWord(120.0, 0.1), NO_LANDING_SAMPLE)
     state, = step_satellite(estimator, state, records[3], FixedNCOWord(140.0, 0.1), NO_LANDING_SAMPLE)
     acc = state.carrier_phase_acc
-    rotation = ustrip(Hz, fll) * 0.001
     @test acc.count == 2
-    @test acc.cycles ≈ (100.0 + 120.0) * 0.0005 + (120.0 + 140.0) * 0.0005 + 2 * rotation
+    @test acc.cycles ≈ (100.0 + 120.0) * 0.0005 + (120.0 + 140.0) * 0.0005 + (0.03 - 0.02)
     @test acc.duration ≈ 0.002s
     # The spans run from the first record's centre (0.5 ms) to the third's (2.5 ms).
     doppler, time = TL._mean_carrier_doppler(state)
-    @test doppler ≈ 120.0Hz + fll
+    @test doppler ≈ 120.0Hz + 0.01 / 0.002 * Hz
     @test time ≈ 0.0015s
     @test TL.accumulated_carrier_doppler(state, 0.003) == (ustrip(Hz, doppler), 0.003 - ustrip(s, time))
     @test state.previous_replica_half == (140.0 * 0.0005, 0.0005s)
-    # A record without a previous prompt (a changed carrier phase polarity) has no
-    # rotation, so its span is left out; the next one starts from its half record.
-    no_prompt = vector_record(signal, accumulators, 5000, fs; sample_index = 20000)
+    # A record without a previous prompt (a changed carrier phase polarity) does not
+    # follow on from the one before it, so its span is left out; the next one starts
+    # from its half record and its phase error.
+    no_prompt = record(prompts[3], 0.0, 4)
     skipped, = step_satellite(estimator, state, no_prompt, FixedNCOWord(160.0, 0.1), NO_LANDING_SAMPLE)
     @test skipped.carrier_phase_acc == acc
     @test skipped.previous_replica_half == (160.0 * 0.0005, 0.0005s)
+    @test skipped.previous_phase_error[1] ≈ 0.03
+    # Nor does one whose phase error was read with another polarity, even with a
+    # previous prompt: the phase errors refer to phases half a cycle apart.
+    other_polarity = record(prompts[3], prompts[3], 5; carrier_phase_polarity = 1)
+    skipped, = step_satellite(estimator, skipped, other_polarity, FixedNCOWord(160.0, 0.1), NO_LANDING_SAMPLE)
+    @test skipped.carrier_phase_acc == acc
+    @test skipped.previous_phase_error[1] ≈ 0.03
+    @test skipped.previous_phase_error[2] == 1
+end
+
+# Step a vector-loop satellite through records whose prompts lie `phases[k]` cycles
+# ahead of a replica on the fixed `word` (Hz), 1 ms records at 4 MHz, read with
+# `polarity`. Returns the carrier phase it accumulated (cycles) and the spans.
+function accumulate_prompt_phases(phases; word = 250.0, polarity = 0)
+    signal = GPSL1CA()
+    fs = 4e6Hz
+    estimator = VectorPLLAndDLL(signal)
+    state = TL._enable_vector_tracking(init_estimator_state(estimator, signal, word * Hz, 0.0Hz))
+    previous = complex(0.0)
+    for (k, phase) in enumerate(phases)
+        p = 0.8cis(2π * phase)
+        output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), 4000, 4000k)
+        record = LoopRecord(signal, output.correlator, previous, output, 1, fs; carrier_phase_polarity = polarity)
+        state, = step_satellite(estimator, state, record, FixedNCOWord(word, 0.0), NO_LANDING_SAMPLE)
+        previous = p
+    end
+    state.carrier_phase_acc
+end
+
+@testset "Prompt noise across the discriminator's range leaves no cycle behind, polarity $polarity" for (polarity, jump) in (
+    (0, 0.27),   # a data signal, Costas: past the FLL's quarter cycle
+    (1, 0.55),   # a pilot, four-quadrant: past the FLL's half cycle
+)
+    # The incoming carrier gains 0.004 cycles on the replica per record, and the noise
+    # turns one prompt `jump` cycles away from the one before it and back: more than
+    # the FLL's rotation reads before it wraps, by half a cycle for the Costas FLL and
+    # a whole one for the four-quadrant FLL. Every phase error itself stays within the
+    # PLL discriminator's range.
+    true_phases = 0.004 .* (0:9)
+    noise = [0.0, 0.01, -0.12, -0.12 + jump, 0.02, -0.01, 0.0, 0.03, -0.02, 0.01]
+    if polarity != 0
+        noise[3] = -0.28
+        noise[4] = -0.28 + jump
+    end
+    phases = true_phases .+ noise
+    @test all(abs.(phases) .< (polarity == 0 ? 0.25 : 0.5))
+    @test abs(phases[4] - phases[3]) > (polarity == 0 ? 0.25 : 0.5)
+    acc = accumulate_prompt_phases(phases; polarity)
+    @test acc.count == 9
+    @test acc.duration ≈ 0.009s
+    # The replica's advance over the spans plus the incoming signal's advance against
+    # it, at the noise of the two end prompts only.
+    @test acc.cycles ≈ 250.0 * 0.009 + phases[end] - phases[1] atol = 1e-9
 end
 
 @testset "The vector loop accumulates the carrier phase in Hz from a MHz sampling frequency" begin
-    # The FLL reading took the sampling frequency's unit, and the `Hz`-typed
-    # accumulator refused it as soon as the satellite was in the vector loop.
+    # A MHz sampling frequency must not reach the accumulator in its own unit. The
+    # FLL reading it once took did, and the accumulator refused it as soon as the
+    # satellite was in the vector loop; the replica's half records are formed from
+    # the sampling frequency too.
     signal = GPSL1CA()
     estimator = VectorPLLAndDLL(GPSL1CA())
     function accumulated(fs, num_samples)
@@ -253,7 +312,8 @@ end
     end
     acc = accumulated(5.0u"MHz", 5000)
     @test acc.count == 1
-    @test acc.cycles != 0.1
+    # Two half records of 100 Hz; the prompts are alike.
+    @test acc.cycles ≈ 0.1
     reference = accumulated(5e6Hz, 5000)
     @test acc.cycles ≈ reference.cycles
     @test acc.duration ≈ reference.duration
@@ -300,8 +360,8 @@ end
     predicted, predicted_state, predicted_rotation = run(NCOReferencedPLLAndDLL(), 12000)
     control, control_state, control_rotation = run(NCOReferencedPLLAndDLL(; predict_landing = false), 12000)
     @test predicted != control
-    # The accumulated rotation is the raw FLL discriminator's, before any re-basing
-    # onto the landing word, so the prediction does not reach it; the replica's
+    # The accumulated phase errors are the prompts' raw ones, before any prediction
+    # to the landing sample, so the prediction does not reach them; the replica's
     # advance is the words' that really ran.
     @test predicted_rotation ≈ control_rotation atol = 1e-12
     @test predicted_rotation != 0.0
@@ -321,6 +381,7 @@ end
         code_discr_acc = (3, 0.3),
         carrier_phase_acc = TL.CarrierPhaseAccumulator(3, 0.3, 0.003s, 0.0s^2),
         previous_replica_half = (0.1, 0.0005s),
+        previous_phase_error = (0.02, Int8(1)),
     )
     @test TL._enable_vector_tracking(steered) === steered
     # The corrections take over one another.
@@ -346,9 +407,12 @@ end
     @test released.carrier_freq_update == 0.0Hz
     @test released.code_freq_update_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test released.code_update_landing_lead == 0.0s
-    # The replica's last half record is the replica's: it survives the hand-over both ways.
+    # The replica's last half record and its last prompt's phase error are the
+    # replica's: they survive the hand-over both ways.
     @test released.previous_replica_half == (0.1, 0.0005s)
     @test TL._enable_vector_tracking(released).previous_replica_half == (0.1, 0.0005s)
+    @test released.previous_phase_error == (0.02, Int8(1))
+    @test TL._enable_vector_tracking(released).previous_phase_error == (0.02, Int8(1))
     @test TL._enable_vector_tracking(released).code_freq_update == 0.0Hz
 end
 
@@ -366,6 +430,7 @@ end
     @test reset.code_discr_acc == (0, 0.0)
     @test reset.carrier_phase_acc == TL.CarrierPhaseAccumulator()
     @test reset.previous_replica_half == state.previous_replica_half
+    @test reset.previous_phase_error == state.previous_phase_error
     # The re-seeded Dopplers carry the last correction, so it is no longer applied…
     @test reset.code_freq_update == 0.0Hz
     @test reset.carrier_freq_update == 0.0Hz
@@ -419,6 +484,7 @@ end
     @test released.code_discr_acc == (0, 0.0)
     @test released.carrier_phase_acc == TL.CarrierPhaseAccumulator()
     @test released.previous_replica_half == state.previous_replica_half
+    @test released.previous_phase_error == state.previous_phase_error
     @test released.code_freq_update == 0.0Hz
     @test released.carrier_freq_update == 0.0Hz
     @test released.code_freq_update_history == (0.0Hz, 0.0Hz, 0.0Hz)
@@ -443,12 +509,13 @@ const RATE_WAVELENGTH = TL.SPEED_OF_LIGHT / ustrip(Hz, get_center_frequency(RATE
 # Track the carrier of phase `phase(t)` (cycles) with records of `record_samples`,
 # the first ending at `first_end` (samples), up to `duration` seconds, the epochs every
 # `cycle` seconds. Each prompt is the mean of the carrier against the replica over its
-# record, with complex noise of `noise_std` per component. Returns per epoch `E` the
+# record, with complex noise of `noise_std` per component, read with the carrier phase
+# polarity `polarity`. Returns per epoch `E` the
 # mean Doppler the satellite accumulated (Hz), how long before `E` it refers to (s), the
 # carrier phase it accumulated (cycles) and the spans' length (s), and the centres of the
 # first and the last record whose spans the measurements cover.
 function track_carrier(phase, doppler0; record_samples = 16000, first_end = 16000, cycle = 0.1,
-        duration = 2.0, noise_std = 0.0, rng = Xoshiro(1))
+        duration = 2.0, noise_std = 0.0, rng = Xoshiro(1), polarity = 0)
     estimator = VectorPLLAndDLL(RATE_SIGNAL)
     state = TL._enable_vector_tracking(init_estimator_state(estimator, RATE_SIGNAL, doppler0 * Hz, 0.0Hz))
     carrier = doppler0
@@ -477,7 +544,8 @@ function track_carrier(phase, doppler0; record_samples = 16000, first_end = 1600
                                 replica_phase - carrier * (i - 0.5) / n * (t1 - t0))) for i = 1:n) / n
         prompt += noise_std * complex(randn(rng), randn(rng))
         output = CorrelatorOutput(loop_epl(0.5prompt, prompt, 0.5prompt), record_end - record_start, record_end)
-        record = LoopRecord(RATE_SIGNAL, output.correlator, previous_prompt, output, 1, RATE_FS * Hz)
+        record = LoopRecord(RATE_SIGNAL, output.correlator, previous_prompt, output, 1, RATE_FS * Hz;
+            carrier_phase_polarity = polarity)
         state, new_carrier, = TL._step_satellite(estimator, state, record,
             FixedNCOWord(carrier, 0.0), NO_LANDING_SAMPLE)
         replica_phase += carrier * (t1 - t0)
@@ -551,6 +619,33 @@ end
     residuals = [RATE_WAVELENGTH * (e.cycles / e.duration -
                  (phase(e.last_center) - phase(e.last_center - e.duration)) / e.duration) for e in measured]
     @test std(residuals) / mean(RATE_WAVELENGTH * sqrt(2σ_φ²) / (2π * e.duration) for e in measured) ≈ 1.0 atol = 0.15
+    r = residuals .- mean(residuals)
+    @test sum(r[1:end-1] .* r[2:end]) / sum(abs2, r) ≈ -0.5 atol = 0.1
+end
+
+@testset "A weak satellite's rates have no cycle outliers, polarity $polarity at $cn0_dbhz dB-Hz" for (polarity, cn0_dbhz) in (
+    (0, 37.0), # a data signal, Costas
+    (1, 34.0), # a pilot, four-quadrant
+)
+    # 1 ms records: the prompt noise turns consecutive prompts by more than the FLL's
+    # range now and then, a quarter cycle for the Costas FLL and half a cycle for the
+    # four-quadrant one. Such a turn must not leave half a cycle (λ/2 over the 100 ms
+    # cycle, 6–7σ) or a whole one in the cycle's rate: the residuals stay Gaussian at
+    # the modelled variance, with the −1/2 lag-1 autocorrelation of shared boundary
+    # prompts.
+    cn0 = 10^(cn0_dbhz / 10)
+    record_samples = 4000
+    T_coh = record_samples / RATE_FS
+    phase(t) = 0.1 + 800.0 * t + 0.2 / RATE_WAVELENGTH * t^2 / 2
+    epochs = track_carrier(phase, 800.0; record_samples, first_end = record_samples, duration = 60.0,
+        noise_std = sqrt(1 / (2 * cn0 * T_coh)), rng = Xoshiro(11), polarity)
+    measured = epochs[11:end]
+    σ_φ² = 1 / (2 * cn0 * T_coh) * (1 + 1 / (2 * cn0 * T_coh))
+    σ_rate = mean(RATE_WAVELENGTH * sqrt(2σ_φ²) / (2π * e.duration) for e in measured)
+    residuals = [RATE_WAVELENGTH * (e.cycles / e.duration -
+                 (phase(e.last_center) - phase(e.last_center - e.duration)) / e.duration) for e in measured]
+    @test maximum(abs, residuals) < 5σ_rate
+    @test std(residuals) / σ_rate ≈ 1.0 atol = 0.15
     r = residuals .- mean(residuals)
     @test sum(r[1:end-1] .* r[2:end]) / sum(abs2, r) ≈ -0.5 atol = 0.1
 end

@@ -3,8 +3,8 @@
 #
 # In scalar tracking every satellite closes its own code/carrier loops from its
 # own discriminators. In vector tracking a central navigation Kalman filter
-# closes all loops at once: each satellite's accumulated DLL (and FLL)
-# discriminator outputs become pseudorange (and pseudorange-rate) measurements,
+# closes all loops at once: each satellite's accumulated DLL discriminator outputs
+# (and carrier phase) become pseudorange (and pseudorange-rate) measurements,
 # the filter fuses them into a position/velocity/clock state, and the predicted
 # line-of-sight dynamics are fed back as per-satellite NCO corrections — a
 # vector delay lock loop (VDLL), or a vector delay/frequency lock loop (VDFLL)
@@ -46,8 +46,8 @@ defaults suit a vehicle carrying a consumer-grade front end.
 
 # Fields
 - `use_pseudorange_rates`: with `true` (VDFLL) the navigation filter measures
-  both the pseudoranges (DLL discriminators) and the pseudorange rates (FLL
-  discriminators on the carrier Doppler); with `false` (VDLL) only the
+  both the pseudoranges (DLL discriminators) and the pseudorange rates (the
+  incoming carrier phase over the cycle); with `false` (VDLL) only the
   pseudoranges enter the filter — the carrier NCO corrections are then derived
   purely from the filter's velocity/clock-drift prediction.
 - `motion_model_order`: order of the per-axis motion model — `1` position only,
@@ -519,17 +519,21 @@ end
 # the instant it refers to lies (s). `(0.0, 0.0)` when nothing was accumulated (see
 # `has_code_and_carrier_measurements`).
 #
-# The FLL discriminator measures the incoming signal against the replica that actually
+# Each prompt measures the incoming signal's phase against the replica that actually
 # ran, whose frequency the PLL changes on every record, so the incoming Doppler is the
-# replica's mean frequency over the very spans the FLL measured plus the FLL's mean, not
-# the replica's frequency at any one instant. Both are accumulated span by span, as
-# carrier phase (`CarrierPhaseAccumulator`): the replica's advance over each span between
-# two prompts' centres, from the words it ran on, and the FLL's rotation over it. The
-# spans of a cycle tile the time from the centre of the previous cycle's last record to
-# that of this cycle's, so the cycles' measurements, times their spans, sum to the
-# incoming carrier phase: the interior prompt phases cancel and only the boundary prompts'
-# remain, each shared by two cycles with opposite signs (see
-# `pseudorange_rate_noise_variance`). Reading the replica at the end of the cycle instead
+# replica's mean frequency over the spans between the prompts plus the mean drift of the
+# prompts' phase errors, not the replica's frequency at any one instant. Both are
+# accumulated span by span, as carrier phase (`CarrierPhaseAccumulator`): the replica's
+# advance over each span between two prompts' centres, from the words it ran on, and the
+# change of the PLL phase error over it, unwrapped. The spans of a cycle tile the time
+# from the centre of the previous cycle's last record to that of this cycle's, so the
+# cycles' measurements, times their spans, sum to the incoming carrier phase: the
+# interior prompt phases cancel and only the boundary prompts' remain, each shared by two
+# cycles with opposite signs (see `pseudorange_rate_noise_variance`). The FLL's rotation
+# between two prompts would cancel likewise but for its wrap: prompt noise that turns
+# one prompt past the FLL's range from the last (a quarter cycle for a Costas FLL, half a
+# cycle for a four-quadrant one) left half a cycle or a whole one in the cycle, a rate
+# outlier of λ/2 or λ over the cycle. Reading the replica at the end of the cycle instead
 # — the NCO word there plus the mean FLL — adds the PLL's frequency jitter of one record,
 # `f_NCO,end − mean(f_NCO)`, which is independent from cycle to cycle: the integrated rate
 # error then walks without bound instead of staying at the carrier-phase noise.
@@ -778,8 +782,8 @@ end
 # figure. It is the right variance for the estimator the mean incoming Doppler actually is.
 
 # Measurement-noise variances: CN0-driven DLL thermal-noise variance for the pseudoranges,
-# and the pseudorange-rate variance for the ATAN frequency-lock discriminator
-# (`atan(cross/dot)/(2π·T_coh)`; see `fll_disc`).
+# and the pseudorange-rate variance of the carrier phase measured between the cycle's
+# boundary prompts with the ATAN phase discriminator (see `pll_disc`).
 #
 # Both are built the same way: the per-dump discriminator variance for a coherent
 # integration time `T_coh` (`member.coherent_integration_time`), propagated through the
@@ -820,9 +824,9 @@ end
 # discriminator jitter
 #     σ_φ² = 1/(2·C/N0·T_coh)·(1 + 1/(2·C/N0·T_coh))   [rad²].
 # The filter's rate measurement is the incoming carrier phase over the cycle divided by
-# its length: the replica's advance, known exactly, plus the `N` per-dump FLL rotations
-# against it. Each rotation is a phase difference between two dumps, `θ_k − θ_{k-1}`, so
-# their sum reduces to `θ_N − θ_0`: the interior phases cancel, leaving only the two
+# its length: the replica's advance, known exactly, plus the `N` per-dump changes of the
+# phase error against it. Each is a phase difference between two dumps, `θ_k − θ_{k-1}`,
+# so their sum reduces to `θ_N − θ_0`: the interior phases cancel, leaving only the two
 # endpoint phase estimates, giving
 #     var(mean) = 2·σ_φ² / (2π·T)²   [Hz²],
 # and the pseudorange-rate variance is λ² times that.
@@ -1143,8 +1147,8 @@ nco_carrier_correction(predicted_pseudorange_rate, measured_pseudorange_rate, wa
 #
 # Because the vector loop steers every replica onto the navigation solution, a
 # well-tracked member's residuals reduce to its own discriminators — the code residual
-# to `+code_discriminator · chip_length`, the rate residual to the FLL's mean against a
-# replica that follows the prediction — while a member the solution predicts poorly
+# to `+code_discriminator · chip_length`, the rate residual to the drift of the phase
+# error against a replica that follows the prediction — while a member the solution predicts poorly
 # (one diverging, or one out of lock and coasting) keeps a large residual. That is
 # what makes them worth reporting for members outside the update too: such a member
 # is monitored rather than dropped as a missing satellite.

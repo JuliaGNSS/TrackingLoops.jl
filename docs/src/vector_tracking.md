@@ -2,7 +2,7 @@
 
 In scalar tracking every satellite closes its own code and carrier loops from
 its own discriminators. In vector tracking a navigation filter closes them all
-at once. Each satellite's accumulated DLL and FLL discriminators become
+at once. Each satellite's accumulated DLL discriminators and carrier phase become
 pseudorange and pseudorange-rate measurements. The filter fuses them into a
 position, velocity and clock state and feeds the predicted line-of-sight
 dynamics back as per-satellite NCO corrections. Weak or briefly obscured

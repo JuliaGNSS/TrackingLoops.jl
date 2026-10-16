@@ -84,8 +84,8 @@ releases it. While a satellite is in the vector loop:
     output: `code_doppler = init_code_doppler + code_freq_update +
     carrier_filter_output · code_center_frequency_ratio`;
   - the DLL output (chips) and the carrier phase the incoming signal advanced
-    by between the prompts — the replica's own advance plus the FLL's rotation —
-    are accumulated for the filter to read.
+    by between the prompts — the replica's own advance plus the change of the
+    PLL phase error, unwrapped — are accumulated for the filter to read.
 
 Each satellite picks up the corrections of the latest cycle on its next driver
 record, sized for where they land: at `landing_sample`, or at the record's end
@@ -127,12 +127,22 @@ _has_fll_path(::NCOReferencedPLLAndDLL) = true
 What a satellite in the vector loop accumulates for the navigation filter's
 pseudorange-rate measurement: per pair of consecutive prompts of its driver,
 the carrier phase the incoming signal advanced by between their centres — the
-replica's own advance over that span plus the FLL discriminator's rotation, the
-incoming signal's advance against it — and the span. Over a navigation cycle
-the spans tile the time between the centres of the cycle's last record and the
-previous cycle's, so consecutive cycles share their boundary prompt and the sum
-of the cycles' measurements is the incoming carrier phase, at the noise of two
-prompt phases.
+replica's own advance over that span plus the change of the PLL phase error
+(`pll_disc`) from the first prompt to the second, the incoming signal's advance
+against the replica — and the span. Over a navigation cycle the spans tile the
+time between the centres of the cycle's last record and the previous cycle's,
+so consecutive cycles share their boundary prompt and the sum of the cycles'
+measurements is the incoming carrier phase, at the noise of two prompt phases.
+
+The change of the phase error is not wrapped: summed over the spans it
+telescopes to the last prompt's phase error minus the first's, each within the
+discriminator's range. Prompt noise that turns one prompt by more than that
+range from the one before (a quarter cycle for the Costas discriminator, half a
+cycle for the four-quadrant one) is undone by the next span instead of leaving
+half a cycle or a whole one in the sum, as the FLL's rotation, wrapped to that
+range, did. A slip of the PLL itself still shows, as one cycle's outlier: the
+replica's phase really moved by half a cycle or a whole one against the
+signal's.
 
   - `count`: the spans accumulated;
   - `cycles`: the incoming carrier phase over them (cycles);
@@ -174,6 +184,10 @@ struct SatVectorPLLAndDLL{S}
     #     by over the second half of the driver's last record, and that half's length,
     #     `NaN` before the first record. It carries the accumulation across the
     #     filter's reads and across a hand-over between the loops.
+    #   - `previous_phase_error`: `(cycles, polarity)`, the PLL phase error of the
+    #     driver's last prompt against the replica that produced it and the carrier
+    #     phase polarity it was read with, `NaN` before the first record. It carries
+    #     the accumulation as `previous_replica_half` does.
     #   - `code_freq_update` / `carrier_freq_update`: the corrections the per-record
     #     step applies, set from the filter's latest cycle.
     #   - `code_freq_update_history` and `code_update_landing_lead`: the last three
@@ -191,6 +205,7 @@ struct SatVectorPLLAndDLL{S}
     code_discr_acc::Tuple{Int,Float64}
     carrier_phase_acc::CarrierPhaseAccumulator
     previous_replica_half::Tuple{Float64,typeof(1.0s)}
+    previous_phase_error::Tuple{Float64,Int8}
     code_freq_update::typeof(1.0Hz)
     carrier_freq_update::typeof(1.0Hz)
     code_freq_update_history::NTuple{3,typeof(1.0Hz)}
@@ -206,8 +221,9 @@ _is_driven_by(state::SatVectorPLLAndDLL, signal::AbstractGNSSSignal) =
     _is_driven_by(state.inner, signal)
 
 # A satellite with the vector interface empty — out of the loop or just joined —
-# on the slot of `registration`. The replica's last half record is not the vector
-# interface's but the replica's, so it is kept.
+# on the slot of `registration`. The replica's last half record and its last
+# prompt's phase error are not the vector interface's but the replica's, so they
+# are kept.
 SatVectorPLLAndDLL(
     inner,
     vt_on::Bool,
@@ -215,6 +231,7 @@ SatVectorPLLAndDLL(
     registration::Int = 0,
     cycle_id::Int = -1;
     previous_replica_half::Tuple{Float64,typeof(1.0s)} = (NaN, NaN * s),
+    previous_phase_error::Tuple{Float64,Int8} = (NaN, Int8(0)),
 ) =
     SatVectorPLLAndDLL(
         inner,
@@ -222,6 +239,7 @@ SatVectorPLLAndDLL(
         (0, 0.0),
         CarrierPhaseAccumulator(),
         previous_replica_half,
+        previous_phase_error,
         0.0Hz,
         0.0Hz,
         (0.0Hz, 0.0Hz, 0.0Hz),
@@ -237,6 +255,7 @@ function SatVectorPLLAndDLL(
     code_discr_acc::Maybe{Tuple{Int,Float64}} = nothing,
     carrier_phase_acc::Maybe{CarrierPhaseAccumulator} = nothing,
     previous_replica_half::Maybe{Tuple{Float64,typeof(1.0s)}} = nothing,
+    previous_phase_error::Maybe{Tuple{Float64,Int8}} = nothing,
     cycle_id::Maybe{Int} = nothing,
 ) where {S}
     SatVectorPLLAndDLL{S}(
@@ -245,6 +264,7 @@ function SatVectorPLLAndDLL(
         something(code_discr_acc, state.code_discr_acc),
         something(carrier_phase_acc, state.carrier_phase_acc),
         something(previous_replica_half, state.previous_replica_half),
+        something(previous_phase_error, state.previous_phase_error),
         state.code_freq_update,
         state.carrier_freq_update,
         state.code_freq_update_history,
@@ -264,6 +284,7 @@ _registered(state::SatVectorPLLAndDLL{S}, slot::Int, registration::Int) where {S
         state.code_discr_acc,
         state.carrier_phase_acc,
         state.previous_replica_half,
+        state.previous_phase_error,
         state.code_freq_update,
         state.carrier_freq_update,
         state.code_freq_update_history,
@@ -331,6 +352,7 @@ reset_estimator_state(
     (0, 0.0),
     CarrierPhaseAccumulator(),
     state.previous_replica_half,
+    state.previous_phase_error,
     0.0Hz,
     0.0Hz,
     state.code_freq_update_history,
@@ -361,6 +383,7 @@ _enable_vector_tracking(state::SatVectorPLLAndDLL) =
         state.registration,
         state.cycle_id;
         state.previous_replica_half,
+        state.previous_phase_error,
     )
 
 # Hand the satellite back to its inner scalar loop, with the accumulators and
@@ -373,6 +396,7 @@ _disable_vector_tracking(state::SatVectorPLLAndDLL) =
         state.registration,
         state.cycle_id;
         state.previous_replica_half,
+        state.previous_phase_error,
     )
 
 # `_disable_vector_tracking` with the inner loop re-seeded from the Dopplers the
@@ -388,6 +412,7 @@ _release_from_vector_tracking(state::SatVectorPLLAndDLL, carrier_doppler, code_d
         state.registration,
         state.cycle_id;
         state.previous_replica_half,
+        state.previous_phase_error,
     )
 
 # The inner reset reads the per-satellite state only, never the estimator's
@@ -419,6 +444,7 @@ function _set_vector_corrections(
         state.code_discr_acc,
         state.carrier_phase_acc,
         state.previous_replica_half,
+        state.previous_phase_error,
         code_freq_update,
         carrier_freq_update,
         (code_freq_update, newest, previous),
@@ -430,7 +456,8 @@ function _set_vector_corrections(
 end
 
 # Empty both accumulators, once the filter has read them. The replica's last half
-# record stays: the next cycle's first span starts from it.
+# record and its last prompt's phase error stay: the next cycle's first span starts
+# from them.
 _reset_code_and_carrier_accumulators(state::SatVectorPLLAndDLL) = SatVectorPLLAndDLL(
     state;
     code_discr_acc = (0, 0.0),
@@ -472,31 +499,52 @@ end
     )
 end
 
+# The raw PLL phase error (cycles) of `record`'s prompt against the replica that
+# produced it, and the carrier phase polarity it was read with: the Costas or the
+# four-quadrant discriminator the inner loop reads it with, but never the
+# NCO-referenced loop's prediction to the landing sample, which refers to another
+# replica.
+@inline _prompt_phase_error(record::LoopRecord) = (
+    Float64(pll_disc(record.signal, record.filtered_correlator; polarity = record.carrier_phase_polarity)),
+    record.carrier_phase_polarity,
+)
+
 # The accumulator with the span from the previous record's prompt to this one's
 # added: the replica's advance over it — the second half of the previous record and
-# the first of this one — plus the FLL's rotation, the incoming signal's advance
-# against the replica over the same span. `fll_disc` divides the rotation by the
-# record's integration time, so multiplying by it gives the rotation back. A record
-# without a previous prompt (the first one, or one whose carrier phase polarity
-# changed) has no rotation, and one without a previous half record no replica
-# advance: either span is left out rather than taken as a zero.
+# the first of this one — plus the change of the phase error from the previous
+# prompt to this one, the incoming signal's advance against the replica over the
+# same span. The difference is taken as it is, not wrapped: over consecutive spans
+# it telescopes to the last phase error minus the first, each within the
+# discriminator's range, so a difference beyond that range, which prompt noise
+# makes, is undone by the next span, where the FLL's wrapped rotation left a half
+# or a whole cycle. A record without a previous prompt (the first one, or one whose
+# carrier phase polarity changed), one whose phase error was read with another
+# polarity than the previous prompt's, as the two refer to phases half a cycle
+# apart, and one without a previous half record: the span is left out rather than
+# taken as a zero.
 @inline function _accumulate_carrier_phase(
     acc::CarrierPhaseAccumulator,
     previous_replica_half,
+    previous_phase_error,
     replica_halves,
-    fll_discriminator,
+    phase_error,
     record::LoopRecord,
 )
     previous_cycles, previous_duration = previous_replica_half
     first_cycles, first_duration = replica_halves.first
-    (iszero(record.previous_prompt) || isnan(previous_cycles)) && return acc
-    integration_time = record.integrated_samples / record.sampling_frequency
-    rotation = Float64(uconvert(NoUnits, fll_discriminator * integration_time))
+    previous_error, previous_polarity = previous_phase_error
+    current_error, polarity = phase_error
+    (
+        iszero(record.previous_prompt) ||
+        isnan(previous_cycles) ||
+        isnan(previous_error) ||
+        polarity != previous_polarity
+    ) && return acc
     duration = previous_duration + first_duration
     midpoint = replica_halves.center - duration / 2
     CarrierPhaseAccumulator(
         acc.count + 1,
-        acc.cycles + previous_cycles + first_cycles + rotation,
+        acc.cycles + previous_cycles + first_cycles + (current_error - previous_error),
         acc.duration + duration,
         acc.time_moment + duration * midpoint,
     )
@@ -513,24 +561,24 @@ end
 )
     replica_halves = _replica_halves(record, words)
     previous_replica_half = replica_halves.second
+    previous_phase_error = _prompt_phase_error(record)
     if !state.vt_on
         inner, carrier_doppler, code_doppler =
             step_loop(estimator.inner, state.inner, record, words, landing_sample)
-        return SatVectorPLLAndDLL(state; inner, previous_replica_half),
+        return SatVectorPLLAndDLL(state; inner, previous_replica_half, previous_phase_error),
         carrier_doppler,
         code_doppler
     end
-    inner, carrier_doppler, code_doppler, dll_discriminator, fll_discriminator =
-        _step_vector_loop(
-            estimator.inner,
-            state.inner,
-            record,
-            words,
-            landing_sample,
-            state.code_freq_update,
-            state.carrier_freq_update,
-            estimator.navigation.cycle_time,
-        )
+    inner, carrier_doppler, code_doppler, dll_discriminator = _step_vector_loop(
+        estimator.inner,
+        state.inner,
+        record,
+        words,
+        landing_sample,
+        state.code_freq_update,
+        state.carrier_freq_update,
+        estimator.navigation.cycle_time,
+    )
     SatVectorPLLAndDLL(
         state;
         inner,
@@ -538,11 +586,13 @@ end
         carrier_phase_acc = _accumulate_carrier_phase(
             state.carrier_phase_acc,
             state.previous_replica_half,
+            state.previous_phase_error,
             replica_halves,
-            fll_discriminator,
+            previous_phase_error,
             record,
         ),
         previous_replica_half,
+        previous_phase_error,
     ),
     carrier_doppler,
     code_doppler
@@ -553,10 +603,9 @@ end
 # phase error keeps its prediction to the landing sample), the carrier filter
 # stepped with the filter's carrier correction in its FLL slot at the vector FLL
 # bandwidth, capped against the navigation `cycle_time`, the code filter frozen
-# and the code correction in place of its output. Returns the inner
-# state, both Dopplers and the two discriminators to accumulate: the DLL and the
-# raw FLL — the mean offset from the replica that ran between the two prompts'
-# centres, before any re-basing onto a landing word.
+# and the code correction in place of its output. Returns the inner state, both
+# Dopplers and the DLL discriminator to accumulate. The FLL is not formed: its
+# slot takes the filter's correction.
 @inline function _step_vector_loop(
     estimator,
     state,
@@ -567,7 +616,7 @@ end
     carrier_freq_update,
     cycle_time,
 )
-    discriminators = _record_discriminators(estimator, state, record, words, landing_sample; form_fll = true)
+    discriminators = _record_discriminators(estimator, state, record, words, landing_sample; form_fll = false)
     integration_time = discriminators.integration_time
     # At the narrow PLL bandwidth, whatever the inner loop's stage, with the FLL
     # branch at the vector FLL's own, capped against the cycle that sets its input.
@@ -599,6 +648,5 @@ end
     ),
     carrier_doppler,
     code_doppler,
-    discriminators.code_error,
-    discriminators.raw_frequency_error
+    discriminators.code_error
 end
