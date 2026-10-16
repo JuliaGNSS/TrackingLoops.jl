@@ -673,24 +673,6 @@ function dense_bias_columns(members, primary_clock_index::Int, num_clocks, num_i
     )
 end
 
-# Predicted pseudorange rate (m/s): line-of-sight closing speed plus satellite
-# clock drift minus the (single, common) receiver clock drift — the same sign
-# convention as the measured `λ · carrier_doppler`.
-@inline function predict_pseudorange_rate(
-    user_pos,
-    user_vel,
-    user_clock_drift,
-    sat_pos,
-    sat_vel,
-    sat_clock_drift,
-)
-    # `calc_line_of_sight` points receiver→satellite, so the closing speed —
-    # positive while the range shrinks, the Doppler sign — is its dot product
-    # with the *user's* velocity relative to the satellite.
-    e = calc_line_of_sight(sat_pos, user_pos)
-    dot(e, user_vel - sat_vel) + sat_clock_drift * SPEED_OF_LIGHT - user_clock_drift
-end
-
 # Position, velocity and common clock drift of the state `x` moved on kinematically by
 # `τ` seconds, as `propagate_state!` moves them, without writing a state vector.
 @inline function nav_filter_states_at(x, idxs::NavFilterIndices, τ)
@@ -704,10 +686,15 @@ end
 # The pseudorange rate the state `x` at the epoch predicts for `member`'s measurement:
 # at the instant that refers to, `rate_epoch_offset` before the epoch (see
 # `accumulated_carrier_doppler`), with the satellite there.
+#
+# The rate is the time derivative of the pseudorange `calc_ρ_hat!` models, Earth rotation
+# over the travel time included: PositionVelocityTime's `calc_pseudorange_rate`, the model
+# its velocity solve fits. That runs receding-positive; the prediction is its negative,
+# the sign of the measured `λ · carrier_doppler` — positive while the satellite closes in.
 @inline function predict_pseudorange_rate(x, idxs::NavFilterIndices, member::VTMember)
     user_pos, user_vel, user_clock_drift =
         nav_filter_states_at(x, idxs, -member.rate_epoch_offset)
-    predict_pseudorange_rate(
+    -calc_pseudorange_rate(
         user_pos,
         user_vel,
         user_clock_drift,

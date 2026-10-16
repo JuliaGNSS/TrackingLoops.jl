@@ -134,7 +134,7 @@ end
         # with the satellite there — against the replica's own word there; the
         # measured rate, a mean over the past cycle, does not enter it.
         orbit = calc_satellite_position_and_velocity(slot.decoder, member.time)
-        rate_at_epoch = TL.predict_pseudorange_rate(user_pos, user_vel, user_drift,
+        rate_at_epoch = -TL.calc_pseudorange_rate(user_pos, user_vel, user_drift,
             member.sat_position, orbit.velocity, calc_satellite_clock_drift(slot.decoder, member.time))
         @test SVector{3,Float64}(orbit.position) == member.sat_position
         # The measurement the last update fused against the one the corrections use.

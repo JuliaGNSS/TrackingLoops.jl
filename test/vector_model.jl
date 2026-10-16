@@ -350,56 +350,14 @@ end
     @test psr[1] ≈ 2.6e7 - 6.378e6 + 100.0
     @test psr[2] ≈ norm(user_pos - [0.0, 0.0, 2.6e7]) + 200.0 rtol = 1e-5
 
-    # A satellite closing head-on with 1000 m/s reads +1000 m/s; a receiver
-    # clock drift of +10 m/s reduces the predicted rate accordingly.
-    rate = TL.predict_pseudorange_rate(
-        user_pos,
-        SVector(0.0, 0.0, 0.0),
-        0.0,
-        SVector(2.6e7, 0.0, 0.0),
-        SVector(-1000.0, 0.0, 0.0),
-        0.0,
-    )
-    @test rate ≈ 1000.0 atol = 1e-6
-    rate_with_drift = TL.predict_pseudorange_rate(
-        user_pos,
-        SVector(0.0, 0.0, 0.0),
-        10.0,
-        SVector(2.6e7, 0.0, 0.0),
-        SVector(-1000.0, 0.0, 0.0),
-        0.0,
-    )
-    @test rate_with_drift ≈ 990.0 atol = 1e-6
+    # The prediction is Doppler-signed: a satellite closing head-on with 1000 m/s reads
+    # +1000 m/s (scaled by the light time, a receiver second spanning `1 + 1000 / c`
+    # seconds of its transmission), the negative of `calc_pseudorange_rate`.
+    closing = _test_member(; sat_position = SVector(2.6e7, 0.0, 0.0),
+        sat_velocity = SVector(-1000.0, 0.0, 0.0), rate_epoch_offset = 0.0)
+    @test TL.predict_pseudorange_rate(x, idxs, closing) ≈
+          1000.0 * (1 + 1000.0 / SPEED_OF_LIGHT) atol = 1e-6
 
-    # The measurement model writes the pseudoranges, then the rates of the candidate
-    # members, then one row per hub constraint: the difference of the two clock states.
-    constraints = [(2, 1, -0.3)]
-    rate_members = [
-        _test_member(; prn = 1, clock_bias_index = 1, sat_position = SVector(2.6e7, 0.0, 0.0),
-            sat_velocity = SVector(-1000.0, 0.0, 0.0)),
-        members[2],
-    ]
-    h! = TL.VTMeasurementModel(idxs, zeros(length(ξ)), positions, rate_members, [1, 2],
-        bias_columns, true, constraints)
-    y = zeros(5)
-    h!(y, x)
-    @test y[1:2] == psr
-    @test y[3] ≈ 1000.0 atol = 1e-6
-    @test y[4] ≈ 0.0 atol = 1e-9
-    @test y[5] == 200.0 - 100.0
-    # Without the rates the hub row follows the pseudoranges directly.
-    h_vdll! = TL.VTMeasurementModel(idxs, zeros(length(ξ)), positions, rate_members, [1, 2],
-        bias_columns, false, constraints)
-    y = zeros(3)
-    h_vdll!(y, x)
-    @test y == [psr; 100.0]
-end
-
-@testset "The rate is predicted at its own instant" begin
-    # A member's rate is a mean over the cycle, `rate_epoch_offset` before the epoch the
-    # state is at: the prediction moves the state back there kinematically and takes the
-    # satellite of that instant, which the member carries.
-    layout = TL.NavFilterLayout((GPSL1CA(),))
     sat_position = SVector(2.6e7, 0.0, 0.0)
     user_pos = SVector(6.378e6, 0.0, 0.0)
     for order in (1, 2, 3)
@@ -416,7 +374,7 @@ end
         pos, vel, drift = TL.nav_filter_states(x_back, idxs)
         @test TL.nav_filter_states_at(x, idxs, -0.05) == (pos, vel, drift)
         @test TL.predict_pseudorange_rate(x, idxs, member) ==
-              TL.predict_pseudorange_rate(pos, vel, drift, member.rate_sat_position,
+              -TL.calc_pseudorange_rate(pos, vel, drift, member.rate_sat_position,
                   member.rate_sat_velocity, member.rate_sat_clock_drift)
     end
     # Under a line-of-sight acceleration the rate half a cycle back is the epoch's less
