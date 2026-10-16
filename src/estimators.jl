@@ -716,13 +716,14 @@ function SatNCOReferencedPLLAndDLL(
     code_loop_filter::Maybe{CO} = nothing,
     previous_record_center::Maybe{Float64} = nothing,
     staging::Maybe{CarrierLoopStaging} = nothing,
+    bandwidths::Maybe{LoopBandwidths} = nothing,
 ) where {CA,CO}
     SatNCOReferencedPLLAndDLL{CA,CO}(
         state.init_carrier_doppler,
         state.init_code_doppler,
         something(carrier_loop_filter, state.carrier_loop_filter),
         something(code_loop_filter, state.code_loop_filter),
-        state.bandwidths,
+        something(bandwidths, state.bandwidths),
         something(previous_record_center, state.previous_record_center),
         state.driver,
         something(staging, state.staging),

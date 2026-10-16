@@ -242,6 +242,51 @@ end
     end
 end
 
+# The true carrier phase error (cycles) of every channel after each of its records from
+# cycle `skip` on, at `cn0_dbhz`, with the navigation cycles run (`vector = true`) or
+# not, which leaves every satellite in its scalar loop, narrowed to the 18 Hz PLL by
+# then.
+function carrier_phase_errors(signal; vector, cn0_dbhz = 40.0, cycles = 100, skip = 30)
+    rx = SimReceiver(; signals = (signal,))
+    noise_std = sqrt(1 / (2 * 10^(cn0_dbhz / 10) * 1e-3))
+    foreach(sat -> sat.noise_std = noise_std, rx.sats)
+    n = record_ms(signal)
+    errors = Float64[]
+    sample = 0
+    for cycle = 1:cycles
+        for k = n:n:100
+            sample_index = sample + k * SAMPLES_PER_MS
+            for sat in rx.sats
+                simulate_record!(sat, rx.estimator, rx.truth, sim_time(rx, sample_index),
+                    n * SAMPLES_PER_MS, sample_index, NO_LANDING_SAMPLE)
+                cycle > skip && push!(errors, rem(sat.phase_error, 0.5, RoundNearest))
+            end
+        end
+        sample += 100 * SAMPLES_PER_MS
+        vector && run_cycle!(rx, sample, fill_slot!)
+    end
+    @test all(sat -> sat.state.vt_on == vector, rx.sats)
+    @test all(sat -> carrier_loop_stage(sat.state) == NARROW_PLL, rx.sats)
+    errors
+end
+
+@testset "The vector FLL branch keeps the carrier phase jitter near the PLL's, on $(nameof(typeof(signal)))" for (signal, max_ratio) in (
+    (GPSL1CA(), 1.6),
+    (GalileoE1B(), 1.12),
+)
+    # The 18 Hz PLL alone, and the same PLL with the navigation filter's carrier
+    # correction in the FLL branch of its filter, on the same noisy signal. The
+    # correction is set once per 100 ms cycle and held over it. With the FLL branch tied
+    # to the PLL's bandwidth (2.9 Hz) the phase jitter was 3.2 times the PLL's on GPS
+    # L1 C/A and 1.6 times on Galileo E1, at 2–3 Hz; at its own 1 Hz it is 1.47 and
+    # 1.08 times. What remains is the correction's own noise: it is measured against
+    # the NCO word, which carries one record's PLL kick, and is largest on the
+    # 1 ms records of GPS L1 C/A.
+    scalar = 360 * std(carrier_phase_errors(signal; vector = false))
+    vector = 360 * std(carrier_phase_errors(signal; vector = true))
+    @test vector / scalar < max_ratio
+end
+
 @testset "The filter corrects the atmospheric delays" begin
     # The true ranges carry PositionVelocityTime's ionospheric and tropospheric delays,
     # metres each, which the filter predicts at its own position every cycle.

@@ -51,6 +51,7 @@ function VectorPLLAndDLL(
     approximate_year::Integer = year(now(UTC)),
     enable_ionospheric_correction::Bool = true,
     enable_tropospheric_correction::Bool = true,
+    vector_fll_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
 )
     _has_fll_path(inner) || throw(
         ArgumentError(
@@ -86,7 +87,7 @@ function VectorPLLAndDLL(
         enable_ionospheric_correction,
         enable_tropospheric_correction,
     )
-    VectorPLLAndDLL(inner, navigation)
+    VectorPLLAndDLL(inner, navigation, vector_fll_loop_filter_bandwidth)
 end
 
 """

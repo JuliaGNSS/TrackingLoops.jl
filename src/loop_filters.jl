@@ -31,12 +31,27 @@ bandwidth at `0.02 / Δt`: 5 Hz up to 4 ms records, 2 Hz at 10 ms.
 """
 const MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT = 0.02
 
+"""
+    MAX_VECTOR_FLL_LOOP_BANDWIDTH_CYCLE_PRODUCT
+
+The largest product `BL · T` of the vector loop's FLL-branch bandwidth and the
+navigation cycle time `T`: `0.1`.
+[`effective_vector_fll_loop_filter_bandwidth`](@ref) caps the vector-FLL
+bandwidth at `0.1 / T`: 1 Hz on the default 100 ms cycle. The FLL branch
+integrates a carrier correction that the navigation filter sets once per cycle
+and holds over it, so the loop the correction closes is sampled at `T`. It
+diverges at `BL · T ≈ 0.75`; at `0.1` its noise bandwidth runs 18 % wider than
+configured, 43 % at `0.2`.
+"""
+const MAX_VECTOR_FLL_LOOP_BANDWIDTH_CYCLE_PRODUCT = 0.1
+
 # The signal-independent default loop-filter bandwidths: what the generic
 # `default_*_loop_filter_bandwidth` methods return, and what a `LoopBandwidths`
 # built without a signal holds.
 const _DEFAULT_WIDE_CARRIER_LOOP_FILTER_BANDWIDTH = 50.0Hz
 const _DEFAULT_NARROW_CARRIER_LOOP_FILTER_BANDWIDTH = 18.0Hz
 const _DEFAULT_FLL_ASSIST_LOOP_FILTER_BANDWIDTH = 5.0Hz
+const _DEFAULT_VECTOR_FLL_LOOP_FILTER_BANDWIDTH = 1.0Hz
 const _DEFAULT_CODE_LOOP_FILTER_BANDWIDTH = 1.0Hz
 
 """
@@ -97,6 +112,35 @@ end
 """
 $(SIGNATURES)
 
+Recommended vector-FLL bandwidth for `signal`: 1 Hz, the noise bandwidth of
+the FLL branch of the carrier filter of a satellite in the vector loop (see
+[`VectorPLLAndDLL`](@ref)). The branch integrates the navigation filter's
+carrier correction, which is set once per navigation cycle (every 100 ms by
+default) and held for the cycle. So the loop it closes is sampled at 10 Hz and
+must sit well below that rate's 5 Hz Nyquist frequency. It must also sit well
+below the PLL's 18 Hz, so that the two branches do not share a band. 1 Hz is
+`BL · T = 0.1` on the default cycle, where the sampled loop's noise bandwidth
+runs 18 % over the configured one (see
+[`MAX_VECTOR_FLL_LOOP_BANDWIDTH_CYCLE_PRODUCT`](@ref)), and it still removes a
+velocity error of the replica within about a second. The vector loop used to
+tie the FLL branch to the PLL's bandwidth (`ω₀ / 4`, 2.9 Hz at 18 Hz). That
+sampled loop has `BL · T ≈ 0.3` and raised the replica's phase noise at 2–3 Hz.
+The FLL-assist bandwidth
+([`default_fll_assist_loop_filter_bandwidth`](@ref)) is for pull-in and is not
+used here.
+
+Capped at filter time by [`effective_vector_fll_loop_filter_bandwidth`](@ref)
+against the navigation cycle time. Override by defining a method for your signal
+type, or pass `vector_fll_loop_filter_bandwidth =` to
+[`VectorPLLAndDLL`](@ref).
+"""
+function default_vector_fll_loop_filter_bandwidth(signal::AbstractGNSSSignal)
+    _DEFAULT_VECTOR_FLL_LOOP_FILTER_BANDWIDTH
+end
+
+"""
+$(SIGNATURES)
+
 Recommended code-loop-filter (DLL) bandwidth for `signal`: a flat 1 Hz, inside
 the 0.25–2 Hz of the reference software receivers (GNSS-SDR, SoftGNSS,
 PocketSDR). Carrier-aided (see [`aid_dopplers`](@ref)), the DLL has almost no
@@ -112,30 +156,47 @@ end
 
 """
     LoopBandwidths(; wide_carrier = 50Hz, narrow_carrier = 18Hz, fll_assist = 5Hz,
-                     code = 1Hz)
-    LoopBandwidths(signal; wide_carrier, narrow_carrier, fll_assist, code)
+                     code = 1Hz, vector_fll = 1Hz)
+    LoopBandwidths(signal; wide_carrier, narrow_carrier, fll_assist, code, vector_fll)
 
 The loop-filter bandwidths of a scalar estimator's per-satellite state:
 `wide_carrier` for the PLL until it narrows and `narrow_carrier` after (see
 [`CarrierLoopStage`](@ref)), `fll_assist` for the FLL path while the loop is
-FLL-assisted, and `code` for the DLL. Given a `signal`, each bandwidth not given
-defaults to the signal's ([`default_wide_carrier_loop_filter_bandwidth`](@ref),
+FLL-assisted, `code` for the DLL, and `vector_fll` for the FLL path while a
+[`VectorPLLAndDLL`](@ref) feeds it the navigation filter's carrier correction.
+Given a `signal`, each bandwidth not given defaults to the signal's
+([`default_wide_carrier_loop_filter_bandwidth`](@ref),
 [`default_narrow_carrier_loop_filter_bandwidth`](@ref),
 [`default_fll_assist_loop_filter_bandwidth`](@ref),
-[`default_code_loop_filter_bandwidth`](@ref)), so methods of those for a signal
-type apply; without one, to the generic defaults. [`init_estimator_state`](@ref)
-resolves them from the estimator's, each `nothing` there from the driver
-signal's default. Each is capped against the record's integration time at
-filter time (see [`effective_carrier_loop_filter_bandwidth`](@ref),
+[`default_code_loop_filter_bandwidth`](@ref),
+[`default_vector_fll_loop_filter_bandwidth`](@ref)), so methods of those for a
+signal type apply; without one, to the generic defaults. The four-argument
+positional form leaves `vector_fll` at its generic default.
+[`init_estimator_state`](@ref) resolves them from the estimator's, each
+`nothing` there from the driver signal's default. Each is capped at filter time,
+the vector FLL's against the navigation cycle time and the others against the
+record's integration time (see
+[`effective_carrier_loop_filter_bandwidth`](@ref),
 [`effective_fll_assist_loop_filter_bandwidth`](@ref),
-[`effective_code_loop_filter_bandwidth`](@ref)).
+[`effective_code_loop_filter_bandwidth`](@ref),
+[`effective_vector_fll_loop_filter_bandwidth`](@ref)).
 """
 @kwdef struct LoopBandwidths
     wide_carrier::typeof(1.0Hz) = _DEFAULT_WIDE_CARRIER_LOOP_FILTER_BANDWIDTH
     narrow_carrier::typeof(1.0Hz) = _DEFAULT_NARROW_CARRIER_LOOP_FILTER_BANDWIDTH
     fll_assist::typeof(1.0Hz) = _DEFAULT_FLL_ASSIST_LOOP_FILTER_BANDWIDTH
     code::typeof(1.0Hz) = _DEFAULT_CODE_LOOP_FILTER_BANDWIDTH
+    vector_fll::typeof(1.0Hz) = _DEFAULT_VECTOR_FLL_LOOP_FILTER_BANDWIDTH
 end
+
+# Without the vector FLL's, the bandwidths a scalar loop alone runs on.
+LoopBandwidths(wide_carrier, narrow_carrier, fll_assist, code) = LoopBandwidths(
+    wide_carrier,
+    narrow_carrier,
+    fll_assist,
+    code,
+    _DEFAULT_VECTOR_FLL_LOOP_FILTER_BANDWIDTH,
+)
 
 LoopBandwidths(
     signal::AbstractGNSSSignal;
@@ -143,7 +204,8 @@ LoopBandwidths(
     narrow_carrier = default_narrow_carrier_loop_filter_bandwidth(signal),
     fll_assist = default_fll_assist_loop_filter_bandwidth(signal),
     code = default_code_loop_filter_bandwidth(signal),
-) = LoopBandwidths(wide_carrier, narrow_carrier, fll_assist, code)
+    vector_fll = default_vector_fll_loop_filter_bandwidth(signal),
+) = LoopBandwidths(wide_carrier, narrow_carrier, fll_assist, code, vector_fll)
 
 """
 $(SIGNATURES)
@@ -188,6 +250,21 @@ Effective FLL-assist bandwidth for a record that integrated for
         bandwidth,
         uconvert(Hz, MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT / integration_time),
     )
+end
+
+"""
+$(SIGNATURES)
+
+Effective FLL-branch bandwidth of a satellite's carrier filter in the vector
+loop, whose correction the navigation filter updates every `cycle_time`: the
+configured bandwidth, capped at
+`MAX_VECTOR_FLL_LOOP_BANDWIDTH_CYCLE_PRODUCT / cycle_time`. The default 1 Hz
+runs unchanged up to a 100 ms cycle, at 0.5 Hz on a 200 ms cycle and 0.1 Hz on
+a 1 s one. A record is never longer than the cycle, so the cap also keeps the
+FLL path well inside its per-record stability limit.
+"""
+@inline function effective_vector_fll_loop_filter_bandwidth(bandwidth, cycle_time)
+    min(bandwidth, uconvert(Hz, MAX_VECTOR_FLL_LOOP_BANDWIDTH_CYCLE_PRODUCT / cycle_time))
 end
 
 """
