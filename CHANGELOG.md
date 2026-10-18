@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.1.1](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v5.1.0...v5.1.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **vector:** predict the pseudorange rate as the derivative of the modelled pseudorange ([0e3eb0b](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/0e3eb0bb599d8e2a670ac9f68f0688573b4d1e49))
+
 # [5.1.0](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v5.0.2...v5.1.0) (2026-10-16)
 
 
