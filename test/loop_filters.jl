@@ -15,20 +15,17 @@ end
 
 @testset "Default loop bandwidths" begin
     # Flat bandwidths for every signal: the PLL's 50 Hz wide and 18 Hz narrow, the
-    # FLL-assist 5 Hz, the code 1 Hz and the vector FLL 1 Hz.
+    # FLL-assist 5 Hz and the code 1 Hz.
     for signal in (GPSL1CA(), GPSL1C_P(), GalileoE1B(), GPSL5I())
         @test default_wide_carrier_loop_filter_bandwidth(signal) == 50.0Hz
         @test default_narrow_carrier_loop_filter_bandwidth(signal) == 18.0Hz
         @test default_fll_assist_loop_filter_bandwidth(signal) == 5.0Hz
         @test default_code_loop_filter_bandwidth(signal) == 1.0Hz
-        @test default_vector_fll_loop_filter_bandwidth(signal) == 1.0Hz
     end
     @test default_narrow_carrier_loop_filter_bandwidth(GPSL1CA()) isa typeof(1.0Hz)
     # A state's bandwidths: the signal's defaults, the generic ones without a signal.
     @test LoopBandwidths(GPSL1CA()) == LoopBandwidths() ==
-          LoopBandwidths(50.0Hz, 18.0Hz, 5.0Hz, 1.0Hz) ==
-          LoopBandwidths(50.0Hz, 18.0Hz, 5.0Hz, 1.0Hz, 1.0Hz)
-    @test LoopBandwidths(GPSL1CA(); vector_fll = 0.5Hz).vector_fll == 0.5Hz
+          LoopBandwidths(50.0Hz, 18.0Hz, 5.0Hz, 1.0Hz)
     @test LoopBandwidths(GPSL1CA(); wide_carrier = 18.0Hz).wide_carrier == 18.0Hz
     @test LoopBandwidths(GPSL1CA(); wide_carrier = 18.0Hz).narrow_carrier == 18.0Hz
 end
@@ -41,17 +38,6 @@ end
     @test effective(5.0Hz, 20ms) ≈ 1.0Hz
     @test effective(5.0Hz, 20ms) * 20ms ≈ MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT
     @test @inferred(effective(5.0Hz, 5000 / 5e6Hz)) isa typeof(1.0Hz)
-end
-
-@testset "The vector FLL bandwidth is capped by the navigation cycle" begin
-    effective = effective_vector_fll_loop_filter_bandwidth
-    @test effective(1.0Hz, 100ms) == 1.0Hz
-    @test effective(0.5Hz, 100ms) == 0.5Hz
-    @test effective(1.0Hz, 50ms) == 1.0Hz
-    @test effective(2.0Hz, 100ms) ≈ 1.0Hz
-    @test effective(1.0Hz, 200ms) ≈ 0.5Hz
-    @test effective(1.0Hz, 1000ms) * 1000ms ≈ MAX_VECTOR_FLL_LOOP_BANDWIDTH_CYCLE_PRODUCT
-    @test @inferred(effective(1.0Hz, 0.1s)) isa typeof(1.0Hz)
 end
 
 # The carrier bandwidth, wide or narrow, is capped by its stability product, not
@@ -177,20 +163,20 @@ staging_record(p, num_code_blocks = 1) = LoopRecord(
     )
     fresh = TrackingLoops.CarrierLoopStaging(ThirdOrderBilinearLF)
     # No reading until the averages span their time constant, 0.1 s of 1 ms records.
-    @test isnan(advance(fresh, fill(complex(1.0), 99)).phase_lock_indicator)
-    @test advance(fresh, fill(complex(1.0), 100)).phase_lock_indicator ≈ 1.0
+    @test isnan(advance(fresh, fill(complex(1.0), 99)).lock_detector.indicator)
+    @test advance(fresh, fill(complex(1.0), 100)).lock_detector.indicator ≈ 1.0
     # A constant phase error φ reads cos 2φ.
-    @test advance(fresh, fill(cis(π / 6), 200)).phase_lock_indicator ≈ cos(π / 3)
+    @test advance(fresh, fill(cis(π / 6), 200)).lock_detector.indicator ≈ cos(π / 3)
     # Locked at a low C/N₀ (30 dB-Hz: |P|²/σ² = 1 per 1 ms record), the
     # moments-based power still normalises it to about 1, if noisily, …
     rng = MersenneTwister(3)
     amplitude = sqrt(10^3.0 * 1e-3)
-    locked = [advance(fresh, [amplitude + randn(rng, ComplexF64) for _ = 1:500]).phase_lock_indicator for _ = 1:50]
+    locked = [advance(fresh, [amplitude + randn(rng, ComplexF64) for _ = 1:500]).lock_detector.indicator for _ = 1:50]
     @test 0.8 < median(locked) < 1.2
     @test count(>(0.5), locked) >= 45
     # … and a spinning phase about 0.
     spinning = [
-        advance(fresh, [amplitude * cis(0.3k) + randn(rng, ComplexF64) for k = 1:500]).phase_lock_indicator for
+        advance(fresh, [amplitude * cis(0.3k) + randn(rng, ComplexF64) for k = 1:500]).lock_detector.indicator for
         _ = 1:50
     ]
     @test abs(median(spinning)) < 0.1
@@ -204,7 +190,7 @@ end
     gpsl1 = GPSL1CA()
     staging = TrackingLoops.CarrierLoopStaging(ThirdOrderAssistedBilinearLF)
     @test staging.stage == FLL_ASSISTED_PLL
-    @test isnan(staging.phase_lock_indicator)
+    @test isnan(staging.lock_detector.indicator)
     @test TrackingLoops.CarrierLoopStaging(ThirdOrderBilinearLF).stage == WIDE_PLL
     stages = CarrierLoopStage[]
     for k = 1:1000
@@ -218,12 +204,12 @@ end
     @test findfirst(==(NARROW_PLL), stages) == 599
     @test issorted(stages)
     # Narrowed, the last stage, it no longer counts how long it has read lock.
-    @test staging.phase_lock_indicator ≈ cos(0.2)
+    @test staging.lock_detector.indicator ≈ cos(0.2)
     @test staging.num_locked_records == 0
     # Lock lost, the narrow PLL stays.
     for k = 1:500
         staging = TrackingLoops._advance_staging(staging, staging_record(cis(0.3k)))
     end
-    @test staging.phase_lock_indicator < 0.5
+    @test staging.lock_detector.indicator < 0.5
     @test staging.stage == NARROW_PLL
 end

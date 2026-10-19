@@ -6,14 +6,38 @@ const TL = TrackingLoops
 step_satellite(estimator::VectorPLLAndDLL, args...) = TL._step_satellite(estimator, args...)
 step_satellite(estimator, args...) = step_loop(estimator, args...)
 
+# A host's C/N₀ estimator that reads `cn0_dbhz` whatever the prompts.
+struct ReportedCN0 <: TrackingLoops.AbstractCN0Estimator
+    cn0_dbhz::Float64
+end
+TrackingLoops.estimate_cn0(estimator::ReportedCN0, integration_time) = estimator.cn0_dbhz * dBHz
+
+# `record` as read by a host whose C/N₀ estimator reads `cn0_dbhz`.
+with_cn0(record::LoopRecord, cn0_dbhz) = LoopRecord(
+    (f === :cn0_estimator ? ReportedCN0(cn0_dbhz) : getfield(record, f) for f in fieldnames(LoopRecord))...,
+)
+
 # One record at `sample_index` with the given raw accumulators, normalised the
 # way `apply_record` does before the loop filters see it (the post-correlation
-# filter is the identity for the first prompt).
-function vector_record(signal, accumulators, num_samples, fs; previous_prompt = complex(0.0, 0.0), sample_index = num_samples)
+# filter is the identity for the first prompt), its host reading `cn0_dbhz`.
+function vector_record(signal, accumulators, num_samples, fs; previous_prompt = complex(0.0, 0.0),
+        sample_index = num_samples, cn0_dbhz = 45.0)
     correlator = update_accumulator(get_default_correlator(signal), SVector(accumulators...))
     output = CorrelatorOutput(correlator, num_samples, sample_index)
     normalized = normalize(correlator, num_samples, get_code_amplitude(signal))
-    LoopRecord(signal, normalized, previous_prompt, output, 1, fs)
+    with_cn0(LoopRecord(signal, normalized, previous_prompt, output, 1, fs), cn0_dbhz)
+end
+
+# A record whose prompt is `prompt`, its early and late taps half of it.
+prompt_record(signal, prompt, num_samples, fs; sample_index = num_samples, previous_prompt = complex(0.0),
+        cn0_dbhz = 45.0) =
+    vector_record(signal, (500.0prompt, 1000.0prompt, 500.0prompt), num_samples, fs; previous_prompt,
+        sample_index, cn0_dbhz)
+
+# A satellite in the vector loop, commanded the Doppler `ramp` and the code correction
+# `code_update`, its residual PLL taking over from the scalar word `scalar_doppler`.
+function commanded(state, ramp; code_update = 0.0Hz, lead = 0.0s, scalar_doppler = ramp.doppler)
+    TL._set_vector_corrections(TL._enable_vector_tracking(state), code_update, ramp, lead, FixedNCOWord(scalar_doppler, 0.0), 0)
 end
 
 @testset "Vector PLL and DLL state" begin
@@ -24,15 +48,17 @@ end
     @test state.inner == init_estimator_state(ConventionalAssistedPLLAndDLL(), GPSL1CA(), 500.0Hz, 100.0Hz)
     @test state.vt_on == false
     @test state.code_discr_acc == (0, 0.0)
-    @test state.carrier_phase_acc == TL.CarrierPhaseAccumulator()
+    @test state.fll_disc_sum == (0, 0.0Hz)
     @test all(isnan, state.previous_replica_half)
     @test state.code_freq_update == 0.0Hz
-    @test state.carrier_freq_update == 0.0Hz
     @test state.code_freq_update_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test state.code_update_landing_lead == 0.0s
+    @test isnan(state.ramp.time)
+    @test !TL._has_carrier_ramp(state)
+    @test state.residual_pll.bandwidth == 10.0Hz
     @test estimator_state_type(estimator, GPSL1CA()) === typeof(state)
     @test TL._mean_code_discriminator(state) === nothing
-    @test TL._mean_carrier_doppler(state) === nothing
+    @test TL._disc_mean(state.fll_disc_sum) === nothing
 end
 
 @testset "Vector PLL and DLL seeding" begin
@@ -43,8 +69,6 @@ end
     @test state.inner.bandwidths.narrow_carrier == 18.0Hz
     @test state.inner.bandwidths.fll_assist == 5.0Hz
     @test state.inner.bandwidths.code == 1.0Hz
-    @test state.inner.bandwidths.vector_fll == 1.0Hz ==
-          default_vector_fll_loop_filter_bandwidth(GPSL1CA())
     @test state.inner.init_carrier_doppler == 100.0Hz
     @test carrier_loop_stage(state) == FLL_ASSISTED_PLL
     explicit = ConventionalAssistedPLLAndDLL(; narrow_carrier_loop_filter_bandwidth = 12.0Hz, code_loop_filter_bandwidth = 1.0Hz)
@@ -58,37 +82,50 @@ end
     @test referenced.inner isa SatNCOReferencedPLLAndDLL
     @test referenced.inner.bandwidths.narrow_carrier ==
           default_narrow_carrier_loop_filter_bandwidth(GalileoE1B())
-    # The vector FLL's bandwidth is the vector estimator's, resolved into the inner
-    # state, for either inner loop; the inner loop's own bandwidths stay.
+    # The residual PLL's bandwidth is the estimator's, for either inner loop; the
+    # inner loop's own bandwidths stay.
     for inner in (explicit, NCOReferencedPLLAndDLL())
-        estimator = VectorPLLAndDLL(GPSL1CA(); inner, vector_fll_loop_filter_bandwidth = 0.5Hz)
+        estimator = VectorPLLAndDLL(GPSL1CA(); inner, residual_pll_loop_filter_bandwidth = 5.0Hz)
         vector_state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.0Hz)
-        inner_state = init_estimator_state(inner, GPSL1CA(), 100.0Hz, 0.0Hz)
-        @test vector_state.inner.bandwidths.vector_fll == 0.5Hz
-        b = inner_state.bandwidths
-        @test vector_state.inner.bandwidths ==
-              LoopBandwidths(b.wide_carrier, b.narrow_carrier, b.fll_assist, b.code, 0.5Hz)
+        @test vector_state.residual_pll.bandwidth == 5.0Hz
+        @test vector_state.inner == init_estimator_state(inner, GPSL1CA(), 100.0Hz, 0.0Hz)
+        # A satellite keeps it across the hand-overs.
+        @test TL._enable_vector_tracking(vector_state).residual_pll.bandwidth == 5.0Hz
+        @test TL._release_from_vector_tracking(TL._enable_vector_tracking(vector_state), FixedNCOWord(1.0, 0.0), 0, 1e6).residual_pll.bandwidth == 5.0Hz
     end
+    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); residual_pll_loop_filter_bandwidth = 0.0Hz)
 end
 
-@testset "The vector FLL runs at its own bandwidth, capped by the cycle" begin
-    # One record in the vector loop with a carrier correction alone: the FLL branch at
-    # the configured bandwidth, or at `0.1 / cycle_time` on a longer cycle.
+@testset "The filter alone sets the carrier NCO, with $(nameof(typeof(inner)))" for inner in (
+    ConventionalAssistedPLLAndDLL(),
+    NCOReferencedPLLAndDLL(),
+)
+    # The command is the filter's ramp at the middle of the record it lands on, whatever
+    # the prompt reads; the code is commanded from it, carrier-aided, plus the filter's
+    # code correction.
     signal = GPSL1CA()
     fs = 5e6Hz
-    record = vector_record(signal, (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im), 5000, fs)
-    words = FixedNCOWord(100.0, 0.0)
-    pll_discriminator = pll_disc(signal, record.filtered_correlator)
-    for (cycle_time, vector_fll, applied) in
-        ((100.0ms, 1.0Hz, 1.0Hz), (100.0ms, 0.4Hz, 0.4Hz), (100.0ms, 3.0Hz, 1.0Hz), (1.0s, 1.0Hz, 0.1Hz))
-        estimator = VectorPLLAndDLL(signal; cycle_time, vector_fll_loop_filter_bandwidth = vector_fll)
-        state = init_estimator_state(estimator, signal, 100.0Hz, 0.0Hz)
-        state = TL._set_vector_corrections(TL._enable_vector_tracking(state), 0.0Hz, 5.0Hz)
-        _, carrier_doppler, _ = step_satellite(estimator, state, record, words, NO_LANDING_SAMPLE)
-        expected, _ = filter_loop(ThirdOrderAssistedBilinearLF(), (pll_discriminator, 5.0Hz), 1.0ms, (18.0Hz, applied))
-        @test carrier_doppler ≈ 100.0Hz + expected
-        @test effective_vector_fll_loop_filter_bandwidth(vector_fll, cycle_time) ≈ applied
+    estimator = VectorPLLAndDLL(signal; inner)
+    ramp = TL.CarrierRamp(110.0, 4.0, 0.0)
+    state = commanded(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz), ramp; code_update = -0.25Hz)
+    words = FixedNCOWord(100.0, 0.1)
+    ratio = get_code_center_frequency_ratio(signal)
+    for landing in (NO_LANDING_SAMPLE, Int64(15000))
+        commands = map((cis(0.0), cis(0.2), -cis(0.1))) do prompt
+            _, carrier, code = step_satellite(estimator, state, prompt_record(signal, prompt, 5000, fs), words, landing)
+            carrier, code
+        end
+        @test allequal(commands)
+        carrier, code = first(commands)
+        middle = ((landing == NO_LANDING_SAMPLE ? 5000 : 15000) + 2500) / 5e6
+        @test carrier ≈ (110.0 + 4.0 * middle) * Hz
+        @test code ≈ 0.1Hz - 0.25Hz + (carrier - 100.0Hz) * ratio
     end
+    # The inner loop's filters are frozen.
+    stepped, = step_satellite(estimator, state, prompt_record(signal, cis(0.2), 5000, fs), words, NO_LANDING_SAMPLE)
+    @test stepped.inner.carrier_loop_filter == state.inner.carrier_loop_filter
+    @test stepped.inner.code_loop_filter == state.inner.code_loop_filter
+    @test carrier_loop_stage(stepped) == VECTOR_LOOP
 end
 
 @testset "A vector loop needs an FLL-assisted inner loop" begin
@@ -109,11 +146,12 @@ end
               simulate_delayed_loop(inner, d; steps = 300)
     end
     # And record by record on one fixed word: nothing is accumulated and the
-    # corrections are never written.
+    # commands are never applied.
     signal = GPSL1CA()
     fs = 5e6Hz
     vector = VectorPLLAndDLL(GPSL1CA(); inner)
-    vector_state = TL._set_vector_corrections(init_estimator_state(vector, signal, 100.0Hz, 0.1Hz), 0.5Hz, 2.0Hz)
+    vector_state = TL._set_vector_corrections(init_estimator_state(vector, signal, 100.0Hz, 0.1Hz), 0.5Hz,
+        TL.CarrierRamp(120.0, 0.0, 0.0), 0.0s, FixedNCOWord(100.0, 0.0), 0)
     inner_state = init_estimator_state(inner, signal, 100.0Hz, 0.1Hz)
     record = vector_record(signal, (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im), 5000, fs; previous_prompt = cis(0.1))
     words = FixedNCOWord(100.0, 0.1)
@@ -123,16 +161,15 @@ end
     @test vector_code == inner_code
     @test new_vector_state.inner == new_inner_state
     @test new_vector_state.code_discr_acc == (0, 0.0)
-    @test new_vector_state.carrier_phase_acc == TL.CarrierPhaseAccumulator()
+    @test new_vector_state.fll_disc_sum == (0, 0.0Hz)
     # The replica's last half record is kept, for the span a later vector loop opens
     # with: half of the 1 ms record on the 100 Hz word.
     @test new_vector_state.previous_replica_half == (100.0 * 0.0005, 0.0005s)
     @test new_vector_state.code_freq_update == 0.5Hz
-    @test new_vector_state.carrier_freq_update == 2.0Hz
-    @test vector_carrier != 100.0Hz
+    @test vector_carrier != 120.0Hz
 end
 
-@testset "Vector loop closure applies the NCO corrections, with $(nameof(typeof(inner)))" for inner in (
+@testset "A member's record: the DLL accumulated, the residual PLL stepped, with $(nameof(typeof(inner)))" for inner in (
     ConventionalAssistedPLLAndDLL(),
     NCOReferencedPLLAndDLL(),
 )
@@ -142,171 +179,124 @@ end
     init_code_doppler = carrier_doppler * get_code_center_frequency_ratio(gpsl1)
     num_samples = 5000
     accumulators = (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im)
-    nav_carrier_freq_update = 5.0Hz
-    nav_code_freq_update = -0.25Hz
-
     estimator = VectorPLLAndDLL(GPSL1CA(); inner)
     state = init_estimator_state(estimator, gpsl1, carrier_doppler, init_code_doppler)
-    state = TL._enable_vector_tracking(state)
-    state = TL._set_vector_corrections(state, nav_code_freq_update, nav_carrier_freq_update)
+    state = commanded(state, TL.CarrierRamp(100.0, 0.0, 0.0); code_update = -0.25Hz)
     record = vector_record(gpsl1, accumulators, num_samples, sampling_frequency)
     words = FixedNCOWord(ustrip(Hz, carrier_doppler), ustrip(Hz, init_code_doppler))
-    state, new_carrier_doppler, new_code_doppler = step_satellite(estimator, state, record, words, NO_LANDING_SAMPLE)
-
+    state, = step_satellite(estimator, state, record, words, NO_LANDING_SAMPLE)
     normalized_correlator = update_accumulator(
         get_default_correlator(gpsl1),
         SVector(accumulators...) ./ num_samples,
     )
-    integration_time = num_samples / sampling_frequency
-    pll_discriminator = pll_disc(gpsl1, normalized_correlator)
     dll_discriminator = dll_disc(gpsl1, normalized_correlator, init_code_doppler, sampling_frequency)
-    # The FLL branch is driven by the vector loop's carrier update, at its own 1 Hz
-    # beside the 18 Hz PLL.
-    expected_carrier_freq_update, _ = filter_loop(
-        ThirdOrderAssistedBilinearLF(),
-        (pll_discriminator, nav_carrier_freq_update),
-        integration_time,
-        (18.0Hz, 1.0Hz),
-    )
-    @test new_carrier_doppler == carrier_doppler + expected_carrier_freq_update
-    # The code Doppler follows the vector loop's update directly, plus the
-    # carrier filter's own aiding; the code loop filter is frozen.
-    @test new_code_doppler ==
-          init_code_doppler +
-          nav_code_freq_update +
-          expected_carrier_freq_update * get_code_center_frequency_ratio(gpsl1)
     @test state.inner.code_loop_filter == SecondOrderBilinearLF()
     # The DLL discriminator is accumulated. Without a previous prompt there is no
     # frequency measurement, so no carrier span opens: not a span of zero rotation.
     @test state.code_discr_acc == (1, dll_discriminator)
-    @test state.carrier_phase_acc == TL.CarrierPhaseAccumulator()
+    @test state.fll_disc_sum == (0, 0.0Hz)
     @test TL._mean_code_discriminator(state) == dll_discriminator
-    @test TL._mean_carrier_doppler(state) === nothing
+    @test TL._disc_mean(state.fll_disc_sum) === nothing
     @test !TL.has_code_and_carrier_measurements(state)
+    @test TL._has_carrier_ramp(state)
+    @test state.residual_pll.prompt_center ≈ 0.0005
     # The replica's second half record is kept for the next span.
     @test state.previous_replica_half == (ustrip(Hz, carrier_doppler) * 0.0005, 0.0005s)
-    # The corrections survive the step untouched.
-    @test state.code_freq_update == nav_code_freq_update
-    @test state.carrier_freq_update == nav_carrier_freq_update
+    @test state.code_freq_update == -0.25Hz
+    # The residual PLL reads the phase lock on the prompts it rotated, carrying on from the
+    # scalar loop's averages; the staging stands still.
+    @test state.residual_pll.lock.lock_detector.num_records == 1
+    @test state.inner.staging == init_estimator_state(inner, gpsl1, carrier_doppler, init_code_doppler).staging
 
-    state = TL._reset_code_and_carrier_accumulators(state)
+    state = TL._reset_discriminator_accumulators(state)
     @test state.code_discr_acc == (0, 0.0)
-    @test state.carrier_phase_acc == TL.CarrierPhaseAccumulator()
+    @test state.fll_disc_sum == (0, 0.0Hz)
     @test state.previous_replica_half == (ustrip(Hz, carrier_doppler) * 0.0005, 0.0005s)
     @test TL._mean_code_discriminator(state) === nothing
-    @test TL._mean_carrier_doppler(state) === nothing
+    @test TL._disc_mean(state.fll_disc_sum) === nothing
     @test state.vt_on
-    @test state.code_freq_update == nav_code_freq_update
+    @test state.code_freq_update == -0.25Hz
 end
 
-@testset "The vector loop accumulates the incoming carrier phase between prompts" begin
+@testset "The vector loop accumulates the FLL discriminator" begin
     signal = GPSL1CA()
     fs = 5e6Hz
     estimator = VectorPLLAndDLL(GPSL1CA())
-    state = TL._enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
+    state = commanded(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz), TL.CarrierRamp(100.0, 0.0, 0.0))
     previous = cis(0.2)
     accumulators = (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im)
     records = [vector_record(signal, accumulators, 5000, fs; previous_prompt = previous, sample_index = 5000k)
-               for k = 1:3]
+               for k = 1:2]
     fll = fll_disc(signal, records[1].filtered_correlator, previous, 5000 / fs)
     @test fll != 0.0Hz
-    # The first record has no replica half record before it, so it only leaves its own.
     state, = step_satellite(estimator, state, records[1], FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
-    @test state.carrier_phase_acc == TL.CarrierPhaseAccumulator()
-    @test state.previous_replica_half == (0.05, 0.0005s)
-    # Each later one adds the span between the two prompts' centres: the replica's
-    # advance over it, half a record on each word, plus the FLL's rotation.
     state, = step_satellite(estimator, state, records[2], FixedNCOWord(120.0, 0.1), NO_LANDING_SAMPLE)
-    state, = step_satellite(estimator, state, records[3], FixedNCOWord(140.0, 0.1), NO_LANDING_SAMPLE)
-    acc = state.carrier_phase_acc
-    rotation = ustrip(Hz, fll) * 0.001
-    @test acc.count == 2
-    @test acc.cycles ≈ (100.0 + 120.0) * 0.0005 + (120.0 + 140.0) * 0.0005 + 2 * rotation
-    @test acc.duration ≈ 0.002s
-    # The spans run from the first record's centre (0.5 ms) to the third's (2.5 ms).
-    doppler, time = TL._mean_carrier_doppler(state)
-    @test doppler ≈ 120.0Hz + fll
-    @test time ≈ 0.0015s
-    @test TL.accumulated_carrier_doppler(state, 0.003) == (ustrip(Hz, doppler), 0.003 - ustrip(s, time))
-    @test state.previous_replica_half == (140.0 * 0.0005, 0.0005s)
+    @test state.fll_disc_sum == (2, fll + fll)
+    @test TL._disc_mean(state.fll_disc_sum) == (fll + fll) / 2
+    # The replica's last half record, which the residual PLL propagates by.
+    @test state.previous_replica_half == (120.0 * 0.0005, 0.0005s)
     # A record without a previous prompt (a changed carrier phase polarity) has no
-    # rotation, so its span is left out; the next one starts from its half record.
-    no_prompt = vector_record(signal, accumulators, 5000, fs; sample_index = 20000)
+    # frequency measurement, so it is left out rather than taken as 0 Hz.
+    no_prompt = vector_record(signal, accumulators, 5000, fs; sample_index = 15000)
     skipped, = step_satellite(estimator, state, no_prompt, FixedNCOWord(160.0, 0.1), NO_LANDING_SAMPLE)
-    @test skipped.carrier_phase_acc == acc
+    @test skipped.fll_disc_sum == state.fll_disc_sum
     @test skipped.previous_replica_half == (160.0 * 0.0005, 0.0005s)
 end
 
-@testset "The vector loop accumulates the carrier phase in Hz from a MHz sampling frequency" begin
+@testset "The vector loop accumulates the FLL discriminator in Hz from a MHz sampling frequency" begin
     # The FLL reading took the sampling frequency's unit, and the `Hz`-typed
     # accumulator refused it as soon as the satellite was in the vector loop.
     signal = GPSL1CA()
     estimator = VectorPLLAndDLL(GPSL1CA())
-    function accumulated(fs, num_samples)
-        state = TL._enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
-        for k = 1:2
-            record = vector_record(signal, (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im), 5000, fs;
-                previous_prompt = cis(0.2), sample_index = num_samples * k)
-            state, = step_satellite(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
-        end
-        state.carrier_phase_acc
+    function accumulated(fs)
+        state = commanded(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz), TL.CarrierRamp(100.0, 0.0, 0.0))
+        record = vector_record(signal, (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im), 5000, fs;
+            previous_prompt = cis(0.2))
+        state, = step_satellite(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
+        state.fll_disc_sum
     end
-    acc = accumulated(5.0u"MHz", 5000)
-    @test acc.count == 1
-    @test acc.cycles != 0.1
-    reference = accumulated(5e6Hz, 5000)
-    @test acc.cycles ≈ reference.cycles
-    @test acc.duration ≈ reference.duration
-    @test acc.time_moment ≈ reference.time_moment
+    count, carrier_sum = accumulated(5.0u"MHz")
+    @test count == 1
+    @test carrier_sum != 0.0Hz
+    @test carrier_sum ≈ last(accumulated(5e6Hz))
 end
 
-@testset "The NCO-referenced vector loop keeps its landing prediction" begin
-    # In the vector loop, with the delay the prediction has something to do,
-    # and without it the NCO-referenced loop is the conventional one.
+@testset "In the vector loop either inner loop runs the same" begin
+    # The inner loop's discriminators and filters are not used in the vector loop: the
+    # filter commands the carrier, the residual PLL measures it.
     signal = GPSL1CA()
     fs = 4e6Hz
     function run(inner, landing_offset)
         estimator = VectorPLLAndDLL(GPSL1CA(); inner)
         state = init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz)
-        state = TL._set_vector_corrections(TL._enable_vector_tracking(state), 0.1Hz, 1.0Hz)
+        state = commanded(state, TL.CarrierRamp(100.5, 1.0, 0.0); code_update = 0.1Hz, scalar_doppler = 100.0)
         timeline = NCOTimeline()
         reset_timeline!(timeline, 100.0, 0.1)
         previous = complex(0.0, 0.0)
         carriers = typeof(1.0Hz)[]
-        # The replica's advance over each record, from the words it ran on.
-        record_cycles = Float64[]
         for k = 1:50
             p = cis(0.3 + 0.01k)
             output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), 4000, 4000k)
             record = LoopRecord(signal, output.correlator, previous, output, 1, fs)
             landing = landing_offset == 0 ? NO_LANDING_SAMPLE : Int64(4000k + landing_offset)
-            push!(record_cycles, first(mean_nco_word(timeline, 4000k - 4000, 4000k)) * 0.001)
             state, carrier, code = step_satellite(estimator, state, record, timeline, landing)
             schedule_word!(timeline, 4000k + landing_offset, ustrip(Hz, carrier), ustrip(Hz, code))
             promote_words!(timeline, 4000k - 4000)
             push!(carriers, carrier)
             previous = p
         end
-        # The spans run from the first record's centre to the last one's; every word
-        # lands on a record boundary, so each half record is half the record's advance.
-        replica = sum(record_cycles) - (record_cycles[1] + record_cycles[end]) / 2
-        carriers, state, state.carrier_phase_acc.cycles - replica
+        carriers, state
     end
-    referenced, referenced_state = run(NCOReferencedPLLAndDLL(), 0)
-    conventional, conventional_state = run(ConventionalAssistedPLLAndDLL(), 0)
-    @test referenced == conventional
-    @test referenced_state.code_discr_acc == conventional_state.code_discr_acc
-    @test referenced_state.carrier_phase_acc == conventional_state.carrier_phase_acc
-    predicted, predicted_state, predicted_rotation = run(NCOReferencedPLLAndDLL(), 12000)
-    control, control_state, control_rotation = run(NCOReferencedPLLAndDLL(; predict_landing = false), 12000)
-    @test predicted != control
-    # The accumulated rotation is the raw FLL discriminator's, before any re-basing
-    # onto the landing word, so the prediction does not reach it; the replica's
-    # advance is the words' that really ran.
-    @test predicted_rotation ≈ control_rotation atol = 1e-12
-    @test predicted_rotation != 0.0
-    # The first record has no previous prompt.
-    @test predicted_state.carrier_phase_acc.count == 49
+    for landing_offset in (0, 12000)
+        referenced, referenced_state = run(NCOReferencedPLLAndDLL(), landing_offset)
+        conventional, conventional_state = run(ConventionalAssistedPLLAndDLL(), landing_offset)
+        @test referenced == conventional
+        @test referenced_state.code_discr_acc == conventional_state.code_discr_acc
+        @test referenced_state.fll_disc_sum == conventional_state.fll_disc_sum
+        @test referenced_state.residual_pll == conventional_state.residual_pll
+        # The first record has no previous prompt.
+        @test first(conventional_state.fll_disc_sum) == 49
+    end
 end
 
 @testset "Vector tracking state management" begin
@@ -314,23 +304,34 @@ end
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     joined = TL._enable_vector_tracking(state)
     @test joined.vt_on
+    ramp = TL.CarrierRamp(110.0, 2.0, 0.01)
     # Re-enabling a member changes nothing, so the members can be enabled every
     # cycle.
     steered = SatVectorPLLAndDLL(
-        TL._set_vector_corrections(joined, 1.0Hz, 10.0Hz, 0.02s);
+        TL._set_vector_corrections(joined, 1.0Hz, ramp, 0.02s, FixedNCOWord(100.0, 0.0), 0);
         code_discr_acc = (3, 0.3),
-        carrier_phase_acc = TL.CarrierPhaseAccumulator(3, 0.3, 0.003s, 0.0s^2),
+        fll_disc_sum = (3, 0.3Hz),
         previous_replica_half = (0.1, 0.0005s),
     )
     @test TL._enable_vector_tracking(steered) === steered
-    # The corrections take over one another.
+    # The first ramp starts the residual PLL from the scalar loop's word, against the ramp.
+    @test steered.ramp == ramp
+    @test TL._has_carrier_ramp(steered)
+    @test steered.residual_pll.carrier_freq_update ≈ 100.0 - 110.0
+    @test TL._residual_doppler(steered.residual_pll) ≈ 100.0 - 110.0
     @test steered.code_freq_update == 1.0Hz
-    @test steered.carrier_freq_update == 10.0Hz
     @test steered.code_freq_update_history == (1.0Hz, 0.0Hz, 0.0Hz)
     @test steered.code_update_landing_lead == 0.02s
-    next = TL._set_vector_corrections(steered, 2.0Hz, 20.0Hz)
+    # A later one keeps the residual PLL's estimates of the incoming Doppler and its rate.
+    next_ramp = TL.CarrierRamp(105.0, 0.0, 0.11)
+    next = TL._set_vector_corrections(steered, 2.0Hz, next_ramp, 0.0s, FixedNCOWord(999.0, 0.0), 0)
+    @test TL._doppler_at(next_ramp, 0.01) + next.residual_pll.carrier_freq_update ≈ TL._doppler_at(ramp, 0.01) + steered.residual_pll.carrier_freq_update
+    @test TL._doppler_at(next_ramp, 0.01) + TL._residual_doppler(next.residual_pll) ≈
+          TL._doppler_at(ramp, 0.01) + TL._residual_doppler(steered.residual_pll)
+    @test next_ramp.rate + TL._residual_doppler_rate(next.residual_pll) ≈
+          ramp.rate + TL._residual_doppler_rate(steered.residual_pll)
     @test next.code_freq_update_history == (2.0Hz, 1.0Hz, 0.0Hz)
-    @test TL._set_vector_corrections(next, 3.0Hz, 0.0Hz).code_freq_update_history ==
+    @test TL._set_vector_corrections(next, 3.0Hz, next_ramp, 0.0s, FixedNCOWord(0.0, 0.0), 0).code_freq_update_history ==
           (3.0Hz, 2.0Hz, 1.0Hz)
     @test next.code_freq_update == 2.0Hz
     @test next.code_update_landing_lead == 0.0s
@@ -341,49 +342,52 @@ end
     @test !released.vt_on
     @test released.inner == next.inner
     @test released.code_discr_acc == (0, 0.0)
-    @test released.carrier_phase_acc == TL.CarrierPhaseAccumulator()
+    @test released.fll_disc_sum == (0, 0.0Hz)
     @test released.code_freq_update == 0.0Hz
-    @test released.carrier_freq_update == 0.0Hz
     @test released.code_freq_update_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test released.code_update_landing_lead == 0.0s
+    @test isnan(released.ramp.time)
+    @test !TL._has_carrier_ramp(released)
     # The replica's last half record is the replica's: it survives the hand-over both ways.
     @test released.previous_replica_half == (0.1, 0.0005s)
     @test TL._enable_vector_tracking(released).previous_replica_half == (0.1, 0.0005s)
     @test TL._enable_vector_tracking(released).code_freq_update == 0.0Hz
 end
 
-@testset "Resetting keeps the vector flag and stops applying the corrections" begin
+@testset "Resetting keeps the vector flag and stops applying the code correction" begin
     estimator = VectorPLLAndDLL(GPSL1CA(); inner = ConventionalAssistedPLLAndDLL(; narrow_carrier_loop_filter_bandwidth = 12.0Hz))
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     record = vector_record(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
-    state = TL._set_vector_corrections(TL._enable_vector_tracking(state), 0.5Hz, 4.0Hz)
+    ramp = TL.CarrierRamp(104.0, 0.0, 0.0)
+    state = commanded(state, ramp; code_update = 0.5Hz)
     state, = step_satellite(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
-    state = TL._set_vector_corrections(state, 0.6Hz, 4.0Hz, 0.01s)
-    @test state.inner.carrier_loop_filter != ThirdOrderAssistedBilinearLF()
+    state = TL._set_vector_corrections(state, 0.6Hz, ramp, 0.01s, FixedNCOWord(0.0, 0.0), 0)
     reset = reset_estimator_state(estimator, state, 150.0Hz, 0.2Hz)
     @test reset isa typeof(state)
     @test reset.vt_on
     @test reset.code_discr_acc == (0, 0.0)
-    @test reset.carrier_phase_acc == TL.CarrierPhaseAccumulator()
+    @test reset.fll_disc_sum == (0, 0.0Hz)
     @test reset.previous_replica_half == state.previous_replica_half
-    # The re-seeded Dopplers carry the last correction, so it is no longer applied…
+    # The re-seeded Dopplers carry the last code correction, so it is no longer applied…
     @test reset.code_freq_update == 0.0Hz
-    @test reset.carrier_freq_update == 0.0Hz
     # …but the replica is still steered by it, so the next code measurement is moved to
     # the epoch exactly as without the reset.
     @test reset.code_freq_update_history == (0.6Hz, 0.5Hz, 0.0Hz)
     @test reset.code_update_landing_lead == 0.01s
     @test TrackingLoops.code_phase_advance(reset, 0.1) == TrackingLoops.code_phase_advance(state, 0.1)
     @test TrackingLoops.code_phase_advance(reset, 0.1) != 0.0
+    # The carrier command is the filter's Doppler itself, and the residual PLL carries on.
+    @test reset.ramp == state.ramp
+    @test reset.residual_pll == state.residual_pll
     @test reset.inner.carrier_loop_filter == ThirdOrderAssistedBilinearLF()
     @test reset.inner.bandwidths.narrow_carrier == 12.0Hz
-    # In the vector loop the carrier loop stays at the narrow PLL.
-    @test carrier_loop_stage(reset) == NARROW_PLL
+    @test carrier_loop_stage(reset) == VECTOR_LOOP
     @test reset.inner.init_carrier_doppler == 150.0Hz
     @test reset.inner.init_code_doppler == 0.2Hz
-    # With nothing applied, the code Doppler is the re-seeded one plus the carrier aiding.
+    # With no code correction, the code Doppler is the re-seeded one plus the carrier aiding.
     _, carrier_doppler, code_doppler =
         step_satellite(estimator, reset, record, FixedNCOWord(150.0, 0.2), NO_LANDING_SAMPLE)
+    @test carrier_doppler == 104.0Hz
     @test code_doppler ≈ 0.2Hz + (carrier_doppler - 150.0Hz) * get_code_center_frequency_ratio(GPSL1CA())
 end
 
@@ -394,34 +398,48 @@ end
     estimator = VectorPLLAndDLL(GPSL1CA(); inner)
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     record = vector_record(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
-    state = TL._set_vector_corrections(TL._enable_vector_tracking(state), 0.5Hz, 4.0Hz, 0.01s)
+    ramp = TL.CarrierRamp(104.0, 2.0, 0.0)
+    state = commanded(state, ramp; code_update = 0.5Hz, lead = 0.01s)
     state, = step_satellite(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
-    released = TL._release_from_vector_tracking(state, 150.0Hz, 0.2Hz)
+    # A residual PLL out of lock knows no better than the filter: the inner loop starts over
+    # from the handed-over replica and the ramp's Doppler rate.
+    unlocked = TL.SatVectorPLLAndDLL(state; residual_pll = TL.ResidualPLL(state.residual_pll; lock = TL.ResidualPLLLock()))
+    released = TL._release_from_vector_tracking(unlocked, FixedNCOWord(150.0, 0.2), 2000, 1e6)
     @test released isa typeof(state)
     @test !released.vt_on
-    # The inner loop starts over from the handed-over replica, with its own
-    # configuration kept: the per-satellite state carries it. Unlike a reset, the
-    # release restarts the staging.
+    # The inner loop starts over with its own configuration kept: the per-satellite
+    # state carries it. Unlike a reset, the release restarts the staging.
     reset_inner = reset_estimator_state(inner, state.inner, 150.0Hz, 0.2Hz)
     @test released.inner == Base.typename(typeof(reset_inner)).wrapper(
         reset_inner;
+        carrier_loop_filter = TL._carrier_filter_at_rate(reset_inner.carrier_loop_filter, 2.0),
         staging = TL.CarrierLoopStaging(typeof(reset_inner.carrier_loop_filter)),
     )
-    @test reset_inner.staging == state.inner.staging
+    @test released.inner.carrier_loop_filter.x2 == 2.0Hz^2
     @test released.inner.init_carrier_doppler == 150.0Hz
     @test released.inner.init_code_doppler == 0.2Hz
+    # A residual PLL in lock hands over its estimate where the release lands: the ramp plus
+    # its residual Doppler, moved on by its rate, and the Doppler rate of both.
+    residual_pll = state.residual_pll
+    residual_pll = TL.ResidualPLL(residual_pll.bandwidth, 1.5, TL._residual_pll_loop_filter(1.5, 0.5), residual_pll.prompt_center,
+        residual_pll.carrier_phase_polarity, residual_pll.prompt_phase,
+        TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
+    locked = TL._release_from_vector_tracking(TL.SatVectorPLLAndDLL(state; residual_pll), FixedNCOWord(150.0, 0.2), 2000, 1e6)
+    @test locked.inner.init_carrier_doppler ≈
+          (TL._doppler_at(ramp, 0.002) + 1.5 + 0.5 * (0.002 - residual_pll.prompt_center)) * Hz
+    @test locked.inner.carrier_loop_filter.x2 ≈ 2.5Hz^2
+    @test locked.inner.init_code_doppler == 0.2Hz
     @test released.inner.bandwidths.narrow_carrier == 12.0Hz
-    # The carrier loop pulls in afresh, FLL-assisted, after the narrow PLL it ran
-    # at in the vector loop.
-    @test carrier_loop_stage(state) == NARROW_PLL
+    # The carrier loop pulls in afresh, FLL-assisted.
+    @test carrier_loop_stage(state) == VECTOR_LOOP
     @test carrier_loop_stage(released) == FLL_ASSISTED_PLL
     # Nothing the vector loop owned survives.
     @test released.code_discr_acc == (0, 0.0)
-    @test released.carrier_phase_acc == TL.CarrierPhaseAccumulator()
+    @test released.fll_disc_sum == (0, 0.0Hz)
     @test released.previous_replica_half == state.previous_replica_half
     @test released.code_freq_update == 0.0Hz
-    @test released.carrier_freq_update == 0.0Hz
     @test released.code_freq_update_history == (0.0Hz, 0.0Hz, 0.0Hz)
+    @test !TL._has_carrier_ramp(released)
     # Out of the vector loop it steps exactly as the re-seeded inner loop.
     @test step_satellite(estimator, released, record, FixedNCOWord(150.0, 0.2), NO_LANDING_SAMPLE)[2:3] ==
           step_satellite(inner, released.inner, record, FixedNCOWord(150.0, 0.2), NO_LANDING_SAMPLE)[2:3]
@@ -429,9 +447,10 @@ end
 
 # ─────────────────────────────────────────────────────────────────────────────
 # The pseudorange-rate observable of a satellite in the vector loop, on a carrier of
-# known phase: the loop's own carrier filter tracking it record by record, and the
-# accumulators read and emptied at every navigation epoch, as the engine's snapshot
-# does — before the record that crosses the epoch.
+# known phase: the replica commanded a ramp `offset` Hz off the carrier's Doppler, the
+# residual PLL following the rest record by record, and the accumulators read and
+# emptied at every navigation epoch, as the engine's snapshot does — before the record
+# that crosses the epoch, with the word that record runs on as the replica's Doppler.
 
 using Random: Xoshiro, randn
 using Statistics: mean, std
@@ -444,13 +463,13 @@ const RATE_WAVELENGTH = TL.SPEED_OF_LIGHT / ustrip(Hz, get_center_frequency(RATE
 # the first ending at `first_end` (samples), up to `duration` seconds, the epochs every
 # `cycle` seconds. Each prompt is the mean of the carrier against the replica over its
 # record, with complex noise of `noise_std` per component. Returns per epoch `E` the
-# mean Doppler the satellite accumulated (Hz), how long before `E` it refers to (s), the
-# carrier phase it accumulated (cycles) and the spans' length (s), and the centres of the
-# first and the last record whose spans the measurements cover.
-function track_carrier(phase, doppler0; record_samples = 16000, first_end = 16000, cycle = 0.1,
-        duration = 2.0, noise_std = 0.0, rng = Xoshiro(1))
+# rate observable (Hz: the replica's word there plus the mean FLL) and the records it
+# averaged.
+function track_carrier(phase, doppler0, rate; offset = 0.5, record_samples = 16000, first_end = 16000,
+        cycle = 0.1, duration = 2.0, noise_std = 0.0, rng = Xoshiro(1))
     estimator = VectorPLLAndDLL(RATE_SIGNAL)
-    state = TL._enable_vector_tracking(init_estimator_state(estimator, RATE_SIGNAL, doppler0 * Hz, 0.0Hz))
+    state = init_estimator_state(estimator, RATE_SIGNAL, doppler0 * Hz, 0.0Hz)
+    state = commanded(state, TL.CarrierRamp(doppler0 + offset, rate, 0.0); scalar_doppler = doppler0)
     carrier = doppler0
     replica_phase = phase(0.0) # cycles, at the start of the record ahead
     previous_prompt = complex(0.0)
@@ -458,18 +477,15 @@ function track_carrier(phase, doppler0; record_samples = 16000, first_end = 1600
     epoch = 1
     record_end = first_end
     record_start = 0
-    previous_center = NaN
-    last_center = NaN
     while record_end / RATE_FS <= duration
         t0, t1 = record_start / RATE_FS, record_end / RATE_FS
         # The engine's snapshot: the accumulators up to the epoch, emptied before the
-        # record that crosses it.
+        # record that crosses it, whose word is the replica's there.
         if t1 > epoch * cycle
-            doppler, offset = TL.accumulated_carrier_doppler(state, epoch * cycle)
-            acc = state.carrier_phase_acc
-            push!(epochs, (; epoch = epoch * cycle, doppler, offset, cycles = acc.cycles,
-                duration = ustrip(s, acc.duration), count = acc.count, last_center = previous_center))
-            state = TL._reset_code_and_carrier_accumulators(state)
+            push!(epochs, (; epoch = epoch * cycle,
+                doppler = carrier + TL.mean_fll_disc(state),
+                count = first(state.fll_disc_sum)))
+            state = TL._reset_discriminator_accumulators(state)
             epoch += 1
         end
         n = 64
@@ -483,74 +499,54 @@ function track_carrier(phase, doppler0; record_samples = 16000, first_end = 1600
         replica_phase += carrier * (t1 - t0)
         carrier = ustrip(Hz, new_carrier)
         previous_prompt = prompt
-        previous_center = (t0 + t1) / 2
         record_start = record_end
         record_end += record_samples
     end
     epochs
 end
 
-@testset "The rate is the mean Doppler over the cycle, at the instant it refers to" begin
+@testset "The rate is the Doppler at the epoch" begin
     # A line-of-sight acceleration of 5 m/s², on 4 ms records ending 1.3 ms past the
-    # epochs. The Doppler the replica ends a cycle on lags the ramp, and the cycle's mean
-    # is not the end-of-cycle Doppler: it is the Doppler at the mean of the spans'
-    # midpoints, half a cycle and half a record before the epoch — exactly so under a
-    # constant acceleration, whatever the loop's lag.
+    # epochs, the replica commanded 0.5 Hz off on a ramp of the carrier's slope. The
+    # mean FLL is the cycle's mean offset from the replica, so with the replica's word
+    # at the epoch it is the incoming Doppler there, to within the half record that
+    # word stands for — not the cycle's mean Doppler, half a cycle earlier.
     acceleration = 5.0
     ramp = acceleration / RATE_WAVELENGTH # Hz/s
     doppler(t) = 1200.0 + ramp * t
     phase(t) = 0.3 + 1200.0 * t + ramp * t^2 / 2
-    epochs = track_carrier(phase, 1200.0; first_end = 16000 + 5200, duration = 3.0)
+    epochs = track_carrier(phase, 1200.0, ramp; first_end = 16000 + 5200, duration = 3.0)
     for e in epochs[11:end]
-        # The spans run from the centre of the last record before the previous epoch to
-        # that of the last one before this epoch: 2 ms + 1.3 ms… before each.
-        @test e.offset ≈ 0.1 / 2 + 0.002 + 0.0027 atol = 1e-9
-        @test RATE_WAVELENGTH * abs(e.doppler - doppler(e.epoch - e.offset)) < 0.001
-        # Half a cycle and more away from the epoch's Doppler: what a prediction at the
-        # epoch would mistake for a rate error.
-        @test RATE_WAVELENGTH * (doppler(e.epoch) - e.doppler) ≈ acceleration * e.offset atol = 0.001
+        @test RATE_WAVELENGTH * abs(e.doppler - doppler(e.epoch)) < acceleration * 0.002 + 0.001
+        @test RATE_WAVELENGTH * abs(e.doppler - doppler(e.epoch - 0.05)) > 0.2
     end
 end
 
 @testset "The rate measurements are continuous across cycles" begin
     # Noisy prompts at 45 dB-Hz, 4.1 ms records, so the 100 ms cycles take 24 or 25 of
-    # them, under a slow Doppler ramp. The cycles' spans tile the time between the first
-    # and the last measured prompt, and the carrier phase they accumulated sums to the
-    # incoming phase there, up to the noise of the two end prompts: no walk, however
-    # many cycles.
+    # them, under a slow Doppler ramp. The FLL compares consecutive prompts and chains
+    # across the cycles, so the integrated rate error stays at the noise of the
+    # boundary prompts — no walk, however many cycles — each cycle's error has the
+    # variance the filter weights the rate with, and consecutive cycles, sharing a
+    # boundary prompt, a lag-1 autocorrelation of −1/2.
     cn0 = 10^4.5
     record_samples = 16400
     T_coh = record_samples / RATE_FS
     ramp = 0.5 / RATE_WAVELENGTH
+    doppler(t) = 800.0 + ramp * t
     phase(t) = 0.1 + 800.0 * t + ramp * t^2 / 2
-    epochs = track_carrier(phase, 800.0; record_samples, first_end = record_samples, duration = 60.0,
+    epochs = track_carrier(phase, 800.0, ramp; record_samples, first_end = record_samples, duration = 60.0,
         noise_std = sqrt(1 / (2 * cn0 * T_coh)), rng = Xoshiro(7))
     measured = epochs[11:end]
     @test all(e -> e.count in (24, 25), measured)
     @test any(e -> e.count == 24, measured) && any(e -> e.count == 25, measured)
-    first_center = epochs[10].last_center
-    integrated_error = Float64[]
-    tiling_error = 0.0
-    total_cycles = 0.0
-    total_duration = 0.0
-    for e in measured
-        total_cycles += e.cycles
-        total_duration += e.duration
-        tiling_error = max(tiling_error, abs(total_duration - (e.last_center - first_center)))
-        push!(integrated_error,
-            RATE_WAVELENGTH * (total_cycles - (phase(e.last_center) - phase(first_center))))
-    end
-    @test tiling_error < 1e-9
-    # Two prompt phases' worth of noise, 2.8 mm (1σ), from the first cycle to the 590th.
+    residuals = [RATE_WAVELENGTH * (e.doppler - doppler(e.epoch)) for e in measured]
+    integrated_error = cumsum(residuals) .* 0.1
     σ_φ² = 1 / (2 * cn0 * T_coh) * (1 + 1 / (2 * cn0 * T_coh))
     σ_integrated = RATE_WAVELENGTH * sqrt(2σ_φ²) / 2π
     @test maximum(abs, integrated_error) < 5σ_integrated
     @test std(integrated_error[1:end÷2]) ≈ std(integrated_error[end÷2:end]) rtol = 0.3
-    # Each cycle's error then has the variance the filter weights the rate with, and
-    # consecutive cycles share a boundary prompt: a lag-1 autocorrelation of −1/2.
-    residuals = [RATE_WAVELENGTH * (e.cycles / e.duration -
-                 (phase(e.last_center) - phase(e.last_center - e.duration)) / e.duration) for e in measured]
-    @test std(residuals) / mean(RATE_WAVELENGTH * sqrt(2σ_φ²) / (2π * e.duration) for e in measured) ≈ 1.0 atol = 0.15
+    @test std(residuals) / (RATE_WAVELENGTH * sqrt(2σ_φ²) / (2π * 0.1)) ≈ 1.0 atol = 0.15
     r = residuals .- mean(residuals)
     @test sum(r[1:end-1] .* r[2:end]) / sum(abs2, r) ≈ -0.5 atol = 0.1
 end

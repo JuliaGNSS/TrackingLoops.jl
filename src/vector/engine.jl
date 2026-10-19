@@ -47,17 +47,18 @@ function VectorPLLAndDLL(
     config::Union{VectorTracking,Nothing} = VectorTracking(),
     cycle_time = 100.0ms,
     lock_cn0_threshold = 30.0dBHz,
+    residual_pll_loop_filter_bandwidth = default_residual_pll_loop_filter_bandwidth(),
     max_satellites_per_signal::Integer = 16,
     approximate_year::Integer = year(now(UTC)),
     enable_ionospheric_correction::Bool = true,
     enable_tropospheric_correction::Bool = true,
-    vector_fll_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
 )
     _has_fll_path(inner) || throw(
         ArgumentError(
-            "the vector loop drives the carrier through the FLL branch of an " *
-            "FLL-assisted carrier filter; use `ConventionalAssistedPLLAndDLL()` " *
-            "or `NCOReferencedPLLAndDLL()` as the inner estimator",
+            "a satellite the vector loop releases pulls in again through the FLL " *
+            "path of an FLL-assisted carrier filter; use " *
+            "`ConventionalAssistedPLLAndDLL()` or `NCOReferencedPLLAndDLL()` as " *
+            "the inner estimator",
         ),
     )
     isempty(signals) &&
@@ -76,6 +77,8 @@ function VectorPLLAndDLL(
     T = Float64(ustrip(s, cycle_time)) * s
     0.0s < T < Inf * s ||
         throw(ArgumentError("the navigation cycle time must be positive and finite"))
+    residual_pll_loop_filter_bandwidth > 0.0Hz ||
+        throw(ArgumentError("`residual_pll_loop_filter_bandwidth` must be positive"))
     navigation = VectorNavigation(
         config,
         pairs,
@@ -87,7 +90,7 @@ function VectorPLLAndDLL(
         enable_ionospheric_correction,
         enable_tropospheric_correction,
     )
-    VectorPLLAndDLL(inner, navigation, vector_fll_loop_filter_bandwidth)
+    VectorPLLAndDLL(inner, navigation, Float64(ustrip(Hz, residual_pll_loop_filter_bandwidth)) * Hz)
 end
 
 """
@@ -209,10 +212,15 @@ function _step_vector_record(
     if driver
         state, carrier_doppler, code_doppler = _step_satellite(estimator, state, record, words, landing_sample)
         _advance_driver!(group, slot, record, words)
+        # The residual PLL stepped on this record's prompt in the vector loop
+        # (`_measure_carrier`); out of it, it starts afresh when the satellite is added
+        # again.
+        state.vt_on ? _push_prompt!(slot.prompt_history, state.residual_pll) :
+        _clear_prompts!(slot.prompt_history)
     else
         carrier_doppler, code_doppler = _command_in_force(record, words, landing_sample)
     end
-    decoding && _advance_decoding!(group, slot, record)
+    decoding && _advance_decoding!(group, slot, record, state, words, driver)
     state, carrier_doppler, code_doppler
 end
 
@@ -254,7 +262,7 @@ function _register!(nav::VectorNavigation, group::VTSlotGroup, g::Int, state::Sa
     )
     index = _find_slot(slots, prn)
     if index == 0
-        push!(slots, VTSlot(group.decoding_signal, prn, group.prototype))
+        push!(slots, VTSlot(group.decoding_signal, prn, group.prototype, group.prompt_history_length))
         index = length(slots)
     end
     slot = slots[index]
@@ -301,6 +309,9 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     slot.decoding_blocks_into_symbol = 0
     slot.decoding_code_phase_fraction = NaN
     slot.sync_fold_end = typemin(Int)
+    slot.symbol_accumulator = zero(ComplexF64)
+    slot.symbol_from_edge = false
+    _clear_prompts!(slot.prompt_history)
     if nav.pending_epoch == typemin(Int)
         nav.pending_epoch = _epoch_at_or_after(nav, slot.last_end_time)
     end
@@ -323,7 +334,6 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     slot.in_lock = false
     slot.pvt_ready = false
     slot.release_reason = VT_NOT_RELEASED
-    slot.restart_cycle = -1
     slot.correction_cycle = -1
     slot.member_index = 0
     nothing
@@ -347,8 +357,8 @@ end
 # Taking up a cycle
 
 # The satellite's state with the latest cycle's decisions taken up, once: admission,
-# a restart, the release (its scalar loop re-seeded from the replica where the command
-# lands) and the corrections, sized for that landing.
+# the release (its scalar loop re-seeded where the command lands) and the commands,
+# sized for that landing.
 function _take_up_cycle(
     nav::VectorNavigation,
     group::VTSlotGroup,
@@ -361,26 +371,24 @@ function _take_up_cycle(
     id = nav.cycle_id
     state.cycle_id == id && return state
     in_loop = slot.estimator_state.vt_on
-    if slot.restart_cycle == id && state.vt_on
-        state = _enable_vector_tracking(_disable_vector_tracking(state))
-    end
     if in_loop && !state.vt_on
         state = _enable_vector_tracking(state)
     elseif !in_loop && state.vt_on
-        carrier_doppler, code_doppler = mean_nco_word(words, landing, landing)
-        state = _release_from_vector_tracking(state, carrier_doppler * Hz, code_doppler * Hz)
+        state = _release_from_vector_tracking(state, words, landing, _sampling_frequency_hz(record))
     end
     if in_loop && slot.correction_cycle == id
-        code_update, carrier_update, lead =
-            _correction_at_landing(nav, group, slot, record, words, landing)
-        state = _set_vector_corrections(state, code_update * Hz, carrier_update * Hz, lead * s)
+        code_update, ramp, lead =
+            _commands_at_landing(nav, group, slot, record, words, landing)
+        state = _set_vector_corrections(state, code_update * Hz, ramp, lead * s, words, landing)
     end
     SatVectorPLLAndDLL(state; cycle_id = id)
 end
 
-# The slot's corrections from the latest cycle, for a command landing at sample
-# `landing`, and how long after the cycle's epoch that is (s).
-function _correction_at_landing(
+# The command of the latest cycle for the slot, landing at sample `landing`: the code
+# correction, the carrier Doppler ramp from the landing on — the predicted Doppler there
+# and one cycle later, the replica's code moved on at the word it runs on — and how
+# long after the cycle's epoch the landing is (s).
+function _commands_at_landing(
     nav::VectorNavigation,
     group::VTSlotGroup,
     slot::VTSlot,
@@ -398,14 +406,15 @@ function _correction_at_landing(
         ),
     )
     lead = max(lead, 0.0)
+    T = _cycle_seconds(nav)
     code_frequency = ustrip(Hz, get_code_frequency(group.signal))
     _, code_word = mean_nco_word(words, slot.last_end_sample, landing)
     chips =
         slot.chips_since_epoch + (landing - slot.last_end_sample) / fs * (code_frequency + code_word)
-    carrier_doppler, _ = mean_nco_word(words, landing, landing)
-    code_update, carrier_update =
-        _member_corrections(nav, slot, slot.member_index, lead, chips, carrier_doppler)
-    code_update, carrier_update, lead
+    code_update, doppler = _member_commands(nav, slot, slot.member_index, lead, chips)
+    _, next_doppler =
+        _member_commands(nav, slot, slot.member_index, lead + T, chips + T * (code_frequency + code_word))
+    code_update, CarrierRamp(doppler, (next_doppler - doppler) / T, landing / fs), lead
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -466,7 +475,7 @@ function _snapshot_driver!(
     slot.early_late_spacing = slot.last_early_late_spacing
     slot.chips_since_epoch = -chips_to_epoch
     slot.driver_epoch = nav.pending_epoch
-    _reset_code_and_carrier_accumulators(state)
+    _reset_discriminator_accumulators(state)
 end
 
 # The decoding signal's half of the snapshot at the pending epoch `E`, if this record
@@ -673,14 +682,13 @@ end
 #   - Vector tracking not running: the scalar PVT over the satellites that are
 #     ready for it. A fresh fix seeds the filter from it, puts the fix's satellites
 #     into the vector loop and closes their loops a first time at the seeded state.
-#     Satellites still in the loop from before are released if no longer eligible,
-#     and start over otherwise.
 #   - Running: one filter cycle: the members are admitted (decoded, healthy, in lock
 #     and a degree above the horizon) and released, their accumulated
 #     discriminators measured and fused, and every member left its corrections.
 #     Members out of lock stay in the loop, unmeasured. After
 #     `insufficient_meas_timeout` of unsolvable epochs, or with no member left, every
-#     member is released and the next cycle solves the scalar PVT again.
+#     satellite in the loop is released — those that missed the epoch too — and the
+#     next cycle solves the scalar PVT again.
 #   - Built with `config = nothing`: the scalar PVT only.
 function _navigation_cycle!(nav::VectorNavigation, now)
     groups = nav.groups
@@ -703,7 +711,7 @@ function _navigation_cycle!(nav::VectorNavigation, now)
         # solve, so identity is exactly the freshness test.
         if nav.enabled && pvt !== previous_pvt
             enabled = true
-            released = _seed!(nav, groups, cycle_time)
+            _seed!(nav, groups, cycle_time)
         end
     end
     num_members = _fold_groups(_count_members, 0, groups, buffers.states, 1)
@@ -753,17 +761,21 @@ end
 # at its end. A record that follows the one that found a sync in the same fold, its
 # replica still the pre-sync one (see `fold_record`'s `overlay_wiped`), does not anchor
 # the symbol count: the bit clock counts as unsynchronised there until the next fold.
-function _advance_decoding!(group::VTSlotGroup, slot::VTSlot, record::LoopRecord)
-    soft_bits = record.new_soft_bits
-    if !isempty(soft_bits)
-        slot.running_decoder = decode!(slot.running_decoder, soft_bits, Base.length(soft_bits))
-    end
+function _advance_decoding!(
+    group::VTSlotGroup,
+    slot::VTSlot,
+    record::LoopRecord,
+    state::SatVectorPLLAndDLL,
+    words,
+    driver::Bool,
+)
     if record.sync_change == SYNC_FOUND
         slot.sync_fold_end = record.fold_end
     elseif !record.bit_synced
         slot.sync_fold_end = typemin(Int)
     end
     unwiped_after_sync = record.sync_change != SYNC_FOUND && record.fold_end == slot.sync_fold_end
+    _decode_record!(group, slot, record, state, words, driver, unwiped_after_sync)
     code_length = get_code_length(group.decoding_signal)
     fs = _sampling_frequency_hz(record)
     slot.decoding_last_end_sample = record.sample_index
@@ -773,5 +785,61 @@ function _advance_decoding!(group::VTSlotGroup, slot::VTSlot, record::LoopRecord
     slot.decoding_code_phase_fraction =
         isnan(record.code_phase) ? NaN :
         mod(record.code_phase + code_length / 2, code_length) - code_length / 2
+    nothing
+end
+
+# A decoding signal's record into the satellite's decoder. Out of the vector loop, the
+# soft bits the host's bit buffer formed. In it the carrier NCO runs on the filter's
+# prediction, so the prompts turn at the filter's Doppler error and the host's soft
+# bits, the real part of their sum, are not decoded: the engine rotates each prompt
+# onto the incoming carrier by the residual PLL's estimate (`_symbol_prompt_phase`)
+# and the decoding signal's carrier-phase offset from the driver, sums them over the
+# data symbol and decodes the sum's real part, signed as the host's bit clock signs
+# its own, at the record on which the host's bit clock ends the symbol. A symbol the
+# rotated sum does not cover from its first block — the one a satellite is added to the
+# loop in, or one after a record correlated before the overlay was wiped
+# (`unwiped_after_sync`) — and a record that ends more than one, take the host's soft
+# bits.
+function _decode_record!(
+    group::VTSlotGroup,
+    slot::VTSlot,
+    record::LoopRecord,
+    state::SatVectorPLLAndDLL,
+    words,
+    driver::Bool,
+    unwiped_after_sync::Bool,
+)
+    soft_bits = record.new_soft_bits
+    phase =
+        state.vt_on && record.bit_synced && record.sync_change == SYNC_UNCHANGED && !unwiped_after_sync ?
+        _symbol_prompt_phase(
+            state.residual_pll,
+            state.ramp,
+            state.previous_replica_half,
+            slot.prompt_history,
+            record,
+            words,
+            driver,
+        ) :
+        NaN
+    if isnan(phase)
+        slot.symbol_accumulator = zero(ComplexF64)
+        slot.symbol_from_edge = false
+    else
+        rotation =
+            get_carrier_phase_offset(group.signal) - get_carrier_phase_offset(group.decoding_signal) -
+            2π * phase
+        slot.symbol_accumulator += ComplexF64(get_prompt(record.filtered_correlator)) * cis(rotation)
+    end
+    isempty(soft_bits) && return nothing
+    if !isnan(phase) && slot.symbol_from_edge && Base.length(soft_bits) == 1
+        symbol = real(slot.symbol_accumulator)
+        slot.soft_bit[1] = Float32(record.bit_polarity < 0 ? -symbol : symbol)
+        slot.running_decoder = decode!(slot.running_decoder, slot.soft_bit, 1)
+    else
+        slot.running_decoder = decode!(slot.running_decoder, soft_bits, Base.length(soft_bits))
+    end
+    slot.symbol_accumulator = zero(ComplexF64)
+    slot.symbol_from_edge = !isnan(phase)
     nothing
 end

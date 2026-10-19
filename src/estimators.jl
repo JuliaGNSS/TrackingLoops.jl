@@ -494,14 +494,12 @@ end
 
 # The discriminators of one record, as the loop filters are fed them, and what the
 # step needs around them: the per-record integration time and the record's centre
-# sample. Shared by the scalar step and the vector step (`_step_vector_loop`), so
-# the two cannot drift apart. `phase_error` (cycles) and `frequency_error` (Hz)
-# are what the scalar loop's carrier filter is fed; `raw_frequency_error` is the
-# FLL discriminator as measured, against the replica that ran between the two
-# prompts' centres, before any re-basing onto a landing word. Both FLL errors are
-# formed only where `form_fll` asks for them — the scalar loop while it uses the
-# FLL, the vector loop always — and are zero otherwise. The DLL output
-# `code_error` is normalised with the code word the record ran on.
+# sample. `phase_error` (cycles) and `frequency_error` (Hz) are what the scalar
+# loop's carrier filter is fed; `raw_frequency_error` is the FLL discriminator as
+# measured, against the replica that ran between the two prompts' centres, before
+# any re-basing onto a landing word. Both FLL errors are formed only where
+# `form_fll` asks for them — while the loop uses the FLL — and are zero otherwise.
+# The DLL output `code_error` is normalised with the code word the record ran on.
 @inline function _record_discriminators(
     ::ConventionalPLLAndDLL,
     state::SatConventionalPLLAndDLL,
@@ -938,8 +936,8 @@ end
     carrier_loop_stage(state) -> CarrierLoopStage
 
 The [`CarrierLoopStage`](@ref) of a scalar estimator's per-satellite state, or
-of a [`VectorPLLAndDLL`](@ref)'s: `NARROW_PLL` while the satellite is in the
-vector loop, the inner loop's stage out of it.
+of a [`VectorPLLAndDLL`](@ref)'s: `VECTOR_LOOP` while the satellite is in
+the vector loop, the inner loop's stage out of it.
 """
 carrier_loop_stage(state::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndDLL}) =
     state.staging.stage
@@ -948,8 +946,9 @@ carrier_loop_stage(state::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndD
     phase_lock_indicator(state) -> Float64
 
 The phase-lock indicator the carrier-loop staging reads (see
-[`CarrierLoopStage`](@ref)), of a scalar estimator's per-satellite state or of
-the inner loop of a [`VectorPLLAndDLL`](@ref)'s: `⟨I² − Q²⟩ / A²` of the
+[`CarrierLoopStage`](@ref)), of a scalar estimator's per-satellite state, or of
+a [`VectorPLLAndDLL`](@ref)'s: in the vector loop its residual PLL's, on the
+prompts the residual PLL rotated, out of it the inner loop's. `⟨I² − Q²⟩ / A²` of the
 driver's prompts, an estimate of `cos 2φ` for the carrier phase error `φ` — 1
 in phase lock, 0 for a spinning phase — averaged over 0.1 s or 25 records,
 whichever is longer, and normalised by the signal power `A²` estimated from the
@@ -957,7 +956,7 @@ prompts' moments, so it does not read low at a low C/N₀ while the loop is
 locked; it only gets noisier. `NaN` until the averages span that time.
 """
 phase_lock_indicator(state::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndDLL}) =
-    state.staging.phase_lock_indicator
+    state.staging.lock_detector.indicator
 
 "The estimator-state type a Doppler estimator produces (for slot typing)."
 estimator_state_type(estimator::AbstractDopplerEstimator, driver_signal::AbstractGNSSSignal) =

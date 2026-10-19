@@ -200,32 +200,28 @@ end
 
 @testset "The fused rates are continuous across cycles and weighted as they are noisy" begin
     # Galileo E1 at 45 dB-Hz, the C/N₀ the slots report. Each member's rate measurement,
-    # against the incoming carrier its records really saw, has the noise the filter
-    # weights it with and the −1/2 lag-1 autocorrelation of measurements that share their
-    # boundary prompts; summed over the cycles, it stays at the carrier-phase noise.
-    # With the replica read at the end of each cycle, its PLL jitter made the residuals
-    # nearly five times `√R`, their autocorrelation −0.15, and the integrated error walk
-    # by decimetres.
+    # against the true Doppler at the epoch, has the noise the filter weights it with and
+    # the −1/2 lag-1 autocorrelation of measurements that share their boundary prompts;
+    # summed over the cycles, it stays at the carrier-phase noise. The replica runs on
+    # the filter's ramp alone: with the PLL's jitter in its word, the residuals were
+    # nearly five times `√R`, their autocorrelation −0.15, and the integrated error
+    # walked by decimetres.
     rx = SimReceiver(; signals = (GalileoE1B(),))
     noise_std = sqrt(1 / (2 * 10^4.5 * 1e-3))
     foreach(sat -> sat.noise_std = noise_std, rx.sats)
     T = 0.1
     residuals = [Float64[] for _ in rx.sats]
     variances = Float64[]
-    true_cycles = zeros(length(rx.sats))
     max_code_error = 0.0
     all_measured = true
     sample = 0
     for cycle = 1:400
-        fill!(true_cycles, 0.0)
         for k = 4:4:100
             sample_index = sample + k * SAMPLES_PER_MS
-            for (i, sat) in enumerate(rx.sats)
-                phase_error, carrier = sat.phase_error, sat.carrier_doppler
+            for sat in rx.sats
                 code_error = simulate_record!(sat, rx.estimator, rx.truth, sim_time(rx, sample_index),
                     4 * SAMPLES_PER_MS, sample_index, NO_LANDING_SAMPLE)
                 max_code_error = max(max_code_error, abs(code_error))
-                true_cycles[i] += sat.phase_error - phase_error + carrier * 0.004
             end
         end
         sample += 100 * SAMPLES_PER_MS
@@ -233,7 +229,9 @@ end
         cycle > 50 || continue
         for member in rx.vt.buffers.members
             all_measured &= member.available
-            push!(residuals[member.slot], member.pseudorange_rate - member.wavelength * true_cycles[member.slot] / T)
+            sat = rx.sats[member.slot]
+            push!(residuals[member.slot], member.pseudorange_rate -
+                member.wavelength * true_doppler(sat, rx.truth, sim_time(rx, sample)))
             push!(variances, TL.pseudorange_rate_noise_variance(member, T))
         end
     end
@@ -246,51 +244,6 @@ end
         @test sum(y[1:end-1] .* y[2:end]) / sum(abs2, y) ≈ -0.5 atol = 0.12
         @test maximum(abs, cumsum(r) .* T) < 0.03
     end
-end
-
-# The true carrier phase error (cycles) of every channel after each of its records from
-# cycle `skip` on, at `cn0_dbhz`, with the navigation cycles run (`vector = true`) or
-# not, which leaves every satellite in its scalar loop, narrowed to the 18 Hz PLL by
-# then.
-function carrier_phase_errors(signal; vector, cn0_dbhz = 40.0, cycles = 100, skip = 30)
-    rx = SimReceiver(; signals = (signal,))
-    noise_std = sqrt(1 / (2 * 10^(cn0_dbhz / 10) * 1e-3))
-    foreach(sat -> sat.noise_std = noise_std, rx.sats)
-    n = record_ms(signal)
-    errors = Float64[]
-    sample = 0
-    for cycle = 1:cycles
-        for k = n:n:100
-            sample_index = sample + k * SAMPLES_PER_MS
-            for sat in rx.sats
-                simulate_record!(sat, rx.estimator, rx.truth, sim_time(rx, sample_index),
-                    n * SAMPLES_PER_MS, sample_index, NO_LANDING_SAMPLE)
-                cycle > skip && push!(errors, rem(sat.phase_error, 0.5, RoundNearest))
-            end
-        end
-        sample += 100 * SAMPLES_PER_MS
-        vector && run_cycle!(rx, sample, fill_slot!)
-    end
-    @test all(sat -> sat.state.vt_on == vector, rx.sats)
-    @test all(sat -> carrier_loop_stage(sat.state) == NARROW_PLL, rx.sats)
-    errors
-end
-
-@testset "The vector FLL branch keeps the carrier phase jitter near the PLL's, on $(nameof(typeof(signal)))" for (signal, max_ratio) in (
-    (GPSL1CA(), 1.6),
-    (GalileoE1B(), 1.12),
-)
-    # The 18 Hz PLL alone, and the same PLL with the navigation filter's carrier
-    # correction in the FLL branch of its filter, on the same noisy signal. The
-    # correction is set once per 100 ms cycle and held over it. With the FLL branch tied
-    # to the PLL's bandwidth (2.9 Hz) the phase jitter was 3.2 times the PLL's on GPS
-    # L1 C/A and 1.6 times on Galileo E1, at 2–3 Hz; at its own 1 Hz it is 1.47 and
-    # 1.08 times. What remains is the correction's own noise: it is measured against
-    # the NCO word, which carries one record's PLL kick, and is largest on the
-    # 1 ms records of GPS L1 C/A.
-    scalar = 360 * std(carrier_phase_errors(signal; vector = false))
-    vector = 360 * std(carrier_phase_errors(signal; vector = true))
-    @test vector / scalar < max_ratio
 end
 
 @testset "The filter corrects the atmospheric delays" begin

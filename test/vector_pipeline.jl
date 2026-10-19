@@ -156,6 +156,44 @@ end
     @test all(sat -> sat.state.vt_on, rx.sats)
 end
 
+@testset "A fallback releases a member that missed its epoch" begin
+    # As above, but satellite 7, not faded, reaches the estimator 190 ms late from just
+    # before the epoch the filter falls back at: the others are past the next epoch by
+    # then, so the cycle runs without it — and it is not stale yet. It is released all
+    # the same, and its scalar loop tracks it until the filter seeds anew.
+    rx = PipelineReceiver(; num_sats = 8, config = VectorTracking(; insufficient_meas_timeout = 1.0s),
+        estimator_kw = (; lock_cn0_threshold = 35dBHz))
+    results, start, diverged = run_pipeline!(rx, 30.0)
+    @test !diverged && results[end].status.running
+    t_start = start / 4e6
+    fade(t, i) = t_start + 0.5 <= t <= t_start + 2.5 && i <= 6 ? 0.25 : 1.0
+    # The cycle that coasted to the timeout is the last before the fallback.
+    pause_start = Ref(Inf)
+    paused(t, i) = begin
+        if isinf(pause_start[]) && rx.vt.time_with_insufficient_meas >= 0.95s
+            pause_start[] = t + 0.05
+        end
+        i == 7 && pause_start[] <= t <= pause_start[] + 0.19
+    end
+    lagging = []
+    on_tick(sample) = push!(lagging, (; t = sample / 4e6, status = rx.vt.status,
+        in_loop = rx.vt.groups[1].slots[7].estimator_state.vt_on))
+    results, _, diverged = run_pipeline!(rx, 6.0; start_sample = start, fade, paused, on_tick)
+    @test !diverged
+    fallback = findfirst(r -> r.status.fell_back, results)
+    @test fallback !== nothing
+    # Satellite 7 too, which sat the cycle out.
+    @test all(==(VT_FALLBACK), results[fallback].reasons)
+    reseed = findfirst(r -> r.status.enabled, results)
+    @test reseed !== nothing && reseed > fallback
+    # No satellite is in the loop while the scalar solve is in control.
+    scalar = filter(l -> !l.status.running, lagging)
+    @test !isempty(scalar)
+    @test all(l -> l.status.num_members == 0 && !l.in_loop, scalar)
+    @test results[end].status.running
+    @test all(sat -> sat.state.vt_on, rx.sats)
+end
+
 @testset "From records alone, under an NCO delay" begin
     # A 20 ms navigation cycle and the NCO-referenced inner loop, the commands landing
     # 15 ms after the record that computed them: each satellite sizes its corrections
@@ -422,6 +460,30 @@ end
             a.time == b.time
         end
     end
+end
+
+@testset "A data component almost half a cycle behind its pilot keeps its phase" begin
+    # The data's records reach the estimator 45 ms after the pilot's, at 100 ms cycles,
+    # the commands landing 50 ms after their record, after the late records: up to five
+    # 10 ms pilot records later, which a slot's history of half a cycle and one record
+    # holds, all of it in use. Every data record in the loop is rotated by the phase the
+    # residual PLL estimated for its span; none falls back to the host's soft bits.
+    rx = PipelineReceiver(; pilot = true, num_sats = 6, passenger_lag_ms = 45,
+        inner = NCOReferencedPLLAndDLL(), delay_records = 50)
+    results, sample, diverged = run_pipeline!(rx, 28.0)
+    @test !diverged
+    @test findfirst(r -> r.status.enabled, results) !== nothing
+    group = rx.vt.groups[1]
+    slots = [group.slots[sat.state.slot] for sat in rx.sats]
+    @test all(slot -> length(slot.prompt_history.centers) == 6, slots)
+    dropped = Ref(0)
+    results, _, diverged = run_pipeline!(rx, 4.0; start_sample = sample, on_tick = _ ->
+        (dropped[] += count(slot -> slot.estimator_state.vt_on && !slot.symbol_from_edge, slots)))
+    @test !diverged
+    @test all(r -> r.status.running && r.status.num_members == length(rx.sats), results)
+    @test dropped[] == 0
+    @test all(slot -> slot.prompt_history.count == 6, slots)
+    @test pipeline_errors(rx, results) < 3.0
 end
 
 @testset "The soft bits decode the same whenever the host drains them" begin
