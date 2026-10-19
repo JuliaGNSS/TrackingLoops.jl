@@ -60,16 +60,41 @@ function fixture_decoders(signal::GPSL2CM)
 end
 
 # The receiver's truth: a straight line at constant velocity and a clock bias
-# drifting at a constant rate, both in metres.
+# drifting at a constant rate, both in metres — optionally with one jerk-limited
+# manoeuvre: from `maneuver_start` seconds after `t0` on, an acceleration
+# `maneuver_acceleration · sin²(π τ / maneuver_duration)` over `maneuver_duration`,
+# after which the receiver drives on at its new velocity.
 Base.@kwdef struct SimTruth
     position::SVector{3,Float64}
     velocity::SVector{3,Float64} = SVector(8.0, -5.0, 2.0)
     clock_bias::Float64 = 1500.0
     clock_drift::Float64 = 30.0
     t0::Float64 # receiver time of week at the start
+    maneuver_start::Float64 = Inf
+    maneuver_duration::Float64 = 4.0
+    maneuver_acceleration::SVector{3,Float64} = zero(SVector{3,Float64})
 end
 
-truth_position(truth::SimTruth, t) = truth.position + truth.velocity * (t - truth.t0)
+# The manoeuvre's velocity and position offsets `τ` seconds into it.
+function maneuver_offsets(truth::SimTruth, τ)
+    τ <= 0 && return zero(SVector{3,Float64}), zero(SVector{3,Float64})
+    D = truth.maneuver_duration
+    A = truth.maneuver_acceleration
+    s = min(τ, D)
+    dv = A * (s / 2 - D / (4π) * sin(2π * s / D))
+    dp = A * (s^2 / 4 + D^2 / (8π^2) * (cos(2π * s / D) - 1))
+    τ > D && (dp += dv * (τ - D))
+    dv, dp
+end
+
+function truth_position(truth::SimTruth, t)
+    _, dp = maneuver_offsets(truth, t - truth.t0 - truth.maneuver_start)
+    truth.position + truth.velocity * (t - truth.t0) + dp
+end
+function truth_velocity(truth::SimTruth, t)
+    dv, _ = maneuver_offsets(truth, t - truth.t0 - truth.maneuver_start)
+    truth.velocity + dv
+end
 truth_clock_bias(truth::SimTruth, t) = truth.clock_bias + truth.clock_drift * (t - truth.t0)
 
 # One simulated channel.
@@ -290,12 +315,14 @@ sim_words(sat::SimSat, landing_sample) =
 # time `t_end`), through the satellite's own loop alone — the per-record step of the
 # vector loop, with the navigation engine filled by hand at the epochs
 # (`fill_slot!`). Returns the code error.
-function simulate_record!(sat::SimSat, estimator, truth, t_end, num_samples, sample_index, landing_sample)
+function simulate_record!(sat::SimSat, estimator, truth, t_end, num_samples, sample_index, landing_sample;
+        polarity = 0)
     words = sim_words(sat, landing_sample)
     correlator, prompt, code_error, f_true, carrier, code =
         simulate_correlator(sat, truth, t_end, num_samples, sample_index, words)
-    record = LoopRecord(sat.signal, correlator, sat.previous_prompt, num_samples,
-        sample_index, sample_index, 1, SIM_FS)
+    # The host reads the C/N₀ `fill_slot!` reports, and no signal during an outage.
+    record = with_cn0(LoopRecord(sat.signal, correlator, sat.previous_prompt, num_samples,
+        sample_index, sample_index, 1, SIM_FS; carrier_phase_polarity = polarity), sat.in_view ? 45.0 : -Inf)
     sat.state, new_carrier, new_code =
         TrackingLoops._step_satellite(estimator, sat.state, record, words, landing_sample)
     sat.previous_prompt = prompt
@@ -318,7 +345,7 @@ function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_loc
     slot.occupied = true
     slot.decoder = epoch_state.decoder
     slot.estimator_state = sat.state
-    sat.state = TrackingLoops._reset_code_and_carrier_accumulators(sat.state)
+    sat.state = TrackingLoops._reset_discriminator_accumulators(sat.state)
     slot.code_phase = epoch_state.code_phase
     carrier, code = mean_nco_word(sim_words(sat, landing_sample), epoch_sample, epoch_sample)
     slot.carrier_doppler = carrier * Hz
@@ -357,6 +384,8 @@ struct SimReceiver{CH<:Tuple,E<:VectorPLLAndDLL}
     cycle_ms::Int
     nominal_ms::Int
     delay_ms::Int
+    # The records' carrier phase polarity: `0` (Costas), or ±1 for a dataless signal.
+    polarity::Int
 end
 
 function Base.getproperty(receiver::SimReceiver, name::Symbol)
@@ -388,6 +417,8 @@ function SimReceiver(;
     nominal_records = records_per_cycle, # the estimator's cycle time
     delay_records = 0,       # NCO delay in milliseconds
     truth_kw = (;),
+    estimator_kw = (;),
+    polarity = 0,
 )
     fixtures = map(fixture_decoders, signals)
     gps_states = last(fixture_decoders(GPSL1CA()))
@@ -398,7 +429,7 @@ function SimReceiver(;
     estimator = VectorPLLAndDLL(signals...; inner, config, approximate_year = 2021,
         cycle_time = nominal_records * 1.0ms,
         enable_ionospheric_correction = correct_atmosphere,
-        enable_tropospheric_correction = correct_atmosphere)
+        enable_tropospheric_correction = correct_atmosphere, estimator_kw...)
     nav = estimator.navigation
     channels = map(signals, fixtures, per_signal(num_sats, signals), range_biases) do signal, (decoders, _), n, range_bias
         n = min(n, length(decoders))
@@ -415,7 +446,7 @@ function SimReceiver(;
         slot.estimator_state = sat.state
         slot.decoder = sat.decoder
     end
-    SimReceiver(channels, estimator, truth, records_per_cycle, nominal_records, delay_records)
+    SimReceiver(channels, estimator, truth, records_per_cycle, nominal_records, delay_records, polarity)
 end
 
 const SAMPLES_PER_MS = 4000
@@ -482,7 +513,8 @@ function run_simulation!(
                 n = record_ms(sat.signal)
                 k % n == 0 || continue
                 code_errors[c] = simulate_record!(sat, receiver.estimator, receiver.truth,
-                    sim_time(receiver, sample_index), n * SAMPLES_PER_MS, sample_index, landing)
+                    sim_time(receiver, sample_index), n * SAMPLES_PER_MS, sample_index, landing;
+                    receiver.polarity)
             end
             # A diverged loop ends the run: the replica has left the signal.
             all(e -> abs(e) < 1, code_errors) || return results, sample, true
@@ -708,11 +740,13 @@ end
 # Run the pipeline for `duration` seconds from device sample `start_sample`, the
 # satellites interleaved millisecond by millisecond as a host steps them chunk by
 # chunk. `outage(t, i)` scripts which satellites lose their signal at receiver time `t`
-# (seconds since the start), and `fade(t, i)` their signal amplitudes. Returns the
+# (seconds since the start), `fade(t, i)` their signal amplitudes, and `paused(t, i)`
+# which reach the estimator late: their records wait for the pause to end. Returns the
 # result of every cycle the estimator ran, the sample reached, and whether a replica
 # left its signal.
 function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
-        outage = (t, i) -> false, fade = (t, i) -> 1.0, on_tick = sample -> nothing)
+        outage = (t, i) -> false, fade = (t, i) -> 1.0, paused = (t, i) -> false,
+        on_tick = sample -> nothing)
     results = []
     estimator = receiver.estimator
     sample = start_sample
@@ -729,6 +763,7 @@ function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
                 receiver.passengers[i].in_view = sat.in_view
                 receiver.passengers[i].amplitude = sat.amplitude
             end
+            paused(t, i) && continue
             error = step_satellite!(receiver, i, sample)
             error > 0 && (code_errors[i] = error)
         end

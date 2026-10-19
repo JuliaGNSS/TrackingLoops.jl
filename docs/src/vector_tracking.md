@@ -3,9 +3,9 @@
 In scalar tracking every satellite closes its own code and carrier loops from
 its own discriminators. In vector tracking a navigation filter closes them all
 at once. Each satellite's accumulated DLL and FLL discriminators become
-pseudorange and pseudorange-rate measurements. The filter fuses them into a
-position, velocity and clock state and feeds the predicted line-of-sight
-dynamics back as per-satellite NCO corrections. Weak or briefly obscured
+pseudorange and pseudorange-rate measurements. The filter fuses them into a position, velocity and clock state
+and sets every satellite's NCOs from it: the carrier to the predicted Doppler,
+the code by a correction. Weak or briefly obscured
 satellites are carried through by the common solution instead of losing lock on
 their own.
 
@@ -17,7 +17,8 @@ which biases a cycle can determine is decided per cycle, and clocks collapse
 onto a hub system's through the broadcast offset (GGTO, BGTO) when the
 measurements cannot separate them. With `use_pseudorange_rates = true` (the
 default) it measures the pseudorange rates too (VDFLL). With `false` it is a VDLL,
-and the carrier corrections come from the filter's prediction alone.
+and the Doppler it sets the carrier NCOs to comes from the code measurements
+alone.
 
 ## One estimator does it all
 
@@ -53,8 +54,9 @@ Several constellations or bands share one filter: list every ranging signal at
 construction. Each satellite runs the scalar loop `inner` —
 `ConventionalAssistedPLLAndDLL()` (the default) or `NCOReferencedPLLAndDLL()` —
 until the filter takes it over, and again once the filter lets it go. In the
-vector loop the code filter is frozen, the filter's corrections steer the
-replica, and the discriminators are accumulated for the filter.
+vector loop the code filter is frozen, the filter sets the replica, and the
+measurements are accumulated for the filter (see [The carrier in the vector
+loop](@ref vector-carrier)).
 
 ## Pilot + data pairs
 
@@ -67,8 +69,8 @@ GalileoE1B()`, GPS `GPSL5Q() => GPSL5I()`, `GPSL1C_P() => GPSL1C_D()`,
 
 - The **driver** closes the loops: its records carry the discriminators, the
   replica's code phase and the C/N₀ the measurements are weighted by.
-- The **decoding signal** feeds the decoder: its records carry the soft bits
-  and where its bit clock stands. For a plain signal these are the driver's own
+- The **decoding signal** feeds the decoder: its records carry its prompts and
+  where its bit clock stands. For a plain signal these are the driver's own
   records.
 
 At an epoch the transmit time is the data symbols the decoding signal has
@@ -135,21 +137,23 @@ every satellite starts on its scalar loop:
    and clock biases, with the covariance the fix's geometry gives them, so a fix
    of poor geometry (a high DOP) starts the filter as uncertain as it is. The
    fix's satellites join the vector loop, and take their first corrections,
-   computed at the seeded state, on their next record. In the loop a satellite
-   runs its carrier loop at the narrow PLL bandwidth, whatever
-   [Carrier-loop staging](@ref) stage its scalar loop had reached.
+   computed at the seeded state, on their next record. In the loop the filter
+   sets a satellite's carrier NCO and its residual PLL follows the carrier,
+   whatever [Carrier-loop staging](@ref) stage its scalar loop had reached.
 3. While it runs, a satellite is admitted once it is decoded, healthy, in lock
-   and a degree above the horizon. A member out of lock stays in the loop,
-   unmeasured, and is predicted through the outage. A member that misses an
-   epoch sits that cycle out.
+   and a degree above the horizon. A member out of lock — its C/N₀ or its bit
+   sync — stays in the loop, unmeasured, and is predicted through the outage. A member that misses an epoch sits that cycle
+   out.
 4. A member is released when it is no longer eligible ([`VT_INELIGIBLE`](@ref
    VTReleaseReason)) — which includes a satellite without a record for two
    cycles, whose slot is freed — or drops below the horizon
    ([`VT_BELOW_HORIZON`](@ref VTReleaseReason)). Its scalar loop is re-seeded
-   from the replica at its landing and its carrier-loop staging restarts, so
-   it pulls in afresh, FLL-assisted at the wide bandwidth.
+   at the vector loop's estimate of the Doppler and its rate (see
+   [The carrier in the vector loop](@ref vector-carrier)) and its carrier-loop staging restarts, so it pulls in afresh, FLL-assisted at the
+   wide bandwidth.
 5. After `insufficient_meas_timeout` of unsolvable cycles, or with no member
-   left, every member is released ([`VT_FALLBACK`](@ref VTReleaseReason)) and
+   left, every satellite in the loop is released, a member that missed the
+   cycle's epoch too ([`VT_FALLBACK`](@ref VTReleaseReason)), and
    the next cycle solves the scalar PVT again, until a fresh fix seeds the filter
    anew.
 
@@ -172,30 +176,89 @@ re-registration — sits that epoch's cycle out, and the next pending epoch is
 the first no satellite is past, so it snapshots that one. A host never has to
 hold a record back or order its channels: each record is stepped as it arrives.
 
-## [The FLL branch's bandwidth](@id vector-fll-bandwidth)
+## [The carrier in the vector loop](@id vector-carrier)
 
-In the vector loop ([`VectorPLLAndDLL`](@ref)) the FLL path of a satellite's
-carrier filter is fed the navigation filter's carrier correction instead of
-the FLL discriminator. The correction is set once per navigation cycle and
-held over the cycle, so the loop it closes is sampled at the cycle time `T`.
-It runs at its own bandwidth, `vector_fll_loop_filter_bandwidth`, 1 Hz by
-default ([`default_vector_fll_loop_filter_bandwidth`](@ref)), capped against
-the cycle ([`effective_vector_fll_loop_filter_bandwidth`](@ref)):
+The navigation filter sets a member's carrier NCO directly: no loop filter sits
+between the filter and the NCO, and no phase discriminator reaches it. So the
+FLL measures the incoming carrier against a replica nothing else moves, and a
+residual PLL per satellite follows the carrier on the prompts the NCO leaves,
+for the data.
 
-```julia
-BL_vector_fll = min(BL_vector_fll_configured, 0.1 / T)
-```
+- **The filter sets the carrier NCO.** Each record is commanded the filter's
+  predicted Doppler at the middle of the record its command lands on, a ramp
+  evaluated from the latest cycle's state at the landing and one cycle later
+  (the velocity, the acceleration where the motion model has one, the clock
+  drift and the satellite's own motion). The code is commanded from that
+  Doppler, carrier-aided, plus the filter's code correction.
+- **A residual PLL follows the carrier.** Per satellite, a third-order loop in
+  software estimates the residual phase, Doppler and Doppler rate against the
+  filter's ramp from the prompts and the words the NCO ran, Costas or
+  four-quadrant by the record's `carrier_phase_polarity`. It never steers the
+  NCO: what the NCO is commanded does not change what the residual PLL estimates. A
+  new ramp does not move its estimate of the incoming Doppler. Its only output
+  is the phase the decoded prompts are rotated by, and its lock.
+- **The rate measurement** is the replica's Doppler at the epoch plus the mean
+  FLL discriminator over the cycle, as before vector tracking set the carrier:
+  the replica follows the filter's ramp, so its rise to the epoch matches the
+  incoming carrier's, and no loop's jitter is in its word. The FLL compares
+  consecutive prompts, so it needs no phase lock, and the measurements
+  telescope across cycles (lag-1 correlation −½ without an NCO delay, an
+  integrated error bounded by the boundary prompts' noise).
+- **The engine decodes the prompts it rotated.** The prompts turn at the
+  filter's Doppler error, so the engine rotates each of the decoding signal's
+  prompts onto the incoming carrier by the residual PLL's phase (and by a data
+  component's carrier-phase offset from its pilot), sums them over each data
+  symbol the host's bit clock counts and decodes the sum's real part. For a
+  plain signal the rotation is the residual PLL's prediction for the record, which
+  that prompt did not correct; a data component's records, which a host folds
+  after its pilot's, take the phase the residual PLL estimated at the pilot's record
+  of the same span. The host's bit buffer still keeps the bit clock, which
+  counts blocks once synced; its own soft bits are not decoded while the
+  satellite is a member. So the host's prompts need no rotation. Its C/N₀
+  estimator should read power only, as the default noise-referenced one and
+  the moment-based one do: a coherent one ([`NWPRCN0Estimator`](@ref)) reads the
+  turning prompts as a small loss.
+- **Lock.** A member is measured while the host's C/N₀ clears
+  `lock_cn0_threshold` and its decoding signal holds the bit sync, as for any
+  satellite. The residual PLL reads its own phase lock, `⟨I² − Q²⟩ / A²` on the
+  prompts it rotated over 0.1 s (at least 0.5) with the C/N₀ the same moments
+  read (no more than 6 dB below `lock_cn0_threshold`), which
+  [`phase_lock_indicator`](@ref) reports. While the host's C/N₀ is below
+  `lock_cn0_threshold` — no signal — it holds its residual at the filter's
+  Doppler, so it does not integrate a fade's noise into tens of hertz and
+  pulls in again from the filter's prediction once the signal is back. (The
+  moments of the residual PLL's own prompts read up to the threshold on bare noise,
+  so they do not decide that.) With the signal there, out of phase lock or
+  not, its loop runs on and pulls in on the signal by itself.
+- **Hand-over.** A satellite is added at its scalar loop's word, which its residual PLL
+  starts from, and is released into its scalar loop at the residual PLL's estimate
+  of the incoming Doppler and its rate, the ramp's plus the residual PLL's, which
+  the third-order carrier filter starts from; out of lock, at the Doppler and
+  the rate the filter last commanded. Its staging restarts.
 
-That sampled loop diverges at `BL · T ≈ 0.75`. At `0.1` its noise bandwidth runs
-18 % over the configured one, 43 % at `0.2`. At the default 100 ms cycle the
-correction updates at 10 Hz, and 1 Hz keeps the FLL path well below that
-rate's 5 Hz Nyquist frequency and well below the 18 Hz PLL. On a
-`1/T`-sampled correction a wider FLL path would raise the replica's phase
-noise at a few hertz. Up to 5.0.2 the FLL path was tied to the PLL
-(`ω₀ / 4`, 2.9 Hz at 18 Hz), which lifted the carrier phase jitter at 2–3 Hz,
-to 1.6 times the PLL's alone on Galileo E1 in simulation; at 1 Hz it is
-1.08 times. The FLL-assist bandwidth is a pull-in setting and is not used in
-the vector loop.
+The residual PLL's bandwidth is [`VectorPLLAndDLL`](@ref)'s
+`residual_pll_loop_filter_bandwidth`, 10 Hz by default
+([`default_residual_pll_loop_filter_bandwidth`](@ref)), capped like the scalar
+PLL's against the record's integration time. Under the default
+constant-velocity motion model the ramp does not carry the user's acceleration,
+so the residual PLL follows a manoeuvre itself; at 10 Hz its thermal jitter is `√(10/18) = 0.75` times the 18 Hz PLL's.
+
+In the simulation of `test/vector_residual_pll.jl` (synthetic GPS L1 C/A and
+Galileo E1 satellites, no oscillator phase noise):
+
+| | |
+|---|---|
+| phase jitter of the residual PLL's prediction at 40 dB-Hz, vs. the 18 Hz scalar PLL | 0.77 (L1 C/A), 0.75 (E1) |
+| FLL rate residuals, Galileo E1 at 37–45 dB-Hz (Costas) and 34 dB-Hz (four-quadrant), GPS L1 C/A at 45 dB-Hz | `σ/√R` 0.92–1.08, lag-1 −0.36 to −0.62, at most 4.7σ, integrated error below 3.5 cm |
+| 0.5 g / 1 g manoeuvre at 40 dB-Hz | in lock throughout, residual Doppler up to 4.0 / 7.6 Hz, phase error up to 10° / 21° |
+
+Up to 5.1 the filter's carrier correction drove the FLL branch of each
+member's PLL instead, which kept the PLL's integrators in charge of the
+replica's frequency and lifted the prompt-phase jitter to 1.47 (L1 C/A) and
+1.08 (E1) times the scalar PLL's.
+
+Not done yet: a receiver-clock phase common to all satellites, estimated at the
+record rate (vector phase lock), and a carrier-phase output for RTK.
 
 ## Under a hardware NCO delay
 
@@ -252,8 +315,15 @@ and cycles allocate nothing, and the whole estimator compiles with
 
 - A pair ranges on the driver alone: the data component's discriminators are
   not combined with the pilot's.
-- Lock is a C/N₀ threshold over the bit-synced satellites, not a full lock
-  detector.
+- The residual PLL is capped like the scalar PLL against the record's
+  integration time: at 20 ms records its 10 Hz runs at 4.5 Hz.
+- On 1 ms records (GPS L1 C/A) the FLL's rate measurement breaks down below
+  about 40 dB-Hz, as it did with the FLL branch: a phase difference between two
+  prompts wraps at the Costas discriminator's ±90° often enough to break the
+  telescoping, and the residuals reach three times `√R`.
+- Membership follows the host's C/N₀, which lags a sudden blockage: a cycle
+  in which the signal is suddenly gone can still be measured with noise-only
+  FLL discriminators.
 - A host must report the record's `prn` and `code_phase`. HardwareLoopCore does
   not yet.
 
@@ -261,7 +331,7 @@ and cycles allocate nothing, and the whole estimator compiles with
 
 ```@autodocs
 Modules = [TrackingLoops]
-Pages = ["vector/estimator.jl", "vector/engine.jl"]
+Pages = ["vector/estimator.jl", "vector/engine.jl", "vector/residual_pll.jl"]
 Private = false
 ```
 

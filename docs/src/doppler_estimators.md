@@ -102,6 +102,10 @@ The scalar loops stage their carrier loop on phase lock
     lock for another four time constants;
   - **Narrow PLL** (`NARROW_PLL`) at the narrow bandwidth.
 
+A satellite in the vector loop reports **vector loop** (`VECTOR_LOOP`): its
+carrier NCO is the navigation filter's, and the vector loop's residual PLL
+follows the carrier (see [Vector tracking](vector_tracking.md)).
+
 The phase-lock indicator ([`phase_lock_indicator`](@ref)) is `⟨I² − Q²⟩ / A²`,
 an estimate of `cos 2φ`, from exponential averages of the driver's prompts over
 0.1 s or 25 records, whichever is longer. The signal power `A²` comes from the
@@ -116,9 +120,9 @@ satellite's release from the vector loop starts them over, so the scalar loop
 that takes over pulls in afresh. [`reset_estimator_state`](@ref) keeps them: it
 is the handoff to a new integration length, after which the re-seeded loop
 holds its lock at the stage it has reached, its bandwidths capped for the new
-length. A satellite the vector loop takes over runs at the narrow PLL there. Its
-FLL path carries the navigation filter's carrier correction at a bandwidth of
-its own, the vector FLL's 1 Hz (see [Vector FLL](@ref vector-fll-bandwidth)).
+length. While the vector loop holds a satellite the navigation filter sets its
+carrier and a residual PLL follows it (see [The carrier in the vector
+loop](@ref vector-carrier)); its scalar loop takes over again on release.
 
 A wider loop tolerates less command delay: at 50 Hz the conventional loop holds
 through three records of delay. The [`NCOReferencedPLLAndDLL`](@ref), meant for

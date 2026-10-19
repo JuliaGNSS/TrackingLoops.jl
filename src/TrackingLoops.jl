@@ -164,21 +164,20 @@ export NumAnts,
     MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT,
     MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT,
     MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT,
-    MAX_VECTOR_FLL_LOOP_BANDWIDTH_CYCLE_PRODUCT,
     default_wide_carrier_loop_filter_bandwidth,
     default_narrow_carrier_loop_filter_bandwidth,
     default_fll_assist_loop_filter_bandwidth,
-    default_vector_fll_loop_filter_bandwidth,
     default_code_loop_filter_bandwidth,
+    default_residual_pll_loop_filter_bandwidth,
     effective_carrier_loop_filter_bandwidth,
     effective_fll_assist_loop_filter_bandwidth,
-    effective_vector_fll_loop_filter_bandwidth,
     effective_code_loop_filter_bandwidth,
     LoopBandwidths,
     CarrierLoopStage,
     FLL_ASSISTED_PLL,
     WIDE_PLL,
     NARROW_PLL,
+    VECTOR_LOOP,
     carrier_loop_stage,
     phase_lock_indicator,
     aid_dopplers,
@@ -328,6 +327,7 @@ include("carrier_loop_staging.jl")
 include("record.jl")
 include("nco_timeline.jl")
 include("estimators.jl")
+include("vector/residual_pll.jl")
 include("vector/estimator.jl")
 include("vector/model.jl")
 include("vector/tracking.jl")

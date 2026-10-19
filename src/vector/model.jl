@@ -6,7 +6,7 @@
 # closes all loops at once: each satellite's accumulated DLL (and FLL)
 # discriminator outputs become pseudorange (and pseudorange-rate) measurements,
 # the filter fuses them into a position/velocity/clock state, and the predicted
-# line-of-sight dynamics are fed back as per-satellite NCO corrections — a
+# line-of-sight dynamics set every satellite's NCOs — a
 # vector delay lock loop (VDLL), or a vector delay/frequency lock loop (VDFLL)
 # when the pseudorange rates are measured too (`use_pseudorange_rates`). Weak
 # or briefly obscured satellites are carried through outages by the collective
@@ -48,8 +48,8 @@ defaults suit a vehicle carrying a consumer-grade front end.
 - `use_pseudorange_rates`: with `true` (VDFLL) the navigation filter measures
   both the pseudoranges (DLL discriminators) and the pseudorange rates (FLL
   discriminators on the carrier Doppler); with `false` (VDLL) only the
-  pseudoranges enter the filter — the carrier NCO corrections are then derived
-  purely from the filter's velocity/clock-drift prediction.
+  pseudoranges enter the filter, and the carrier Doppler it sets the NCOs to
+  comes from the code measurements alone.
 - `motion_model_order`: order of the per-axis motion model — `1` position only,
   `2` position + velocity, `3` position + velocity + acceleration.
 - `clock_model_order`: order of the receiver clock model — `1` biases only,
@@ -466,16 +466,10 @@ struct VTMember
     # keeps the own-scale `time`.
     time_gpst_count::Float64
     sat_position::SVector{3,Float64}
+    sat_velocity::SVector{3,Float64}
+    sat_clock_drift::Float64 # s/s
     code_discriminator::Float64 # accumulated DLL output, moved to the epoch (chips)
-    # The pseudorange rate is measured as a mean over the cycle (see
-    # `accumulated_carrier_doppler`), so it refers to its own instant,
-    # `rate_epoch_offset` seconds before the epoch, and the satellite is the one at
-    # that instant.
-    pseudorange_rate::Float64 # measured λ·(mean incoming Doppler) (m/s)
-    rate_epoch_offset::Float64 # s
-    rate_sat_position::SVector{3,Float64}
-    rate_sat_velocity::SVector{3,Float64}
-    rate_sat_clock_drift::Float64 # s/s
+    pseudorange_rate::Float64 # measured λ·(replica Doppler + mean FLL) at the epoch (m/s)
     cn0::Float64             # linear carrier-to-noise density (Hz)
     early_late_spacing::Float64 # chips
     coherent_integration_time::Float64 # s, per coherent correlator dump (sets DLL/FLL noise)
@@ -514,61 +508,47 @@ function accumulated_code_discriminator(state::SatVectorPLLAndDLL, T)
     isnothing(mean) ? 0.0 : -mean + code_phase_advance(state, T)
 end
 
-# The pseudorange-rate observable: the mean incoming carrier Doppler (Hz) over the last
-# filter interval, and how long before the epoch at `epoch_time` (s, on the records' grid)
-# the instant it refers to lies (s). `(0.0, 0.0)` when nothing was accumulated (see
+# The pseudorange-rate observable at the epoch (Hz): the replica's Doppler there,
+# `carrier_doppler`, plus the mean FLL discriminator over the last filter interval —
+# `fll_disc` measures f_incoming − f_replica, so it enters with its own sign. (The code
+# discriminator carries the opposite sign because `dll_disc`'s sense is reversed relative
+# to its own observable.) `0.0` when nothing was accumulated (see
 # `has_code_and_carrier_measurements`).
 #
-# The FLL discriminator measures the incoming signal against the replica that actually
-# ran, whose frequency the PLL changes on every record, so the incoming Doppler is the
-# replica's mean frequency over the very spans the FLL measured plus the FLL's mean, not
-# the replica's frequency at any one instant. Both are accumulated span by span, as
-# carrier phase (`CarrierPhaseAccumulator`): the replica's advance over each span between
-# two prompts' centres, from the words it ran on, and the FLL's rotation over it. The
-# spans of a cycle tile the time from the centre of the previous cycle's last record to
-# that of this cycle's, so the cycles' measurements, times their spans, sum to the
-# incoming carrier phase: the interior prompt phases cancel and only the boundary prompts'
-# remain, each shared by two cycles with opposite signs (see
-# `pseudorange_rate_noise_variance`). Reading the replica at the end of the cycle instead
-# — the NCO word there plus the mean FLL — adds the PLL's frequency jitter of one record,
-# `f_NCO,end − mean(f_NCO)`, which is independent from cycle to cycle: the integrated rate
-# error then walks without bound instead of staying at the carrier-phase noise.
-#
-# A mean over the cycle is the Doppler at the mean of its spans' midpoints, exactly under
-# a constant line-of-sight acceleration (the incoming phase is then quadratic), so that is
-# the measurement's epoch: about half a cycle and half a record before the navigation
-# epoch (52 ms for 4 ms records on a 100 ms cycle), from the spans actually accumulated —
-# whatever the record lengths, the cycle length or the records' alignment with the epoch.
-# The prediction is evaluated there (`predict_pseudorange_rate` with the state propagated
-# back by the offset, the satellite at its transmit time then), not at the epoch: under
-# 5 m/s² the two differ by 0.26 m/s. Under the default constant-velocity motion model
-# the propagation moves only the user position, so a sustained user acceleration is what
-# that model always leaves to its process noise; `motion_model_order = 3` carries it
-# back too.
-function accumulated_carrier_doppler(state::SatVectorPLLAndDLL, epoch_time)
-    mean = _mean_carrier_doppler(state)
-    isnothing(mean) && return 0.0, 0.0
-    doppler, time = mean
-    ustrip(Hz, doppler), epoch_time - ustrip(s, time)
+# Deliberately NOT moved to mid-cycle, unlike `accumulated_code_discriminator`. The mean
+# FLL is mean(f_in) − mean(f_replica), and the replica follows the filter's Doppler ramp,
+# so f_replica(epoch) − mean(f_replica) is the predicted Doppler's own rise over half the
+# cycle, which is the incoming carrier's to first order in the filter's error: the sum is
+# the incoming Doppler at the epoch, the instant the filter's state refers to. The ramp is
+# the filter's prediction alone, so no loop's jitter enters the replica's word; with the
+# PLL on the NCO it did, and one record's jitter, f_NCO,end − mean(f_NCO), would make the
+# integrated rate error walk. A command that lands inside the cycle (an NCO delay)
+# leaves a share of the filter's own correction in the measurement: on the simulator the
+# residuals stay at `√R` and the integrated rate error at a centimetre, but the lag-1
+# autocorrelation shortens from −1/2 (−0.3 at 20 ms of delay, −0.1 at 50 ms).
+function mean_fll_disc(state::SatVectorPLLAndDLL)
+    mean = _disc_mean(state.fll_disc_sum)
+    isnothing(mean) ? 0.0 : ustrip(Hz, mean)
 end
 
-# Whether a member accumulated both a code and a carrier measurement this cycle. The means are
-# `nothing` while their accumulator count is zero, which is what a cycle without a single
-# fully integrated correlator dump for this satellite looks like (a member admitted at the
-# very end of a cycle, or one whose samples were starved). The `accumulated_*` helpers
-# substitute a zero there, and a zero discriminator is not a missing measurement to the
-# navigation filter — it is a *confidently zero* residual carrying the full measurement
-# weight of `R`, which would pull the state towards the current NCO instead of leaving it
-# to coast. Members without an accumulation are therefore withheld from the measurement
-# set; they stay in the vector loop and keep getting NCO corrections, exactly like a member
-# out of code lock.
+# Whether a member accumulated both a code and a carrier measurement this cycle. The means
+# are `nothing` while their accumulator count is zero, which is what a cycle without a
+# single fully integrated correlator dump for this satellite looks like (a member admitted
+# at the very end of a cycle, or one whose samples were starved).
+# `accumulated_code_discriminator` and `mean_fll_disc` substitute a zero there, and a zero
+# discriminator is not a missing measurement to the navigation filter — it is a *confidently
+# zero* residual carrying the full measurement weight of `R`, which would pull the state
+# towards the current NCO instead of leaving it to coast. Members without an accumulation
+# are therefore withheld from the measurement set; they stay in the vector loop and keep
+# getting NCO corrections, exactly like a member out of code lock.
 #
-# The carrier accumulator counts only the spans with a frequency measurement — a record
-# without a previous prompt opens none — so it can be empty while the code one is not, on
-# a cycle whose only record is the first after a (re)start. Such a member is withheld
-# too: its rate row would be a guess.
+# The carrier accumulator counts only the records with a frequency measurement — a record
+# without a previous prompt has none — so it can be empty while the code one is not, on a
+# cycle whose only record is the first after a (re)start. Such a member is withheld too:
+# its rate row would be a guess.
 has_code_and_carrier_measurements(state::SatVectorPLLAndDLL) =
-    !isnothing(_mean_code_discriminator(state)) && !isnothing(_mean_carrier_doppler(state))
+    !isnothing(_mean_code_discriminator(state)) &&
+    !isnothing(_disc_mean(state.fll_disc_sum))
 
 # Linear carrier-to-noise density (Hz) floored to 1, from a CN0 estimate in
 # dB-Hz. The floor keeps a starved estimator from producing a degenerate
@@ -673,41 +653,29 @@ function dense_bias_columns(members, primary_clock_index::Int, num_clocks, num_i
     )
 end
 
-# Position, velocity and common clock drift of the state `x` moved on kinematically by
-# `τ` seconds, as `propagate_state!` moves them, without writing a state vector.
-@inline function nav_filter_states_at(x, idxs::NavFilterIndices, τ)
-    user_pos, user_vel, user_clock_drift = nav_filter_states(x, idxs)
-    acc = idxs.acc
-    isempty(acc) && return user_pos + user_vel * τ, user_vel, user_clock_drift
-    user_acc = SVector{3,Float64}(x[acc[1]], x[acc[2]], x[acc[3]])
-    user_pos + user_vel * τ + user_acc * (τ^2 / 2), user_vel + user_acc * τ, user_clock_drift
-end
-
-# The pseudorange rate the state `x` at the epoch predicts for `member`'s measurement:
-# at the instant that refers to, `rate_epoch_offset` before the epoch (see
-# `accumulated_carrier_doppler`), with the satellite there.
+# The pseudorange rate the state `x` at the epoch predicts for `member`, with the
+# satellite at its transmit time then.
 #
 # The rate is the time derivative of the pseudorange `calc_ρ_hat!` models, Earth rotation
 # over the travel time included: PositionVelocityTime's `calc_pseudorange_rate`, the model
 # its velocity solve fits. That runs receding-positive; the prediction is its negative,
 # the sign of the measured `λ · carrier_doppler` — positive while the satellite closes in.
 @inline function predict_pseudorange_rate(x, idxs::NavFilterIndices, member::VTMember)
-    user_pos, user_vel, user_clock_drift =
-        nav_filter_states_at(x, idxs, -member.rate_epoch_offset)
+    user_pos, user_vel, user_clock_drift = nav_filter_states(x, idxs)
     -calc_pseudorange_rate(
         user_pos,
         user_vel,
         user_clock_drift,
-        member.rate_sat_position,
-        member.rate_sat_velocity,
-        member.rate_sat_clock_drift,
+        member.sat_position,
+        member.sat_velocity,
+        member.sat_clock_drift,
     )
 end
 
 # The measurement model `h!(y, x)` of one update, over the candidates' buffers: their
 # pseudoranges (`calc_ρ_hat!`), then their pseudorange rates when fused — the members at
-# `candidates`, each at its own instant — then one row per hub constraint, the broadcast
-# offset between two clock states. A callable struct rather than a closure, so the update
+# `candidates` — then one row per hub constraint, the broadcast offset between two clock
+# states. A callable struct rather than a closure, so the update
 # compiles to one concrete method and allocates nothing.
 struct VTMeasurementModel
     idxs::NavFilterIndices
@@ -739,11 +707,10 @@ function (model::VTMeasurementModel)(y, x)
 end
 
 # The rate rows are the derived single-cycle variance, deliberately carrying no inflation
-# factor. Consecutive cycles are not independent: the accumulated spans chain across
-# cycles (`accumulated_carrier_doppler`) while the accumulators are reset every cycle, so
-# cycle `i` measures the incoming phase from `θ_0` to `θ_N` and cycle `i+1` from `θ_N` to
-# `θ_2N`, and the replica's own advance is known exactly. They share the boundary prompt
-# phase estimate with opposite signs, giving
+# factor. Consecutive cycles are not independent: the FLL's `previous_prompt` chains
+# across cycles while the accumulators are reset every cycle, so cycle `i` measures
+# `(θ_N − θ_0)/(2π·T)` and cycle `i+1` measures `(θ_2N − θ_N)/(2π·T)`. They share the
+# boundary phase estimate with opposite signs, giving
 #     cov = −σ_φ²/(2π·T)²,   var = 2·σ_φ²/(2π·T)²   ⇒   ρ(lag 1) = −1/2,
 # which a Kalman update cannot represent. Two consequences, neither of them a reason to inflate
 # `R`:
@@ -757,12 +724,12 @@ end
 #  - The rate residuals carry a ≈ −0.5 lag-1 autocorrelation *by construction*. That is the
 #    telescoping, not a tracking fault, and it must not be tuned against. A lag-1
 #    autocorrelation well short of it, with residuals well above `√R`, is the signature of a
-#    replica term that does not telescope (see `accumulated_carrier_doppler`).
+#    replica term that does not telescope (see `mean_fll_disc`).
 #
 # Note also that the derived variance is not conservative by accident: treating all `N`
 # per-dump discriminators as independent would give `N` times this value, and it is exactly the
 # −1/2 adjacency correlation making the interior phases telescope away that earns the tighter
-# figure. It is the right variance for the estimator the mean incoming Doppler actually is.
+# figure. It is the right variance for the estimator the mean FLL discriminator actually is.
 
 # Measurement-noise variances: CN0-driven DLL thermal-noise variance for the pseudoranges,
 # and the pseudorange-rate variance for the ATAN frequency-lock discriminator
@@ -806,11 +773,10 @@ end
 # Rate. A coherent dump of length `T_coh` estimates carrier phase with the ATAN
 # discriminator jitter
 #     σ_φ² = 1/(2·C/N0·T_coh)·(1 + 1/(2·C/N0·T_coh))   [rad²].
-# The filter's rate measurement is the incoming carrier phase over the cycle divided by
-# its length: the replica's advance, known exactly, plus the `N` per-dump FLL rotations
-# against it. Each rotation is a phase difference between two dumps, `θ_k − θ_{k-1}`, so
-# their sum reduces to `θ_N − θ_0`: the interior phases cancel, leaving only the two
-# endpoint phase estimates, giving
+# The filter's rate measurement is the mean of the `N` per-dump discriminators. Each dump
+# is a frequency — a phase difference over one `T_coh`, `(θ_k − θ_{k-1})/(2π·T_coh)` — so
+# the mean reduces to `(θ_N − θ_0)/(2π·T)`: the interior phases cancel, leaving only the
+# two endpoint phase estimates, giving
 #     var(mean) = 2·σ_φ² / (2π·T)²   [Hz²],
 # and the pseudorange-rate variance is λ² times that.
 function pseudorange_rate_noise_variance(member::VTMember, T)
@@ -1092,14 +1058,14 @@ end
 # The NCO corrections for one member: the prediction residual — the difference between
 # the pseudorange (rate) the filter predicts for the satellite and the one its replica
 # realises — converted into the code / carrier frequency offsets that remove it over the
-# next interval `T`. The carrier corrections feed the FLL branch of each satellite's
-# carrier loop.
+# next interval `T`. Against a replica word of zero the carrier correction is the
+# predicted Doppler itself, which is what the carrier NCO is set to
+# (`_commands_at_landing`).
 #
-# The carrier correction is formed against the replica's own word where it lands, not
-# against the measured pseudorange rate: it sets the word the replica runs on next, so the
-# rate it removes is the one between that word and the prediction there. The measured rate
-# is a mean over the past cycle and refers to an instant before the epoch; it reaches the
-# NCO only through the state the update made of it.
+# The carrier correction is formed at the prediction where it lands, not from the
+# measured pseudorange rate: the measured rate is a mean over the past cycle and refers to
+# an instant before the epoch; it reaches the NCO only through the state the update made
+# of it.
 #
 # The predictions must be evaluated at the *updated* state, which alone makes them the
 # complete correction. Adding the measurement update's state correction projected onto
@@ -1109,8 +1075,8 @@ end
 nco_code_correction(predicted_pseudorange, measured_pseudorange, code_frequency, T) =
     -(predicted_pseudorange - measured_pseudorange) * code_frequency / (T * SPEED_OF_LIGHT)
 
-nco_carrier_correction(predicted_pseudorange_rate, measured_pseudorange_rate, wavelength) =
-    (predicted_pseudorange_rate - measured_pseudorange_rate) / wavelength
+# The carrier Doppler (Hz) of a predicted pseudorange rate (m/s, Doppler-signed).
+predicted_carrier_doppler(predicted_pseudorange_rate, wavelength) = predicted_pseudorange_rate / wavelength
 
 # Post-fit residuals of one member: evaluated from the predictions at the *updated* state,
 # so these are post-fit residuals and not the pre-fit innovations. `(pseudorange residual

@@ -111,6 +111,14 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     # The fold the decoding signal's bit sync was found in: its later records were
     # correlated before the sync.
     sync_fold_end::Int
+    # The data symbol in the making while the filter steers the carrier: the decoding
+    # signal's prompts rotated onto the incoming carrier by the residual PLL, whether
+    # they cover the symbol from its edge on, and the soft bit it ends in.
+    symbol_accumulator::ComplexF64
+    symbol_from_edge::Bool
+    const soft_bit::Vector{Float32}
+    # The residual PLL's latest prompts, for a pair's decoding signal (`PromptHistory`).
+    const prompt_history::PromptHistory
     # The first epoch the slot can snapshot; the epochs its driver's and its decoding
     # signal's halves of a snapshot were taken at, and the epoch of its latest complete
     # snapshot.
@@ -143,14 +151,18 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     pvt_ready::Bool
     # What the latest cycle decided, for the satellite to take up.
     release_reason::VTReleaseReason
-    restart_cycle::Int
     correction_cycle::Int
     member_index::Int
     # What `satellite_report` hands out, refreshed in place.
     const report::SatelliteReport{D}
 end
 
-function VTSlot(decoding_signal::AbstractGNSSSignal, prn::Integer, state::SatVectorPLLAndDLL)
+function VTSlot(
+    decoding_signal::AbstractGNSSSignal,
+    prn::Integer,
+    state::SatVectorPLLAndDLL,
+    prompt_history_length::Int,
+)
     decoder = GNSSDecoderState(decoding_signal, prn)
     VTSlot(
         Int(prn),
@@ -170,6 +182,10 @@ function VTSlot(decoding_signal::AbstractGNSSSignal, prn::Integer, state::SatVec
         0,
         NaN,
         typemin(Int),
+        zero(ComplexF64),
+        false,
+        zeros(Float32, 1),
+        PromptHistory(prompt_history_length),
         typemax(Int),
         typemin(Int),
         typemin(Int),
@@ -191,25 +207,33 @@ function VTSlot(decoding_signal::AbstractGNSSSignal, prn::Integer, state::SatVec
         false,
         VT_NOT_RELEASED,
         -1,
-        -1,
         0,
         SatelliteReport(decoder),
     )
 end
 
 # The slots of one ranging signal: the driver the satellites range on, the signal
-# whose navigation data they decode (the driver itself for a plain signal), and a
-# fresh satellite state to fill a new slot with.
+# whose navigation data they decode (the driver itself for a plain signal), a fresh
+# satellite state to fill a new slot with, and how many prompts a slot's history holds
+# (`_prompt_history_length`).
 struct VTSlotGroup{S<:AbstractGNSSSignal,DS<:AbstractGNSSSignal,V<:VTSlot,E<:SatVectorPLLAndDLL}
     signal::S
     decoding_signal::DS
     slots::Vector{V}
     prototype::E
+    prompt_history_length::Int
 end
 
-function VTSlotGroup(signal::AbstractGNSSSignal, decoding_signal::AbstractGNSSSignal, prototype::SatVectorPLLAndDLL, capacity)
-    slots = [VTSlot(decoding_signal, 1, prototype) for _ = 1:capacity]
-    VTSlotGroup(signal, decoding_signal, sizehint!(slots, 2 * capacity), prototype)
+function VTSlotGroup(
+    signal::AbstractGNSSSignal,
+    decoding_signal::AbstractGNSSSignal,
+    prototype::SatVectorPLLAndDLL,
+    capacity,
+    cycle_time,
+)
+    prompt_history_length = _prompt_history_length(signal, decoding_signal, cycle_time)
+    slots = [VTSlot(decoding_signal, 1, prototype, prompt_history_length) for _ = 1:capacity]
+    VTSlotGroup(signal, decoding_signal, sizehint!(slots, 2 * capacity), prototype, prompt_history_length)
 end
 
 """
@@ -417,7 +441,7 @@ function VectorNavigation(
     n = num_nav_states(filter_config, layout)
     groups = map(pairs) do (signal, decoding_signal)
         prototype = SatVectorPLLAndDLL(init_estimator_state(inner, signal, 0.0Hz, 0.0Hz), false)
-        VTSlotGroup(signal, decoding_signal, prototype, max_satellites_per_signal)
+        VTSlotGroup(signal, decoding_signal, prototype, max_satellites_per_signal, cycle_time)
     end
     max_members = max_satellites_per_signal * length(signals)
     states = map(_satellite_state_buffer, groups)
@@ -714,18 +738,11 @@ function _collect_members!(j, group, g, buffer, vt, T)
     wavelength = SPEED_OF_LIGHT / ustrip(Hz, get_center_frequency(signal))
     clock_bias_index = layout.clock_bias_index_by_group[g]
     ifb_index = layout.ifb_index_by_group[g]
-    epoch_time = _epoch_time(vt, vt.pending_epoch)
     for (slot, sat) in enumerate(group.slots)
         _is_member(sat) || continue
         state = sat.estimator_state
         j += 1
         row = buffers.rows[j]
-        doppler, rate_epoch_offset = accumulated_carrier_doppler(state, epoch_time)
-        # The satellite at the transmit time of the rate's instant: the receive time is
-        # `rate_epoch_offset` earlier, and the transmit time with it, to within the
-        # range rate's 10⁻⁵ of that.
-        rate_time = row.time - rate_epoch_offset
-        rate_orbit = calc_satellite_position_and_velocity(sat.decoder, rate_time)
         push!(
             buffers.members,
             VTMember(
@@ -741,12 +758,11 @@ function _collect_members!(j, group, g, buffer, vt, T)
                 row.time,
                 row.time - row.count_offset_to_gpst,
                 row.position,
+                row.velocity,
+                row.clock_drift,
                 accumulated_code_discriminator(state, T),
-                wavelength * doppler,
-                rate_epoch_offset,
-                get_sat_position(rate_orbit),
-                get_sat_velocity(rate_orbit),
-                calc_satellite_clock_drift(sat.decoder, rate_time),
+                wavelength *
+                (ustrip(Hz, sat.carrier_doppler) + mean_fll_disc(state)),
                 linear_cn0_floor(sat.cn0_dbhz),
                 sat.early_late_spacing,
                 ustrip(s, sat.coherent_integration_time),
@@ -923,7 +939,7 @@ end
 
 # Leave every active member its share of this cycle's corrections: the satellite
 # evaluates them where its own command lands, on its next record
-# (`_correction_at_landing`), against this cycle's posterior and member buffers.
+# (`_commands_at_landing`), against this cycle's posterior and member buffers.
 function _close_loops!(acc, group, g, buffer, vt)
     buffers = vt.buffers
     for (j, member) in enumerate(buffers.members)
@@ -935,35 +951,33 @@ function _close_loops!(acc, group, g, buffer, vt)
     acc
 end
 
-# The NCO corrections of member `j` (of slot `sat`), evaluated where its command lands:
-# `τ` after the epoch, at the state `vt.x` propagated by `τ` and against the range the
-# replica will realise there — the transmit time from the code phase at landing (the
-# epoch's corrected transmit time moved on by the `chips` the replica advances from the
-# epoch to the landing; the satellite clock correction changes by picoseconds in `τ`),
-# the satellite at that time, the receive time `reference_tow + τ`, the epoch's
-# atmospheric delay (it moves by millimetres in `τ`). The code correction removes the
-# range error (the TOW-based, atmosphere-corrected range, no discriminator term), the
-# carrier correction the rate error against the replica's own Doppler at landing,
-# `carrier_doppler` (Hz; no FLL term). Returns both in Hz.
-function _member_corrections(vt::VectorNavigation, sat::VTSlot, j, τ, chips, carrier_doppler)
+# The NCO commands of member `j` (of slot `sat`), `τ` after the epoch: where its command
+# lands, and one cycle later for the carrier ramp's end. Evaluated at the state `vt.x`
+# propagated by `τ` and against the range the replica will realise there — the transmit
+# time from the code phase there (the epoch's corrected transmit time moved on by the
+# `chips` the replica advances from the epoch; the satellite clock correction changes
+# by picoseconds in `τ`), the satellite at that time, the receive time
+# `reference_tow + τ`, the epoch's atmospheric delay (it moves by millimetres in `τ`).
+# The code correction removes the range error (the TOW-based, atmosphere-corrected
+# range, no discriminator term); the carrier is the predicted Doppler itself. Returns
+# both in Hz.
+function _member_commands(vt::VectorNavigation, sat::VTSlot, j, τ, chips)
     member = vt.buffers.members[j]
     predicted_pseudorange, predicted_rate, measured_pseudorange =
-        _predict_at_landing(vt, sat, member, j, ustrip(s, vt.reference_time), τ, chips)
-    replica_rate = member.wavelength * carrier_doppler
+        _predict_after_epoch(vt, sat, member, j, ustrip(s, vt.reference_time), τ, chips)
     code_update = nco_code_correction(
         predicted_pseudorange,
         measured_pseudorange,
         member.code_frequency,
         vt.cycle_integration_time,
     )
-    carrier_update = nco_carrier_correction(predicted_rate, replica_rate, member.wavelength)
-    code_update, carrier_update
+    code_update, predicted_carrier_doppler(predicted_rate, member.wavelength)
 end
 
-# The predicted pseudorange and rate of member `j` where its command lands, `τ` after
-# the epoch and `chips` on from the epoch's code phase, at the state propagated there,
-# and the pseudorange its replica realises there.
-function _predict_at_landing(vt::VectorNavigation, sat::VTSlot, member::VTMember, j, reference_tow, τ, chips)
+# The predicted pseudorange and rate of member `j` `τ` after the epoch and `chips` on
+# from the epoch's code phase, at the state propagated there, and the pseudorange its
+# replica realises there.
+function _predict_after_epoch(vt::VectorNavigation, sat::VTSlot, member::VTMember, j, reference_tow, τ, chips)
     buffers = vt.buffers
     idxs = vt.model.idxs
     landing_time = member.time + chips / member.code_frequency
@@ -1000,13 +1014,25 @@ function _predict_at_landing(vt::VectorNavigation, sat::VTSlot, member::VTMember
     predicted_pseudorange, predicted_rate, measured_pseudorange
 end
 
-# Release the members of this group whose `active` flag equals `which`, for `reason`.
+# Release the members of this group that dropped below the horizon (`active` false).
 # Returns whether any was released.
-function _release_members!(released, group, g, buffer, vt, which::Bool, reason::VTReleaseReason)
+function _release_below_horizon!(released, group, g, buffer, vt)
     buffers = vt.buffers
     for (j, member) in enumerate(buffers.members)
-        member.group == g && buffers.active[j] == which || continue
-        _release!(group.slots[member.slot], reason)
+        member.group == g && !buffers.active[j] || continue
+        _release!(group.slots[member.slot], VT_BELOW_HORIZON)
+        released = true
+    end
+    released
+end
+
+# Release every satellite of this group still in the loop, for `reason`: the members,
+# and those that sat the cycle out, having missed its epoch. Returns whether any was
+# released.
+function _release_all!(released, group, g, buffer, reason::VTReleaseReason)
+    for sat in group.slots
+        sat.estimator_state.vt_on || continue
+        _release!(sat, reason)
         released = true
     end
     released
@@ -1031,25 +1057,6 @@ function _enable_fix_satellites!(num_enabled, group, g, buffer, vt)
         num_enabled += 1
     end
     num_enabled
-end
-
-# Satellites still in the loop when a fix seeds it — kept by a host across a fallback
-# — carry the old filter's accumulators and corrections. The ineligible ones would have
-# no measurement row and are released, as a running cycle releases them; the others
-# start over in the loop, like a satellite joining. Returns whether any was released.
-function _restart_stale_members!(released, group, g, buffer, vt)
-    for sat in group.slots
-        _is_member(sat) || continue
-        state = sat.estimator_state
-        if _is_eligible(sat)
-            sat.estimator_state = _enable_vector_tracking(_disable_vector_tracking(state))
-            sat.restart_cycle = vt.cycle_id
-        else
-            _release!(sat, VT_INELIGIBLE)
-            released = true
-        end
-    end
-    released
 end
 
 # Scale the seeded covariance by the geometry of the fix (`seed_fix_covariance!`): the
@@ -1104,7 +1111,8 @@ end
 # the loops a first time so the NCOs already steer toward the navigation solution — with
 # no measurement update and no accumulator reset. A fresh fix always has satellites, and
 # every one of them is an active slot (only those enter the scalar solve), so there is
-# always a member to seed from. Returns whether a stale member was released.
+# always a member to seed from. No satellite is in the loop then: registration puts a
+# satellite out of it, and the fallback releases every satellite in it.
 function _seed!(vt::VectorNavigation, groups, cycle_time)
     buffers = vt.buffers
     model = vt.model
@@ -1112,7 +1120,6 @@ function _seed!(vt::VectorNavigation, groups, cycle_time)
     T = ustrip(s, model.integration_time)
     pvt = vt.pvt
     vt.primary_clock_index = initial_nav_state!(vt.x, vt.P, vt.layout, model.idxs, pvt)
-    released = _fold_groups(_restart_stale_members!, false, groups, buffers.states, 1, vt)
     _fold_groups(_enable_fix_satellites!, 0, groups, buffers.states, 1, vt)
     ionospheric_correction = _gather_members!(vt, groups, T)
     _seed_fix_covariance!(vt)
@@ -1139,7 +1146,7 @@ function _seed!(vt::VectorNavigation, groups, cycle_time)
     # earlier run would be a week stale if the scalar solve was in control across a
     # week rollover, which no running cycle saw.
     vt.time_epoch_offset = _primary_time_epoch_offset(vt, eachindex(members))
-    released
+    nothing
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1226,32 +1233,14 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
         active[j] = get_sat_enu(enu_from_ecef, _ecef(member.sat_position)).ϕ >= 0
         active[j] && (num_active += 1)
     end
-    released = _fold_groups(
-        _release_members!,
-        released,
-        groups,
-        buffers.states,
-        1,
-        vt,
-        false,
-        VT_BELOW_HORIZON,
-    )
+    released = _fold_groups(_release_below_horizon!, released, groups, buffers.states, 1, vt)
 
     # Fall back to scalar tracking when the filter has coasted too long or no members
     # remain; otherwise close every member's loops with fresh corrections toward the
     # updated solution.
     fell_back = time_with_insufficient_meas > config.insufficient_meas_timeout || num_active == 0
     if fell_back
-        released = _fold_groups(
-            _release_members!,
-            released,
-            groups,
-            buffers.states,
-            1,
-            vt,
-            true,
-            VT_FALLBACK,
-        )
+        released = _fold_groups(_release_all!, released, groups, buffers.states, 1, VT_FALLBACK)
         vt.running = false
     else
         vt.cycle_integration_time = T

@@ -130,9 +130,9 @@ end
         @test slot.member_index == j
         measured = TL.pseudorange_from_tows(ustrip(s, vt.reference_time), member.time_gpst_count) -
                    buffers.delays[j]
-        # The carrier correction is the rate predicted where it lands — at the epoch,
-        # with the satellite there — against the replica's own word there; the
-        # measured rate, a mean over the past cycle, does not enter it.
+        # The carrier NCO is commanded the Doppler of the rate predicted where the
+        # command lands — at the epoch, with the satellite there; the measured rate, a
+        # mean over the past cycle, does not enter it.
         orbit = calc_satellite_position_and_velocity(slot.decoder, member.time)
         rate_at_epoch = -TL.calc_pseudorange_rate(user_pos, user_vel, user_drift,
             member.sat_position, orbit.velocity, calc_satellite_clock_drift(slot.decoder, member.time))
@@ -143,9 +143,9 @@ end
         # the range from the orbit evaluated there is the epoch's.
         @test sat.state.code_freq_update ≈
               TL.nco_code_correction(predicted[j], measured, member.code_frequency, T) * Hz atol = 1e-6Hz
-        @test sat.state.carrier_freq_update ≈
-              TL.nco_carrier_correction(rate_at_epoch,
-                  member.wavelength * ustrip(Hz, slot.carrier_doppler), member.wavelength) * Hz atol = 1e-6Hz
+        @test sat.state.ramp.doppler ≈
+              TL.predicted_carrier_doppler(rate_at_epoch, member.wavelength) atol = 1e-6
+        @test sat.state.ramp.time ≈ TL._epoch_time(vt, vt.cycle_epoch)
         # The post-fit rate is predicted at the measurement's own instant.
         @test buffers.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.x, idxs, member) atol = 1e-9
         @test sat.state.code_update_landing_lead == 0.0s
@@ -167,18 +167,20 @@ end
     member = vt.buffers.members[j]
     words = sim_words(sat, NO_LANDING_SAMPLE)
     record = take_up_record(sat, sample)
-    at_epoch = TL._correction_at_landing(vt, rx.group, slot, record, words, Int64(sample))
+    at_epoch = TL._commands_at_landing(vt, rx.group, slot, record, words, Int64(sample))
     @test at_epoch[3] == 0.0
     @test at_epoch[1] ≈ ustrip(Hz, sat.state.code_freq_update) atol = 1e-9
+    @test at_epoch[2].doppler ≈ sat.state.ramp.doppler atol = 1e-9
     # 20 ms on, under the same words: the range has moved on with the replica, so the
-    # code correction barely changes, and the lead is the 20 ms.
-    later = TL._correction_at_landing(vt, rx.group, slot, record, words, Int64(sample + 80_000))
+    # code correction barely changes, the ramp carries on, and the lead is the 20 ms.
+    later = TL._commands_at_landing(vt, rx.group, slot, record, words, Int64(sample + 80_000))
     @test later[3] ≈ 0.02
     @test later[1] ≈ at_epoch[1] atol = 0.05
+    @test later[2].doppler ≈ TL._doppler_at(at_epoch[2], later[2].time) atol = 1e-3
     # It must land within 2.5 cycles of the epoch.
-    @test_throws ArgumentError TL._correction_at_landing(vt, rx.group, slot, record, words,
+    @test_throws ArgumentError TL._commands_at_landing(vt, rx.group, slot, record, words,
         Int64(sample + 1_100_000))
-    @test_throws ArgumentError TL._correction_at_landing(vt, rx.group, slot, record, words,
+    @test_throws ArgumentError TL._commands_at_landing(vt, rx.group, slot, record, words,
         Int64(sample - 4000))
 end
 
@@ -243,7 +245,9 @@ end
     @test !dropped.estimator_state.vt_on
     @test !sat.state.vt_on
     @test sat.state.code_freq_update == 0.0Hz
-    @test sat.state.inner.init_carrier_doppler == sat.carrier_doppler * Hz
+    # Re-seeded at its residual PLL's estimate, a hair off the replica's word, which
+    # the filter's ramp keeps on the carrier.
+    @test sat.state.inner.init_carrier_doppler ≈ sat.carrier_doppler * Hz atol = 0.01Hz
     @test sat.state.inner.init_code_doppler == sat.code_doppler * Hz
     @test results[1].status.num_members == length(rx.sats) - 1
     @test !haskey(member_sats(rx.estimator), (:GPSL1CA, dropped.prn))
@@ -282,7 +286,8 @@ end
 
 @testset "A released satellite takes over from the replica at landing" begin
     # Under an NCO delay the words committed until the landing are the vector loop's,
-    # so the scalar loop re-seeds from the replica there, not from the epoch's.
+    # so the scalar loop re-seeds from the replica there, not from the epoch's: the
+    # code from its word, the carrier from the residual PLL's estimate on the ramp there.
     rx = SimReceiver(; inner = NCOReferencedPLLAndDLL(), records_per_cycle = 20, delay_records = 15)
     _, sample, diverged = run_simulation!(rx, 20)
     @test !diverged
@@ -293,7 +298,7 @@ end
     _, sample, _ = run_simulation!(rx, 1; fill! = drop!, start_sample = sample)
     @test dropped.release_reason == VT_INELIGIBLE
     landing_carrier, landing_code = nco_word_at(sat.timeline, sample + 15 * SAMPLES_PER_MS)
-    @test sat.state.inner.init_carrier_doppler == landing_carrier * Hz
+    @test sat.state.inner.init_carrier_doppler ≈ landing_carrier * Hz atol = 0.01Hz
     @test sat.state.inner.init_code_doppler == landing_code * Hz
     @test sat.state.inner.init_carrier_doppler != dropped.carrier_doppler
 end
@@ -346,38 +351,12 @@ end
     # The scalar solve takes over, and the cached epoch offset is a week stale, as after
     # a GPST week rollover no running cycle saw.
     rx.vt.time_epoch_offset -= TL.SECONDS_PER_WEEK
+    foreach(slot -> TL._is_member(slot) && TL._release!(slot, VT_FALLBACK), rx.group.slots)
     rx.vt.running = false
     results, _, _ = run_simulation!(rx, 2; start_sample = sample)
     @test results[1].status.enabled
     @test results[2].status.running
     @test results[2].pvt.time - before ≈ 0.2 atol = 1e-3
-end
-
-@testset "Members kept across a fallback start over at the seed" begin
-    rx = SimReceiver()
-    _, sample, _ = run_simulation!(rx, 5)
-    @test all(sat -> sat.state.vt_on, rx.sats)
-    # The scalar solve takes over while every satellite stays in the loop, one of them
-    # reacquired and not decoded yet.
-    rx.vt.running = false
-    prn = rx.sats[1].decoder.prn
-    reacquired!(v, sat, epoch, landing, nav) = begin
-        fill_slot!(v, sat, epoch, landing, nav)
-        if v.prn == prn
-            v.decoder = GNSSDecoderState(GPSL1CA(), prn)
-            v.pvt_ready = false
-        end
-    end
-    results, _, _ = run_simulation!(rx, 1; fill! = reacquired!, start_sample = sample)
-    status = results[1].status
-    @test status.enabled
-    @test status.released
-    @test rx.group.slots[1].release_reason == VT_INELIGIBLE
-    @test !rx.sats[1].state.vt_on
-    @test status.num_members == length(rx.sats) - 1
-    # The others start over in the loop, with nothing stale accumulated.
-    @test all(sat -> sat.state.vt_on && sat.state.code_discr_acc == (0, 0.0), rx.sats[2:end])
-    @test all(slot -> slot.restart_cycle == rx.vt.cycle_id, channel_slots(rx.group, rx.sats)[2:end])
 end
 
 @testset "The measurement-buffer cache grows without undefined slots" begin
