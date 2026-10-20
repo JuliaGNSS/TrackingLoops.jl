@@ -9,7 +9,7 @@ engine_record(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0 + 0.0im, si
     LoopRecord(signal, engine_correlator(p), complex(0.0), n, sample_index, sample_index, 1, 4e6Hz;
         prn, code_phase)
 
-@testset "The navigation epochs are the multiples of the cycle time" begin
+@testset "The navigation epochs are the multiples of the update interval" begin
     nav = VectorPLLAndDLL(GPSL1CA()).navigation
     @test TL._epoch_at_or_after(nav, 0.0) == 0
     @test TL._epoch_at_or_after(nav, 0.3) == 3
@@ -19,7 +19,7 @@ engine_record(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0 + 0.0im, si
     # The first epoch whose time, as the records' ends are compared with it, is not
     # before `t`: 129 × 30 ms comes out just short of 3.87 s, which 3.87 / 0.03 rounds
     # to 129.
-    nav = VectorPLLAndDLL(GPSL1CA(); cycle_time = 30ms).navigation
+    nav = VectorPLLAndDLL(GPSL1CA(); vt_update_interval = 30ms).navigation
     @test TL._epoch_time(nav, 129) < 3.87
     @test TL._epoch_at_or_after(nav, 3.87) == 130
     @test all((0:16_000_000) ./ 4e6) do t

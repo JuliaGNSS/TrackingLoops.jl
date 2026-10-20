@@ -306,14 +306,14 @@ end
 PromptHistory(length::Int) = PromptHistory(fill(NaN, length), fill(NaN, length), 0, 0)
 
 # How many prompts a slot's history holds for a group ranging on `driver` and decoding
-# `decoding`: half a navigation cycle (`cycle_time`) of the driver's shortest
+# `decoding`: half a navigation cycle (`vt_update_interval`) of the driver's shortest
 # records, one code period each — a host steps every signal at least once per half cycle,
 # so no signal's records trail another's by more — and one more for the record that
 # straddles it, counted in chips as `_phase_lock_time_constant` counts. A plain signal
 # decodes its own records and keeps none.
-function _prompt_history_length(driver::AbstractGNSSSignal, decoding::AbstractGNSSSignal, cycle_time)
+function _prompt_history_length(driver::AbstractGNSSSignal, decoding::AbstractGNSSSignal, vt_update_interval)
     typeof(driver) == typeof(decoding) && return 0
-    chips = round(Int, get_code_frequency(driver) * cycle_time / 2)
+    chips = round(Int, get_code_frequency(driver) * vt_update_interval / 2)
     cld(chips, get_code_length(driver)) + 1
 end
 

@@ -31,7 +31,7 @@ engine, which
 
 - decodes each satellite's navigation data from the soft bits its records
   carry;
-- snapshots each satellite at every navigation epoch (every `cycle_time` on the
+- snapshots each satellite at every navigation epoch (every `vt_update_interval` on the
   records' time grid): the replica's code phase from the last data-symbol edge,
   the decoder there, the Dopplers, the C/N₀ and the discriminators accumulated
   since the last epoch;

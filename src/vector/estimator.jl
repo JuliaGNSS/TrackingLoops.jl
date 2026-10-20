@@ -13,7 +13,7 @@
 
 """
     VectorPLLAndDLL(signals...; inner = ConventionalAssistedPLLAndDLL(),
-                    config = VectorTracking(), cycle_time = 100ms,
+                    config = VectorTracking(), vt_update_interval = 100ms,
                     lock_cn0_threshold = 30dBHz,
                     residual_pll_loop_filter_bandwidth = default_residual_pll_loop_filter_bandwidth(),
                     max_satellites_per_signal = 16,
@@ -33,7 +33,7 @@ It does the whole pipeline inside [`step_loop`](@ref), from what the records
 carry: every satellite stepped with this estimator shares one navigation
 engine, which decodes the navigation data, solves the scalar PVT, seeds the
 navigation filter from its first fix and from then on runs one filter cycle
-every `cycle_time`, taking satellites over and handing them back. A host needs
+every `vt_update_interval`, taking satellites over and handing them back. A host needs
 no vector-specific code: it builds a satellite's state with
 [`init_estimator_state`](@ref) for its driver and steps it with every record of
 the satellite, like any other loop's. Read the results with
@@ -60,9 +60,9 @@ another passenger is ignored — also when it is the decoding signal of a pair
 that does not drive this satellite. A satellite's snapshot of a navigation epoch
 needs a record of its driver and one of its decoding signal across the epoch,
 in either order. The host should step every satellite at least once per
-`cycle_time / 2`: a cycle runs once every satellite has completed its epoch's
+`vt_update_interval / 2`: a cycle runs once every satellite has completed its epoch's
 snapshot, and a satellite of which one signal has not stepped for
-`2 · cycle_time` is dropped.
+`2 · vt_update_interval` is dropped.
 
 Per satellite, every driver record runs `inner` — the scalar loop the
 satellite uses until the filter takes it over, and again once the filter
