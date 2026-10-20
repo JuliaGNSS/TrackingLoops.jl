@@ -468,7 +468,6 @@ function _snapshot_driver!(
         min(Float64(ustrip(estimate_cn0(record.cn0_estimator, integration_time))), MAX_CN0_DBHZ)
     slot.estimator_state = state
     slot.epoch_driver_code_phase = slot.last_code_phase + chips_to_epoch
-    slot.carrier_phase = 0.0
     slot.carrier_doppler = carrier_doppler * Hz
     slot.code_doppler = code_doppler * Hz
     slot.coherent_integration_time = slot.last_integration_time

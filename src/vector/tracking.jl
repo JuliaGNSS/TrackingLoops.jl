@@ -142,7 +142,6 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     decoder::D
     estimator_state::E
     code_phase::Float64 # chips since the last decoded data symbol
-    carrier_phase::Float64
     carrier_doppler::typeof(1.0Hz)
     code_doppler::typeof(1.0Hz)
     cn0_dbhz::Float64 # the driver's
@@ -197,7 +196,6 @@ function VTSlot(
         NaN,
         decoder,
         state,
-        0.0,
         0.0,
         0.0Hz,
         0.0Hz,
@@ -622,7 +620,7 @@ end
     system = signal,
     code_phase = slot.code_phase,
     carrier_doppler = slot.carrier_doppler,
-    carrier_phase = slot.carrier_phase,
+    carrier_phase = 0.0,
 )
 
 # The scalar PVT over the satellites marked `pvt_ready`, into the state's solution:
