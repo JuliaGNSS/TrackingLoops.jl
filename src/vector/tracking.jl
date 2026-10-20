@@ -23,10 +23,10 @@ Why the latest navigation cycle handed a satellite back to its scalar loop
   - `VT_NOT_RELEASED`: it was not;
   - `VT_INELIGIBLE`: no longer tracked (no record for two navigation cycles),
     decoded for positioning, or healthy;
-  - `VT_BELOW_HORIZON`: below the horizon at the updated position. It is not
-    admitted again until it stands `ADMISSION_ELEVATION` (1°) above the
-    horizon, so a satellite at the horizon is not admitted and released every
-    cycle;
+  - `VT_BELOW_HORIZON`: below the horizon at the solution the cycle starts
+    from, and so not measured in that cycle. It is not admitted again until it
+    stands `ADMISSION_ELEVATION` (1°) above the horizon, so a satellite at the
+    horizon is not admitted and released every cycle;
   - `VT_FALLBACK`: vector tracking stopped (starvation timeout, or no member
     left).
 
@@ -1165,7 +1165,8 @@ function _run_cycle!(nav::VectorNavigation, groups, cycle_time)
     reference_time = mod(advanced_reference_time, SECONDS_PER_WEEK * s)
     reference_tow = ustrip(s, reference_time)
 
-    # Admission is judged at the solution the filter starts the cycle from.
+    # Admission and the elevation mask are judged at the solution the filter starts the
+    # cycle from.
     enu_from_ecef = ENUfromECEF(_ecef(first(nav_filter_states(nav.x, idxs))), wgs84)
     released =
         _fold_groups_with_buffers(_update_membership!, false, groups, buffers.sat_states, 1, enu_from_ecef)
@@ -1173,15 +1174,25 @@ function _run_cycle!(nav::VectorNavigation, groups, cycle_time)
     members = buffers.members
     num_members = length(members)
 
+    # Elevation mask: a member that dropped below the horizon is released this cycle,
+    # neither measured nor commanded.
+    above_horizon = resize!(buffers.above_horizon, num_members)
+    num_above_horizon = 0
+    for (j, member) in enumerate(members)
+        above_horizon[j] = get_sat_enu(enu_from_ecef, _ecef(member.sat_position)).ϕ >= 0
+        above_horizon[j] && (num_above_horizon += 1)
+    end
+    released = _fold_groups_with_buffers(_release_below_horizon!, released, groups, buffers.sat_states, 1, nav)
+
     # Navigation filter prediction, then the measurements at the predicted state.
     time_update!(buffers.time_update, nav.x, nav.P, model.F, model.Q)
     _measure_pseudoranges!(nav, ionospheric_correction, reference_tow)
 
-    # Measurement candidates: members whose signal is currently available (the
-    # discriminators of an obscured satellite carry no information).
+    # Measurement candidates: members above the horizon whose signal is currently
+    # available (the discriminators of an obscured satellite carry no information).
     candidates = empty!(buffers.candidates)
     for (j, member) in enumerate(members)
-        member.available && push!(candidates, j)
+        member.available && above_horizon[j] && push!(candidates, j)
     end
     # What this epoch must supply to determine the state, decided below from the bias
     # layout actually in force. Until a measurement set is gathered it is the bare floor —
@@ -1212,19 +1223,6 @@ function _run_cycle!(nav::VectorNavigation, groups, cycle_time)
         is_epoch_solvable(observability, num_candidates) ?
         max(0.0s, nav.time_with_insufficient_meas - cycle_time / 2) :
         nav.time_with_insufficient_meas + cycle_time
-
-    # Elevation mask: release members that dropped below the horizon, at the updated
-    # position — before the corrections, so every remaining member gets one.
-    above_horizon = resize!(buffers.above_horizon, num_members)
-    fill!(above_horizon, true)
-    user_pos, _, _ = nav_filter_states(nav.x, idxs)
-    enu_from_ecef = ENUfromECEF(_ecef(user_pos), wgs84)
-    num_above_horizon = 0
-    for (j, member) in enumerate(members)
-        above_horizon[j] = get_sat_enu(enu_from_ecef, _ecef(member.sat_position)).ϕ >= 0
-        above_horizon[j] && (num_above_horizon += 1)
-    end
-    released = _fold_groups_with_buffers(_release_below_horizon!, released, groups, buffers.sat_states, 1, nav)
 
     # Fall back to scalar tracking when the filter has coasted too long or no members
     # remain; otherwise assign every member fresh commands toward the updated solution.
