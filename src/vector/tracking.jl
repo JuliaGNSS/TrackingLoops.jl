@@ -24,8 +24,9 @@ Why the latest navigation cycle handed a satellite back to its scalar loop
   - `VT_INELIGIBLE`: no longer tracked (no record for two navigation cycles),
     decoded for positioning, or healthy;
   - `VT_BELOW_HORIZON`: below the horizon at the updated position. It is not
-    admitted again until it stands a degree above the horizon, so a satellite
-    at the horizon is not admitted and released every cycle;
+    admitted again until it stands `ADMISSION_ELEVATION` (1°) above the
+    horizon, so a satellite at the horizon is not admitted and released every
+    cycle;
   - `VT_FALLBACK`: vector tracking stopped (starvation timeout, or no member
     left).
 

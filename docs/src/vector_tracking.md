@@ -141,7 +141,7 @@ every satellite starts on its scalar loop:
    sets a satellite's carrier NCO and its residual PLL follows the carrier,
    whatever [Carrier-loop staging](@ref) stage its scalar loop had reached.
 3. While it runs, a satellite is admitted once it is decoded, healthy, in lock
-   and a degree above the horizon. A member out of lock — its C/N₀ or its bit
+   and 1° (`ADMISSION_ELEVATION`) above the horizon. A member out of lock — its C/N₀ or its bit
    sync — stays in the loop, unmeasured, and is predicted through the outage. A member that misses an epoch sits that cycle
    out.
 4. A member is released when it is no longer eligible ([`VT_INELIGIBLE`](@ref
