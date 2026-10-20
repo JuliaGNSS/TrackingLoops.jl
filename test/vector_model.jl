@@ -779,15 +779,15 @@ end
     both = [gps(1), gps(2), e1b(3)]
 
     # Kept while its own time system still contributes a measurement — no flicker.
-    @test TL.report_primary_clock_index(layout, both, 1:3, gal_clock) == gal_clock
-    @test TL.report_primary_clock_index(layout, both, 1:3, gps_clock) == gps_clock
+    @test TL.select_primary_clock_index(layout, both, 1:3, gal_clock) == gal_clock
+    @test TL.select_primary_clock_index(layout, both, 1:3, gps_clock) == gps_clock
     # Re-picked when the current primary's system is absent (index 0 is never
     # present): GPST is preferred when GPS is in the fix.
-    @test TL.report_primary_clock_index(layout, both, 1:3, 0) == gps_clock
+    @test TL.select_primary_clock_index(layout, both, 1:3, 0) == gps_clock
     # Else the most-populated time system (GPS absent ⇒ Galileo).
-    @test TL.report_primary_clock_index(layout, [e1b(2), e1b(3)], 1:2, gps_clock) == gal_clock
+    @test TL.select_primary_clock_index(layout, [e1b(2), e1b(3)], 1:2, gps_clock) == gal_clock
     # No included measurements at all: keep whatever it was.
-    @test TL.report_primary_clock_index(layout, both, Int[], gps_clock) == gps_clock
+    @test TL.select_primary_clock_index(layout, both, Int[], gps_clock) == gps_clock
 end
 
 @testset "NCO loop-closure corrections" begin
