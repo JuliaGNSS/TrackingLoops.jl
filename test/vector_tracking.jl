@@ -331,6 +331,21 @@ end
     @test results[1].status.num_members == length(rx.sats)
 end
 
+@testset "A member below the horizon is released unmeasured" begin
+    # The filter's solution moved to the antipode: every satellite is below its horizon.
+    # The elevation mask runs before the measurement update, at the solution the cycle
+    # starts from, so they are all released without being measured, and with no member
+    # left the loop falls back.
+    rx = SimReceiver()
+    _, sample, _ = run_simulation!(rx, 5)
+    pos = rx.vt.model.idxs.pos
+    rx.vt.x[pos] .= -rx.vt.x[pos]
+    results, _, _ = run_simulation!(rx, 1; start_sample = sample)
+    @test all(==(VT_BELOW_HORIZON), results[1].reasons)
+    @test isempty(results[1].measured)
+    @test results[1].status.fell_back
+end
+
 @testset "Biases are reported only for what was measured" begin
     rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()))
     # No Galileo satellite in lock: its clock coasts and is not reported.
