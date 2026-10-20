@@ -220,11 +220,13 @@ _cycle_seconds(nav::VectorNavigation) = ustrip(s, nav.cycle_time)
 _sampling_frequency_hz(record::LoopRecord) = Float64(ustrip(Hz, record.sampling_frequency))
 _epoch_time(nav::VectorNavigation, epoch::Int) = epoch * _cycle_seconds(nav)
 
-# The first epoch at or after time `t`.
+# The first epoch at or after time `t`: the first whose `_epoch_time` is not before
+# `t`, compared exactly as `_crosses_pending_epoch` compares them — `t / T` may round
+# to either side of an epoch.
 function _epoch_at_or_after(nav::VectorNavigation, t)
     T = _cycle_seconds(nav)
     epoch = ceil(Int, t / T)
-    (epoch - 1) * T >= t ? epoch - 1 : epoch
+    (epoch - 1) * T >= t ? epoch - 1 : epoch * T < t ? epoch + 1 : epoch
 end
 
 # `f(acc, group, args...)` over the slot groups, in order, statically dispatched.
@@ -302,6 +304,11 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     if nav.pending_epoch == typemin(Int)
         nav.pending_epoch = _epoch_at_or_after(nav, slot.last_end_time)
     end
+    # A snapshot the slot held is gone with it.
+    slot.snapshot_epoch == nav.pending_epoch && (nav.num_snapshots -= 1)
+    # A record starting exactly at an epoch crosses it, so that epoch is the first: if
+    # it is not pending yet, the slot is past it by the time it is, and the cycle does
+    # not wait for it (`_all_snapshotted`).
     slot.first_epoch = _epoch_at_or_after(nav, slot.last_end_time)
     slot.driver_epoch = typemin(Int)
     slot.decoding_epoch = typemin(Int)
@@ -535,7 +542,8 @@ const MAX_CN0_DBHZ = 80.0
 
 # Whether some satellite of the group can still complete its snapshot of the pending
 # epoch at `epoch_time`: one that is tracked, not stale at `now`, due at that epoch,
-# and whose missing halves' signals are not yet past it.
+# and whose missing halves' signals are not yet past it — a record crosses the epoch
+# only from a last record end at or before it (`_crosses_pending_epoch`).
 function _can_reach_epoch(acc, group::VTSlotGroup, nav::VectorNavigation, epoch_time, now)
     acc && return true
     epoch = nav.pending_epoch
@@ -576,9 +584,19 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Running the cycle
 
-# Run the pending epoch's cycle once every satellite has completed its snapshot of it —
-# counting out those that joined after it and those without a record for two cycles,
-# which the cycle drops. Returns whether it ran.
+# Run the pending epoch's cycle once every satellite that can still complete its
+# snapshot of it has — counting out those that joined after it, those without a record
+# for two cycles, which the cycle drops, and those already past it without one. Returns
+# whether it ran.
+#
+# The scheduling invariant: every live satellite can snapshot the pending epoch, unless
+# it got past it before it was pending. Such a satellite holds no cycle up; it sits the
+# pending epoch's cycle out, and the cycle moves the pending epoch on to one no live
+# satellite is past (`_next_pending_epoch`), which it snapshots. The host steps the
+# satellites one after another through each chunk of records, so a satellite stepped
+# early in a chunk can cross an epoch that becomes pending only when one stepped later
+# runs the cycle before it — after a re-registration on a record that starts at the
+# epoch, or after an overdue cycle. Neither locks it out for more than that epoch.
 function _run_cycle_if_due!(nav::VectorNavigation, record::LoopRecord)
     nav.num_snapshots == 0 && return false
     now = record.sample_index / _sampling_frequency_hz(record)
@@ -589,6 +607,12 @@ end
 
 # Whether the slot is at an epoch past the pending one while that still waits for
 # others: its cycle runs now, with the satellites that made it, so the slot can go on.
+#
+# Only a satellite that can still snapshot the pending epoch holds it up — one whose
+# records are behind the others' by more than a cycle, yet not stale. The satellites
+# stepped before this one are past the next epoch by now; the cycle moves the pending
+# epoch on past them (`_next_pending_epoch`), so the overdue cycle stays the exception:
+# the next one runs as a due cycle with every satellite that keeps up.
 function _run_overdue_cycle!(nav::VectorNavigation, slot::VTSlot, record::LoopRecord)
     slot.snapshot_epoch == nav.pending_epoch || return false
     now = record.sample_index / _sampling_frequency_hz(record)
@@ -597,14 +621,29 @@ function _run_overdue_cycle!(nav::VectorNavigation, slot::VTSlot, record::LoopRe
     true
 end
 
-function _all_snapshotted(ready, group::VTSlotGroup, nav::VectorNavigation, now)
-    ready || return false
+# Whether no satellite of the group is still to complete its snapshot of the pending
+# epoch: each one live and due at it has, or is past it without and never will.
+_all_snapshotted(ready, group::VTSlotGroup, nav::VectorNavigation, now) =
+    ready && !_can_reach_epoch(false, group, nav, _epoch_time(nav, nav.pending_epoch), now)
+
+# The epoch to snapshot after the cycle at `epoch`: the next one, unless a satellite is
+# past it already — after an overdue cycle, or one run by a satellite stepped after the
+# others had crossed it — then the first no satellite is past. The skipped epochs could
+# have been completed by none but the satellites behind; the cycle after them is
+# longer, as after a gap. The host steps every satellite through each chunk, which is
+# shorter than a cycle, so in step no satellite is past the next epoch.
+function _next_pending_epoch(nav::VectorNavigation, epoch)
+    next = epoch + 1
+    latest = _fold_slot_groups(_latest_record_end, -Inf, nav.groups)
+    latest > _epoch_time(nav, next) ? _epoch_at_or_after(nav, latest) : next
+end
+
+function _latest_record_end(latest, group::VTSlotGroup)
     for slot in group.slots
-        slot.occupied && !_is_stale(nav, slot, now) || continue
-        slot.snapshot_epoch == nav.pending_epoch || slot.first_epoch > nav.pending_epoch ||
-            return false
+        slot.occupied || continue
+        latest = max(latest, slot.last_end_time, slot.decoding_last_end_time)
     end
-    true
+    latest
 end
 
 # Stale: no record of the driver, or of the decoding signal, for two cycles.
@@ -679,7 +718,7 @@ function _navigation_cycle!(nav::VectorNavigation, now)
         released || dropped,
     )
     nav.cycle_epoch = epoch
-    nav.pending_epoch = epoch + 1
+    nav.pending_epoch = _next_pending_epoch(nav, epoch)
     nav.num_snapshots = 0
     nothing
 end

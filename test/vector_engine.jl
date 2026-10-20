@@ -16,6 +16,16 @@ engine_record(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0 + 0.0im, si
     @test TL._epoch_at_or_after(nav, 0.3 + 1e-9) == 4
     @test TL._epoch_at_or_after(nav, 0.3 - 1e-9) == 3
     @test TL._epoch_time(nav, 7) ≈ 0.7
+    # The first epoch whose time, as the records' ends are compared with it, is not
+    # before `t`: 129 × 30 ms comes out just short of 3.87 s, which 3.87 / 0.03 rounds
+    # to 129.
+    nav = VectorPLLAndDLL(GPSL1CA(); cycle_time = 30ms).navigation
+    @test TL._epoch_time(nav, 129) < 3.87
+    @test TL._epoch_at_or_after(nav, 3.87) == 130
+    @test all((0:16_000_000) ./ 4e6) do t
+        epoch = TL._epoch_at_or_after(nav, t)
+        TL._epoch_time(nav, epoch - 1) < t <= TL._epoch_time(nav, epoch)
+    end
 end
 
 @testset "A satellite registers on its first record" begin
@@ -223,6 +233,14 @@ end
     # …and a satellite is stale once either of its signals is.
     stale.decoding_last_end_time = 0.75
     @test TL._all_snapshotted(true, group, nav, 1.0)
+    # …nor one past the epoch without its snapshot, which it can no longer take — but
+    # one with the driver's half taken is, while its decoding signal is short of it…
+    ended!(stale, 1.001)
+    @test TL._all_snapshotted(true, group, nav, 1.002)
+    stale.driver_epoch = 10
+    stale.decoding_last_end_time = 0.999
+    @test !TL._all_snapshotted(true, group, nav, 1.002)
+    stale.driver_epoch = typemin(Int)
     ended!(stale, 0.75)
     # …and dropped by the cycle, the member released.
     @test TL._prepare_slots!(false, group, nav, 1.0)
@@ -289,6 +307,51 @@ end
     a, = step_loop(estimator, a, engine_record(3, 4000 * 1001), words, NO_LANDING_SAMPLE)
     b, = step_loop(estimator, b, engine_record(5, 4000 * 1001), words, NO_LANDING_SAMPLE)
     @test nav.cycle_epoch == 10
+end
+
+@testset "Satellites stepped past an epoch before it is pending are not locked out" begin
+    # GNSSReceiver steps the satellites one after another through each chunk: here
+    # 4 ms, four 1 ms records each, the records' boundaries on the epochs.
+    estimator = VectorPLLAndDLL(GPSL1CA())
+    nav = estimator.navigation
+    slots = nav.groups[1].slots
+    words = FixedNCOWord(100.0, 0.1)
+    prns = (3, 5, 7)
+    states = [init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz) for _ in prns]
+    cycles = []
+    function step_chunk!(k, sats = 1:3)
+        for i in sats, j = k-3:k
+            id = nav.cycle_id
+            states[i], = step_loop(estimator, states[i], engine_record(prns[i], 4000j), words, NO_LANDING_SAMPLE)
+            nav.cycle_id == id ||
+                push!(cycles, (; epoch = nav.cycle_epoch, time = j / 1000, active = [s.active for s in slots[1:3]]))
+        end
+    end
+    foreach(step_chunk!, 4:4:500)
+    @test nav.cycle_epoch == 4 && nav.pending_epoch == 5
+    # The first two lose their signal for an epoch; the third snapshots it, and its
+    # cycle waits for them…
+    foreach(k -> step_chunk!(k, 3:3), 504:4:600)
+    @test nav.pending_epoch == 5 && slots[3].snapshot_epoch == 5
+    # …until they are re-acquired, on records that start exactly at the next epoch:
+    # registered, they are due from that epoch on, and the second runs the waiting cycle.
+    states[1] = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
+    states[2] = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
+    step_chunk!(604)
+    @test nav.cycle_epoch == 5
+    @test slots[1].first_epoch == slots[2].first_epoch == 6
+    # By then the first is past the next epoch, which it can no longer snapshot: the
+    # epochs move on to the one after, which no satellite is past. Every satellite
+    # snapshots it and every one after it, and every cycle runs as soon as the last
+    # satellite crosses its epoch, not an epoch late.
+    @test nav.pending_epoch == 7
+    foreach(step_chunk!, 608:4:1500)
+    @test nav.cycle_epoch == 14
+    recovered = filter(c -> c.epoch > 5, cycles)
+    @test [c.epoch for c in recovered] == 7:14
+    @test all(c -> all(c.active), recovered)
+    @test all(c -> c.time - c.epoch * 0.1 < 0.01, recovered)
+    @test all(s -> s.snapshot_epoch == 14, slots[1:3])
 end
 
 @testset "A member dropped while its records stopped rejoins released" begin
