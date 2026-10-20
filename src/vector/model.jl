@@ -85,7 +85,7 @@ defaults suit a vehicle carrying a consumer-grade front end.
   fall back to scalar tracking. An epoch counts as unsolvable when it has fewer
   measurements than the bias layout in force has unknowns. How certain the filter
   is of the solution it did produce is reported rather than policed — see
-  [`VTStatus`](@ref)'s `position_std`.
+  [`NavigationStatus`](@ref)'s `position_std`.
 """
 struct VectorTracking
     use_pseudorange_rates::Bool
@@ -820,7 +820,7 @@ const HUB_OFFSET_STD = 3.0
 # Both conditions are necessary and neither is sufficient — the surviving
 # geometry can still be degenerate in a way no satellite count can see. The
 # scalar solve leaves that to `calc_pvt`'s checks on the assembled design; here
-# it is reported as `VTStatus`'s `position_std` rather than policed.
+# it is reported as `NavigationStatus`'s `position_std` rather than policed.
 #
 # The hub offset constraints live in the workspace (`hub_offset_constraints`),
 # one `(clock_index, hub_clock_index, isb)` per collapsed time system: the collapse,

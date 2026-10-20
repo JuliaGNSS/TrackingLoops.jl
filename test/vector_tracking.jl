@@ -13,7 +13,7 @@ using Geodesy: ENUfromECEF, wgs84
     @test all(group -> all(slot -> !slot.occupied && slot.registration == 0, group.slots), nav.groups)
     @test nav.cycle_time == 0.1s
     @test nav.lock_cn0_threshold_dbhz == 30.0
-    @test navigation_status(estimator) == VTStatus()
+    @test navigation_status(estimator) == NavigationStatus()
     @test !navigation_status(estimator).running
     @test navigation_solution(estimator) === nav.pvt
     @test isempty(member_sats(estimator))
@@ -58,7 +58,7 @@ end
     @test !rx.vt.enabled
     results, _, diverged = run_simulation!(rx, 5)
     @test !diverged
-    @test all(r -> !r.status.running && !r.status.enabled, results)
+    @test all(r -> !r.status.running && !r.status.seeded, results)
     @test all(r -> r.status.num_members == 0, results)
     @test all(sat -> !sat.state.in_vector_loop, rx.sats)
     # A scalar fix each cycle, near the truth.
@@ -73,7 +73,7 @@ end
     results, _, diverged = run_simulation!(rx, 1)
     @test !diverged
     seed = results[1]
-    @test seed.status.enabled
+    @test seed.status.seeded
     @test seed.status.running
     @test vt.running
     @test seed.status.num_members == length(rx.sats)
@@ -106,7 +106,7 @@ end
     end
     fill_unready!(v, sat, epoch, landing, nav) = (fill_slot!(v, sat, epoch, landing, nav); v.pvt_ready = false)
     results, _, _ = run_simulation!(rx, 2; fill! = fill_unready!)
-    @test all(r -> !r.status.running && !r.status.enabled, results)
+    @test all(r -> !r.status.running && !r.status.seeded, results)
     @test all(sat -> !sat.state.in_vector_loop, rx.sats)
 end
 
@@ -190,7 +190,7 @@ end
     result = results[end]
     pvt = result.pvt
     @test result.status.running
-    @test !result.status.enabled
+    @test !result.status.seeded
     @test pvt.time isa TAITime
     @test pvt.reference_system === GPST()
     @test pvt.dop !== nothing
@@ -354,7 +354,7 @@ end
     foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
     rx.vt.running = false
     results, _, _ = run_simulation!(rx, 2; start_sample = sample)
-    @test results[1].status.enabled
+    @test results[1].status.seeded
     @test results[2].status.running
     @test results[2].pvt.time - before ≈ 0.2 atol = 1e-3
 end

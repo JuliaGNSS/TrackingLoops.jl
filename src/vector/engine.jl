@@ -698,7 +698,7 @@ function _navigation_cycle!(nav::VectorNavigation, now)
         nav.cycle_epoch == typemin(Int) ? nav.cycle_time : (epoch - nav.cycle_epoch) * nav.cycle_time
     nav.cycle_id += 1
     dropped = _fold_groups(_prepare_slots!, false, groups, nav, now)
-    enabled = released = fell_back = false
+    seeded = released = fell_back = false
     if nav.enabled && nav.running
         released, fell_back = _run_cycle!(nav, groups, cycle_time)
     else
@@ -710,18 +710,18 @@ function _navigation_cycle!(nav::VectorNavigation, now)
         # `calc_pvt!` returns the very solution it was handed on an epoch it cannot
         # solve, so identity is exactly the freshness test.
         if nav.enabled && pvt !== previous_pvt
-            enabled = true
+            seeded = true
             _seed!(nav, groups, cycle_time)
         end
     end
     num_members = _fold_groups_with_buffers(_count_members, 0, groups, buffers.sat_states, 1)
-    nav.status = VTStatus(
+    nav.status = NavigationStatus(
         nav.running,
         nav.running || fell_back ? position_uncertainty(nav) * m : NaN * m,
         nav.running || fell_back ? clock_uncertainty(nav) * m : NaN * m,
         nav.time_with_insufficient_meas,
         num_members,
-        enabled,
+        seeded,
         fell_back,
         released || dropped,
     )

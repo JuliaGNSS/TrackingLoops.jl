@@ -237,7 +237,7 @@ function VTSlotGroup(
 end
 
 """
-    VTStatus
+    NavigationStatus
 
 What the latest navigation cycle of a [`VectorPLLAndDLL`](@ref) did (see
 [`navigation_status`](@ref)).
@@ -250,24 +250,24 @@ What the latest navigation cycle of a [`VectorPLLAndDLL`](@ref) did (see
     epochs it could not solve, counted against `insufficient_meas_timeout`;
     nonzero means the loop is on its way out, paid back at half rate;
   - `num_members`: satellites in the vector loop after this cycle;
-  - the events `enabled` (a fresh scalar fix seeded the filter), `fell_back`
+  - the events `seeded` (a fresh scalar fix seeded the filter), `fell_back`
     (vector tracking stopped) and `released` (some satellite was released; see
     [`release_reason`](@ref)).
 
 The per-member report of the latest cycle is [`member_sats`](@ref).
 """
-struct VTStatus
+struct NavigationStatus
     running::Bool
     position_std::typeof(1.0m)
     clock_std::typeof(1.0m)
     time_with_insufficient_meas::typeof(1.0s)
     num_members::Int
-    enabled::Bool
+    seeded::Bool
     fell_back::Bool
     released::Bool
 end
 
-VTStatus() = VTStatus(false, NaN * m, NaN * m, 0.0s, 0, false, false, false)
+NavigationStatus() = NavigationStatus(false, NaN * m, NaN * m, 0.0s, 0, false, false, false)
 
 # The buffers of one measurement count: the unscented update's intermediate and
 # the measurement vector and noise covariance it is handed.
@@ -403,7 +403,7 @@ mutable struct VectorNavigation{G<:Tuple,SB<:Tuple}
     time_epoch_offset::Union{Nothing,Int}
     const member_sats::Dictionary{Tuple{Symbol,Int},SatInfo}
     pvt::PVTSolution
-    status::VTStatus
+    status::NavigationStatus
     const workspace::PVTWorkspace
     const approximate_year::Int
     const enable_ionospheric_correction::Bool
@@ -458,7 +458,7 @@ function VectorNavigation(
         nothing,
         Dictionary{Tuple{Symbol,Int},SatInfo}(),
         PVTSolution(),
-        VTStatus(),
+        NavigationStatus(),
         PVTWorkspace(),
         Int(approximate_year),
         enable_ionospheric_correction,
@@ -511,9 +511,9 @@ cycle, so copy out what is needed later.
 navigation_solution(estimator::VectorPLLAndDLL) = estimator.navigation.pvt
 
 """
-    navigation_status(estimator::VectorPLLAndDLL) -> VTStatus
+    navigation_status(estimator::VectorPLLAndDLL) -> NavigationStatus
 
-What the latest navigation cycle did (see [`VTStatus`](@ref)).
+What the latest navigation cycle did (see [`NavigationStatus`](@ref)).
 """
 navigation_status(estimator::VectorPLLAndDLL) = estimator.navigation.status
 
@@ -1206,7 +1206,7 @@ function _run_cycle!(nav::VectorNavigation, groups, cycle_time)
     # navigation state — too few measurements, or too few distinct satellites among them,
     # for the bias layout in force — and pay it back down (at half rate) otherwise. How
     # certain the filter is of the solution it did produce is not policed here; it is
-    # reported as `VTStatus`'s `position_std`.
+    # reported as `NavigationStatus`'s `position_std`.
     time_with_insufficient_meas =
         is_epoch_solvable(observability, num_candidates) ?
         max(0.0s, nav.time_with_insufficient_meas - cycle_time / 2) :

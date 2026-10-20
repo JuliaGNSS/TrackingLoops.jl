@@ -973,9 +973,9 @@ out what is needed later.
 navigation_solution(::AbstractDopplerEstimator) = nothing
 
 """
-    navigation_status(estimator) -> Union{VTStatus,Nothing}
+    navigation_status(estimator) -> Union{NavigationStatus,Nothing}
 
-What the latest navigation cycle did ([`VTStatus`](@ref)), or `nothing` for an
+What the latest navigation cycle did ([`NavigationStatus`](@ref)), or `nothing` for an
 estimator without one.
 """
 navigation_status(::AbstractDopplerEstimator) = nothing
