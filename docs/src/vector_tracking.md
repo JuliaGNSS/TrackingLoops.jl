@@ -160,14 +160,17 @@ bit clock has found the bit edges again.
 
 ## Stepping the satellites
 
-A cycle runs once every satellite has completed its epoch's snapshot, and a
-satellite that has gone two cycles without a record of one of its signals is
-dropped. So a host should step every signal of every satellite of the estimator
-at least once per half cycle. Tracking.jl's `track!` does, for any chunk
-shorter than that. A satellite that falls behind holds a cycle up only until
-the others reach the next epoch; then the cycle runs without it. A host never
-has to hold a record back or order its channels: each record is stepped as it
-arrives.
+A cycle runs once every satellite that can still complete its epoch's snapshot
+has, and a satellite that has gone two cycles without a record of one of its
+signals is dropped. So a host should step every signal of every satellite of the
+estimator at least once per half cycle. Tracking.jl's `track!` does, for any
+chunk shorter than that. A satellite that falls behind holds a cycle up only
+until the others reach the next epoch; then the cycle runs without it. A
+satellite already past an epoch when it becomes pending — stepped earlier in
+the chunk than the one whose record runs the cycle before, as after a
+re-registration — sits that epoch's cycle out, and the next pending epoch is
+the first no satellite is past, so it snapshots that one. A host never has to
+hold a record back or order its channels: each record is stepped as it arrives.
 
 ## [The FLL branch's bandwidth](@id vector-fll-bandwidth)
 

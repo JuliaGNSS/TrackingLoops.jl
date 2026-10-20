@@ -266,6 +266,50 @@ end
     @test all(r -> r.status.running, results)
 end
 
+@testset "Satellites stepped past an epoch before it is pending rejoin the next" begin
+    # Six of the eight satellites restart, as after a fallback, while the epoch they
+    # left waits for a seventh, whose records the host holds back. They register past
+    # that epoch and are not due at it. When the cycle runs without them, an epoch late,
+    # they are past the next epoch as well: the host steps them before the satellite
+    # that runs the cycle. They must not be locked out of the epochs after.
+    rx = warm_pipeline()
+    nav = rx.vt
+    function step_ticks!(sample, duration, sats)
+        stop = sample + round(Int, duration * ustrip(Hz, SIM_FS))
+        while sample < stop
+            sample += SAMPLES_PER_MS
+            foreach(i -> step_satellite!(rx, i, sample), sats)
+        end
+        sample
+    end
+    held, restarting = 7, 1:6
+    others = setdiff(eachindex(rx.sats), held)
+    sample = step_ticks!(WARM_PIPELINE.sample, 0.05, eachindex(rx.sats))
+    epoch = nav.pending_epoch
+    sample = step_ticks!(sample, 0.1, others)
+    @test nav.pending_epoch == epoch
+    for i in restarting
+        rx.sats[i].state = TL._registered(rx.sats[i].state, 0, 0)
+    end
+    sample = step_ticks!(sample, 0.07, others)
+    @test nav.cycle_epoch == epoch
+    @test all(i -> pipeline_slots(rx)[i].first_epoch == epoch + 1, restarting)
+    # The held-back satellite catches up. Half a second on, every satellite snapshots
+    # every epoch, and the cycles run as the epochs are crossed, not an epoch late.
+    results, sample, diverged = run_pipeline!(rx, 0.5; start_sample = sample)
+    @test !diverged
+    @test nav.cycle_epoch == fld(sample, round(Int, 0.1 * ustrip(Hz, SIM_FS)))
+    @test all(slot -> slot.snapshot_epoch == nav.cycle_epoch, pipeline_slots(rx))
+    # Once the restarted satellites have decoded a subframe again, the filter measures
+    # all eight.
+    results, _, diverged = run_pipeline!(rx, 12.0; start_sample = sample)
+    @test !diverged
+    @test length(results) == 120
+    tail = results[end-19:end]
+    @test all(r -> r.status.running && length(r.measured) == length(rx.sats), tail)
+    @test pipeline_errors(rx, tail) < 3.0
+end
+
 @testset "A warm minute allocates nothing" begin
     rx = warm_pipeline()
     rx.measuring[] = true
