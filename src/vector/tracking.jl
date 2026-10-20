@@ -645,13 +645,6 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Membership
 
-function _reset_release_reasons!(acc, group, g, buffer)
-    for sat in group.slots
-        sat.release_reason = VT_NOT_RELEASED
-    end
-    acc
-end
-
 # Hand `sat` back to its scalar loop for `reason`. The satellite takes it up on its
 # next record, re-seeding its scalar loop from the replica where that lands
 # (`_take_up_cycle`).
@@ -937,10 +930,10 @@ function _predict_members!(vt::VectorNavigation)
     nothing
 end
 
-# Leave every active member its share of this cycle's corrections: the satellite
-# evaluates them where its own command lands, on its next record
-# (`_commands_at_landing`), against this cycle's posterior and member buffers.
-function _close_loops!(acc, group, g, buffer, vt)
+# Assign every active member this cycle's commands: the satellite evaluates them where
+# its own command lands, on its next record (`_commands_at_landing`), against this
+# cycle's posterior and member buffers.
+function _assign_commands!(acc, group, g, buffer, vt)
     buffers = vt.buffers
     for (j, member) in enumerate(buffers.members)
         member.group == g && buffers.active[j] || continue
@@ -1138,7 +1131,7 @@ function _seed!(vt::VectorNavigation, groups, cycle_time)
     resize!(buffers.active, length(members))
     fill!(buffers.active, true)
     vt.cycle_integration_time = T
-    _fold_groups(_close_loops!, 0, groups, buffers.states, 1, vt)
+    _fold_groups(_assign_commands!, 0, groups, buffers.states, 1, vt)
     vt.running = true
     vt.reference_time = reference_tow * s
     vt.time_with_insufficient_meas = 0.0s
@@ -1153,8 +1146,8 @@ end
 # One cycle
 
 # One navigation-filter cycle: predict, fuse the accumulated discriminators as
-# pseudorange (and, for VDFLL, pseudorange-rate) measurements, close every member's loops
-# with fresh NCO corrections, and manage the membership (admission, availability,
+# pseudorange (and, for VDFLL, pseudorange-rate) measurements, assign every member fresh
+# NCO commands, and manage the membership (admission, availability,
 # release, fallback to scalar tracking). Returns `(released, fell_back)`.
 function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
     config = vt.config
@@ -1206,7 +1199,7 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
             assess_bias_observability!(buffers.observability, vt.layout, members, candidates)
         _measurement_update!(vt, T)
     end
-    num_included = length(candidates)
+    num_candidates = length(candidates)
 
     # The measurement model at the *updated* state, for every member: the post-fit
     # residuals, and — unless the loop falls back — the NCO corrections.
@@ -1218,7 +1211,7 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
     # certain the filter is of the solution it did produce is not policed here; it is
     # reported as `VTStatus`'s `position_std`.
     time_with_insufficient_meas =
-        is_epoch_solvable(observability, num_included) ?
+        is_epoch_solvable(observability, num_candidates) ?
         max(0.0s, vt.time_with_insufficient_meas - cycle_time / 2) :
         vt.time_with_insufficient_meas + cycle_time
 
@@ -1236,19 +1229,18 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
     released = _fold_groups(_release_below_horizon!, released, groups, buffers.states, 1, vt)
 
     # Fall back to scalar tracking when the filter has coasted too long or no members
-    # remain; otherwise close every member's loops with fresh corrections toward the
-    # updated solution.
+    # remain; otherwise assign every member fresh commands toward the updated solution.
     fell_back = time_with_insufficient_meas > config.insufficient_meas_timeout || num_active == 0
     if fell_back
         released = _fold_groups(_release_all!, released, groups, buffers.states, 1, VT_FALLBACK)
         vt.running = false
     else
         vt.cycle_integration_time = T
-        _fold_groups(_close_loops!, 0, groups, buffers.states, 1, vt)
+        _fold_groups(_assign_commands!, 0, groups, buffers.states, 1, vt)
     end
 
     vt.primary_clock_index =
-        report_primary_clock_index(vt.layout, members, candidates, vt.primary_clock_index)
+        select_primary_clock_index(vt.layout, members, candidates, vt.primary_clock_index)
     vt.time_epoch_offset = rolled_over_time_epoch_offset(
         _resolve_time_epoch_offset(vt),
         vt.time_epoch_offset,
@@ -1291,7 +1283,7 @@ function _write_solution!(vt::VectorNavigation, groups)
     position = _ecef(user_pos)
     velocity = _ecef(user_vel)
     primary_clock_bias = x[idxs.clock_biases[vt.primary_clock_index]]
-    included = buffers.candidates
+    candidates = buffers.candidates
 
     # Geometry of the satellites this update measured, or `nothing` when there is none to
     # report: no measurements at all, or a rank-deficient design for which `calc_DOP!`
@@ -1299,21 +1291,21 @@ function _write_solution!(vt::VectorNavigation, groups)
     # one either (it rejects the epoch instead), so a solution's `dop` is always either a
     # real geometry or absent.
     dop = nothing
-    if !isempty(included)
+    if !isempty(candidates)
         columns, primary_column = dense_bias_columns!(
             buffers.dense_clock_indices,
             buffers.dense_ifb_indices,
             buffers.clock_used,
             buffers.ifb_used,
             members,
-            included,
+            candidates,
             vt.primary_clock_index,
         )
         num_columns = 3 + columns.num_clock_biases + columns.num_ifb
-        if size(buffers.design_matrix, 1) < length(included)
-            buffers.design_matrix = zeros(2 * length(included), size(buffers.design_matrix, 2))
+        if size(buffers.design_matrix, 1) < length(candidates)
+            buffers.design_matrix = zeros(2 * length(candidates), size(buffers.design_matrix, 2))
         end
-        H = view(buffers.design_matrix, 1:length(included), 1:num_columns)
+        H = view(buffers.design_matrix, 1:length(candidates), 1:num_columns)
         position_and_bias_vector!(buffers.ξ, x, idxs)
         calc_H!(H, buffers.candidate_positions, buffers.ξ, columns)
         candidate = calc_DOP!(
@@ -1332,7 +1324,7 @@ function _write_solution!(vt::VectorNavigation, groups)
     # residuals, in `member_sats`.
     solution = empty_keeping_capacity!(vt.pvt)
     sats = solution.sats
-    for j in included
+    for j in candidates
         set!(sats, _member_key(layout, members[j]), _member_info(buffers, j))
     end
     member_sats = empty_keeping_capacity!(vt.member_sats)
@@ -1347,13 +1339,13 @@ function _write_solution!(vt::VectorNavigation, groups)
     inter_system_biases = solution.inter_system_biases
     for (index, time_system) in enumerate(layout.time_systems)
         index == vt.primary_clock_index && continue
-        _is_measured(member -> member.clock_bias_index == index, members, included) ||
+        _is_measured(member -> member.clock_bias_index == index, members, candidates) ||
             continue
         inter_system_biases[time_system] = (x[idxs.clock_biases[index]] - primary_clock_bias) * m
     end
     inter_frequency_biases = solution.inter_frequency_biases
     for (index, band) in enumerate(layout.extra_bands)
-        _is_measured(member -> member.ifb_index == index, members, included) || continue
+        _is_measured(member -> member.ifb_index == index, members, candidates) || continue
         inter_frequency_biases[band] =
             InterFrequencyBias(x[idxs.ifb[index]] * m, layout.reference_bands[index])
     end
@@ -1374,9 +1366,9 @@ function _write_solution!(vt::VectorNavigation, groups)
     nothing
 end
 
-# Whether one of the members at `included` satisfies `predicate`.
-function _is_measured(predicate::F, members, included) where {F}
-    for j in included
+# Whether one of the members at `candidates` satisfies `predicate`.
+function _is_measured(predicate::F, members, candidates) where {F}
+    for j in candidates
         predicate(members[j]) && return true
     end
     false

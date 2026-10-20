@@ -1123,21 +1123,21 @@ end
 # PVT solution from the navigation filter
 
 # The clock-bias state to report the solution against. Kept while its time
-# system still contributes an included measurement, so the reference does not
+# system still contributes a measurement (`candidates`), so the reference does not
 # flicker; re-picked on loss following `PositionVelocityTime`'s reference-system
 # convention — GPST when GPS is present, otherwise the time system with the most
 # measurements (ties broken by clock-state order). Re-picking only from time
 # systems that are present this cycle is what keeps the solution able to read a
 # week number from a decoded satellite of the primary system, so it always
 # carries a timestamp.
-function report_primary_clock_index(layout::NavFilterLayout, members, included_indices, current_index)
-    isempty(included_indices) && return current_index
-    for j in included_indices
+function select_primary_clock_index(layout::NavFilterLayout, members, candidates, current_index)
+    isempty(candidates) && return current_index
+    for j in candidates
         members[j].clock_bias_index == current_index && return current_index
     end
     gpst_index = _time_system_index(layout.time_systems, GPST())
     if gpst_index != 0
-        for j in included_indices
+        for j in candidates
             members[j].clock_bias_index == gpst_index && return gpst_index
         end
     end
@@ -1145,7 +1145,7 @@ function report_primary_clock_index(layout::NavFilterLayout, members, included_i
     best_count = 0
     for index in eachindex(layout.time_systems)
         n = 0
-        for j in included_indices
+        for j in candidates
             members[j].clock_bias_index == index && (n += 1)
         end
         if n > best_count
