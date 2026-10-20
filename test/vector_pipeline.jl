@@ -400,7 +400,11 @@ end
     # seeds the filter; the commands land 30 ms after their record, after the late
     # records, so the replicas do not depend on when the records are stepped. (The
     # satellites register in the order their first records arrive, so the solve sums
-    # them in another order: the fixes agree to rounding.)
+    # them in another order: the fixes agree to the solver's convergence. It stops at a
+    # step of ~2 µm (PositionVelocityTime's `x_tol` of 1e-13 against the ~2e7 m clock
+    # bias), so the rounding of the other order — which also depends on the BLAS
+    # kernels the CPU gets — can leave the fixes a few µm apart; a snapshot that
+    # differed would move them by far more than the 0.1 mm allowed.)
     kw = (; pilot = true, num_sats = 6, inner = NCOReferencedPLLAndDLL(), delay_records = 30)
     runs = map(((0, 0), (0, 25), (25, 0))) do (driver_lag_ms, passenger_lag_ms)
         rx = PipelineReceiver(; kw..., driver_lag_ms, passenger_lag_ms)
@@ -412,7 +416,7 @@ end
     @test seeds[1] !== nothing && allequal(seeds)
     for results in runs[2:end]
         @test all(zip(results[1:seeds[1]], runs[1][1:seeds[1]])) do (a, b)
-            norm(a.pvt.position - b.pvt.position) < 1e-6 && Set(a.measured) == Set(b.measured)
+            norm(a.pvt.position - b.pvt.position) < 1e-4 && Set(a.measured) == Set(b.measured)
         end
         @test all(zip(results[1:seeds[1]], runs[1][1:seeds[1]])) do (a, b)
             a.time == b.time
