@@ -224,7 +224,7 @@ end
     @test length(slots) == 8
     gone = pop!(rx.sats)
     pop!(rx.last_ends)
-    gone_slot = slots[gone.state.slot]
+    gone_slot = slots[gone.state.slot_index]
     # Two cycles without a record: dropped, released as ineligible, its slot free with
     # its storage kept.
     rx.measuring[] = true
@@ -247,7 +247,7 @@ end
     results, sample, diverged = run_pipeline!(rx, 1.0; start_sample = sample)
     @test !diverged
     @test length(slots) == 8
-    @test newcomer.state.slot == gone.state.slot
+    @test newcomer.state.slot_index == gone.state.slot_index
     @test gone_slot.occupied
     @test gone_slot.prn == newcomer_decoder.prn
     @test gone_slot.running_decoder.prn == newcomer_decoder.prn
@@ -267,14 +267,14 @@ end
     _, _, diverged = run_pipeline!(rx, 0.3; start_sample = sample)
     @test !diverged
     @test length(slots) == 9
-    @test another.state.slot == 9
+    @test another.state.slot_index == 9
 end
 
 @testset "A re-acquired satellite gets its slot and its decoded data back" begin
     rx = warm_pipeline()
     nav = rx.vt
     lost = rx.sats[2]
-    index = lost.state.slot
+    index = lost.state.slot_index
     prn = lost.decoder.prn
     # Lost for half a second, no record at all: dropped and released.
     deleteat!(rx.sats, 2)
@@ -293,7 +293,7 @@ end
     results, _, diverged = run_pipeline!(rx, 14.0; start_sample = sample)
     @test !diverged
     @test nav.registrations == registrations + 1
-    @test reacquired.state.slot == index
+    @test reacquired.state.slot_index == index
     @test slot.occupied && slot.prn == prn
     # Its decoder restarted its sync but kept what it had decoded, so once the bit clock
     # has found the edges again the next subframe makes it ready — not a whole frame —
@@ -369,7 +369,7 @@ function snapshot_range_errors(rx)
     nav = rx.vt
     group = nav.groups[1]
     map(rx.sats) do sat
-        slot = group.slots[sat.state.slot]
+        slot = group.slots[sat.state.slot_index]
         t = rx.truth.t0 + TL._epoch_time(nav, slot.snapshot_epoch)
         u_true = uncorrected_time(sat, first(true_transmit(sat, rx.truth, t)))
         (calc_uncorrected_time(TL._satellite_state(group.signal, slot)) - u_true) *
@@ -388,7 +388,7 @@ first_fix(results) = results[findfirst(r -> r.status.enabled, results)]
     @test group.signal isa GPSL1C_P && group.decoding_signal isa GPSL1CA
     # The data's bit clock synced and its bits decoded; the pilot's C/N₀ sets the lock.
     for sat in rx.sats
-        slot = group.slots[sat.state.slot]
+        slot = group.slots[sat.state.slot_index]
         @test slot.decoding_bit_synced
         @test TL.is_decoding_completed_for_positioning(slot.running_decoder)
         @test slot.in_lock && slot.pvt_ready
@@ -474,7 +474,7 @@ end
     @test !diverged
     @test findfirst(r -> r.status.enabled, results) !== nothing
     group = rx.vt.groups[1]
-    slots = [group.slots[sat.state.slot] for sat in rx.sats]
+    slots = [group.slots[sat.state.slot_index] for sat in rx.sats]
     @test all(slot -> length(slot.prompt_history.centers) == 6, slots)
     dropped = Ref(0)
     results, _, diverged = run_pipeline!(rx, 4.0; start_sample = sample, on_tick = _ ->

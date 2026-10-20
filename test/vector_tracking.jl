@@ -12,17 +12,17 @@ using Geodesy: ENUfromECEF, wgs84
     @test all(group -> length(group.slots) == 4, nav.groups)
     @test all(group -> all(slot -> !slot.occupied && slot.registration == 0, group.slots), nav.groups)
     @test nav.cycle_time == 0.1s
-    @test nav.lock_cn0_threshold == 30.0
+    @test nav.lock_cn0_threshold_dbhz == 30.0
     @test navigation_status(estimator) == VTStatus()
     @test !navigation_status(estimator).running
     @test navigation_solution(estimator) === nav.pvt
     @test isempty(member_sats(estimator))
     @test release_reason(estimator, GPSL1CA(), 5) == VT_NOT_RELEASED
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
-    @test (state.slot, state.registration, state.cycle_id) == (0, 0, -1)
+    @test (state.slot_index, state.registration, state.cycle_id) == (0, 0, -1)
     @test !state.vt_on
     @test VectorPLLAndDLL(GPSL1CA(); cycle_time = 20ms).navigation.cycle_time == 0.02s
-    @test VectorPLLAndDLL(GPSL1CA(); lock_cn0_threshold = 35dBHz).navigation.lock_cn0_threshold == 35.0
+    @test VectorPLLAndDLL(GPSL1CA(); lock_cn0_threshold = 35dBHz).navigation.lock_cn0_threshold_dbhz == 35.0
     @test !VectorPLLAndDLL(GPSL1CA(); config = nothing).navigation.enabled
 end
 
@@ -125,8 +125,8 @@ end
         TL.vt_bias_columns(members, vt.layout))
     user_pos, user_vel, user_drift = TL.nav_filter_states(vt.x, idxs)
     for (j, member) in enumerate(members)
-        sat = rx.sats[member.slot]
-        slot = rx.group.slots[member.slot]
+        sat = rx.sats[member.slot_index]
+        slot = rx.group.slots[member.slot_index]
         @test slot.member_index == j
         measured = TL.pseudorange_from_tows(ustrip(s, vt.reference_time), member.time_gpst_count) -
                    buffers.delays[j]
@@ -263,7 +263,7 @@ end
     results, _, _ = run_simulation!(rx, 1; fill! = miss!, start_sample = sample)
     # Not stale, so not dropped: it keeps its place and its corrections, without new ones.
     @test late.occupied
-    @test !late.active
+    @test !late.in_cycle
     @test late.release_reason == VT_NOT_RELEASED
     @test late.correction_cycle != rx.vt.cycle_id
     @test rx.sats[3].state.vt_on

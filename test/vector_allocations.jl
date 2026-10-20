@@ -42,7 +42,7 @@ end
     # A skipped epoch rebuilds the process model in place.
     sample += 2cycle
     @test measure_navigation(rx, sample) == 0
-    @test rx.vt.model.integration_time == 0.2s
+    @test rx.vt.model.cycle_time == 0.2s
     take_up!(rx, sample)
 
     slot = rx.group.slots[2]

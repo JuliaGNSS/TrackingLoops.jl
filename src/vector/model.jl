@@ -363,33 +363,33 @@ end
 """
     NavFilterModel
 
-The navigation filter's linear process model for one integration interval: `F`
-and `Q`, rebuilt in place whenever the measured interval changes (see
-`ensure_nav_filter_integration_time!`).
+The navigation filter's linear process model for one navigation cycle: `F`
+and `Q`, rebuilt in place whenever the measured cycle time changes (see
+`ensure_nav_filter_cycle_time!`).
 """
 mutable struct NavFilterModel
-    integration_time::typeof(1.0s)
+    cycle_time::typeof(1.0s)
     const F::Matrix{Float64}
     const Q::Matrix{Float64}
     const idxs::NavFilterIndices
 end
 
-function NavFilterModel(config::VectorTracking, layout::NavFilterLayout, integration_time)
+function NavFilterModel(config::VectorTracking, layout::NavFilterLayout, cycle_time)
     n = num_nav_states(config, layout)
     model = NavFilterModel(
-        integration_time,
+        cycle_time,
         Matrix{Float64}(undef, n, n),
         Matrix{Float64}(undef, n, n),
         NavFilterIndices(config, layout),
     )
-    rebuild_nav_filter_model!(model, config, integration_time)
+    rebuild_nav_filter_model!(model, config, cycle_time)
 end
 
-function rebuild_nav_filter_model!(model::NavFilterModel, config::VectorTracking, integration_time)
-    T = ustrip(s, integration_time)
+function rebuild_nav_filter_model!(model::NavFilterModel, config::VectorTracking, cycle_time)
+    T = ustrip(s, cycle_time)
     nav_filter_process_model!(model.F, config, model.idxs, T)
     nav_filter_process_noise_covariance!(model.Q, config, model.idxs, T)
-    model.integration_time = integration_time
+    model.cycle_time = cycle_time
     model
 end
 
@@ -402,13 +402,13 @@ end
 # TCXO's hundreds of m/s of clock drift that alone is metres against a clock process noise
 # of centimetres. So `F`/`Q` are rebuilt whenever the interval changes at all; the rebuild
 # is cheap and allocates nothing.
-function ensure_nav_filter_integration_time!(
+function ensure_nav_filter_cycle_time!(
     model::NavFilterModel,
     config::VectorTracking,
-    integration_time,
+    cycle_time,
 )
-    integration_time == model.integration_time && return model
-    rebuild_nav_filter_model!(model, config, integration_time)
+    cycle_time == model.cycle_time && return model
+    rebuild_nav_filter_model!(model, config, cycle_time)
 end
 
 # The state propagated kinematically by `τ` seconds, into `x_τ`: position
@@ -448,7 +448,7 @@ end
 # allocating.
 struct VTMember
     group::Int             # position of the member's signal group
-    slot::Int              # position in that group's satellite vector
+    slot_index::Int        # position in that group's satellite vector
     prn::Int
     clock_bias_index::Int  # clock-bias state of this member's time system
     ifb_index::Int         # IFB state of this member's band (0 = reference)
@@ -470,7 +470,7 @@ struct VTMember
     sat_clock_drift::Float64 # s/s
     code_discriminator::Float64 # accumulated DLL output, moved to the epoch (chips)
     pseudorange_rate::Float64 # measured λ·(replica Doppler + mean FLL) at the epoch (m/s)
-    cn0::Float64             # linear carrier-to-noise density (Hz)
+    cn0_lin::Float64         # C/N₀, linear (Hz); C/N₀ without `_lin` is in dB-Hz
     early_late_spacing::Float64 # chips
     coherent_integration_time::Float64 # s, per coherent correlator dump (sets DLL/FLL noise)
     # The member's broadcast offsets toward `CANDIDATE_HUB_SYSTEMS`, in that order,
@@ -556,8 +556,8 @@ has_code_and_carrier_measurements(state::SatVectorPLLAndDLL) =
 # correlator returns NaN dB-Hz) from putting a NaN into the measurement-noise
 # covariance and corrupting the whole Kalman update.
 function linear_cn0_floor(cn0_dbhz)
-    cn0_linear = 10^(cn0_dbhz / 10)
-    isnan(cn0_linear) ? 1.0 : max(cn0_linear, 1.0)
+    cn0_lin = 10^(cn0_dbhz / 10)
+    isnan(cn0_lin) ? 1.0 : max(cn0_lin, 1.0)
 end
 
 # Pseudorange (m) from the receive and transmit times-of-week. Both are
@@ -700,8 +700,8 @@ function (model::VTMeasurementModel)(y, x)
         end
         offset += num_sats
     end
-    for (i, (state, hub_state, _)) in enumerate(model.constraints)
-        y[offset+i] = x[idxs.clock_biases[state]] - x[idxs.clock_biases[hub_state]]
+    for (i, (clock_index, hub_clock_index, _)) in enumerate(model.constraints)
+        y[offset+i] = x[idxs.clock_biases[clock_index]] - x[idxs.clock_biases[hub_clock_index]]
     end
     y
 end
@@ -764,10 +764,10 @@ end
 # triangle, i.e. `d < 2` chips — which every real correlator configuration is well under
 # (the default is 0.5).
 function pseudorange_noise_variance(member::VTMember, T)
-    cn0_tcoh = member.cn0 * member.coherent_integration_time
+    cn0_tcoh = member.cn0_lin * member.coherent_integration_time
     d = member.early_late_spacing
     squaring_loss = 1 + 2 / ((2 - d) * cn0_tcoh)
-    d / (4 * T * member.cn0) * squaring_loss * member.chip_length^2
+    d / (4 * T * member.cn0_lin) * squaring_loss * member.chip_length^2
 end
 
 # Rate. A coherent dump of length `T_coh` estimates carrier phase with the ATAN
@@ -780,7 +780,7 @@ end
 #     var(mean) = 2·σ_φ² / (2π·T)²   [Hz²],
 # and the pseudorange-rate variance is λ² times that.
 function pseudorange_rate_noise_variance(member::VTMember, T)
-    cn0_tcoh = member.cn0 * member.coherent_integration_time
+    cn0_tcoh = member.cn0_lin * member.coherent_integration_time
     sigma_phi2 = 1 / (2 * cn0_tcoh) * (1 + 1 / (2 * cn0_tcoh))
     member.wavelength^2 * sigma_phi2 / (2 * π^2 * T^2)
 end
@@ -825,9 +825,10 @@ const HUB_OFFSET_STD = 3.0
 # it is reported as `VTStatus`'s `position_std` rather than policed.
 #
 # The hub offset constraints live in the workspace (`hub_offset_constraints`),
-# one `(state, hub_state, isb)` per collapsed time system: the collapse, expressed
-# as the linear pseudo-measurement `x[state] - x[hub_state] = isb` rather than as a
-# merged design-matrix column, so the filter keeps a fixed state dimension and that
+# one `(clock_index, hub_clock_index, isb)` per collapsed time system: the collapse,
+# expressed as the linear pseudo-measurement `x[clock_index] - x[hub_clock_index] = isb`
+# rather than as a merged design-matrix column, so the filter keeps a fixed state
+# dimension and that
 # constellation's clock stays available (and keeps tracking the shared oscillator
 # drift) for the epochs where the geometry does observe it. Several because a mixed
 # epoch can collapse several systems onto the hub at once — Galileo through its GGTO
@@ -981,11 +982,11 @@ function assess_bias_observability!(
     # constraint wins.
     for hub_offset_index in eachindex(CANDIDATE_HUB_SYSTEMS)
         hub = _candidate_hub(hub_offset_index)
-        hub_state = _time_system_index(layout.time_systems, hub)
-        (hub_state == 0 || _time_system_index(time_systems, hub) == 0) && continue
+        hub_clock_index = _time_system_index(layout.time_systems, hub)
+        (hub_clock_index == 0 || _time_system_index(time_systems, hub) == 0) && continue
         collapsed = empty!(ws.collapsed)
-        for state in eachindex(layout.time_systems)
-            time_system = layout.time_systems[state]
+        for clock_index in eachindex(layout.time_systems)
+            time_system = layout.time_systems[clock_index]
             (time_system === hub || _time_system_index(time_systems, time_system) == 0) &&
                 continue
             # The offset is one constellation-wide value whichever of the system's
@@ -993,7 +994,7 @@ function assess_bias_observability!(
             # that system's measurements — the rule `calc_hub_range_offsets` follows.
             offset_member = 0
             for j in candidate_indices
-                if members[j].clock_bias_index == state &&
+                if members[j].clock_bias_index == clock_index &&
                    members[j].time_offsets[hub_offset_index].available
                     offset_member = j
                     break
@@ -1008,7 +1009,7 @@ function assess_bias_observability!(
             isb =
                 -SPEED_OF_LIGHT *
                 calc_steering_offset(member.time_offsets[hub_offset_index], member.time)
-            push!(constraints, (state, hub_state, isb))
+            push!(constraints, (clock_index, hub_clock_index, isb))
             push!(collapsed, time_system)
         end
         isempty(constraints) && continue

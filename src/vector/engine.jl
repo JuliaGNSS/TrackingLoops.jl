@@ -84,7 +84,7 @@ function VectorPLLAndDLL(
         pairs,
         inner;
         cycle_time = T,
-        lock_cn0_threshold = Float64(ustrip(lock_cn0_threshold)),
+        lock_cn0_threshold_dbhz = Float64(ustrip(lock_cn0_threshold)),
         max_satellites_per_signal = Int(max_satellites_per_signal),
         approximate_year,
         enable_ionospheric_correction,
@@ -251,7 +251,7 @@ end
 # other takes a free slot, and only when none is free does the group grow.
 function _register!(nav::VectorNavigation, group::VTSlotGroup, g::Int, state::SatVectorPLLAndDLL, record::LoopRecord)
     slots = group.slots
-    index = state.slot
+    index = state.slot_index
     if 1 <= index <= length(slots)
         slot = slots[index]
         slot.occupied && slot.registration == state.registration && return state, slot
@@ -295,7 +295,7 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     slot.prn = prn
     slot.occupied = true
     slot.registration = nav.registrations
-    slot.active = false
+    slot.in_cycle = false
     fs = _sampling_frequency_hz(record)
     start = record.sample_index - record.integrated_samples
     slot.last_end_sample = start
@@ -495,7 +495,7 @@ function _snapshot_decoding!(nav::VectorNavigation, group::VTSlotGroup, slot::VT
     chips_to_epoch = (epoch_time - slot.decoding_last_end_time) * (code_frequency + code_word)
     slot.epoch_decoder = slot.running_decoder
     slot.epoch_bit_synced = slot.decoding_bit_synced
-    slot.epoch_symbol_phase = _code_phase_from_symbol_edge(signal, slot) + chips_to_epoch
+    slot.epoch_code_phase = _code_phase_from_symbol_edge(signal, slot) + chips_to_epoch
     slot.decoding_epoch = nav.pending_epoch
     nothing
 end
@@ -511,10 +511,10 @@ function _complete_snapshot!(nav::VectorNavigation, group::VTSlotGroup, slot::VT
     code_frequency = ustrip(Hz, get_code_frequency(group.decoding_signal))
     decoder, code_phase = _decoder_at_code_phase(
         slot.epoch_decoder,
-        _symbol_phase_on_driver(group, slot),
+        _code_phase_on_driver(group, slot),
         code_frequency,
     )
-    in_lock = slot.epoch_bit_synced && slot.cn0_dbhz >= nav.lock_cn0_threshold
+    in_lock = slot.epoch_bit_synced && slot.cn0_dbhz >= nav.lock_cn0_threshold_dbhz
     slot.decoder = decoder
     slot.code_phase = code_phase
     slot.in_lock = in_lock
@@ -529,19 +529,19 @@ end
 # the symbol taken from the driver's replica: the decoding signal's count says which
 # symbol and roughly where, the driver's replica — the one the discriminators steer —
 # where exactly. The two codes are aligned at the satellite, so the driver's phase is
-# the symbol phase modulo the shorter of the driver's code period and a data symbol;
+# the code phase modulo the shorter of the driver's code period and a data symbol;
 # it moves the decoding signal's count to the nearest phase that agrees with it. For a
 # plain signal both come from the same replica and agree already. Before the bit sync
 # there is no symbol edge, and nothing reads it.
-function _symbol_phase_on_driver(group::VTSlotGroup, slot::VTSlot)
-    symbol_phase = slot.epoch_symbol_phase
+function _code_phase_on_driver(group::VTSlotGroup, slot::VTSlot)
+    code_phase = slot.epoch_code_phase
     driver_phase = slot.epoch_driver_code_phase
-    slot.epoch_bit_synced && !isnan(driver_phase) || return symbol_phase
+    slot.epoch_bit_synced && !isnan(driver_phase) || return code_phase
     decoding = group.decoding_signal
     chips_per_symbol =
         ustrip(Hz, get_code_frequency(decoding)) / ustrip(Hz, get_data_frequency(decoding))
     period = min(Float64(get_code_length(group.signal)), chips_per_symbol)
-    symbol_phase + rem(driver_phase - symbol_phase, period, RoundNearest)
+    code_phase + rem(driver_phase - code_phase, period, RoundNearest)
 end
 
 # The C/N₀ the measurements are weighted by is capped at what a receiver can see: the
@@ -665,8 +665,8 @@ _is_stale(nav::VectorNavigation, slot::VTSlot, now) =
 function _prepare_slots!(released, group::VTSlotGroup, nav::VectorNavigation, now)
     for slot in group.slots
         slot.release_reason = VT_NOT_RELEASED
-        slot.active = slot.occupied && slot.snapshot_epoch == nav.pending_epoch
-        if slot.occupied && !slot.active && _is_stale(nav, slot, now)
+        slot.in_cycle = slot.occupied && slot.snapshot_epoch == nav.pending_epoch
+        if slot.occupied && !slot.in_cycle && _is_stale(nav, slot, now)
             slot.occupied = false
             if slot.estimator_state.vt_on
                 _release!(slot, VT_INELIGIBLE)
@@ -714,7 +714,7 @@ function _navigation_cycle!(nav::VectorNavigation, now)
             _seed!(nav, groups, cycle_time)
         end
     end
-    num_members = _fold_groups(_count_members, 0, groups, buffers.states, 1)
+    num_members = _fold_groups(_count_members, 0, groups, buffers.sat_states, 1)
     nav.status = VTStatus(
         nav.running,
         nav.running || fell_back ? position_uncertainty(nav) * m : NaN * m,
