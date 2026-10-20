@@ -47,7 +47,7 @@ end
         @test slot.in_lock && slot.pvt_ready
         @test 40 < slot.cn0_dbhz < 50
     end
-    seed = findfirst(r -> r.status.enabled, results)
+    seed = findfirst(r -> r.status.seeded, results)
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
     @test all(r -> !r.status.running && isempty(r.measured), results[1:seed-1])
     @test position_error(rx, results[seed]) < 10.0
@@ -98,7 +98,7 @@ end
     rx = PipelineReceiver(; cn0_dbhz = 80.0)
     results, _, diverged = run_pipeline!(rx, 36.0)
     @test !diverged
-    seed = findfirst(r -> r.status.enabled, results)
+    seed = findfirst(r -> r.status.seeded, results)
     @test seed !== nothing
     tail = results[seed+50:end]
     @test all(r -> r.status.running, tail)
@@ -150,7 +150,7 @@ end
     @test results[fallback].status.released
     @test all(==(VT_FALLBACK), results[fallback].reasons)
     @test !results[fallback].status.running
-    reseed = findfirst(r -> r.status.enabled, results)
+    reseed = findfirst(r -> r.status.seeded, results)
     @test reseed !== nothing && reseed > fallback
     @test results[end].status.running
     @test all(sat -> sat.state.in_vector_loop, rx.sats)
@@ -184,7 +184,7 @@ end
     @test fallback !== nothing
     # Satellite 7 too, which sat the cycle out.
     @test all(==(VT_FALLBACK), results[fallback].reasons)
-    reseed = findfirst(r -> r.status.enabled, results)
+    reseed = findfirst(r -> r.status.seeded, results)
     @test reseed !== nothing && reseed > fallback
     # No satellite is in the loop while the scalar solve is in control.
     scalar = filter(l -> !l.status.running, lagging)
@@ -205,10 +205,10 @@ end
     rx = PipelineReceiver(; kw..., delay_records = 15)
     results, _, diverged = run_pipeline!(rx, 33.0)
     @test !diverged
-    seed = findfirst(r -> r.status.enabled, results)
+    seed = findfirst(r -> r.status.seeded, results)
     @test seed !== nothing
     tail = results[seed+250:end]
-    tail0 = results0[findfirst(r -> r.status.enabled, results0)+250:end]
+    tail0 = results0[findfirst(r -> r.status.seeded, results0)+250:end]
     @test all(r -> r.status.running, tail)
     @test pipeline_errors(rx, tail) < 2 * pipeline_errors(rx0, tail0) + 0.5
     @test pipeline_code_errors(tail) < 2 * pipeline_code_errors(tail0) + 0.01
@@ -377,7 +377,7 @@ function snapshot_range_errors(rx)
     end
 end
 
-first_fix(results) = results[findfirst(r -> r.status.enabled, results)]
+first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
 
 @testset "A pilot + data pair ranges on the pilot and decodes the data" begin
     rx = PipelineReceiver(; pilot = true)
@@ -399,7 +399,7 @@ first_fix(results) = results[findfirst(r -> r.status.enabled, results)]
         @test release_reason(estimator, GPSL1C_P(), sat.decoder.prn) == VT_NOT_RELEASED
     end
     # The first fix comes once every satellite's data is decoded, as on the data alone.
-    seed = findfirst(r -> r.status.enabled, results)
+    seed = findfirst(r -> r.status.seeded, results)
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
     @test position_error(rx, results[seed]) < 10.0
     tail = results[seed+50:end]
@@ -450,7 +450,7 @@ end
         @test !diverged
         results
     end
-    seeds = map(results -> findfirst(r -> r.status.enabled, results), runs)
+    seeds = map(results -> findfirst(r -> r.status.seeded, results), runs)
     @test seeds[1] !== nothing && allequal(seeds)
     for results in runs[2:end]
         @test all(zip(results[1:seeds[1]], runs[1][1:seeds[1]])) do (a, b)
@@ -472,7 +472,7 @@ end
         inner = NCOReferencedPLLAndDLL(), delay_records = 50)
     results, sample, diverged = run_pipeline!(rx, 28.0)
     @test !diverged
-    @test findfirst(r -> r.status.enabled, results) !== nothing
+    @test findfirst(r -> r.status.seeded, results) !== nothing
     group = rx.vt.groups[1]
     slots = [group.slots[sat.state.slot_index] for sat in rx.sats]
     @test all(slot -> length(slot.prompt_history.centers) == 6, slots)
@@ -497,7 +497,7 @@ end
         rx, results
     end
     (rx1, results1), (rx2, results2) = runs
-    @test any(r -> r.status.enabled, results1)
+    @test any(r -> r.status.seeded, results1)
     @test [r.pvt.position for r in results1] == [r.pvt.position for r in results2]
     for (a, b) in zip(rx1.vt.groups[1].slots, rx2.vt.groups[1].slots)
         @test a.running_decoder.num_bits_after_valid_syncro_sequence ==
@@ -512,7 +512,7 @@ end
     rx = PipelineReceiver(; num_sats = 6, cn0_estimator)
     results, _, diverged = run_pipeline!(rx, 28.0)
     @test !diverged
-    @test any(r -> r.status.enabled, results)
+    @test any(r -> r.status.seeded, results)
     for sat in rx.sats
         @test sat.loop.cn0_estimator isa typeof(cn0_estimator())
         report = satellite_report(rx.estimator, GPSL1CA(), sat.decoder.prn)
@@ -528,7 +528,7 @@ end
     rx = PipelineReceiver(; num_sats = 6, noise_ready_after = 28.0)
     results, sample, diverged = run_pipeline!(rx, 27.9)
     @test !diverged
-    @test all(r -> isempty(r.measured) && !r.status.enabled, results)
+    @test all(r -> isempty(r.measured) && !r.status.seeded, results)
     for sat in rx.sats
         report = satellite_report(rx.estimator, GPSL1CA(), sat.decoder.prn)
         @test report.bit_synced && !report.in_lock && !report.pvt_ready
@@ -537,7 +537,7 @@ end
     end
     results, _, diverged = run_pipeline!(rx, 1.0; start_sample = sample)
     @test !diverged
-    @test any(r -> r.status.enabled, results)
+    @test any(r -> r.status.seeded, results)
 end
 
 @testset "One host loop drives $name" for (name, estimator, pilot) in (

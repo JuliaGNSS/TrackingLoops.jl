@@ -410,7 +410,7 @@ end
     fade = (40.0, 48.0)
     results, _, diverged = run_pipeline!(rx, 66.0; fade = (t, i) -> i == 1 && fade[1] <= t < fade[2] ? 10^(-25 / 20) : 1.0)
     @test !diverged
-    seed = findfirst(r -> r.status.enabled, results)
+    seed = findfirst(r -> r.status.seeded, results)
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
     @test all(r -> r.status.running, results[seed:end])
     slots = rx.vt.groups[1].slots[1:length(rx.sats)]

@@ -31,7 +31,7 @@ function report(io, cycle, pvt, status)
     print(io, " ", length(pvt.sats))
     print(io, " ", status.num_members)
     print(io, " ", status.running)
-    print(io, " ", status.enabled)
+    print(io, " ", status.seeded)
     t = pvt.time
     t === nothing || print(io, " ", t.second)
     println(io)
@@ -51,7 +51,7 @@ function (@main)(args::Vector{String})::Cint
         if nav.cycle_id != last_cycle
             last_cycle = nav.cycle_id
             status = nav.status
-            (status.enabled || last_cycle % 20 == 0) && report(io, last_cycle, nav.pvt, status)
+            (status.seeded || last_cycle % 20 == 0) && report(io, last_cycle, nav.pvt, status)
         end
     end
     return 0

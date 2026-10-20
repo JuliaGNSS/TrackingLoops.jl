@@ -110,12 +110,12 @@ end
     @test all(sat -> !sat.state.in_vector_loop && sat.state.code_freq_update == 0.0Hz, rx.sats)
     @test all(sat -> sat.state.code_disc_sum == (0, 0.0), rx.sats)
     # Not ready, no satellite enters the scalar solve, so nothing re-seeds…
-    @test all(r -> !r.status.running && !r.status.enabled, results[fallback+1:end])
+    @test all(r -> !r.status.running && !r.status.seeded, results[fallback+1:end])
     # …until the receiver flags them in lock again: the first scalar fix seeds vector
     # tracking anew, from scalar loops that kept tracking.
     results, _, diverged = run_simulation!(rx, 20; start_sample = sample)
     @test !diverged
-    @test results[1].status.enabled
+    @test results[1].status.seeded
     @test all(r -> r.status.running, results)
     @test tail_errors(rx, results[10:end]) < 3.0
 end
@@ -290,7 +290,7 @@ end
     galileo.decoder = with_zero_ggto(galileo.decoder)
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
-    @test results[1].status.enabled
+    @test results[1].status.seeded
     @test all(r -> r.status.running && r.status.num_members == 4, results)
     @test all(r -> length(r.measured) == 4, results)
     gst_clock, gpst_clock, isb = only(rx.vt.buffers.observability.hub_offset_constraints)
@@ -303,5 +303,5 @@ end
     # Without the GGTO there is nothing to collapse onto, and no fix to seed from.
     rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1))
     results, _, _ = run_simulation!(rx, 5)
-    @test all(r -> !r.status.running && !r.status.enabled, results)
+    @test all(r -> !r.status.running && !r.status.seeded, results)
 end

@@ -69,7 +69,7 @@ end
     sample += cycle
     @test measure_navigation(rx, sample) == 0
     @test rx.vt.running
-    @test navigation_status(rx.estimator).enabled
+    @test navigation_status(rx.estimator).seeded
 end
 
 @testset "Navigation cycles are allocation-free with $name" for (name, kw) in (

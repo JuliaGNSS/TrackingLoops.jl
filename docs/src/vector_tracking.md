@@ -273,7 +273,7 @@ that replica. The landing may lie up to 2.5 cycles after the epoch.
 
 Nothing is logged. [`navigation_solution`](@ref) is the latest solution (the
 scalar PVT's before the filter is seeded) and [`navigation_status`](@ref) the
-[`VTStatus`](@ref) of the latest cycle: the events (the filter was seeded, fell
+[`NavigationStatus`](@ref) of the latest cycle: the events (the filter was seeded, fell
 back, released a satellite) and the filter's position and clock uncertainties,
 also at hand as [`position_uncertainty`](@ref) and
 [`clock_uncertainty`](@ref). [`release_reason`](@ref) says whether and why the
