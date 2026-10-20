@@ -158,7 +158,7 @@ struct SatVectorPLLAndDLL{S}
     #
     #   - `in_vector_loop`: whether the filter controls this satellite's NCOs. While `false`
     #     the satellite runs the inner loop and nothing is accumulated.
-    #   - `code_discr_acc`: `(count, sum)` of the DLL output (chips) since the
+    #   - `code_disc_sum`: `(count, sum)` of the DLL output (chips) since the
     #     filter last read it.
     #   - `fll_disc_sum`: `(count, sum)` of the FLL discriminator (Hz) since
     #     the filter last read it, over the records with a previous prompt.
@@ -185,7 +185,7 @@ struct SatVectorPLLAndDLL{S}
     #     taken up.
     inner::S
     in_vector_loop::Bool
-    code_discr_acc::Tuple{Int,Float64}
+    code_disc_sum::Tuple{Int,Float64}
     fll_disc_sum::Tuple{Int,typeof(1.0Hz)}
     previous_replica_half::Tuple{Float64,typeof(1.0s)}
     code_freq_update::typeof(1.0Hz)
@@ -236,7 +236,7 @@ function SatVectorPLLAndDLL(
     state::SatVectorPLLAndDLL{S};
     inner::Maybe{S} = nothing,
     in_vector_loop::Maybe{Bool} = nothing,
-    code_discr_acc::Maybe{Tuple{Int,Float64}} = nothing,
+    code_disc_sum::Maybe{Tuple{Int,Float64}} = nothing,
     fll_disc_sum::Maybe{Tuple{Int,typeof(1.0Hz)}} = nothing,
     previous_replica_half::Maybe{Tuple{Float64,typeof(1.0s)}} = nothing,
     code_freq_update::Maybe{typeof(1.0Hz)} = nothing,
@@ -251,7 +251,7 @@ function SatVectorPLLAndDLL(
     SatVectorPLLAndDLL{S}(
         isnothing(inner) ? state.inner : inner,
         isnothing(in_vector_loop) ? state.in_vector_loop : in_vector_loop,
-        isnothing(code_discr_acc) ? state.code_discr_acc : code_discr_acc,
+        isnothing(code_disc_sum) ? state.code_disc_sum : code_disc_sum,
         isnothing(fll_disc_sum) ? state.fll_disc_sum : fll_disc_sum,
         isnothing(previous_replica_half) ? state.previous_replica_half :
         previous_replica_half,
@@ -313,7 +313,7 @@ reset_estimator_state(
 ) = SatVectorPLLAndDLL(
     state;
     inner = reset_estimator_state(estimator.inner, state.inner, carrier_doppler, code_doppler),
-    code_discr_acc = (0, 0.0),
+    code_disc_sum = (0, 0.0),
     fll_disc_sum = (0, 0.0Hz),
     code_freq_update = 0.0Hz,
 )
@@ -457,14 +457,7 @@ _has_carrier_ramp(state::SatVectorPLLAndDLL) = !isnan(state.ramp.time)
 
 # Empty both discriminator accumulators, once the filter has read them.
 _reset_discriminator_accumulators(state::SatVectorPLLAndDLL) =
-    SatVectorPLLAndDLL(state; code_discr_acc = (0, 0.0), fll_disc_sum = (0, 0.0Hz))
-
-# The mean DLL output (chips) accumulated since the last reset, or `nothing` if
-# nothing has been accumulated.
-function _mean_code_discriminator(state::SatVectorPLLAndDLL)
-    count, discr_sum = state.code_discr_acc
-    count == 0 ? nothing : discr_sum / count
-end
+    SatVectorPLLAndDLL(state; code_disc_sum = (0, 0.0), fll_disc_sum = (0, 0.0Hz))
 
 # The mean of a discriminator sum `(count, sum)` — the DLL's (chips) or the FLL's (Hz)
 # since the last reset — or `nothing` if nothing has been accumulated.
@@ -489,9 +482,9 @@ end
 # The FLL accumulator with `record`'s discriminator added. A record without a
 # previous prompt (the first one, or one whose carrier phase polarity changed) has
 # no frequency measurement and is left out rather than taken as 0 Hz.
-@inline _accumulate_fll((count, discr_sum), fll_discriminator, record::LoopRecord) =
-    iszero(record.previous_prompt) ? (count, discr_sum) :
-    (count + 1, discr_sum + fll_discriminator)
+@inline _accumulate_fll((count, disc_sum), fll_discriminator, record::LoopRecord) =
+    iszero(record.previous_prompt) ? (count, disc_sum) :
+    (count + 1, disc_sum + fll_discriminator)
 
 # One record through the satellite's loop: the inner loop out of the vector loop,
 # the vector step in it.
@@ -549,7 +542,7 @@ end
     )
     SatVectorPLLAndDLL(
         state;
-        code_discr_acc = state.code_discr_acc .+ (1, _code_discriminator(record, words)),
+        code_disc_sum = state.code_disc_sum .+ (1, _code_discriminator(record, words)),
         fll_disc_sum,
         previous_replica_half = replica_halves.second,
         residual_pll,

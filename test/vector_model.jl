@@ -328,11 +328,11 @@ end
             sat_position = SVector(0.0, 0.0, 2.6e7),
         ),
     ]
-    bias_columns = TL.vt_bias_columns(members, layout)
+    bias_columns = TL.member_bias_columns(members, layout)
     @test bias_columns.clock_bias_indices == [1, 2]
     @test bias_columns.num_clock_biases == 2
     @test bias_columns.num_ifb == 0
-    @test TL.vt_bias_columns(members, layout, [2]).clock_bias_indices == [2]
+    @test TL.member_bias_columns(members, layout, [2]).clock_bias_indices == [2]
 
     user_pos = SVector(6.378e6, 0.0, 0.0)
     x = zeros(9)
@@ -732,15 +732,15 @@ end
 @testset "Solution epoch from the cached week offset" begin
     # Until an epoch offset has been resolved there is no epoch to report, so the solution
     # carries no timestamp and reads as "no fix" — as it must.
-    @test isnothing(TL.vt_time(nothing, 123.25s, 0.0))
+    @test isnothing(TL.solution_time(nothing, 123.25s, 0.0))
 
     # With the offset known, the epoch is the clock-bias-corrected reference time on top of
     # it: a receiver clock one light-second fast puts the same reference time one second
     # earlier.
     week_offset = 2052 * TL.SECONDS_PER_WEEK
-    epoch = TL.vt_time(week_offset, 123.25s, 0.0)
+    epoch = TL.solution_time(week_offset, 123.25s, 0.0)
     @test epoch == TAITime(week_offset + 123, 0.25)
-    @test epoch - TL.vt_time(week_offset, 123.25s, SPEED_OF_LIGHT) ≈ 1.0 rtol = 1e-9
+    @test epoch - TL.solution_time(week_offset, 123.25s, SPEED_OF_LIGHT) ≈ 1.0 rtol = 1e-9
 
     # The offset is read off a primary-system row: week, start epoch and the scale offset
     # that puts a BDT count onto the GPS Time count.
@@ -766,8 +766,8 @@ end
 
     # End to end across the boundary: one cycle before the wrap and one after must be a
     # single integration time apart, not a week.
-    before = TL.vt_time(week_offset, (TL.SECONDS_PER_WEEK - 0.1) * s, 0.0)
-    after = TL.vt_time(TL.rolled_over_time_epoch_offset(week_offset, week_offset, true), 0.0s, 0.0)
+    before = TL.solution_time(week_offset, (TL.SECONDS_PER_WEEK - 0.1) * s, 0.0)
+    after = TL.solution_time(TL.rolled_over_time_epoch_offset(week_offset, week_offset, true), 0.0s, 0.0)
     @test after - before ≈ 0.1 rtol = 1e-6
 end
 
@@ -811,7 +811,7 @@ end
     x[idxs.pos] = user_pos
     x_updated = copy(x)
     x_updated[idxs.pos] = user_pos .+ [10.0, 0.0, 0.0] # +x is towards the satellite
-    columns = TL.vt_bias_columns([member], layout)
+    columns = TL.member_bias_columns([member], layout)
     predict(x) = calc_ρ_hat!(zeros(1), [member.sat_position], TL.position_and_bias_vector(x, idxs), columns)[1]
     @test predict(x_updated) - predict(x) ≈ -10.0 rtol = 1e-3
     @test TL.nco_code_correction(predict(x_updated), predict(x), member.code_frequency, 0.1) ≈
@@ -826,7 +826,7 @@ end
     steered = _test_member(; prn = 4, code_discriminator = 0.02) # chips
     steered = @set steered.pseudorange_rate = 800.0 + 5.0 * steered.wavelength
     diverged = _test_member(; prn = 9, pseudorange_rate = -600.0)
-    residual, rate_residual = TL.vt_post_fit_residuals(steered, 2.05e7, 2.05e7, 800.0)
+    residual, rate_residual = TL.post_fit_residuals(steered, 2.05e7, 2.05e7, 800.0)
     # Both go straight into `SatInfo`'s unit-typed fields, so the units are part of the
     # contract: metres and metres per second.
     @test residual isa typeof(1.0u"m")
@@ -841,7 +841,7 @@ end
     # opposite to this loop's Doppler-signed one, so a measurement beyond the prediction
     # reads positive in the range domain and negative in the rate domain.
     residual, rate_residual =
-        TL.vt_post_fit_residuals(diverged, 2.10e7, 2.10e7 - 30.0, diverged.pseudorange_rate - 2.0)
+        TL.post_fit_residuals(diverged, 2.10e7, 2.10e7 - 30.0, diverged.pseudorange_rate - 2.0)
     @test ustrip(u"m", residual) ≈ 30.0
     @test ustrip(u"m/s", rate_residual) ≈ -2.0
 end
@@ -858,7 +858,7 @@ end
     @test TL.mean_fll_disc(neg) ≈ -4.0
     @test TL.mean_fll_disc(empty_acc) == 0.0
     # The DLL mean enters negated.
-    @test TL.accumulated_code_discriminator(SatVectorPLLAndDLL(base; code_discr_acc = (2, 0.1)), 0.1) ≈ -0.05
+    @test TL.mean_code_disc_at_epoch(SatVectorPLLAndDLL(base; code_disc_sum = (2, 0.1)), 0.1) ≈ -0.05
 end
 
 @testset "The code measurement is moved from mid-cycle to the epoch" begin
@@ -869,8 +869,8 @@ end
         state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, FixedNCOWord(20.0, 0.0), 0), c_new * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, FixedNCOWord(20.0, 0.0), 0)
         @test state.code_freq_update_history == (c_new * Hz, c_old * Hz, 0.0Hz)
         @test TL.code_phase_advance(state, T) === c_new * T / 2
-        state = SatVectorPLLAndDLL(state; code_discr_acc = (4, 0.2))
-        @test TL.accumulated_code_discriminator(state, T) === -0.05 + c_new * T / 2
+        state = SatVectorPLLAndDLL(state; code_disc_sum = (4, 0.2))
+        @test TL.mean_code_disc_at_epoch(state, T) === -0.05 + c_new * T / 2
     end
     # Under an NCO delay the second half-cycle ran on the corrections in effect before
     # the newest landed: on `c₁` while the newest lands inside it or after the epoch, and
@@ -892,26 +892,26 @@ end
 end
 
 @testset "A cycle without both a code and a carrier measurement withholds the member" begin
-    # The `accumulated_*` helpers substitute a zero when nothing was accumulated, which the
-    # navigation filter cannot distinguish from a genuine zero residual measured at full
-    # weight. `has_code_and_carrier_measurements` is the guard that keeps such a member out
-    # of the measurement set.
+    # `mean_code_disc_at_epoch` and `mean_fll_disc` substitute a zero when nothing was
+    # accumulated, which the navigation filter cannot distinguish from a genuine zero
+    # residual measured at full weight. `has_disc_sums` is the guard that keeps such a
+    # member out of the measurement set.
     base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
-    accumulated = SatVectorPLLAndDLL(base; code_discr_acc = (3, 0.06),
+    accumulated = SatVectorPLLAndDLL(base; code_disc_sum = (3, 0.06),
         fll_disc_sum = (3, 6.0Hz))
-    nothing_accumulated = SatVectorPLLAndDLL(base; code_discr_acc = (0, 0.0),
+    nothing_accumulated = SatVectorPLLAndDLL(base; code_disc_sum = (0, 0.0),
         fll_disc_sum = (0, 0.0Hz))
-    @test TL.has_code_and_carrier_measurements(accumulated)
-    @test !TL.has_code_and_carrier_measurements(nothing_accumulated)
+    @test TL.has_disc_sums(accumulated)
+    @test !TL.has_disc_sums(nothing_accumulated)
     # A cycle without a frequency measurement — its only record the first after a
     # (re)start — has no rate to measure, and is withheld too.
-    no_fll = SatVectorPLLAndDLL(base; code_discr_acc = (1, 0.02),
+    no_fll = SatVectorPLLAndDLL(base; code_disc_sum = (1, 0.02),
         fll_disc_sum = (0, 0.0Hz))
-    @test !TL.has_code_and_carrier_measurements(no_fll)
+    @test !TL.has_disc_sums(no_fll)
     # The zero the helpers would otherwise hand to the filter is indistinguishable from a
     # measured zero — which is exactly why the guard is needed rather than the fallback.
     @test TL.mean_fll_disc(nothing_accumulated) == 0.0
-    @test TL.accumulated_code_discriminator(nothing_accumulated, 0.1) == 0.0
+    @test TL.mean_code_disc_at_epoch(nothing_accumulated, 0.1) == 0.0
 end
 
 @testset "Pseudorange differencing across a GNSS week rollover" begin
@@ -991,15 +991,15 @@ end
     positions = [member.sat_position for member in members]
     gst_bias = Dict{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}(GST() => 2.0u"m")
     pvt = PVTSolution(; position = ECEF(user...), reference_system = GPST(), inter_system_biases = gst_bias)
-    clock_used, ifb_used = zeros(Int, 2), zeros(Int, 0)
-    columns, primary = TL.dense_bias_columns!(Int[], Int[], clock_used, ifb_used, members, eachindex(members), 1)
+    clock_columns, ifb_columns = zeros(Int, 2), zeros(Int, 0)
+    columns, primary = TL.dense_bias_columns!(Int[], Int[], clock_columns, ifb_columns, members, eachindex(members), 1)
     H = calc_H!(zeros(5, 5), positions, [user..., 0.0, 0.0], columns)
     dop = calc_DOP!(zeros(5, 5), H, ECEF(user...), primary)
 
     x, P = zeros(n), zeros(n, n)
     TL.initial_nav_state!(x, P, layout, idxs, pvt)
     seeded = copy(P)
-    @test TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(5, 5), clock_used, ifb_used)
+    @test TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(5, 5), clock_columns, ifb_columns)
     block = [idxs.pos; idxs.clock_biases]
     @test P[block, block] ≈ TL.FIX_PSEUDORANGE_STD^2 * inv(H' * H)
     @test TL.position_uncertainty(P, idxs) ≈ TL.FIX_PSEUDORANGE_STD * dop.PDOP
@@ -1016,7 +1016,7 @@ end
     pvt_gps = @set pvt.inter_system_biases = empty(gst_bias)
     x2, P2 = zeros(n), zeros(n, n)
     TL.initial_nav_state!(x2, P2, layout, idxs, pvt_gps)
-    @test TL.seed_fix_covariance!(P2, idxs, layout, pvt_gps, 1, H, zeros(5, 5), clock_used, ifb_used)
+    @test TL.seed_fix_covariance!(P2, idxs, layout, pvt_gps, 1, H, zeros(5, 5), clock_columns, ifb_columns)
     gal = idxs.clock_biases[2]
     @test P2[gal, gal] == 100.0^2
     @test all(iszero, P2[gal, setdiff(1:n, gal)])
@@ -1025,7 +1025,7 @@ end
     # A rank-deficient design leaves the seed as it was.
     P3 = copy(seeded)
     H_degenerate = calc_H!(zeros(5, 5), fill(positions[1], 5), [user..., 0.0, 0.0], columns)
-    @test !TL.seed_fix_covariance!(P3, idxs, layout, pvt, 1, H_degenerate, zeros(5, 5), clock_used, ifb_used)
+    @test !TL.seed_fix_covariance!(P3, idxs, layout, pvt, 1, H_degenerate, zeros(5, 5), clock_columns, ifb_columns)
     @test P3 == seeded
 end
 
@@ -1048,12 +1048,12 @@ end
     positions = [member.sat_position for member in members]
     gst_bias = Dict{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}(GST() => 2.0u"m")
     pvt = PVTSolution(; position = ECEF(user...), reference_system = GPST(), inter_system_biases = gst_bias)
-    clock_used, ifb_used = zeros(Int, 2), zeros(Int, 1)
-    columns, _ = TL.dense_bias_columns!(Int[], Int[], clock_used, ifb_used, members, eachindex(members), 1)
+    clock_columns, ifb_columns = zeros(Int, 2), zeros(Int, 1)
+    columns, _ = TL.dense_bias_columns!(Int[], Int[], clock_columns, ifb_columns, members, eachindex(members), 1)
     H = calc_H!(zeros(6, 6), positions, [user..., 0.0, 0.0, 0.0], columns)
     x, P = zeros(n), zeros(n, n)
     TL.initial_nav_state!(x, P, layout, idxs, pvt)
     seeded = copy(P)
-    @test !TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(6, 6), clock_used, ifb_used)
+    @test !TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(6, 6), clock_columns, ifb_columns)
     @test P == seeded
 end

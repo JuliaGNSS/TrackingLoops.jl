@@ -277,9 +277,9 @@ struct MeasurementBuffers{I}
     R::Matrix{Float64}
 end
 
-const _UKFMU = typeof(UKFMUIntermediate(Float64, 1, 1))
+const _UKFIntermediate = typeof(UKFMUIntermediate(Float64, 1, 1))
 
-MeasurementBuffers(num_states, num_measurements) = MeasurementBuffers{_UKFMU}(
+MeasurementBuffers(num_states, num_measurements) = MeasurementBuffers{_UKFIntermediate}(
     UKFMUIntermediate(Float64, num_states, num_measurements),
     zeros(num_measurements),
     zeros(num_measurements, num_measurements),
@@ -314,11 +314,11 @@ mutable struct VTBuffers{SB<:Tuple}
     landing_range::Vector{Float64}
     observability::ObservabilityWorkspace
     time_update::KFTUIntermediate{Float64}
-    measurement_updates::Vector{Union{Nothing,MeasurementBuffers{_UKFMU}}}
+    measurement_updates::Vector{Union{Nothing,MeasurementBuffers{_UKFIntermediate}}}
     dense_clock_indices::Vector{Int}
     dense_ifb_indices::Vector{Int}
-    clock_used::Vector{Int}
-    ifb_used::Vector{Int}
+    clock_columns::Vector{Int}
+    ifb_columns::Vector{Int}
     design_matrix::Matrix{Float64}
     normal_matrices::Vector{Matrix{Float64}}
 end
@@ -357,7 +357,7 @@ function VTBuffers(sat_states::Tuple, num_states, layout::NavFilterLayout, max_m
         KFTUIntermediate(Float64, num_states),
         # One per measurement count the slots can produce, so a change of membership
         # never builds one mid-run.
-        Union{Nothing,MeasurementBuffers{_UKFMU}}[
+        Union{Nothing,MeasurementBuffers{_UKFIntermediate}}[
             MeasurementBuffers(num_states, k) for k = 1:max_measurements
         ],
         _capacity_vector(Int, max_members),
@@ -589,9 +589,9 @@ end
 # group's position `g` and its entry of the per-group `buffers`; returns the final
 # accumulator. Recursion over the tuples keeps every group's call statically
 # dispatched, however heterogeneous the groups are.
-@inline _fold_groups(f::F, acc, ::Tuple{}, ::Tuple{}, g, args...) where {F} = acc
-@inline _fold_groups(f::F, acc, groups::Tuple, buffers::Tuple, g, args...) where {F} =
-    _fold_groups(
+@inline _fold_groups_with_buffers(f::F, acc, ::Tuple{}, ::Tuple{}, g, args...) where {F} = acc
+@inline _fold_groups_with_buffers(f::F, acc, groups::Tuple, buffers::Tuple, g, args...) where {F} =
+    _fold_groups_with_buffers(
         f,
         f(acc, first(groups), g, first(buffers), args...),
         Base.tail(groups),
@@ -628,7 +628,7 @@ end
 # a fresh fix is a new object, a failed epoch the solution itself.
 function _solve_scalar_pvt!(nav::VectorNavigation, groups)
     buffers = nav.buffers.sat_states
-    _fold_groups(_collect_pvt_ready!, nothing, groups, buffers, 1)
+    _fold_groups_with_buffers(_collect_pvt_ready!, nothing, groups, buffers, 1)
     nav.pvt = calc_pvt!(
         nav.pvt,
         nav.workspace,
@@ -745,13 +745,13 @@ function _collect_members!(j, group, g, buffer, nav, T)
                 chip_length,
                 wavelength,
                 code_frequency,
-                slot.in_lock && has_code_and_carrier_measurements(state),
+                slot.in_lock && has_disc_sums(state),
                 row.time,
                 row.time - row.count_offset_to_gpst,
                 row.position,
                 row.velocity,
                 row.clock_drift,
-                accumulated_code_discriminator(state, T),
+                mean_code_disc_at_epoch(state, T),
                 wavelength *
                 (ustrip(Hz, slot.carrier_doppler) + mean_fll_disc(state)),
                 linear_cn0_floor(slot.cn0_dbhz),
@@ -768,7 +768,7 @@ end
 # the per-member model pieces. Returns the ionospheric correction the rows select.
 function _gather_members!(nav::VectorNavigation, groups, T)
     buffers = nav.buffers
-    _fold_groups(_collect_member_states!, nothing, groups, buffers.sat_states, 1)
+    _fold_groups_with_buffers(_collect_member_states!, nothing, groups, buffers.sat_states, 1)
     ionospheric_correction = collect_measurement_rows!(
         buffers.rows,
         _signal_groups(groups, buffers.sat_states);
@@ -785,13 +785,13 @@ function _gather_members!(nav::VectorNavigation, groups, T)
         ),
     )
     empty!(buffers.members)
-    _fold_groups(_collect_members!, 0, groups, buffers.sat_states, 1, nav, T)
+    _fold_groups_with_buffers(_collect_members!, 0, groups, buffers.sat_states, 1, nav, T)
     members = buffers.members
     resize!(buffers.positions, num_members)
     for j in eachindex(members)
         buffers.positions[j] = members[j].sat_position
     end
-    vt_bias_columns!(buffers.member_columns, members, eachindex(members))
+    member_bias_columns!(buffers.member_columns, members, eachindex(members))
     ionospheric_correction
 end
 
@@ -864,7 +864,7 @@ function _measurement_update!(nav::VectorNavigation, T)
     for (k, j) in enumerate(candidates)
         buffers.candidate_positions[k] = members[j].sat_position
     end
-    vt_bias_columns!(buffers.candidate_columns, members, candidates)
+    member_bias_columns!(buffers.candidate_columns, members, candidates)
     num_rate_rows = use_rates ? num_sats : 0
     num_measurements = num_sats + num_rate_rows + length(constraints)
     update = _measurement_buffers!(buffers, length(nav.x), num_measurements)
@@ -918,7 +918,7 @@ function _predict_members!(nav::VectorNavigation)
     rate_residuals = resize!(buffers.rate_residuals, num_members)
     for (j, member) in enumerate(members)
         rates[j] = predict_pseudorange_rate(nav.x, idxs, member)
-        residuals[j], rate_residuals[j] = vt_post_fit_residuals(
+        residuals[j], rate_residuals[j] = post_fit_residuals(
             member,
             buffers.measured_pseudoranges[j],
             predicted[j],
@@ -1070,8 +1070,8 @@ function _seed_fix_covariance!(nav::VectorNavigation)
     columns, _ = dense_bias_columns!(
         buffers.dense_clock_indices,
         buffers.dense_ifb_indices,
-        buffers.clock_used,
-        buffers.ifb_used,
+        buffers.clock_columns,
+        buffers.ifb_columns,
         members,
         included,
         nav.primary_clock_index,
@@ -1092,8 +1092,8 @@ function _seed_fix_covariance!(nav::VectorNavigation)
         nav.primary_clock_index,
         H,
         buffers.normal_matrices[num_columns],
-        buffers.clock_used,
-        buffers.ifb_used,
+        buffers.clock_columns,
+        buffers.ifb_columns,
     )
 end
 
@@ -1111,7 +1111,7 @@ function _seed!(nav::VectorNavigation, groups, cycle_time)
     T = ustrip(s, model.cycle_time)
     pvt = nav.pvt
     nav.primary_clock_index = initial_nav_state!(nav.x, nav.P, nav.layout, model.idxs, pvt)
-    _fold_groups(_add_fix_satellites!, 0, groups, buffers.sat_states, 1, nav)
+    _fold_groups_with_buffers(_add_fix_satellites!, 0, groups, buffers.sat_states, 1, nav)
     ionospheric_correction = _gather_members!(nav, groups, T)
     _seed_fix_covariance!(nav)
     members = buffers.members
@@ -1128,7 +1128,7 @@ function _seed!(nav::VectorNavigation, groups, cycle_time)
     _predict_members!(nav)
     resize!(buffers.above_horizon, length(members))
     fill!(buffers.above_horizon, true)
-    _fold_groups(_assign_commands!, 0, groups, buffers.sat_states, 1, nav)
+    _fold_groups_with_buffers(_assign_commands!, 0, groups, buffers.sat_states, 1, nav)
     nav.running = true
     nav.reference_time = reference_tow * s
     nav.time_with_insufficient_meas = 0.0s
@@ -1165,9 +1165,9 @@ function _run_cycle!(nav::VectorNavigation, groups, cycle_time)
     reference_tow = ustrip(s, reference_time)
 
     # Admission is judged at the solution the filter starts the cycle from.
-    admission_frame = ENUfromECEF(_ecef(first(nav_filter_states(nav.x, idxs))), wgs84)
+    enu_from_ecef = ENUfromECEF(_ecef(first(nav_filter_states(nav.x, idxs))), wgs84)
     released =
-        _fold_groups(_update_membership!, false, groups, buffers.sat_states, 1, admission_frame)
+        _fold_groups_with_buffers(_update_membership!, false, groups, buffers.sat_states, 1, enu_from_ecef)
     ionospheric_correction = _gather_members!(nav, groups, T)
     members = buffers.members
     num_members = length(members)
@@ -1223,16 +1223,16 @@ function _run_cycle!(nav::VectorNavigation, groups, cycle_time)
         above_horizon[j] = get_sat_enu(enu_from_ecef, _ecef(member.sat_position)).ϕ >= 0
         above_horizon[j] && (num_above_horizon += 1)
     end
-    released = _fold_groups(_release_below_horizon!, released, groups, buffers.sat_states, 1, nav)
+    released = _fold_groups_with_buffers(_release_below_horizon!, released, groups, buffers.sat_states, 1, nav)
 
     # Fall back to scalar tracking when the filter has coasted too long or no members
     # remain; otherwise assign every member fresh commands toward the updated solution.
     fell_back = time_with_insufficient_meas > config.insufficient_meas_timeout || num_above_horizon == 0
     if fell_back
-        released = _fold_groups(_release_all!, released, groups, buffers.sat_states, 1, VT_FALLBACK)
+        released = _fold_groups_with_buffers(_release_all!, released, groups, buffers.sat_states, 1, VT_FALLBACK)
         nav.running = false
     else
-        _fold_groups(_assign_commands!, 0, groups, buffers.sat_states, 1, nav)
+        _fold_groups_with_buffers(_assign_commands!, 0, groups, buffers.sat_states, 1, nav)
     end
 
     nav.primary_clock_index =
@@ -1291,8 +1291,8 @@ function _write_solution!(nav::VectorNavigation, groups)
         columns, primary_column = dense_bias_columns!(
             buffers.dense_clock_indices,
             buffers.dense_ifb_indices,
-            buffers.clock_used,
-            buffers.ifb_used,
+            buffers.clock_columns,
+            buffers.ifb_columns,
             members,
             candidates,
             nav.primary_clock_index,
@@ -1351,7 +1351,7 @@ function _write_solution!(nav::VectorNavigation, groups)
         velocity,
         calc_course_over_ground(position, velocity),
         primary_clock_bias * m,
-        vt_time(nav.time_epoch_offset, nav.reference_time, primary_clock_bias),
+        solution_time(nav.time_epoch_offset, nav.reference_time, primary_clock_bias),
         user_clock_drift / SPEED_OF_LIGHT,
         dop,
         sats,
