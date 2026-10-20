@@ -1,5 +1,12 @@
 # Changelog
 
+## [5.1.2](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v5.1.1...v5.1.2) (2026-10-20)
+
+
+### Bug Fixes
+
+* **vector:** never lock a satellite stepped past an epoch out of the next ones ([610b7a7](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/610b7a793bac6e25e5d961f41c63861656eeb7da))
+
 ## [5.1.1](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v5.1.0...v5.1.1) (2026-10-18)
 
 
