@@ -91,7 +91,7 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     # The registration that holds the slot; a state of an older one registers again.
     registration::Int
     # Whether the slot snapshotted the epoch of the running cycle.
-    active::Bool
+    in_cycle::Bool
     # The decoder, advanced by every record of the decoding signal.
     running_decoder::D
     # The driver's last record end.
@@ -131,7 +131,7 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     # code phase at the epoch from the decoder's last symbol edge (chips).
     epoch_decoder::D
     epoch_bit_synced::Bool
-    epoch_symbol_phase::Float64
+    epoch_code_phase::Float64
     # The driver's replica code phase at the epoch (chips; `NaN` if not reported).
     epoch_driver_code_phase::Float64
     # The snapshot at the epoch: what the cycle reads, and partly writes. The decoder
@@ -289,10 +289,11 @@ MeasurementBuffers(num_states, num_measurements) = MeasurementBuffers{_UKFMU}(
 # vectors grow past that with `push!` / `resize!`, the design matrix by replacement.
 mutable struct VTBuffers{SB<:Tuple}
     # Per group, the `SatelliteState`s whose rows are collected.
-    states::SB
+    sat_states::SB
     rows::Vector{SatelliteMeasurement}
     members::Vector{VTMember}
-    active::Vector{Bool}
+    # Per member, whether it stayed above the horizon this cycle.
+    above_horizon::Vector{Bool}
     candidates::Vector{Int}
     delays::Vector{Float64}
     measured_pseudoranges::Vector{Float64}
@@ -324,13 +325,13 @@ end
 
 _capacity_vector(::Type{T}, n) where {T} = sizehint!(T[], n)
 
-function VTBuffers(states::Tuple, num_states, layout::NavFilterLayout, max_members)
+function VTBuffers(sat_states::Tuple, num_states, layout::NavFilterLayout, max_members)
     num_clocks = num_clock_biases(layout)
     num_ifbs = num_ifb(layout)
     num_lsq = 3 + num_clocks + num_ifbs
     max_measurements = 2 * max_members + num_clocks
     VTBuffers(
-        states,
+        sat_states,
         _capacity_vector(SatelliteMeasurement, max_members),
         _capacity_vector(VTMember, max_members),
         _capacity_vector(Bool, max_members),
@@ -410,16 +411,14 @@ mutable struct VectorNavigation{G<:Tuple,SB<:Tuple}
     const buffers::VTBuffers{SB}
     const groups::G
     const cycle_time::typeof(1.0s)
-    const lock_cn0_threshold::Float64 # dB-Hz
+    const lock_cn0_threshold_dbhz::Float64
     # The epoch (a multiple of `cycle_time` on the records' time grid) the slots
     # snapshot next, and how many have.
     pending_epoch::Int
     num_snapshots::Int
-    # The latest cycle: its id, its epoch and the integration time its
-    # corrections were sized with.
+    # The latest cycle: its id and its epoch.
     cycle_id::Int
     cycle_epoch::Int
-    cycle_integration_time::Float64 # s
     registrations::Int
 end
 
@@ -428,7 +427,7 @@ function VectorNavigation(
     pairs::Tuple,
     inner::AbstractDopplerEstimator;
     cycle_time,
-    lock_cn0_threshold::Float64,
+    lock_cn0_threshold_dbhz::Float64,
     max_satellites_per_signal::Int,
     approximate_year::Integer,
     enable_ionospheric_correction::Bool,
@@ -444,7 +443,7 @@ function VectorNavigation(
         VTSlotGroup(signal, decoding_signal, prototype, max_satellites_per_signal, cycle_time)
     end
     max_members = max_satellites_per_signal * length(signals)
-    states = map(_satellite_state_buffer, groups)
+    sat_states = map(_satellite_state_buffer, groups)
     VectorNavigation(
         filter_config,
         !isnothing(config),
@@ -464,15 +463,14 @@ function VectorNavigation(
         Int(approximate_year),
         enable_ionospheric_correction,
         enable_tropospheric_correction,
-        VTBuffers(states, n, layout, max_members),
+        VTBuffers(sat_states, n, layout, max_members),
         groups,
         uconvert(s, cycle_time),
-        lock_cn0_threshold,
+        lock_cn0_threshold_dbhz,
         typemin(Int),
         0,
         0,
         typemin(Int),
-        ustrip(s, cycle_time),
         0,
     )
 end
@@ -612,7 +610,7 @@ _signal_groups(groups, buffers) =
 function _collect_pvt_ready!(acc, group, g, buffer)
     empty!(buffer)
     for sat in group.slots
-        sat.active && sat.pvt_ready || continue
+        sat.in_cycle && sat.pvt_ready || continue
         push!(buffer, _satellite_state(group.signal, sat))
     end
     acc
@@ -629,7 +627,7 @@ end
 # The scalar PVT over the satellites marked `pvt_ready`, into the state's solution:
 # a fresh fix is a new object, a failed epoch the solution itself.
 function _solve_scalar_pvt!(vt::VectorNavigation, groups)
-    buffers = vt.buffers.states
+    buffers = vt.buffers.sat_states
     _fold_groups(_collect_pvt_ready!, nothing, groups, buffers, 1)
     vt.pvt = calc_pvt!(
         vt.pvt,
@@ -657,10 +655,10 @@ end
 # Whether the slot is a member of the vector loop this cycle: it snapshotted the
 # epoch, and its state at the epoch is in the loop. A member that missed the
 # epoch sits the cycle out.
-_is_member(sat::VTSlot) = sat.active && sat.estimator_state.vt_on
+_is_member(sat::VTSlot) = sat.in_cycle && sat.estimator_state.vt_on
 
 _is_eligible(sat::VTSlot) =
-    sat.active &&
+    sat.in_cycle &&
     is_decoding_completed_for_positioning(sat.decoder) &&
     is_sat_healthy(sat.decoder)
 
@@ -693,7 +691,7 @@ end
 # receiving corrections.
 function _update_membership!(released, group, g, buffer, enu_from_ecef)
     for sat in group.slots
-        sat.active || continue
+        sat.in_cycle || continue
         eligible = _is_eligible(sat)
         state = sat.estimator_state
         if eligible && sat.in_lock
@@ -731,7 +729,7 @@ function _collect_members!(j, group, g, buffer, vt, T)
     wavelength = SPEED_OF_LIGHT / ustrip(Hz, get_center_frequency(signal))
     clock_bias_index = layout.clock_bias_index_by_group[g]
     ifb_index = layout.ifb_index_by_group[g]
-    for (slot, sat) in enumerate(group.slots)
+    for (slot_index, sat) in enumerate(group.slots)
         _is_member(sat) || continue
         state = sat.estimator_state
         j += 1
@@ -740,7 +738,7 @@ function _collect_members!(j, group, g, buffer, vt, T)
             buffers.members,
             VTMember(
                 g,
-                slot,
+                slot_index,
                 sat.prn,
                 clock_bias_index,
                 ifb_index,
@@ -770,16 +768,16 @@ end
 # the per-member model pieces. Returns the ionospheric correction the rows select.
 function _gather_members!(vt::VectorNavigation, groups, T)
     buffers = vt.buffers
-    _fold_groups(_collect_member_states!, nothing, groups, buffers.states, 1)
+    _fold_groups(_collect_member_states!, nothing, groups, buffers.sat_states, 1)
     ionospheric_correction = collect_measurement_rows!(
         buffers.rows,
-        _signal_groups(groups, buffers.states);
+        _signal_groups(groups, buffers.sat_states);
         approximate_year = vt.approximate_year,
     )
     # Every member is decoded and healthy, which is exactly what the collection pass
     # keeps, so the rows are the members in order.
     num_rows = length(buffers.rows)
-    num_members = mapreduce(length, +, buffers.states; init = 0)
+    num_members = mapreduce(length, +, buffers.sat_states; init = 0)
     num_rows == num_members || throw(
         ArgumentError(
             "a vector-loop member was not decoded for positioning and healthy; " *
@@ -787,7 +785,7 @@ function _gather_members!(vt::VectorNavigation, groups, T)
         ),
     )
     empty!(buffers.members)
-    _fold_groups(_collect_members!, 0, groups, buffers.states, 1, vt, T)
+    _fold_groups(_collect_members!, 0, groups, buffers.sat_states, 1, vt, T)
     members = buffers.members
     resize!(buffers.positions, num_members)
     for j in eachindex(members)
@@ -930,14 +928,14 @@ function _predict_members!(vt::VectorNavigation)
     nothing
 end
 
-# Assign every active member this cycle's commands: the satellite evaluates them where
-# its own command lands, on its next record (`_commands_at_landing`), against this
-# cycle's posterior and member buffers.
+# Assign every member above the horizon this cycle's commands: the satellite evaluates
+# them where its own command lands, on its next record (`_commands_at_landing`),
+# against this cycle's posterior and member buffers.
 function _assign_commands!(acc, group, g, buffer, vt)
     buffers = vt.buffers
     for (j, member) in enumerate(buffers.members)
-        member.group == g && buffers.active[j] || continue
-        sat = group.slots[member.slot]
+        member.group == g && buffers.above_horizon[j] || continue
+        sat = group.slots[member.slot_index]
         sat.correction_cycle = vt.cycle_id
         sat.member_index = j
     end
@@ -962,7 +960,7 @@ function _member_commands(vt::VectorNavigation, sat::VTSlot, j, τ, chips)
         predicted_pseudorange,
         measured_pseudorange,
         member.code_frequency,
-        vt.cycle_integration_time,
+        ustrip(s, vt.model.cycle_time),
     )
     code_update, predicted_carrier_doppler(predicted_rate, member.wavelength)
 end
@@ -1007,13 +1005,13 @@ function _predict_after_epoch(vt::VectorNavigation, sat::VTSlot, member::VTMembe
     predicted_pseudorange, predicted_rate, measured_pseudorange
 end
 
-# Release the members of this group that dropped below the horizon (`active` false).
+# Release the members of this group that dropped below the horizon.
 # Returns whether any was released.
 function _release_below_horizon!(released, group, g, buffer, vt)
     buffers = vt.buffers
     for (j, member) in enumerate(buffers.members)
-        member.group == g && !buffers.active[j] || continue
-        _release!(group.slots[member.slot], VT_BELOW_HORIZON)
+        member.group == g && !buffers.above_horizon[j] || continue
+        _release!(group.slots[member.slot_index], VT_BELOW_HORIZON)
         released = true
     end
     released
@@ -1045,7 +1043,7 @@ function _enable_fix_satellites!(num_enabled, group, g, buffer, vt)
     signal_id = vt.layout.signal_id_by_group[g]
     sats = vt.pvt.sats
     for sat in group.slots
-        sat.active && haskey(sats, (signal_id, sat.prn)) || continue
+        sat.in_cycle && haskey(sats, (signal_id, sat.prn)) || continue
         sat.estimator_state = _enable_vector_tracking(sat.estimator_state)
         num_enabled += 1
     end
@@ -1103,17 +1101,17 @@ end
 # fix's satellites into the vector loop, seed the navigation filter from the fix, and close
 # the loops a first time so the NCOs already steer toward the navigation solution — with
 # no measurement update and no accumulator reset. A fresh fix always has satellites, and
-# every one of them is an active slot (only those enter the scalar solve), so there is
+# every one of them is a slot in the cycle (only those enter the scalar solve), so there is
 # always a member to seed from. No satellite is in the loop then: registration puts a
 # satellite out of it, and the fallback releases every satellite in it.
 function _seed!(vt::VectorNavigation, groups, cycle_time)
     buffers = vt.buffers
     model = vt.model
-    ensure_nav_filter_integration_time!(model, vt.config, cycle_time)
-    T = ustrip(s, model.integration_time)
+    ensure_nav_filter_cycle_time!(model, vt.config, cycle_time)
+    T = ustrip(s, model.cycle_time)
     pvt = vt.pvt
     vt.primary_clock_index = initial_nav_state!(vt.x, vt.P, vt.layout, model.idxs, pvt)
-    _fold_groups(_enable_fix_satellites!, 0, groups, buffers.states, 1, vt)
+    _fold_groups(_enable_fix_satellites!, 0, groups, buffers.sat_states, 1, vt)
     ionospheric_correction = _gather_members!(vt, groups, T)
     _seed_fix_covariance!(vt)
     members = buffers.members
@@ -1128,10 +1126,9 @@ function _seed!(vt::VectorNavigation, groups, cycle_time)
     # First loop closure: the filter is seeded exactly at the fix, so the NCO corrections
     # are the prediction residuals at the seeded state.
     _predict_members!(vt)
-    resize!(buffers.active, length(members))
-    fill!(buffers.active, true)
-    vt.cycle_integration_time = T
-    _fold_groups(_assign_commands!, 0, groups, buffers.states, 1, vt)
+    resize!(buffers.above_horizon, length(members))
+    fill!(buffers.above_horizon, true)
+    _fold_groups(_assign_commands!, 0, groups, buffers.sat_states, 1, vt)
     vt.running = true
     vt.reference_time = reference_tow * s
     vt.time_with_insufficient_meas = 0.0s
@@ -1155,7 +1152,7 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
     model = vt.model
     idxs = model.idxs
     T = ustrip(s, cycle_time)
-    ensure_nav_filter_integration_time!(model, config, cycle_time)
+    ensure_nav_filter_cycle_time!(model, config, cycle_time)
     # Advance the receive time-of-week, wrapping at the 604800 s week boundary so it
     # stays a valid seconds-of-week for the pseudorange differencing, the atmospheric
     # time-of-week and the solution's week/second split. The wrap is remembered: the
@@ -1170,7 +1167,7 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
     # Admission is judged at the solution the filter starts the cycle from.
     admission_frame = ENUfromECEF(_ecef(first(nav_filter_states(vt.x, idxs))), wgs84)
     released =
-        _fold_groups(_update_membership!, false, groups, buffers.states, 1, admission_frame)
+        _fold_groups(_update_membership!, false, groups, buffers.sat_states, 1, admission_frame)
     ionospheric_correction = _gather_members!(vt, groups, T)
     members = buffers.members
     num_members = length(members)
@@ -1217,26 +1214,25 @@ function _run_cycle!(vt::VectorNavigation, groups, cycle_time)
 
     # Elevation mask: release members that dropped below the horizon, at the updated
     # position — before the corrections, so every remaining member gets one.
-    active = resize!(buffers.active, num_members)
-    fill!(active, true)
+    above_horizon = resize!(buffers.above_horizon, num_members)
+    fill!(above_horizon, true)
     user_pos, _, _ = nav_filter_states(vt.x, idxs)
     enu_from_ecef = ENUfromECEF(_ecef(user_pos), wgs84)
-    num_active = 0
+    num_above_horizon = 0
     for (j, member) in enumerate(members)
-        active[j] = get_sat_enu(enu_from_ecef, _ecef(member.sat_position)).ϕ >= 0
-        active[j] && (num_active += 1)
+        above_horizon[j] = get_sat_enu(enu_from_ecef, _ecef(member.sat_position)).ϕ >= 0
+        above_horizon[j] && (num_above_horizon += 1)
     end
-    released = _fold_groups(_release_below_horizon!, released, groups, buffers.states, 1, vt)
+    released = _fold_groups(_release_below_horizon!, released, groups, buffers.sat_states, 1, vt)
 
     # Fall back to scalar tracking when the filter has coasted too long or no members
     # remain; otherwise assign every member fresh commands toward the updated solution.
-    fell_back = time_with_insufficient_meas > config.insufficient_meas_timeout || num_active == 0
+    fell_back = time_with_insufficient_meas > config.insufficient_meas_timeout || num_above_horizon == 0
     if fell_back
-        released = _fold_groups(_release_all!, released, groups, buffers.states, 1, VT_FALLBACK)
+        released = _fold_groups(_release_all!, released, groups, buffers.sat_states, 1, VT_FALLBACK)
         vt.running = false
     else
-        vt.cycle_integration_time = T
-        _fold_groups(_assign_commands!, 0, groups, buffers.states, 1, vt)
+        _fold_groups(_assign_commands!, 0, groups, buffers.sat_states, 1, vt)
     end
 
     vt.primary_clock_index =

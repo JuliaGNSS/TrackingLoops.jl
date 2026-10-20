@@ -119,8 +119,8 @@ end
             c > 50 || return
             for member in rx.vt.buffers.members
                 @test member.available
-                sat = rx.sats[member.slot]
-                push!(residuals[member.slot], member.pseudorange_rate -
+                sat = rx.sats[member.slot_index]
+                push!(residuals[member.slot_index], member.pseudorange_rate -
                     member.wavelength * true_doppler(sat, rx.truth, cycle_time(rx, c)))
                 push!(variances, TL.pseudorange_rate_noise_variance(member, T))
             end

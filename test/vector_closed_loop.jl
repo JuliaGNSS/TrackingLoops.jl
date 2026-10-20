@@ -55,7 +55,7 @@ end
         truth_kw = (; clock_drift = 600.0))
     results, _, diverged = run_simulation!(rx, 60)
     @test !diverged
-    @test rx.vt.model.integration_time ≈ 200.0ms
+    @test rx.vt.model.cycle_time ≈ 200.0ms
     tail = results[31:end]
     @test tail_errors(rx, tail) < 0.2
     @test tail_code_errors(tail) < 0.005
@@ -229,8 +229,8 @@ end
         cycle > 50 || continue
         for member in rx.vt.buffers.members
             all_measured &= member.available
-            sat = rx.sats[member.slot]
-            push!(residuals[member.slot], member.pseudorange_rate -
+            sat = rx.sats[member.slot_index]
+            push!(residuals[member.slot_index], member.pseudorange_rate -
                 member.wavelength * true_doppler(sat, rx.truth, sim_time(rx, sample)))
             push!(variances, TL.pseudorange_rate_noise_variance(member, T))
         end

@@ -35,7 +35,7 @@ end
     words = FixedNCOWord(100.0, 0.1)
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     state, = step_loop(estimator, state, engine_record(7, 4000), words, NO_LANDING_SAMPLE)
-    @test (state.slot, state.registration) == (1, 1)
+    @test (state.slot_index, state.registration) == (1, 1)
     slot = group.slots[1]
     @test slot.occupied && slot.prn == 7 && slot.running_decoder.prn == 7
     # The record started at sample 0: the first epoch it can snapshot is the one there,
@@ -49,19 +49,19 @@ end
     # Another satellite takes the next slot.
     other = init_estimator_state(estimator, GPSL1CA(), 50.0Hz, 0.05Hz)
     other, = step_loop(estimator, other, engine_record(9, 8000), words, NO_LANDING_SAMPLE)
-    @test other.slot == 2 && group.slots[2].prn == 9
+    @test other.slot_index == 2 && group.slots[2].prn == 9
     # A fresh state of a PRN already held — the satellite re-acquired — takes its slot
     # over and restarts its bit clock; the old state, of an older registration,
     # registers anew.
     reacquired = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     reacquired, = step_loop(estimator, reacquired, engine_record(7, 12_000), words, NO_LANDING_SAMPLE)
-    @test reacquired.slot == 1 && reacquired.registration == 3
+    @test reacquired.slot_index == 1 && reacquired.registration == 3
     @test slot.registration == 3
     @test isnothing(slot.running_decoder.num_bits_after_valid_syncro_sequence)
     # A third satellite finds no free slot and grows the group.
     third = init_estimator_state(estimator, GPSL1CA(), 10.0Hz, 0.0Hz)
     third, = step_loop(estimator, third, engine_record(11, 12_000), words, NO_LANDING_SAMPLE)
-    @test third.slot == 3 && length(group.slots) == 3
+    @test third.slot_index == 3 && length(group.slots) == 3
 end
 
 # B-CNAV1 subframe 1 of satellite `prn` at SOH `soh`: its BCH PRN and SOH codewords as
@@ -84,7 +84,7 @@ b1c_subframe1(prn, soh) = Float32[
     slot.occupied = false
     other = init_estimator_state(estimator, BeiDouB1C_P(), 100.0Hz, 0.1Hz)
     other, = step_loop(estimator, other, engine_record(30, 8000; signal = BeiDouB1C_P()), words, NO_LANDING_SAMPLE)
-    @test other.slot == 1 && slot.running_decoder.prn == 30
+    @test other.slot_index == 1 && slot.running_decoder.prn == 30
     # Subframe 1 at both ends of a frame is all the sync reads.
     frame = [b1c_subframe1(30, 10); ones(Float32, 1728); b1c_subframe1(30, 11)]
     decoder = decode!(slot.running_decoder, frame, length(frame))
@@ -244,7 +244,7 @@ end
     ended!(stale, 0.75)
     # …and dropped by the cycle, the member released.
     @test TL._prepare_slots!(false, group, nav, 1.0)
-    @test fresh.active && fresh.occupied
+    @test fresh.in_cycle && fresh.occupied
     @test !stale.occupied && stale.release_reason == VT_NOT_RELEASED
     @test !member.occupied && member.release_reason == VT_INELIGIBLE
     @test !member.estimator_state.vt_on
@@ -281,7 +281,7 @@ end
     @test nav.num_snapshots == 2
     states[1], = step_loop(estimator, states[1], engine_record(prns[1], 4000 * 301), words, NO_LANDING_SAMPLE)
     @test nav.cycle_id == 3 && nav.cycle_epoch == 2
-    @test !nav.groups[1].slots[3].active
+    @test !nav.groups[1].slots[3].in_cycle
 end
 
 @testset "A satellite joining past the pending epoch does not skip it" begin
@@ -324,7 +324,7 @@ end
             id = nav.cycle_id
             states[i], = step_loop(estimator, states[i], engine_record(prns[i], 4000j), words, NO_LANDING_SAMPLE)
             nav.cycle_id == id ||
-                push!(cycles, (; epoch = nav.cycle_epoch, time = j / 1000, active = [s.active for s in slots[1:3]]))
+                push!(cycles, (; epoch = nav.cycle_epoch, time = j / 1000, in_cycle = [s.in_cycle for s in slots[1:3]]))
         end
     end
     foreach(step_chunk!, 4:4:500)
@@ -349,7 +349,7 @@ end
     @test nav.cycle_epoch == 14
     recovered = filter(c -> c.epoch > 5, cycles)
     @test [c.epoch for c in recovered] == 7:14
-    @test all(c -> all(c.active), recovered)
+    @test all(c -> all(c.in_cycle), recovered)
     @test all(c -> c.time - c.epoch * 0.1 < 0.01, recovered)
     @test all(s -> s.snapshot_epoch == 14, slots[1:3])
 end
@@ -366,7 +366,7 @@ end
         b, = step_loop(estimator, b, engine_record(5, 4000k), words, NO_LANDING_SAMPLE)
     end
     # `b` is a member of the vector loop, in the slot and in the state its host keeps.
-    slot = group.slots[b.slot]
+    slot = group.slots[b.slot_index]
     b = TL._enable_vector_tracking(b)
     slot.estimator_state = b
     # Its records stop for longer than two cycles: a cycle drops it and releases it, but
@@ -415,7 +415,7 @@ end
     # The data component's record comes first: it registers the satellite and leaves
     # its loop alone, returning the command in force.
     stepped, carrier, code = step_loop(estimator, state, engine_record(7, 4000; signal = GPSL1CA()), words, NO_LANDING_SAMPLE)
-    @test (stepped.slot, stepped.registration) == (1, 1)
+    @test (stepped.slot_index, stepped.registration) == (1, 1)
     @test stepped.inner === state.inner
     @test (carrier, code) == (100.0Hz, 0.1Hz)
     @test nav.groups[1].slots[1].decoding_last_end_sample == 4000
@@ -427,7 +427,7 @@ end
     @test (carrier, code) == (120.0Hz, 0.12Hz)
     # The pilot's record steps the loop on the same slot.
     driven, = step_loop(estimator, stepped, engine_record(7, 40_000; n = 40_000, signal = GPSL1C_P()), words, NO_LANDING_SAMPLE)
-    @test driven.slot == 1 && nav.registrations == 1
+    @test driven.slot_index == 1 && nav.registrations == 1
     @test nav.groups[1].slots[1].last_end_sample == 40_000
     # A passenger the estimator does not decode is ignored; a driver it does not range
     # on is an error, as is a satellite stepped with another satellite's driver.
@@ -459,7 +459,7 @@ end
         end
     end
     @test nav.registrations == 1
-    @test (state.slot, state.registration) == (1, 1)
+    @test (state.slot_index, state.registration) == (1, 1)
     @test !any(slot -> slot.occupied, nav.groups[2].slots)
     # The satellite keeps snapshotting the epochs, so its cycles keep running: one
     # every 100 ms up to the last record, 3 s in.

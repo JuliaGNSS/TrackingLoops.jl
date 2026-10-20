@@ -529,20 +529,20 @@ end
     # boundary prompts — no walk, however many cycles — each cycle's error has the
     # variance the filter weights the rate with, and consecutive cycles, sharing a
     # boundary prompt, a lag-1 autocorrelation of −1/2.
-    cn0 = 10^4.5
+    cn0_lin = 10^4.5
     record_samples = 16400
     T_coh = record_samples / RATE_FS
     ramp = 0.5 / RATE_WAVELENGTH
     doppler(t) = 800.0 + ramp * t
     phase(t) = 0.1 + 800.0 * t + ramp * t^2 / 2
     epochs = track_carrier(phase, 800.0, ramp; record_samples, first_end = record_samples, duration = 60.0,
-        noise_std = sqrt(1 / (2 * cn0 * T_coh)), rng = Xoshiro(7))
+        noise_std = sqrt(1 / (2 * cn0_lin * T_coh)), rng = Xoshiro(7))
     measured = epochs[11:end]
     @test all(e -> e.count in (24, 25), measured)
     @test any(e -> e.count == 24, measured) && any(e -> e.count == 25, measured)
     residuals = [RATE_WAVELENGTH * (e.doppler - doppler(e.epoch)) for e in measured]
     integrated_error = cumsum(residuals) .* 0.1
-    σ_φ² = 1 / (2 * cn0 * T_coh) * (1 + 1 / (2 * cn0 * T_coh))
+    σ_φ² = 1 / (2 * cn0_lin * T_coh) * (1 + 1 / (2 * cn0_lin * T_coh))
     σ_integrated = RATE_WAVELENGTH * sqrt(2σ_φ²) / 2π
     @test maximum(abs, integrated_error) < 5σ_integrated
     @test std(integrated_error[1:end÷2]) ≈ std(integrated_error[end÷2:end]) rtol = 0.3

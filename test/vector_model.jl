@@ -29,7 +29,7 @@ function _test_member(;
     sat_clock_drift = 0.0,
     code_discriminator = 0.0,
     pseudorange_rate = 0.0,
-    cn0 = 10^4.5, # 45 dB-Hz
+    cn0_lin = 10^4.5, # 45 dB-Hz
     early_late_spacing = 1.0,
     coherent_integration_time = nothing,
     decoder = nothing,
@@ -59,7 +59,7 @@ function _test_member(;
         sat_clock_drift,
         code_discriminator,
         pseudorange_rate,
-        cn0,
+        cn0_lin,
         early_late_spacing,
         tcoh,
         time_offsets,
@@ -234,14 +234,14 @@ end
     nav = TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 100.0ms)
     F = nav.F
     Q = copy(nav.Q)
-    TL.ensure_nav_filter_integration_time!(nav, config, 100.0ms)
+    TL.ensure_nav_filter_cycle_time!(nav, config, 100.0ms)
     @test nav.Q == Q
-    TL.ensure_nav_filter_integration_time!(nav, config, 0.104s)
-    @test nav.integration_time == 0.104s
+    TL.ensure_nav_filter_cycle_time!(nav, config, 0.104s)
+    @test nav.cycle_time == 0.104s
     @test nav.F[1, 2] == 0.104
     @test nav.Q == TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 0.104s).Q
-    TL.ensure_nav_filter_integration_time!(nav, config, 0.2s)
-    @test nav.integration_time == 0.2s
+    TL.ensure_nav_filter_cycle_time!(nav, config, 0.2s)
+    @test nav.cycle_time == 0.2s
     @test nav.F[1, 2] ≈ 0.2
     @test nav.F === F
 end
@@ -396,14 +396,14 @@ end
     # Averaged noncoherent DLL variance d/(4·C/N0·T)·(1 + 2/((2−d)·C/N0·T_coh)), in metres².
     function range_var(m, T = T)
         d = m.early_late_spacing
-        squaring_loss = 1 + 2 / ((2 - d) * m.cn0 * m.coherent_integration_time)
-        d / (4 * T * m.cn0) * squaring_loss * m.chip_length^2
+        squaring_loss = 1 + 2 / ((2 - d) * m.cn0_lin * m.coherent_integration_time)
+        d / (4 * T * m.cn0_lin) * squaring_loss * m.chip_length^2
     end
     # Mean-FLL variance 2·σ_φ²/(2π·T)² with σ_φ² = 1/(2·C/N0·T_coh)(1+1/(2·C/N0·T_coh)),
     # expressed as a rate (λ²). No inflation factor: the derived single-cycle variance is the
     # right one for this estimator, and the lag-1 correlation the telescoping creates makes a
     # white-noise filter pessimistic rather than overconfident.
-    rate_var(m) = let ct = m.cn0 * m.coherent_integration_time
+    rate_var(m) = let ct = m.cn0_lin * m.coherent_integration_time
         m.wavelength^2 * (1 / (2 * ct) * (1 + 1 / (2 * ct))) / (2 * π^2 * T^2)
     end
     @test TL.pseudorange_noise_variance(ca, T) ≈ range_var(ca)
@@ -421,8 +421,8 @@ end
     # the filter interval averages the thermal term down but cannot buy back the loss.
     @test TL.pseudorange_noise_variance(ca, 0.1) / TL.pseudorange_noise_variance(ca, 1.0) ≈ 10.0
     # A weak-signal member is dominated by the squaring loss, which no filter interval fixes.
-    weak = _test_member(; cn0 = 10^2.0) # 20 dB-Hz
-    weak_loss = 1 + 2 / ((2 - weak.early_late_spacing) * weak.cn0 * weak.coherent_integration_time)
+    weak = _test_member(; cn0_lin = 10^2.0) # 20 dB-Hz
+    weak_loss = 1 + 2 / ((2 - weak.early_late_spacing) * weak.cn0_lin * weak.coherent_integration_time)
     @test weak_loss > 10
     @test TL.pseudorange_noise_variance(weak, 0.1) ≈ range_var(weak, 0.1)
 

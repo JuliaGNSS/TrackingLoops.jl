@@ -180,7 +180,7 @@ struct SatVectorPLLAndDLL{S}
     #     latest cycle, and the satellite's residual PLL (`ResidualPLL`). Both are set
     #     on the filter's first command, which a satellite is added to the vector loop with,
     #     and cleared out of it (`_has_carrier_ramp`).
-    #   - `slot`, `registration` and `cycle_id`: where the navigation engine keeps
+    #   - `slot_index`, `registration` and `cycle_id`: where the navigation engine keeps
     #     this satellite (`0` until its first record), and the latest cycle it has
     #     taken up.
     inner::S
@@ -193,7 +193,7 @@ struct SatVectorPLLAndDLL{S}
     code_update_landing_lead::typeof(1.0s)
     ramp::CarrierRamp
     residual_pll::ResidualPLL
-    slot::Int
+    slot_index::Int
     registration::Int
     cycle_id::Int
 end
@@ -210,7 +210,7 @@ _is_driven_by(state::SatVectorPLLAndDLL, signal::AbstractGNSSSignal) =
 SatVectorPLLAndDLL(
     inner,
     vt_on::Bool,
-    slot::Int = 0,
+    slot_index::Int = 0,
     registration::Int = 0,
     cycle_id::Int = -1;
     previous_replica_half::Tuple{Float64,typeof(1.0s)} = (NaN, NaN * s),
@@ -227,7 +227,7 @@ SatVectorPLLAndDLL(
         0.0s,
         CarrierRamp(),
         ResidualPLL(residual_pll_loop_filter_bandwidth),
-        slot,
+        slot_index,
         registration,
         cycle_id,
     )
@@ -244,7 +244,7 @@ function SatVectorPLLAndDLL(
     code_update_landing_lead::Maybe{typeof(1.0s)} = nothing,
     ramp::Maybe{CarrierRamp} = nothing,
     residual_pll::Maybe{ResidualPLL} = nothing,
-    slot::Maybe{Int} = nothing,
+    slot_index::Maybe{Int} = nothing,
     registration::Maybe{Int} = nothing,
     cycle_id::Maybe{Int} = nothing,
 ) where {S}
@@ -262,16 +262,16 @@ function SatVectorPLLAndDLL(
         code_update_landing_lead,
         isnothing(ramp) ? state.ramp : ramp,
         isnothing(residual_pll) ? state.residual_pll : residual_pll,
-        isnothing(slot) ? state.slot : slot,
+        isnothing(slot_index) ? state.slot_index : slot_index,
         isnothing(registration) ? state.registration : registration,
         isnothing(cycle_id) ? state.cycle_id : cycle_id,
     )
 end
 
-# The state on a fresh slot `slot` of `registration`, owing the pick-up of the
+# The state on the fresh slot `slot_index` of `registration`, owing the pick-up of the
 # latest cycle.
-_registered(state::SatVectorPLLAndDLL, slot::Int, registration::Int) =
-    SatVectorPLLAndDLL(state; slot, registration, cycle_id = -1)
+_registered(state::SatVectorPLLAndDLL, slot_index::Int, registration::Int) =
+    SatVectorPLLAndDLL(state; slot_index, registration, cycle_id = -1)
 
 """
     init_estimator_state(estimator::VectorPLLAndDLL, driver_signal, carrier_doppler, code_doppler)
@@ -340,7 +340,7 @@ _enable_vector_tracking(state::SatVectorPLLAndDLL) =
     SatVectorPLLAndDLL(
         state.inner,
         true,
-        state.slot,
+        state.slot_index,
         state.registration,
         state.cycle_id;
         state.previous_replica_half,
@@ -357,7 +357,7 @@ _disable_vector_tracking(state::SatVectorPLLAndDLL) =
     SatVectorPLLAndDLL(
         state.inner,
         false,
-        state.slot,
+        state.slot_index,
         state.registration,
         state.cycle_id;
         state.previous_replica_half,
@@ -510,7 +510,7 @@ end
         carrier_doppler,
         code_doppler
     end
-    _step_vector_loop(state, record, words, landing_sample, replica_halves, estimator.navigation.lock_cn0_threshold)
+    _step_vector_loop(state, record, words, landing_sample, replica_halves, estimator.navigation.lock_cn0_threshold_dbhz)
 end
 
 # The DLL output (chips) of a record, normalised with the code word the replica ran
