@@ -502,9 +502,9 @@ const MAX_LANDING_LEAD_CYCLES = 2.5
 # Mean DLL discriminator (chips) over the last filter interval, advanced to the epoch by
 # `code_phase_advance`. `dll_disc`'s sense is reversed relative to its own observable,
 # hence the negated mean. Zero when nothing was accumulated (see
-# `has_code_and_carrier_measurements`).
-function accumulated_code_discriminator(state::SatVectorPLLAndDLL, T)
-    mean = _mean_code_discriminator(state)
+# `has_disc_sums`).
+function mean_code_disc_at_epoch(state::SatVectorPLLAndDLL, T)
+    mean = _disc_mean(state.code_disc_sum)
     isnothing(mean) ? 0.0 : -mean + code_phase_advance(state, T)
 end
 
@@ -513,9 +513,9 @@ end
 # `fll_disc` measures f_incoming − f_replica, so it enters with its own sign. (The code
 # discriminator carries the opposite sign because `dll_disc`'s sense is reversed relative
 # to its own observable.) `0.0` when nothing was accumulated (see
-# `has_code_and_carrier_measurements`).
+# `has_disc_sums`).
 #
-# Deliberately NOT moved to mid-cycle, unlike `accumulated_code_discriminator`. The mean
+# Deliberately NOT moved to mid-cycle, unlike `mean_code_disc_at_epoch`. The mean
 # FLL is mean(f_in) − mean(f_replica), and the replica follows the filter's Doppler ramp,
 # so f_replica(epoch) − mean(f_replica) is the predicted Doppler's own rise over half the
 # cycle, which is the incoming carrier's to first order in the filter's error: the sum is
@@ -531,24 +531,21 @@ function mean_fll_disc(state::SatVectorPLLAndDLL)
     isnothing(mean) ? 0.0 : ustrip(Hz, mean)
 end
 
-# Whether a member accumulated both a code and a carrier measurement this cycle. The means
-# are `nothing` while their accumulator count is zero, which is what a cycle without a
-# single fully integrated correlator dump for this satellite looks like (a member admitted
-# at the very end of a cycle, or one whose samples were starved).
-# `accumulated_code_discriminator` and `mean_fll_disc` substitute a zero there, and a zero
-# discriminator is not a missing measurement to the navigation filter — it is a *confidently
-# zero* residual carrying the full measurement weight of `R`, which would pull the state
-# towards the current NCO instead of leaving it to coast. Members without an accumulation
-# are therefore withheld from the measurement set; they stay in the vector loop and keep
-# getting commands, exactly like a member out of code lock.
+# Whether a member accumulated both a code and a carrier measurement this cycle. A sum's
+# count is zero after a cycle without a single fully integrated correlator dump for this
+# satellite (a member admitted at the very end of a cycle, or one whose samples were
+# starved). `mean_code_disc_at_epoch` and `mean_fll_disc` substitute a zero there, and a
+# zero discriminator is not a missing measurement to the navigation filter — it is a
+# *confidently zero* residual carrying the full measurement weight of `R`, which would pull
+# the state towards the current NCO instead of leaving it to coast. Members without an
+# accumulation are therefore withheld from the measurement set; they stay in the vector
+# loop and keep getting commands, exactly like a member out of code lock.
 #
 # The carrier accumulator counts only the records with a frequency measurement — a record
 # without a previous prompt has none — so it can be empty while the code one is not, on a
 # cycle whose only record is the first after a (re)start. Such a member is withheld too:
 # its rate row would be a guess.
-has_code_and_carrier_measurements(state::SatVectorPLLAndDLL) =
-    !isnothing(_mean_code_discriminator(state)) &&
-    !isnothing(_disc_mean(state.fll_disc_sum))
+has_disc_sums(state::SatVectorPLLAndDLL) = first(state.code_disc_sum) > 0 && first(state.fll_disc_sum) > 0
 
 # Linear carrier-to-noise density (Hz) floored to 1, from a CN0 estimate in
 # dB-Hz. The floor keeps a starved estimator from producing a degenerate
@@ -575,7 +572,7 @@ pseudorange_from_tows(receive_tow, transmit_tow) =
 # form, for the members at `indices`, written into the vectors of `columns` (which
 # must have been built with room for them), so its `calc_ρ_hat!` / `calc_H!` do the
 # pseudorange modelling (including the earth-rotation correction).
-function vt_bias_columns!(columns::BiasColumns, members, indices)
+function member_bias_columns!(columns::BiasColumns, members, indices)
     resize!(columns.clock_bias_indices, length(indices))
     resize!(columns.ifb_indices, length(indices))
     for (k, j) in enumerate(indices)
@@ -585,8 +582,8 @@ function vt_bias_columns!(columns::BiasColumns, members, indices)
     columns
 end
 
-vt_bias_columns(members, layout::NavFilterLayout, indices = eachindex(members)) =
-    vt_bias_columns!(
+member_bias_columns(members, layout::NavFilterLayout, indices = eachindex(members)) =
+    member_bias_columns!(
         BiasColumns(Int[], num_clock_biases(layout), Int[], num_ifb(layout)),
         members,
         indices,
@@ -599,45 +596,46 @@ vt_bias_columns(members, layout::NavFilterLayout, indices = eachindex(members)) 
 # built for DOP must only carry the columns the measurement set can determine:
 # an all-zero column for a constellation with no satellites this epoch makes
 # `HᵀH` singular, and `calc_DOP!` then reports −1 for every epoch a
-# constellation happens to be missing from. `clock_used` / `ifb_used` are
-# scratch vectors of the layout's clock and IFB counts.
+# constellation happens to be missing from. `clock_columns` / `ifb_columns` are
+# scratch vectors of the layout's clock and IFB counts, which end up holding each
+# state's dense column (0 for one no member occupies).
 function dense_bias_columns!(
     clock_indices::Vector{Int},
     ifb_indices::Vector{Int},
-    clock_used::Vector{Int},
-    ifb_used::Vector{Int},
+    clock_columns::Vector{Int},
+    ifb_columns::Vector{Int},
     members,
     indices,
     primary_clock_index::Int,
 )
-    fill!(clock_used, 0)
-    fill!(ifb_used, 0)
+    fill!(clock_columns, 0)
+    fill!(ifb_columns, 0)
     for j in indices
-        clock_used[members[j].clock_bias_index] = 1
-        members[j].ifb_index != 0 && (ifb_used[members[j].ifb_index] = 1)
+        clock_columns[members[j].clock_bias_index] = 1
+        members[j].ifb_index != 0 && (ifb_columns[members[j].ifb_index] = 1)
     end
     # Dense column per state, in state order (the order `sort!(unique(…))` gives).
     num_clocks = 0
-    for i in eachindex(clock_used)
-        clock_used[i] == 0 && continue
+    for i in eachindex(clock_columns)
+        clock_columns[i] == 0 && continue
         num_clocks += 1
-        clock_used[i] = num_clocks
+        clock_columns[i] = num_clocks
     end
     num_ifbs = 0
-    for i in eachindex(ifb_used)
-        ifb_used[i] == 0 && continue
+    for i in eachindex(ifb_columns)
+        ifb_columns[i] == 0 && continue
         num_ifbs += 1
-        ifb_used[i] = num_ifbs
+        ifb_columns[i] = num_ifbs
     end
     resize!(clock_indices, length(indices))
     resize!(ifb_indices, length(indices))
     for (k, j) in enumerate(indices)
-        clock_indices[k] = clock_used[members[j].clock_bias_index]
-        ifb_indices[k] = members[j].ifb_index == 0 ? 0 : ifb_used[members[j].ifb_index]
+        clock_indices[k] = clock_columns[members[j].clock_bias_index]
+        ifb_indices[k] = members[j].ifb_index == 0 ? 0 : ifb_columns[members[j].ifb_index]
     end
     primary =
-        1 <= primary_clock_index <= length(clock_used) &&
-        clock_used[primary_clock_index] != 0 ? clock_used[primary_clock_index] : 1
+        1 <= primary_clock_index <= length(clock_columns) &&
+        clock_columns[primary_clock_index] != 0 ? clock_columns[primary_clock_index] : 1
     BiasColumns(clock_indices, num_clocks, ifb_indices, num_ifbs), primary
 end
 
@@ -1109,7 +1107,7 @@ predicted_carrier_doppler(predicted_pseudorange_rate, wavelength) = predicted_ps
 # solution against a measurement it never saw — the more searching check of the two.
 # Either way it flags a satellite whose Doppler disagrees with the solution
 # independently of its pseudorange.
-function vt_post_fit_residuals(
+function post_fit_residuals(
     member::VTMember,
     measured_pseudorange,
     predicted_pseudorange,
@@ -1192,7 +1190,7 @@ time_epoch_offset(row::SatelliteMeasurement) =
 # Absolute epoch of the vector-tracking solution: the clock-bias-corrected reference time
 # (seconds of week on the GPS Time count), anchored by the cached epoch offset, or
 # `nothing` while there is none.
-function vt_time(time_epoch_offset, reference_time, primary_clock_bias)
+function solution_time(time_epoch_offset, reference_time, primary_clock_bias)
     isnothing(time_epoch_offset) && return nothing
     corrected_reference_time = ustrip(s, reference_time) - primary_clock_bias / SPEED_OF_LIGHT
     TAITime(
@@ -1302,20 +1300,19 @@ const FIX_PSEUDORANGE_STD = 1.0
 # of `HᵀH` up to about 10¹², far beyond any fix worth seeding from.
 const FIX_MIN_PIVOT_RATIO = 1e-6
 
-# Overwrite the position and bias block of `P`, as `initial_nav_state!` seeded it, with
-# the covariance of the least-squares fix it was seeded from: `σ² (HᵀH)⁻¹` for the
-# design matrix `H` of the fix's satellites (`calc_H!`, over the dense bias columns of
-# `dense_bias_columns!`, whose state-to-column maps `clock_used` and `ifb_used` are), and
-# `σ = FIX_PSEUDORANGE_STD`. A fixed variance, whatever the geometry, takes a fix of a
+# Overwrite the position and bias block of `P`, as `initial_nav_state!` seeded it, with the
+# covariance of the least-squares fix it was seeded from: `σ² (HᵀH)⁻¹` for the design matrix
+# `H` of the fix's satellites (`calc_H!`, over the dense bias columns of
+# `dense_bias_columns!`, whose state-to-column maps `clock_columns` and `ifb_columns` are),
+# and `σ = FIX_PSEUDORANGE_STD`. A fixed variance, whatever the geometry, takes a fix of a
 # GDOP of 40 as accurate as one of 2: its error, many times the variance, is then held by
 # the measurements that agree with it, while the covariance shrinks (JuliaGNSS/
 # TrackingLoops.jl#16). The geometry also correlates the position with the clocks — an
-# inter-system bias determined by one satellite is as wrong as the position along its
-# line of sight — which the full block carries. A bias state the fix did not seed keeps
-# its generous variance, uncorrelated, though the position's variance still counts it as
-# an unknown. `normal_matrix` is a square scratch matrix of `H`'s column count. Returns
-# whether the block was written: a rank-deficient `H` (`_has_full_rank`) leaves `P` as
-# seeded.
+# inter-system bias determined by one satellite is as wrong as the position along its line
+# of sight — which the full block carries. A bias state the fix did not seed keeps its
+# generous variance, uncorrelated, though the position's variance still counts it as an
+# unknown. `normal_matrix` is a square scratch matrix of `H`'s column count. Returns whether
+# the block was written: a rank-deficient `H` (`_has_full_rank`) leaves `P` as seeded.
 function seed_fix_covariance!(
     P,
     idxs::NavFilterIndices,
@@ -1324,8 +1321,8 @@ function seed_fix_covariance!(
     primary_clock_index,
     H,
     normal_matrix,
-    clock_used,
-    ifb_used,
+    clock_columns,
+    ifb_columns,
 )
     mul!(normal_matrix, H', H)
     factorization = cholesky!(Symmetric(normal_matrix); check = false)
@@ -1334,8 +1331,8 @@ function seed_fix_covariance!(
     σ² = FIX_PSEUDORANGE_STD^2
     num_columns = size(covariance, 1)
     for column = 1:num_columns, row = 1:num_columns
-        i = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_used, ifb_used, row)
-        j = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_used, ifb_used, column)
+        i = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_columns, ifb_columns, row)
+        j = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_columns, ifb_columns, column)
         i == 0 || j == 0 || (P[i, j] = σ² * covariance[row, column])
     end
     true
@@ -1357,15 +1354,15 @@ end
 
 # The state behind column `column` of the fix's dense design matrix, `0` for a bias
 # state the fix did not seed.
-function _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_used, ifb_used, column)
+function _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_columns, ifb_columns, column)
     column <= 3 && return idxs.pos[column]
-    for (index, dense) in enumerate(clock_used)
+    for (index, dense) in enumerate(clock_columns)
         dense == column - 3 || continue
         return _fix_seeds_clock(pvt, layout, primary_clock_index, index) ?
                idxs.clock_biases[index] : 0
     end
-    num_clocks = count(!iszero, clock_used)
-    for (index, dense) in enumerate(ifb_used)
+    num_clocks = count(!iszero, clock_columns)
+    for (index, dense) in enumerate(ifb_columns)
         dense == column - 3 - num_clocks || continue
         return _fix_seeds_ifb(pvt, layout, index) ? idxs.ifb[index] : 0
     end

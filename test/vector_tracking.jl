@@ -84,7 +84,7 @@ end
     # empty accumulators to accumulate from now on.
     for (sat, slot) in zip(rx.sats, channel_slots(rx.group, rx.sats))
         @test sat.state.in_vector_loop
-        @test sat.state.code_discr_acc == (0, 0.0)
+        @test sat.state.code_disc_sum == (0, 0.0)
         @test isfinite(sat.state.code_freq_update)
         @test sat.state.cycle_id == vt.cycle_id
         @test slot.command_cycle == vt.cycle_id
@@ -122,7 +122,7 @@ end
     # GNSSReceiver computed them: all members at once, from the epoch's rows.
     ξ = TL.position_and_bias_vector(vt.x, idxs)
     predicted = calc_ρ_hat!(zeros(length(members)), [m.sat_position for m in members], ξ,
-        TL.vt_bias_columns(members, vt.layout))
+        TL.member_bias_columns(members, vt.layout))
     user_pos, user_vel, user_drift = TL.nav_filter_states(vt.x, idxs)
     for (j, member) in enumerate(members)
         sat = rx.sats[member.slot_index]
@@ -150,7 +150,7 @@ end
         @test buffers.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.x, idxs, member) atol = 1e-9
         @test sat.state.code_update_landing_lead == 0.0s
         # The accumulators were emptied at the epoch's snapshot.
-        @test sat.state.code_discr_acc == (0, 0.0)
+        @test sat.state.code_disc_sum == (0, 0.0)
         # Taken up once: a second take-up changes nothing.
         @test TL._take_up_cycle(vt, rx.group, slot, sat.state, take_up_record(sat, 0),
             sim_words(sat, NO_LANDING_SAMPLE), Int64(0)) === sat.state

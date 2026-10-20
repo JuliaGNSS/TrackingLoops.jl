@@ -47,7 +47,7 @@ end
     @test state isa SatVectorPLLAndDLL
     @test state.inner == init_estimator_state(ConventionalAssistedPLLAndDLL(), GPSL1CA(), 500.0Hz, 100.0Hz)
     @test state.in_vector_loop == false
-    @test state.code_discr_acc == (0, 0.0)
+    @test state.code_disc_sum == (0, 0.0)
     @test state.fll_disc_sum == (0, 0.0Hz)
     @test all(isnan, state.previous_replica_half)
     @test state.code_freq_update == 0.0Hz
@@ -57,7 +57,7 @@ end
     @test !TL._has_carrier_ramp(state)
     @test state.residual_pll.bandwidth == 10.0Hz
     @test estimator_state_type(estimator, GPSL1CA()) === typeof(state)
-    @test TL._mean_code_discriminator(state) === nothing
+    @test TL._disc_mean(state.code_disc_sum) === nothing
     @test TL._disc_mean(state.fll_disc_sum) === nothing
 end
 
@@ -160,7 +160,7 @@ end
     @test vector_carrier == inner_carrier
     @test vector_code == inner_code
     @test new_vector_state.inner == new_inner_state
-    @test new_vector_state.code_discr_acc == (0, 0.0)
+    @test new_vector_state.code_disc_sum == (0, 0.0)
     @test new_vector_state.fll_disc_sum == (0, 0.0Hz)
     # The replica's last half record is kept, for the span a later vector loop opens
     # with: half of the 1 ms record on the 100 Hz word.
@@ -193,11 +193,11 @@ end
     @test state.inner.code_loop_filter == SecondOrderBilinearLF()
     # The DLL discriminator is accumulated. Without a previous prompt there is no
     # frequency measurement, so no carrier span opens: not a span of zero rotation.
-    @test state.code_discr_acc == (1, dll_discriminator)
+    @test state.code_disc_sum == (1, dll_discriminator)
     @test state.fll_disc_sum == (0, 0.0Hz)
-    @test TL._mean_code_discriminator(state) == dll_discriminator
+    @test TL._disc_mean(state.code_disc_sum) == dll_discriminator
     @test TL._disc_mean(state.fll_disc_sum) === nothing
-    @test !TL.has_code_and_carrier_measurements(state)
+    @test !TL.has_disc_sums(state)
     @test TL._has_carrier_ramp(state)
     @test state.residual_pll.prompt_center ≈ 0.0005
     # The replica's second half record is kept for the next span.
@@ -209,10 +209,10 @@ end
     @test state.inner.staging == init_estimator_state(inner, gpsl1, carrier_doppler, init_code_doppler).staging
 
     state = TL._reset_discriminator_accumulators(state)
-    @test state.code_discr_acc == (0, 0.0)
+    @test state.code_disc_sum == (0, 0.0)
     @test state.fll_disc_sum == (0, 0.0Hz)
     @test state.previous_replica_half == (ustrip(Hz, carrier_doppler) * 0.0005, 0.0005s)
-    @test TL._mean_code_discriminator(state) === nothing
+    @test TL._disc_mean(state.code_disc_sum) === nothing
     @test TL._disc_mean(state.fll_disc_sum) === nothing
     @test state.in_vector_loop
     @test state.code_freq_update == -0.25Hz
@@ -291,7 +291,7 @@ end
         referenced, referenced_state = run(NCOReferencedPLLAndDLL(), landing_offset)
         conventional, conventional_state = run(ConventionalAssistedPLLAndDLL(), landing_offset)
         @test referenced == conventional
-        @test referenced_state.code_discr_acc == conventional_state.code_discr_acc
+        @test referenced_state.code_disc_sum == conventional_state.code_disc_sum
         @test referenced_state.fll_disc_sum == conventional_state.fll_disc_sum
         @test referenced_state.residual_pll == conventional_state.residual_pll
         # The first record has no previous prompt.
@@ -308,7 +308,7 @@ end
     # A member joining again changes nothing, so the members can join every cycle.
     steered = SatVectorPLLAndDLL(
         TL._set_vector_commands(joined, 1.0Hz, ramp, 0.02s, FixedNCOWord(100.0, 0.0), 0);
-        code_discr_acc = (3, 0.3),
+        code_disc_sum = (3, 0.3),
         fll_disc_sum = (3, 0.3Hz),
         previous_replica_half = (0.1, 0.0005s),
     )
@@ -334,13 +334,13 @@ end
           (3.0Hz, 2.0Hz, 1.0Hz)
     @test next.code_freq_update == 2.0Hz
     @test next.code_update_landing_lead == 0.0s
-    @test next.code_discr_acc == (3, 0.3)
+    @test next.code_disc_sum == (3, 0.3)
     # Leaving zeroes everything the vector loop owned, so a satellite that joins again
     # never runs on stale values.
     released = TL._release_from_vector_loop(next)
     @test !released.in_vector_loop
     @test released.inner == next.inner
-    @test released.code_discr_acc == (0, 0.0)
+    @test released.code_disc_sum == (0, 0.0)
     @test released.fll_disc_sum == (0, 0.0Hz)
     @test released.code_freq_update == 0.0Hz
     @test released.code_freq_update_history == (0.0Hz, 0.0Hz, 0.0Hz)
@@ -364,7 +364,7 @@ end
     reset = reset_estimator_state(estimator, state, 150.0Hz, 0.2Hz)
     @test reset isa typeof(state)
     @test reset.in_vector_loop
-    @test reset.code_discr_acc == (0, 0.0)
+    @test reset.code_disc_sum == (0, 0.0)
     @test reset.fll_disc_sum == (0, 0.0Hz)
     @test reset.previous_replica_half == state.previous_replica_half
     # The re-seeded Dopplers carry the last code correction, so it is no longer applied…
@@ -433,7 +433,7 @@ end
     @test carrier_loop_stage(state) == VECTOR_LOOP
     @test carrier_loop_stage(released) == FLL_ASSISTED_PLL
     # Nothing the vector loop owned survives.
-    @test released.code_discr_acc == (0, 0.0)
+    @test released.code_disc_sum == (0, 0.0)
     @test released.fll_disc_sum == (0, 0.0Hz)
     @test released.previous_replica_half == state.previous_replica_half
     @test released.code_freq_update == 0.0Hz

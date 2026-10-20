@@ -238,9 +238,9 @@ function _epoch_at_or_after(nav::VectorNavigation, t)
 end
 
 # `f(acc, group, args...)` over the slot groups, in order, statically dispatched.
-@inline _fold_slot_groups(f::F, acc, ::Tuple{}, args...) where {F} = acc
-@inline _fold_slot_groups(f::F, acc, groups::Tuple, args...) where {F} =
-    _fold_slot_groups(f, f(acc, first(groups), args...), Base.tail(groups), args...)
+@inline _fold_groups(f::F, acc, ::Tuple{}, args...) where {F} = acc
+@inline _fold_groups(f::F, acc, groups::Tuple, args...) where {F} =
+    _fold_groups(f, f(acc, first(groups), args...), Base.tail(groups), args...)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Registration
@@ -426,7 +426,7 @@ function _move_past_gap!(nav::VectorNavigation, start_time, record::LoopRecord)
     epoch_time = _epoch_time(nav, nav.pending_epoch)
     nav.num_snapshots == 0 && start_time > epoch_time || return nothing
     end_time = record.sample_index / _sampling_frequency_hz(record)
-    _fold_slot_groups(_can_reach_epoch, false, nav.groups, nav, epoch_time, end_time) &&
+    _fold_groups(_can_reach_epoch, false, nav.groups, nav, epoch_time, end_time) &&
         return nothing
     nav.pending_epoch = _epoch_at_or_after(nav, start_time)
     nothing
@@ -609,7 +609,7 @@ end
 function _run_cycle_if_due!(nav::VectorNavigation, record::LoopRecord)
     nav.num_snapshots == 0 && return false
     now = record.sample_index / _sampling_frequency_hz(record)
-    _fold_slot_groups(_all_snapshotted, true, nav.groups, nav, now) || return false
+    _fold_groups(_all_snapshotted, true, nav.groups, nav, now) || return false
     _navigation_cycle!(nav, now)
     true
 end
@@ -643,7 +643,7 @@ _all_snapshotted(ready, group::VTSlotGroup, nav::VectorNavigation, now) =
 # shorter than a cycle, so in step no satellite is past the next epoch.
 function _next_pending_epoch(nav::VectorNavigation, epoch)
     next = epoch + 1
-    latest = _fold_slot_groups(_latest_record_end, -Inf, nav.groups)
+    latest = _fold_groups(_latest_record_end, -Inf, nav.groups)
     latest > _epoch_time(nav, next) ? _epoch_at_or_after(nav, latest) : next
 end
 
@@ -697,7 +697,7 @@ function _navigation_cycle!(nav::VectorNavigation, now)
     cycle_time =
         nav.cycle_epoch == typemin(Int) ? nav.cycle_time : (epoch - nav.cycle_epoch) * nav.cycle_time
     nav.cycle_id += 1
-    dropped = _fold_slot_groups(_prepare_slots!, false, groups, nav, now)
+    dropped = _fold_groups(_prepare_slots!, false, groups, nav, now)
     enabled = released = fell_back = false
     if nav.enabled && nav.running
         released, fell_back = _run_cycle!(nav, groups, cycle_time)
@@ -714,7 +714,7 @@ function _navigation_cycle!(nav::VectorNavigation, now)
             _seed!(nav, groups, cycle_time)
         end
     end
-    num_members = _fold_groups(_count_members, 0, groups, buffers.sat_states, 1)
+    num_members = _fold_groups_with_buffers(_count_members, 0, groups, buffers.sat_states, 1)
     nav.status = VTStatus(
         nav.running,
         nav.running || fell_back ? position_uncertainty(nav) * m : NaN * m,
