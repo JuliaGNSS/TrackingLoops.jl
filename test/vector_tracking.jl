@@ -11,7 +11,7 @@ using Geodesy: ENUfromECEF, wgs84
     @test nav.groups[1].driver_signal isa GPSL1CA
     @test all(group -> length(group.slots) == 4, nav.groups)
     @test all(group -> all(slot -> !slot.occupied && slot.registration == 0, group.slots), nav.groups)
-    @test nav.cycle_time == 0.1s
+    @test nav.vt_update_interval == 0.1s
     @test nav.lock_cn0_threshold_dbhz == 30.0
     @test navigation_status(estimator) == NavigationStatus()
     @test !navigation_status(estimator).running
@@ -21,7 +21,7 @@ using Geodesy: ENUfromECEF, wgs84
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     @test (state.slot_index, state.registration, state.cycle_id) == (0, 0, -1)
     @test !state.in_vector_loop
-    @test VectorPLLAndDLL(GPSL1CA(); cycle_time = 20ms).navigation.cycle_time == 0.02s
+    @test VectorPLLAndDLL(GPSL1CA(); vt_update_interval = 20ms).navigation.vt_update_interval == 0.02s
     @test VectorPLLAndDLL(GPSL1CA(); lock_cn0_threshold = 35dBHz).navigation.lock_cn0_threshold_dbhz == 35.0
     @test !VectorPLLAndDLL(GPSL1CA(); config = nothing).navigation.enabled
 end
@@ -32,9 +32,9 @@ end
     # A dataless pilot carries no bits to decode.
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1C_P())
     @test_throws ArgumentError VectorPLLAndDLL(GalileoE1C())
-    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); cycle_time = 0.0s)
-    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); cycle_time = -0.1s)
-    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); cycle_time = Inf * s)
+    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); vt_update_interval = 0.0s)
+    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); vt_update_interval = -0.1s)
+    @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); vt_update_interval = Inf * s)
     @test_throws ArgumentError VectorPLLAndDLL(GPSL1CA(); max_satellites_per_signal = 0)
     # A record of no satellite, or of a driver it was not built for.
     estimator = VectorPLLAndDLL(GPSL1CA())

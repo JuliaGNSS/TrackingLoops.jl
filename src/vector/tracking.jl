@@ -230,9 +230,9 @@ function VTSlotGroup(
     decoding_signal::AbstractGNSSSignal,
     prototype::SatVectorPLLAndDLL,
     capacity,
-    cycle_time,
+    vt_update_interval,
 )
-    prompt_history_length = _prompt_history_length(driver_signal, decoding_signal, cycle_time)
+    prompt_history_length = _prompt_history_length(driver_signal, decoding_signal, vt_update_interval)
     slots = [VTSlot(decoding_signal, 1, prototype, prompt_history_length) for _ = 1:capacity]
     VTSlotGroup(driver_signal, decoding_signal, sizehint!(slots, 2 * capacity), prototype, prompt_history_length)
 end
@@ -411,9 +411,9 @@ mutable struct VectorNavigation{G<:Tuple,SB<:Tuple}
     const enable_tropospheric_correction::Bool
     const buffers::VTBuffers{SB}
     const groups::G
-    const cycle_time::typeof(1.0s)
+    const vt_update_interval::typeof(1.0s)
     const lock_cn0_threshold_dbhz::Float64
-    # The epoch (a multiple of `cycle_time` on the records' time grid) the slots
+    # The epoch (a multiple of `vt_update_interval` on the records' time grid) the slots
     # snapshot next, and how many have.
     pending_epoch::Int
     num_snapshots::Int
@@ -427,7 +427,7 @@ function VectorNavigation(
     config::Union{VectorTracking,Nothing},
     pairs::Tuple,
     inner::AbstractDopplerEstimator;
-    cycle_time,
+    vt_update_interval,
     lock_cn0_threshold_dbhz::Float64,
     max_satellites_per_signal::Int,
     approximate_year::Integer,
@@ -437,11 +437,11 @@ function VectorNavigation(
     filter_config = something(config, VectorTracking())
     signals = map(first, pairs)
     layout = NavFilterLayout(signals)
-    model = NavFilterModel(filter_config, layout, uconvert(s, cycle_time))
+    model = NavFilterModel(filter_config, layout, uconvert(s, vt_update_interval))
     n = num_nav_states(filter_config, layout)
     groups = map(pairs) do (signal, decoding_signal)
         prototype = SatVectorPLLAndDLL(init_estimator_state(inner, signal, 0.0Hz, 0.0Hz), false)
-        VTSlotGroup(signal, decoding_signal, prototype, max_satellites_per_signal, cycle_time)
+        VTSlotGroup(signal, decoding_signal, prototype, max_satellites_per_signal, vt_update_interval)
     end
     max_members = max_satellites_per_signal * length(signals)
     sat_states = map(_satellite_state_buffer, groups)
@@ -466,7 +466,7 @@ function VectorNavigation(
         enable_tropospheric_correction,
         VTBuffers(sat_states, n, layout, max_members),
         groups,
-        uconvert(s, cycle_time),
+        uconvert(s, vt_update_interval),
         lock_cn0_threshold_dbhz,
         typemin(Int),
         0,
@@ -522,7 +522,7 @@ navigation_cycle(estimator::VectorPLLAndDLL) = estimator.navigation.cycle_id
 
 function navigation_epoch(estimator::VectorPLLAndDLL)
     nav = estimator.navigation
-    nav.cycle_epoch == typemin(Int) ? nothing : nav.cycle_epoch * nav.cycle_time
+    nav.cycle_epoch == typemin(Int) ? nothing : nav.cycle_epoch * nav.vt_update_interval
 end
 
 function satellite_report(estimator::VectorPLLAndDLL, signal::AbstractGNSSSignal, prn::Integer)
@@ -542,7 +542,7 @@ function _satellite_report(nav, groups::Tuple, signal::S, prn) where {S}
         report.decoder = slot.running_decoder
         report.bit_synced = slot.decoding_bit_synced
         report.epoch =
-            slot.snapshot_epoch == typemin(Int) ? nothing : slot.snapshot_epoch * nav.cycle_time
+            slot.snapshot_epoch == typemin(Int) ? nothing : slot.snapshot_epoch * nav.vt_update_interval
         report.cn0_dbhz = slot.cn0_dbhz
         report.in_lock = slot.in_lock
         report.pvt_ready = slot.pvt_ready

@@ -427,7 +427,7 @@ function SimReceiver(;
     truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0, truth_kw...)
     delays = atmosphere ? sim_atmosphere(signals, fixtures, first(gps_states), t0) : NO_ATMOSPHERE
     estimator = VectorPLLAndDLL(signals...; inner, config, approximate_year = 2021,
-        cycle_time = nominal_records * 1.0ms,
+        vt_update_interval = nominal_records * 1.0ms,
         enable_ionospheric_correction = correct_atmosphere,
         enable_tropospheric_correction = correct_atmosphere, estimator_kw...)
     nav = estimator.navigation

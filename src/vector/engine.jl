@@ -8,7 +8,7 @@
 #
 # Times are on the records' grid: `sample_index / sampling_frequency` seconds
 # since an origin shared by every satellite. The navigation epochs are the
-# multiples of the cycle time on it.
+# multiples of the update interval on it.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # The ranging signals of the estimator, as `(driver, decoding signal)` pairs: a
@@ -45,7 +45,7 @@ function VectorPLLAndDLL(
     signals::Union{AbstractGNSSSignal,Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}}...;
     inner::AbstractDopplerEstimator = ConventionalAssistedPLLAndDLL(),
     config::Union{VectorTracking,Nothing} = VectorTracking(),
-    cycle_time = 100.0ms,
+    vt_update_interval = 100.0ms,
     lock_cn0_threshold = 30.0dBHz,
     residual_pll_loop_filter_bandwidth = default_residual_pll_loop_filter_bandwidth(),
     max_satellites_per_signal::Integer = 16,
@@ -74,16 +74,16 @@ function VectorPLLAndDLL(
     foreach(_check_ranging_pair, pairs)
     max_satellites_per_signal >= 1 ||
         throw(ArgumentError("`max_satellites_per_signal` must be at least 1"))
-    T = Float64(ustrip(s, cycle_time)) * s
+    T = Float64(ustrip(s, vt_update_interval)) * s
     0.0s < T < Inf * s ||
-        throw(ArgumentError("the navigation cycle time must be positive and finite"))
+        throw(ArgumentError("`vt_update_interval` must be positive and finite"))
     residual_pll_loop_filter_bandwidth > 0.0Hz ||
         throw(ArgumentError("`residual_pll_loop_filter_bandwidth` must be positive"))
     navigation = VectorNavigation(
         config,
         pairs,
         inner;
-        cycle_time = T,
+        vt_update_interval = T,
         lock_cn0_threshold_dbhz = Float64(ustrip(lock_cn0_threshold)),
         max_satellites_per_signal = Int(max_satellites_per_signal),
         approximate_year,
@@ -224,15 +224,15 @@ function _step_vector_record(
     state, carrier_doppler, code_doppler
 end
 
-_cycle_seconds(nav::VectorNavigation) = ustrip(s, nav.cycle_time)
+_update_interval_seconds(nav::VectorNavigation) = ustrip(s, nav.vt_update_interval)
 _sampling_frequency_hz(record::LoopRecord) = Float64(ustrip(Hz, record.sampling_frequency))
-_epoch_time(nav::VectorNavigation, epoch::Int) = epoch * _cycle_seconds(nav)
+_epoch_time(nav::VectorNavigation, epoch::Int) = epoch * _update_interval_seconds(nav)
 
 # The first epoch at or after time `t`: the first whose `_epoch_time` is not before
 # `t`, compared exactly as `_crosses_pending_epoch` compares them — `t / T` may round
 # to either side of an epoch.
 function _epoch_at_or_after(nav::VectorNavigation, t)
-    T = _cycle_seconds(nav)
+    T = _update_interval_seconds(nav)
     epoch = ceil(Int, t / T)
     (epoch - 1) * T >= t ? epoch - 1 : epoch * T < t ? epoch + 1 : epoch
 end
@@ -399,14 +399,14 @@ function _commands_at_landing(
     fs = _sampling_frequency_hz(record)
     # A command landing on the epoch itself may read a rounding error early.
     lead = landing / fs - _epoch_time(nav, nav.cycle_epoch)
-    -1 / fs <= lead <= MAX_LANDING_LEAD_CYCLES * _cycle_seconds(nav) || throw(
+    -1 / fs <= lead <= MAX_LANDING_LEAD_CYCLES * _update_interval_seconds(nav) || throw(
         ArgumentError(
             "a command must land between zero and 2.5 navigation cycles after the " *
             "epoch whose commands it carries",
         ),
     )
     lead = max(lead, 0.0)
-    T = _cycle_seconds(nav)
+    T = _update_interval_seconds(nav)
     code_frequency = ustrip(Hz, get_code_frequency(group.driver_signal))
     _, code_word = mean_nco_word(words, slot.driver_last_end_sample, landing)
     chips =
@@ -657,7 +657,8 @@ end
 
 # Stale: no record of the driver, or of the decoding signal, for two cycles.
 _is_stale(nav::VectorNavigation, slot::VTSlot, now) =
-    min(slot.driver_last_end_time, slot.decoding_last_end_time) < now - 2 * _cycle_seconds(nav)
+    min(slot.driver_last_end_time, slot.decoding_last_end_time) <
+    now - 2 * _update_interval_seconds(nav)
 
 # Before a cycle: which slots it reads, every release reason cleared, and the stale
 # slots dropped — freed with their storage kept, released if they were members.
@@ -695,7 +696,8 @@ function _navigation_cycle!(nav::VectorNavigation, now)
     buffers = nav.buffers
     epoch = nav.pending_epoch
     cycle_time =
-        nav.cycle_epoch == typemin(Int) ? nav.cycle_time : (epoch - nav.cycle_epoch) * nav.cycle_time
+        nav.cycle_epoch == typemin(Int) ? nav.vt_update_interval :
+        (epoch - nav.cycle_epoch) * nav.vt_update_interval
     nav.cycle_id += 1
     dropped = _fold_groups(_prepare_slots!, false, groups, nav, now)
     seeded = released = fell_back = false

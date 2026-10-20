@@ -198,7 +198,7 @@ end
     # A 20 ms navigation cycle and the NCO-referenced inner loop, the commands landing
     # 15 ms after the record that computed them: each satellite sizes its corrections
     # for its own landing.
-    kw = (; num_sats = 8, inner = NCOReferencedPLLAndDLL(), estimator_kw = (; cycle_time = 20ms))
+    kw = (; num_sats = 8, inner = NCOReferencedPLLAndDLL(), estimator_kw = (; vt_update_interval = 20ms))
     rx0 = PipelineReceiver(; kw...)
     results0, _, diverged0 = run_pipeline!(rx0, 33.0)
     @test !diverged0
