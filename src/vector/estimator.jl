@@ -125,8 +125,8 @@ as GPS L1C-P or Galileo E1C must be paired with its data component).
 `config = nothing` only ever solves the scalar PVT.
 
 Storage is allocated at construction for `max_satellites_per_signal`
-satellites per ranging signal and only grows past that: a satellite that is
-dropped leaves its storage to the next one.
+satellites per ranging signal — a `pilot => data` pair is one — and only grows
+past that: a satellite that is dropped leaves its storage to the next one.
 """
 struct VectorPLLAndDLL{E<:AbstractDopplerEstimator,N} <: AbstractDopplerEstimator
     inner::E

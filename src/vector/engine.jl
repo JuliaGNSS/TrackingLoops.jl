@@ -683,7 +683,7 @@ end
 #     ready for it. A fresh fix seeds the filter from it, puts the fix's satellites
 #     into the vector loop and closes their loops a first time at the seeded state.
 #   - Running: one filter cycle: the members are admitted (decoded, healthy, in lock
-#     and a degree above the horizon) and released, their accumulated
+#     and `ADMISSION_ELEVATION` above the horizon) and released, their accumulated
 #     discriminators measured and fused, and every member left its commands.
 #     Members out of lock stay in the loop, unmeasured. After
 #     `insufficient_meas_timeout` of unsolvable epochs, or with no member left, every
