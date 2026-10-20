@@ -42,7 +42,7 @@ end
     # and as the only satellite it ran that epoch's cycle at once.
     @test slot.first_epoch == 0
     @test nav.cycle_epoch == 0 && nav.pending_epoch == 1
-    @test slot.last_end_sample == 4000
+    @test slot.driver_last_end_sample == 4000
     # Later records keep the slot.
     state, = step_loop(estimator, state, engine_record(7, 8000), words, NO_LANDING_SAMPLE)
     @test nav.registrations == 1
@@ -110,10 +110,10 @@ function take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fractio
     slot.decoding_last_end_sample = decoding_end
     slot.decoding_last_end_time = decoding_end / fs
     slot.last_code_phase = driver_phase
-    slot.last_end_sample = end_sample
-    slot.last_end_time = end_sample / fs
+    slot.driver_last_end_sample = end_sample
+    slot.driver_last_end_time = end_sample / fs
     words = FixedNCOWord(0.0, code_doppler)
-    record = engine_record(3, epoch_sample + 4000; signal = group.signal)
+    record = engine_record(3, epoch_sample + 4000; signal = group.driver_signal)
     TL._snapshot_driver!(nav, group, slot, group.prototype, record, words)
     TL._snapshot_decoding!(nav, group, slot, record, words)
     TL._complete_snapshot!(nav, group, slot)
@@ -162,8 +162,8 @@ end
     # A record that does not cross the pending epoch takes no snapshot.
     nav.num_snapshots = 0
     slot.driver_epoch = slot.decoding_epoch = slot.snapshot_epoch = typemin(Int)
-    slot.last_end_sample = slot.decoding_last_end_sample = 300_000
-    slot.last_end_time = slot.decoding_last_end_time = 300_000 / fs
+    slot.driver_last_end_sample = slot.decoding_last_end_sample = 300_000
+    slot.driver_last_end_time = slot.decoding_last_end_time = 300_000 / fs
     record = engine_record(3, 304_000)
     TL._snapshot_driver!(nav, group, slot, group.prototype, record, FixedNCOWord(0.0, 0.0))
     TL._snapshot_decoding!(nav, group, slot, record, FixedNCOWord(0.0, 0.0))
@@ -220,12 +220,12 @@ end
         slot.occupied = true
         slot.first_epoch = 0
     end
-    ended!(slot, t) = (slot.last_end_time = slot.decoding_last_end_time = t)
+    ended!(slot, t) = (slot.driver_last_end_time = slot.decoding_last_end_time = t)
     fresh.snapshot_epoch = 10
     ended!(fresh, 1.0)
     ended!(stale, 0.75)
     ended!(member, 0.7)
-    member.estimator_state = TL._enable_vector_tracking(group.prototype)
+    member.estimator_state = TL._add_to_vector_loop(group.prototype)
     # The stale ones are not waited for…
     @test TL._all_snapshotted(true, group, nav, 1.0)
     ended!(stale, 0.85)
@@ -247,7 +247,7 @@ end
     @test fresh.in_cycle && fresh.occupied
     @test !stale.occupied && stale.release_reason == VT_NOT_RELEASED
     @test !member.occupied && member.release_reason == VT_INELIGIBLE
-    @test !member.estimator_state.vt_on
+    @test !member.estimator_state.in_vector_loop
     @test release_reason(VectorPLLAndDLL(signal), signal, 3) == VT_NOT_RELEASED
 end
 
@@ -367,7 +367,7 @@ end
     end
     # `b` is a member of the vector loop, in the slot and in the state its host keeps.
     slot = group.slots[b.slot_index]
-    b = TL._enable_vector_tracking(b)
+    b = TL._add_to_vector_loop(b)
     slot.estimator_state = b
     # Its records stop for longer than two cycles: a cycle drops it and releases it, but
     # only in the slot — the host never hands the satellite the release.
@@ -375,15 +375,15 @@ end
         a, = step_loop(estimator, a, engine_record(3, 4000k), words, NO_LANDING_SAMPLE)
     end
     @test !slot.occupied
-    @test !slot.estimator_state.vt_on
-    @test b.vt_on
+    @test !slot.estimator_state.in_vector_loop
+    @test b.in_vector_loop
     # Its records resume: it registers anew, and takes up the release it missed, its
     # scalar loop re-seeded from the replica's Dopplers.
     resumed = FixedNCOWord(120.0, 0.12)
     b, = step_loop(estimator, b, engine_record(5, 4000 * 401), resumed, NO_LANDING_SAMPLE)
     @test slot.occupied
-    @test !b.vt_on
-    @test !slot.estimator_state.vt_on
+    @test !b.in_vector_loop
+    @test !slot.estimator_state.in_vector_loop
     @test b.code_freq_update == 0.0Hz
     @test b.inner.init_carrier_doppler == 120.0Hz
     @test b.inner.init_code_doppler == 0.12Hz
@@ -392,8 +392,8 @@ end
 @testset "Vector tracking ranges on drivers and decodes their data components" begin
     pair = VectorPLLAndDLL(GPSL1CA(), GalileoE1C() => GalileoE1B())
     groups = pair.navigation.groups
-    @test groups[1].signal isa GPSL1CA && groups[1].decoding_signal isa GPSL1CA
-    @test groups[2].signal isa GalileoE1C && groups[2].decoding_signal isa GalileoE1B
+    @test groups[1].driver_signal isa GPSL1CA && groups[1].decoding_signal isa GPSL1CA
+    @test groups[2].driver_signal isa GalileoE1C && groups[2].decoding_signal isa GalileoE1B
     @test groups[2].slots[1].running_decoder isa typeof(GNSSDecoderState(GalileoE1B(), 1))
     @test pair.navigation.layout.signal_id_by_group == [:GPSL1CA, :GalileoE1C]
     # A dataless driver needs a data component to decode; that one must carry data and
@@ -428,7 +428,7 @@ end
     # The pilot's record steps the loop on the same slot.
     driven, = step_loop(estimator, stepped, engine_record(7, 40_000; n = 40_000, signal = GPSL1C_P()), words, NO_LANDING_SAMPLE)
     @test driven.slot_index == 1 && nav.registrations == 1
-    @test nav.groups[1].slots[1].last_end_sample == 40_000
+    @test nav.groups[1].slots[1].driver_last_end_sample == 40_000
     # A passenger the estimator does not decode is ignored; a driver it does not range
     # on is an error, as is a satellite stepped with another satellite's driver.
     plain = VectorPLLAndDLL(GPSL1CA())

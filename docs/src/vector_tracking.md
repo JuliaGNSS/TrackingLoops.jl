@@ -38,7 +38,7 @@ engine, which
 - runs the epoch's navigation cycle on the record that completes the last
   satellite's snapshot: the scalar PVT until the filter is seeded, a filter
   iteration after that;
-- leaves the cycle's decisions — admission, release, the corrections — for each
+- leaves the cycle's decisions — admission, release, the commands — for each
   satellite to take up on its next record, sized for where its command lands.
 
 ```julia
@@ -122,21 +122,21 @@ the estimator must carry what only the correlator knows:
 
 `NO_LANDING_SAMPLE` keeps meaning that the command computed from a record acts
 from the record's end; a hardware host passes the landing sample, and each
-satellite sizes its corrections for that moment.
+satellite sizes its commands for that moment.
 
 ## The lifecycle of a satellite
 
 Vector tracking needs a decoded navigation message and a first position fix, so
 every satellite starts on its scalar loop:
 
-1. A satellite joins the engine on its first record. Until vector tracking
+1. A satellite registers with the engine on its first record. Until vector tracking
    runs, each cycle solves the scalar PVT over the satellites that are in lock
    (C/N₀ above `lock_cn0_threshold`, bit sync found), decoded for positioning
    and healthy.
 2. The first fix seeds the filter. The filter starts from the fix's position
    and clock biases, with the covariance the fix's geometry gives them, so a fix
    of poor geometry (a high DOP) starts the filter as uncertain as it is. The
-   fix's satellites join the vector loop, and take their first corrections,
+   fix's satellites are added to the vector loop, and take their first commands,
    computed at the seeded state, on their next record. In the loop the filter
    sets a satellite's carrier NCO and its residual PLL follows the carrier,
    whatever [Carrier-loop staging](@ref) stage its scalar loop had reached.
@@ -265,7 +265,7 @@ record rate (vector phase lock), and a carrier-phase output for RTK.
 With a hardware correlator, the command computed from a record only takes
 effect when it lands at the NCO. Pass the landing sample to `step_loop`, and
 the channel's [`NCOTimeline`](@ref) as its words: each satellite then sizes its
-corrections for the moment its own command lands, against the replica the
+commands for the moment they land, against the replica the
 timeline predicts there, and a released satellite's scalar loop takes over from
 that replica. The landing may lie up to 2.5 cycles after the epoch.
 

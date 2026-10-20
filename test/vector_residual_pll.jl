@@ -59,7 +59,7 @@ residual_pll_error(sat, before) =
     @test !diverged
     for channels in rx.channels, sat in channels
         state = sat.state
-        @test state.vt_on && TL._has_carrier_ramp(state)
+        @test state.in_vector_loop && TL._has_carrier_ramp(state)
         # The replica's word is the filter's ramp at the middle of the next record…
         T = record_ms(sat.signal) * 1e-3
         @test sat.carrier_doppler ≈ TL._doppler_at(state.ramp, state.residual_pll.prompt_center + T) atol = 1e-4
@@ -91,7 +91,7 @@ end
     errors = Float64[]
     run_noisy!(rx, 100; noise, on_record = (c, i, sat, before, T) ->
         c > 30 && push!(errors, residual_pll_error(sat, before)))
-    @test all(sat -> sat.state.vt_on, rx.sats)
+    @test all(sat -> sat.state.in_vector_loop, rx.sats)
     @test length(errors) == length(scalar_errors)
     @test std(errors) / std(scalar_errors) < 0.85
 end
@@ -162,7 +162,7 @@ end
             end)
         @test max_frequency < max_residual
         @test maximum(abs, errors) < 0.1
-        @test all(sat -> sat.state.vt_on, rx.sats)
+        @test all(sat -> sat.state.in_vector_loop, rx.sats)
     end
 end
 
@@ -266,11 +266,11 @@ end
     estimate = TL._doppler_at(sat.state.ramp, landing_time) + TL._residual_doppler(residual_pll) +
                TL._residual_doppler_rate(residual_pll) * (landing_time - residual_pll.prompt_center)
     rate = sat.state.ramp.rate + TL._residual_doppler_rate(residual_pll)
-    TL._release!(slot, VT_INELIGIBLE)
+    TL._mark_release!(slot, VT_INELIGIBLE)
     rx.vt.cycle_id += 1
     sat.state = TL._take_up_cycle(rx.vt, rx.group, slot, sat.state, take_up_record(sat, sample),
         sim_words(sat, NO_LANDING_SAMPLE), Int64(sample))
-    @test !sat.state.vt_on
+    @test !sat.state.in_vector_loop
     @test sat.state.inner.init_carrier_doppler ≈ estimate * Hz
     @test abs(estimate - true_doppler(sat, rx.truth, sim_time(rx, sample))) < 0.5
     @test sat.state.inner.carrier_loop_filter.x2 ≈ rate * Hz^2
@@ -301,7 +301,7 @@ residual_pll_at(center, prompt_phase; carrier_freq_update = 0.0) = TL.ResidualPL
     group = first(nav.groups)
     slot = first(group.slots)
     words = FixedNCOWord(100.0, 0.0)
-    state = TL._enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.0Hz))
+    state = TL._add_to_vector_loop(init_estimator_state(estimator, signal, 100.0Hz, 0.0Hz))
     sentinel = 12345.0f0
     slot.soft_bit[1] = sentinel
     # The prompts of one data symbol of value `-1` turn by 0.1 cycle a record at the

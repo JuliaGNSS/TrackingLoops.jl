@@ -25,7 +25,7 @@
 # `assess_bias_observability!`).
 #
 # The loop split: the per-record `VectorPLLAndDLL` accumulates each satellite's
-# discriminators and applies the NCO corrections; everything here — the
+# discriminators and applies the filter's commands; everything here — the
 # navigation filter, measurement construction and the loop-closure maths — and
 # the cycle in `vector/tracking.jl` sit above it. This file holds the model:
 # plain functions of the configuration, the layout and the per-cycle members,
@@ -413,8 +413,8 @@ end
 
 # The state propagated kinematically by `τ` seconds, into `x_τ`: position
 # `+ v·τ (+ a·τ²/2)`, velocity `+ a·τ`, each clock bias `+ drift·τ`, IFBs unchanged.
-# With `τ = 0` it is a plain copy (`x + v·0.0 == x`). This is what the NCO
-# corrections are sized with when they land `τ` after the cycle epoch.
+# With `τ = 0` it is a plain copy (`x + v·0.0 == x`). This is what the
+# commands are sized with when they land `τ` after the cycle epoch.
 function propagate_state!(x_τ, x, idxs::NavFilterIndices, τ)
     copyto!(x_τ, x)
     has_vel = !isempty(idxs.vel)
@@ -540,7 +540,7 @@ end
 # zero* residual carrying the full measurement weight of `R`, which would pull the state
 # towards the current NCO instead of leaving it to coast. Members without an accumulation
 # are therefore withheld from the measurement set; they stay in the vector loop and keep
-# getting NCO corrections, exactly like a member out of code lock.
+# getting commands, exactly like a member out of code lock.
 #
 # The carrier accumulator counts only the records with a frequency measurement — a record
 # without a previous prompt has none — so it can be empty while the code one is not, on a
@@ -1056,7 +1056,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Loop closure
 
-# The NCO corrections for one member: the prediction residual — the difference between
+# The commands for one member: the prediction residual — the difference between
 # the pseudorange (rate) the filter predicts for the satellite and the one its replica
 # realises — converted into the code / carrier frequency offsets that remove it over the
 # next interval `T`. Against a replica word of zero the carrier correction is the
