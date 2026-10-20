@@ -59,7 +59,7 @@ end
     @test all(r -> all(==(VT_NOT_RELEASED), r.reasons), tail)
     @test pipeline_errors(rx, tail) < 3.0
     @test pipeline_code_errors(tail) < 0.05
-    @test all(sat -> sat.state.vt_on, rx.sats)
+    @test all(sat -> sat.state.in_vector_loop, rx.sats)
     @test 0.0u"m" < navigation_status(rx.estimator).position_std < 3.0u"m"
     @test keys(member_sats(rx.estimator)) == keys(navigation_solution(rx.estimator).sats)
     # Each satellite took up every cycle once.
@@ -153,7 +153,7 @@ end
     reseed = findfirst(r -> r.status.enabled, results)
     @test reseed !== nothing && reseed > fallback
     @test results[end].status.running
-    @test all(sat -> sat.state.vt_on, rx.sats)
+    @test all(sat -> sat.state.in_vector_loop, rx.sats)
 end
 
 @testset "A fallback releases a member that missed its epoch" begin
@@ -177,7 +177,7 @@ end
     end
     lagging = []
     on_tick(sample) = push!(lagging, (; t = sample / 4e6, status = rx.vt.status,
-        in_loop = rx.vt.groups[1].slots[7].estimator_state.vt_on))
+        in_loop = rx.vt.groups[1].slots[7].estimator_state.in_vector_loop))
     results, _, diverged = run_pipeline!(rx, 6.0; start_sample = start, fade, paused, on_tick)
     @test !diverged
     fallback = findfirst(r -> r.status.fell_back, results)
@@ -191,7 +191,7 @@ end
     @test !isempty(scalar)
     @test all(l -> l.status.num_members == 0 && !l.in_loop, scalar)
     @test results[end].status.running
-    @test all(sat -> sat.state.vt_on, rx.sats)
+    @test all(sat -> sat.state.in_vector_loop, rx.sats)
 end
 
 @testset "From records alone, under an NCO delay" begin
@@ -299,7 +299,7 @@ end
     # has found the edges again the next subframe makes it ready — not a whole frame —
     # and the filter takes it back.
     @test slot.pvt_ready
-    @test reacquired.state.vt_on
+    @test reacquired.state.in_vector_loop
     @test results[end].status.num_members == length(rx.sats)
     @test all(r -> r.status.running, results)
 end
@@ -372,7 +372,7 @@ function snapshot_range_errors(rx)
         slot = group.slots[sat.state.slot_index]
         t = rx.truth.t0 + TL._epoch_time(nav, slot.snapshot_epoch)
         u_true = uncorrected_time(sat, first(true_transmit(sat, rx.truth, t)))
-        (calc_uncorrected_time(TL._satellite_state(group.signal, slot)) - u_true) *
+        (calc_uncorrected_time(TL._satellite_state(group.driver_signal, slot)) - u_true) *
             TL.SPEED_OF_LIGHT
     end
 end
@@ -385,7 +385,7 @@ first_fix(results) = results[findfirst(r -> r.status.enabled, results)]
     @test !diverged
     estimator = rx.estimator
     group = rx.vt.groups[1]
-    @test group.signal isa GPSL1C_P && group.decoding_signal isa GPSL1CA
+    @test group.driver_signal isa GPSL1C_P && group.decoding_signal isa GPSL1CA
     # The data's bit clock synced and its bits decoded; the pilot's C/N₀ sets the lock.
     for sat in rx.sats
         slot = group.slots[sat.state.slot_index]
@@ -478,7 +478,7 @@ end
     @test all(slot -> length(slot.prompt_history.centers) == 6, slots)
     dropped = Ref(0)
     results, _, diverged = run_pipeline!(rx, 4.0; start_sample = sample, on_tick = _ ->
-        (dropped[] += count(slot -> slot.estimator_state.vt_on && !slot.symbol_from_edge, slots)))
+        (dropped[] += count(slot -> slot.estimator_state.in_vector_loop && !slot.symbol_from_edge, slots)))
     @test !diverged
     @test all(r -> r.status.running && r.status.num_members == length(rx.sats), results)
     @test dropped[] == 0

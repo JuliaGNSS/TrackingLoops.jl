@@ -107,7 +107,7 @@ end
     @test results[fallback].pvt.time isa PositionVelocityTime.TAITime
     @test isempty(results[fallback].measured)
     # The released satellites run their scalar loops: nothing steered, nothing accumulated.
-    @test all(sat -> !sat.state.vt_on && sat.state.code_freq_update == 0.0Hz, rx.sats)
+    @test all(sat -> !sat.state.in_vector_loop && sat.state.code_freq_update == 0.0Hz, rx.sats)
     @test all(sat -> sat.state.code_discr_acc == (0, 0.0), rx.sats)
     # Not ready, no satellite enters the scalar solve, so nothing re-seeds…
     @test all(r -> !r.status.running && !r.status.enabled, results[fallback+1:end])

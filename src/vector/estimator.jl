@@ -156,7 +156,7 @@ struct SatVectorPLLAndDLL{S}
     # The inner scalar loop's state and, on top, the interface to the vector-tracking
     # filter:
     #
-    #   - `vt_on`: whether the filter controls this satellite's NCOs. While `false`
+    #   - `in_vector_loop`: whether the filter controls this satellite's NCOs. While `false`
     #     the satellite runs the inner loop and nothing is accumulated.
     #   - `code_discr_acc`: `(count, sum)` of the DLL output (chips) since the
     #     filter last read it.
@@ -184,7 +184,7 @@ struct SatVectorPLLAndDLL{S}
     #     this satellite (`0` until its first record), and the latest cycle it has
     #     taken up.
     inner::S
-    vt_on::Bool
+    in_vector_loop::Bool
     code_discr_acc::Tuple{Int,Float64}
     fll_disc_sum::Tuple{Int,typeof(1.0Hz)}
     previous_replica_half::Tuple{Float64,typeof(1.0s)}
@@ -203,13 +203,13 @@ _is_driver_record(state::SatVectorPLLAndDLL, record::LoopRecord) =
 _is_driven_by(state::SatVectorPLLAndDLL, signal::AbstractGNSSSignal) =
     _is_driven_by(state.inner, signal)
 
-# A satellite with the vector interface empty — out of the loop or just joined —
+# A satellite with the vector interface empty — out of the loop or just added —
 # on the slot of `registration`. The replica's last half record is not the vector
 # interface's but the replica's, so it is kept; so is the residual PLL's
 # bandwidth, which `residual_pll_loop_filter_bandwidth` gives.
 SatVectorPLLAndDLL(
     inner,
-    vt_on::Bool,
+    in_vector_loop::Bool,
     slot_index::Int = 0,
     registration::Int = 0,
     cycle_id::Int = -1;
@@ -218,7 +218,7 @@ SatVectorPLLAndDLL(
 ) =
     SatVectorPLLAndDLL(
         inner,
-        vt_on,
+        in_vector_loop,
         (0, 0.0),
         (0, 0.0Hz),
         previous_replica_half,
@@ -235,7 +235,7 @@ SatVectorPLLAndDLL(
 function SatVectorPLLAndDLL(
     state::SatVectorPLLAndDLL{S};
     inner::Maybe{S} = nothing,
-    vt_on::Maybe{Bool} = nothing,
+    in_vector_loop::Maybe{Bool} = nothing,
     code_discr_acc::Maybe{Tuple{Int,Float64}} = nothing,
     fll_disc_sum::Maybe{Tuple{Int,typeof(1.0Hz)}} = nothing,
     previous_replica_half::Maybe{Tuple{Float64,typeof(1.0s)}} = nothing,
@@ -250,7 +250,7 @@ function SatVectorPLLAndDLL(
 ) where {S}
     SatVectorPLLAndDLL{S}(
         isnothing(inner) ? state.inner : inner,
-        isnothing(vt_on) ? state.vt_on : vt_on,
+        isnothing(in_vector_loop) ? state.in_vector_loop : in_vector_loop,
         isnothing(code_discr_acc) ? state.code_discr_acc : code_discr_acc,
         isnothing(fll_disc_sum) ? state.fll_disc_sum : fll_disc_sum,
         isnothing(previous_replica_half) ? state.previous_replica_half :
@@ -296,7 +296,7 @@ init_estimator_state(
     reset_estimator_state(estimator::VectorPLLAndDLL, state, carrier_doppler, code_doppler)
 
 Re-seed the inner loop from the converged Dopplers, zero both accumulators and
-stop applying the code correction, keeping `vt_on`, the carrier ramp, the
+stop applying the code correction, keeping `in_vector_loop`, the carrier ramp, the
 residual PLL and the satellite's place in the navigation engine. The code correction
 must leave the NCO words with the re-seed: the converged Dopplers already
 contain it, so keeping it would apply it twice. The replica is still steered by
@@ -322,9 +322,9 @@ reset_estimator_state(
 # loop's staging had reached: the stage is the residual PLL, and the phase-lock
 # indicator is the residual PLL's; out of it, the inner loop's.
 carrier_loop_stage(state::SatVectorPLLAndDLL) =
-    state.vt_on ? VECTOR_LOOP : carrier_loop_stage(state.inner)
+    state.in_vector_loop ? VECTOR_LOOP : carrier_loop_stage(state.inner)
 phase_lock_indicator(state::SatVectorPLLAndDLL) =
-    state.vt_on ? state.residual_pll.lock.lock_detector.indicator :
+    state.in_vector_loop ? state.residual_pll.lock.lock_detector.indicator :
     phase_lock_indicator(state.inner)
 
 
@@ -333,10 +333,10 @@ phase_lock_indicator(state::SatVectorPLLAndDLL) =
 # satellite's place in the engine.
 
 # Put the satellite into the vector loop with its vector interface cleared: the
-# accumulators and corrections zeroed, so that it never runs on stale values, and the inner
+# accumulators and commands zeroed, so that it never runs on stale values, and the inner
 # loop as it stands. One already in the loop is returned unchanged.
-_enable_vector_tracking(state::SatVectorPLLAndDLL) =
-    state.vt_on ? state :
+_add_to_vector_loop(state::SatVectorPLLAndDLL) =
+    state.in_vector_loop ? state :
     SatVectorPLLAndDLL(
         state.inner,
         true,
@@ -348,12 +348,12 @@ _enable_vector_tracking(state::SatVectorPLLAndDLL) =
     )
 
 # Take the satellite out of the vector loop with its vector interface cleared, as
-# `_enable_vector_tracking` puts it in, and its inner loop as it stands. Unlike
-# `_release_from_vector_tracking` it does not re-seed the inner loop: it marks the cycle's
-# release on the slot's copy of the state (`_release!`), which the satellite takes up
+# `_add_to_vector_loop` puts it in, and its inner loop as it stands. Unlike
+# `_hand_over_to_scalar_loop` it does not re-seed the inner loop: it marks the cycle's
+# release on the slot's copy of the state (`_mark_release!`), which the satellite takes up
 # on its own state by handing over to its scalar loop (`_take_up_cycle`), and it registers
 # a satellite out of the loop.
-_disable_vector_tracking(state::SatVectorPLLAndDLL) =
+_release_from_vector_loop(state::SatVectorPLLAndDLL) =
     SatVectorPLLAndDLL(
         state.inner,
         false,
@@ -364,7 +364,7 @@ _disable_vector_tracking(state::SatVectorPLLAndDLL) =
         residual_pll_loop_filter_bandwidth = state.residual_pll.bandwidth,
     )
 
-# `_disable_vector_tracking` with the inner loop re-seeded from the vector loop's
+# `_release_from_vector_loop` with the inner loop re-seeded from the vector loop's
 # latest estimates at the sample `landing` (of the records' grid at `fs`, Hz), where the
 # release lands, so the scalar loop takes over from where the vector loop left the
 # carrier: the Doppler its residual PLL estimates there — the filter's ramp plus the
@@ -375,7 +375,7 @@ _disable_vector_tracking(state::SatVectorPLLAndDLL) =
 # a reset, the release restarts the carrier loop's staging: the scalar loop pulls in
 # again, FLL-assisted at the wide bandwidth, which keeps a satellite the vector loop
 # let go.
-function _release_from_vector_tracking(state::SatVectorPLLAndDLL, words, landing, fs)
+function _hand_over_to_scalar_loop(state::SatVectorPLLAndDLL, words, landing, fs)
     carrier_word, code_word = mean_nco_word(words, landing, landing)
     carrier_doppler = carrier_word * Hz
     code_doppler = code_word * Hz
@@ -389,7 +389,7 @@ function _release_from_vector_tracking(state::SatVectorPLLAndDLL, words, landing
         rate += _residual_doppler_rate(residual_pll)
     end
     SatVectorPLLAndDLL(
-        _disable_vector_tracking(state);
+        _release_from_vector_loop(state);
         inner = _reseed_inner(state.inner, carrier_doppler, code_doppler, rate),
     )
 end
@@ -424,7 +424,7 @@ _carrier_filter_at_rate(filter, rate) =
 # the sample `landing` the command lands on, which the replica ran on until then; one
 # in the loop keeps its residual PLL's estimate of the incoming Doppler across the new
 # ramp.
-function _set_vector_corrections(
+function _set_vector_commands(
     state::SatVectorPLLAndDLL,
     code_freq_update,
     ramp::CarrierRamp,
@@ -452,7 +452,7 @@ end
 # Whether the satellite has a carrier ramp yet: from the filter's first command, which
 # its residual PLL takes over from the scalar loop at, until it leaves the vector loop. A
 # member has one on every record, as it is added with its first command; only the command
-# it takes up reads this, to tell the first from the later ones (`_set_vector_corrections`).
+# it takes up reads this, to tell the first from the later ones (`_set_vector_commands`).
 _has_carrier_ramp(state::SatVectorPLLAndDLL) = !isnan(state.ramp.time)
 
 # Empty both discriminator accumulators, once the filter has read them.
@@ -503,7 +503,7 @@ end
     landing_sample::Int64,
 )
     replica_halves = _replica_halves(record, words)
-    if !state.vt_on
+    if !state.in_vector_loop
         inner, carrier_doppler, code_doppler =
             step_loop(estimator.inner, state.inner, record, words, landing_sample)
         return SatVectorPLLAndDLL(state; inner, previous_replica_half = replica_halves.second),

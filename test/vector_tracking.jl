@@ -8,7 +8,7 @@ using Geodesy: ENUfromECEF, wgs84
     estimator = VectorPLLAndDLL(GPSL1CA(), GalileoE1B(); max_satellites_per_signal = 4)
     nav = estimator.navigation
     @test length(nav.groups) == 2
-    @test nav.groups[1].signal isa GPSL1CA
+    @test nav.groups[1].driver_signal isa GPSL1CA
     @test all(group -> length(group.slots) == 4, nav.groups)
     @test all(group -> all(slot -> !slot.occupied && slot.registration == 0, group.slots), nav.groups)
     @test nav.cycle_time == 0.1s
@@ -20,7 +20,7 @@ using Geodesy: ENUfromECEF, wgs84
     @test release_reason(estimator, GPSL1CA(), 5) == VT_NOT_RELEASED
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     @test (state.slot_index, state.registration, state.cycle_id) == (0, 0, -1)
-    @test !state.vt_on
+    @test !state.in_vector_loop
     @test VectorPLLAndDLL(GPSL1CA(); cycle_time = 20ms).navigation.cycle_time == 0.02s
     @test VectorPLLAndDLL(GPSL1CA(); lock_cn0_threshold = 35dBHz).navigation.lock_cn0_threshold_dbhz == 35.0
     @test !VectorPLLAndDLL(GPSL1CA(); config = nothing).navigation.enabled
@@ -60,7 +60,7 @@ end
     @test !diverged
     @test all(r -> !r.status.running && !r.status.enabled, results)
     @test all(r -> r.status.num_members == 0, results)
-    @test all(sat -> !sat.state.vt_on, rx.sats)
+    @test all(sat -> !sat.state.in_vector_loop, rx.sats)
     # A scalar fix each cycle, near the truth.
     @test length(results[end].pvt.sats) == length(rx.sats)
     @test position_error(rx, results[end]) < 3.0
@@ -83,11 +83,11 @@ end
     # Every fix satellite took itself into the loop with corrections, and joined with
     # empty accumulators to accumulate from now on.
     for (sat, slot) in zip(rx.sats, channel_slots(rx.group, rx.sats))
-        @test sat.state.vt_on
+        @test sat.state.in_vector_loop
         @test sat.state.code_discr_acc == (0, 0.0)
         @test isfinite(sat.state.code_freq_update)
         @test sat.state.cycle_id == vt.cycle_id
-        @test slot.correction_cycle == vt.cycle_id
+        @test slot.command_cycle == vt.cycle_id
         @test slot.release_reason == VT_NOT_RELEASED
     end
     # The reference epoch is the latest transmit time corrected by the fix's clock.
@@ -107,7 +107,7 @@ end
     fill_unready!(v, sat, epoch, landing, nav) = (fill_slot!(v, sat, epoch, landing, nav); v.pvt_ready = false)
     results, _, _ = run_simulation!(rx, 2; fill! = fill_unready!)
     @test all(r -> !r.status.running && !r.status.enabled, results)
-    @test all(sat -> !sat.state.vt_on, rx.sats)
+    @test all(sat -> !sat.state.in_vector_loop, rx.sats)
 end
 
 @testset "Without an NCO delay the corrections are the residuals at the updated state" begin
@@ -225,7 +225,7 @@ end
         (fill_slot!(v, sat, epoch, landing, nav); v.prn == prn && (v.in_lock = false))
     results, sample, _ = run_simulation!(rx, 1; fill! = coast!, start_sample = sample)
     key = (:GPSL1CA, prn)
-    @test rx.sats[1].state.vt_on
+    @test rx.sats[1].state.in_vector_loop
     @test release_reason(rx.estimator, GPSL1CA(), prn) == VT_NOT_RELEASED
     @test !haskey(results[1].pvt.sats, key)
     @test haskey(member_sats(rx.estimator), key)
@@ -242,8 +242,8 @@ end
     @test dropped.release_reason == VT_INELIGIBLE
     @test release_reason(rx.estimator, GPSL1CA(), dropped.prn) == VT_INELIGIBLE
     @test !dropped.occupied
-    @test !dropped.estimator_state.vt_on
-    @test !sat.state.vt_on
+    @test !dropped.estimator_state.in_vector_loop
+    @test !sat.state.in_vector_loop
     @test sat.state.code_freq_update == 0.0Hz
     # Re-seeded at its residual PLL's estimate, a hair off the replica's word, which
     # the filter's ramp keeps on the carrier.
@@ -265,8 +265,8 @@ end
     @test late.occupied
     @test !late.in_cycle
     @test late.release_reason == VT_NOT_RELEASED
-    @test late.correction_cycle != rx.vt.cycle_id
-    @test rx.sats[3].state.vt_on
+    @test late.command_cycle != rx.vt.cycle_id
+    @test rx.sats[3].state.in_vector_loop
     @test results[1].status.num_members == length(rx.sats) - 1
     @test !results[1].status.released
 end
@@ -309,25 +309,25 @@ end
     vt = rx.vt
     group = rx.group
     sat = group.slots[1]
-    sat.estimator_state = TL._disable_vector_tracking(sat.estimator_state)
+    sat.estimator_state = TL._release_from_vector_loop(sat.estimator_state)
     user_pos = first(TL.nav_filter_states(vt.x, vt.model.idxs))
     here = ENUfromECEF(ECEF(user_pos...), wgs84)
     antipode = ENUfromECEF(ECEF((-user_pos)...), wgs84)
-    @test TL._is_above_admission_mask(group.signal, sat, here)
-    @test !TL._is_above_admission_mask(group.signal, sat, antipode)
+    @test TL._is_above_admission_mask(group.driver_signal, sat, here)
+    @test !TL._is_above_admission_mask(group.driver_signal, sat, antipode)
     # Eligible and in lock, but below the mask: not admitted, so a satellite at the
     # horizon is not admitted and released every cycle. A member stays a member; the
     # elevation mask of the running cycle releases it.
     @test !TL._update_membership!(false, group, 1, nothing, antipode)
-    @test !sat.estimator_state.vt_on
-    @test all(v -> v.estimator_state.vt_on, channel_slots(group, rx.sats)[2:end])
+    @test !sat.estimator_state.in_vector_loop
+    @test all(v -> v.estimator_state.in_vector_loop, channel_slots(group, rx.sats)[2:end])
     TL._update_membership!(false, group, 1, nothing, here)
-    @test sat.estimator_state.vt_on
+    @test sat.estimator_state.in_vector_loop
     # A running cycle admits it back at the filter's own position, and the satellite
     # takes the admission up.
-    rx.sats[1].state = TL._disable_vector_tracking(rx.sats[1].state)
+    rx.sats[1].state = TL._release_from_vector_loop(rx.sats[1].state)
     results, _, _ = run_simulation!(rx, 1; start_sample = sample)
-    @test rx.sats[1].state.vt_on
+    @test rx.sats[1].state.in_vector_loop
     @test results[1].status.num_members == length(rx.sats)
 end
 
@@ -351,7 +351,7 @@ end
     # The scalar solve takes over, and the cached epoch offset is a week stale, as after
     # a GPST week rollover no running cycle saw.
     rx.vt.time_epoch_offset -= TL.SECONDS_PER_WEEK
-    foreach(slot -> TL._is_member(slot) && TL._release!(slot, VT_FALLBACK), rx.group.slots)
+    foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
     rx.vt.running = false
     results, _, _ = run_simulation!(rx, 2; start_sample = sample)
     @test results[1].status.enabled

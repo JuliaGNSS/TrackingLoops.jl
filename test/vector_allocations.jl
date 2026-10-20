@@ -54,7 +54,7 @@ end
     sample += cycle
     @test measure_navigation(rx, sample) == 0
     take_up!(rx, sample)
-    @test rx.sats[2].state.vt_on
+    @test rx.sats[2].state.in_vector_loop
 
     unlocked!(v, sat, e, l, nav) = (fill_slot!(v, sat, e, l, nav); v.in_lock = false; v.pvt_ready = false)
     rx.vt.time_with_insufficient_meas = 10.0s

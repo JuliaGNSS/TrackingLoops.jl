@@ -361,8 +361,8 @@ function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_loc
     slot.in_lock = in_lock
     slot.pvt_ready = in_lock
     slot.snapshot_epoch = nav.pending_epoch
-    slot.last_end_sample = slot.decoding_last_end_sample = epoch_sample
-    slot.last_end_time = slot.decoding_last_end_time = epoch_sample / fs
+    slot.driver_last_end_sample = slot.decoding_last_end_sample = epoch_sample
+    slot.driver_last_end_time = slot.decoding_last_end_time = epoch_sample / fs
     slot.chips_since_epoch = 0.0
     slot
 end
@@ -370,7 +370,7 @@ end
 # A channel no longer tracked: its slot has not seen a record for longer than two
 # cycles, so the cycle drops it.
 function drop_slot!(slot)
-    slot.last_end_time = slot.decoding_last_end_time = -Inf
+    slot.driver_last_end_time = slot.decoding_last_end_time = -Inf
     slot.snapshot_epoch = typemin(Int)
     slot
 end
