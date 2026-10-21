@@ -3,7 +3,7 @@
 # choice, which a vector-tracking filter can take over.
 #
 # In vector tracking a central navigation filter closes every satellite's loops
-# at once (see `VectorTracking`). Per record, the satellite's DLL and FLL
+# at once (see `NavigationFilterConfig`). Per record, the satellite's DLL and FLL
 # outputs are only *accumulated* for the filter, and the filter sets the
 # replica: the carrier NCO to its predicted
 # Doppler, the code NCO by its code correction, carrier-aided. Before the
@@ -13,7 +13,7 @@
 
 """
     VectorPLLAndDLL(signals...; inner = ConventionalAssistedPLLAndDLL(),
-                    config = VectorTracking(), vt_update_interval = 100ms,
+                    filter_config = NavigationFilterConfig(), vt_update_interval = 100ms,
                     lock_cn0_threshold = 30dBHz,
                     residual_pll_loop_filter_bandwidth = default_residual_pll_loop_filter_bandwidth(),
                     max_satellites_per_signal = 16,
@@ -122,7 +122,7 @@ satellite in again: a `ConventionalPLLAndDLL{ThirdOrderAssistedBilinearLF}`
 (what [`ConventionalAssistedPLLAndDLL`](@ref) builds) or an
 [`NCOReferencedPLLAndDLL`](@ref). Anything else throws an `ArgumentError`, as does a dataless signal given alone (a pilot such
 as GPS L1C-P or Galileo E1C must be paired with its data component).
-`config = nothing` only ever solves the scalar PVT.
+`filter_config = nothing` only ever solves the scalar PVT.
 
 Storage is allocated at construction for `max_satellites_per_signal`
 satellites per ranging signal — a `pilot => data` pair is one — and only grows

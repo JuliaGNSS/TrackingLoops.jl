@@ -33,12 +33,12 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
-    VectorTracking(; use_pseudorange_rates = true,
-                   motion_model_order = 2, clock_model_order = 2,
-                   acceleration_noise_std = 5.0m/s^2,
-                   h0 = 2e-19, hm2 = 2e-20,
-                   ifb_noise_density = 0.01m/sqrt(1.0s),
-                   insufficient_meas_timeout = 10.0s)
+    NavigationFilterConfig(; use_pseudorange_rates = true,
+                           motion_model_order = 2, clock_model_order = 2,
+                           acceleration_noise_std = 5.0m/s^2,
+                           h0 = 2e-19, hm2 = 2e-20,
+                           ifb_noise_density = 0.01m/sqrt(1.0s),
+                           insufficient_meas_timeout = 10.0s)
 
 Configuration of the vector-tracking navigation filter, for a
 [`VectorPLLAndDLL`](@ref): the platform and the receiver's oscillator. The
@@ -87,7 +87,7 @@ defaults suit a vehicle carrying a consumer-grade front end.
   is of the solution it did produce is reported rather than policed — see
   [`NavigationStatus`](@ref)'s `position_std`.
 """
-struct VectorTracking
+struct NavigationFilterConfig
     use_pseudorange_rates::Bool
     motion_model_order::Int
     clock_model_order::Int
@@ -98,7 +98,7 @@ struct VectorTracking
     insufficient_meas_timeout::typeof(1.0s)
 end
 
-function VectorTracking(;
+function NavigationFilterConfig(;
     use_pseudorange_rates = true,
     motion_model_order = 2,
     clock_model_order = 2,
@@ -111,7 +111,7 @@ function VectorTracking(;
     1 <= motion_model_order <= 3 ||
         throw(ArgumentError("motion_model_order must be 1, 2 or 3"))
     1 <= clock_model_order <= 2 || throw(ArgumentError("clock_model_order must be 1 or 2"))
-    VectorTracking(
+    NavigationFilterConfig(
         use_pseudorange_rates,
         motion_model_order,
         clock_model_order,
@@ -202,14 +202,14 @@ function NavFilterIndices(
     NavFilterIndices(pos, vel, acc, collect(clock_biases), clock_drift, collect(ifb))
 end
 
-NavFilterIndices(config::VectorTracking, layout::NavFilterLayout) = NavFilterIndices(
+NavFilterIndices(config::NavigationFilterConfig, layout::NavFilterLayout) = NavFilterIndices(
     config.motion_model_order,
     config.clock_model_order,
     num_clock_biases(layout),
     num_ifb(layout),
 )
 
-num_nav_states(config::VectorTracking, layout::NavFilterLayout) =
+num_nav_states(config::NavigationFilterConfig, layout::NavFilterLayout) =
     3 * config.motion_model_order +
     num_clock_biases(layout) +
     (config.clock_model_order >= 2 ? 1 : 0) +
@@ -254,7 +254,7 @@ position_and_bias_vector(x, idxs::NavFilterIndices) = position_and_bias_vector!(
 # Discrete-time process model F: a constant-velocity (or -position /
 # -acceleration) block per axis; every clock bias integrates the single
 # oscillator drift; the inter-frequency biases are constant.
-function nav_filter_process_model!(F, config::VectorTracking, idxs::NavFilterIndices, T)
+function nav_filter_process_model!(F, config::NavigationFilterConfig, idxs::NavFilterIndices, T)
     m_ord = config.motion_model_order
     fill!(F, 0.0)
     for i in axes(F, 1)
@@ -307,7 +307,7 @@ const MANOEUVRE_TIME = 2.0s
 
 # `Γ` comes back padded with zeros to three entries; only the first
 # `motion_model_order` are the gain vector.
-function motion_noise_model(config::VectorTracking, T)
+function motion_noise_model(config::NavigationFilterConfig, T)
     acc_std = ustrip(m / s^2, config.acceleration_noise_std)
     τ = ustrip(s, MANOEUVRE_TIME)
     config.motion_model_order == 1 && return SVector(T, 0.0, 0.0), acc_std * τ
@@ -322,7 +322,7 @@ end
 # frequency noise (Sf) is applied per bias.
 function nav_filter_process_noise_covariance!(
     Q,
-    config::VectorTracking,
+    config::NavigationFilterConfig,
     idxs::NavFilterIndices,
     T,
 )
@@ -374,7 +374,7 @@ mutable struct NavFilterModel
     const idxs::NavFilterIndices
 end
 
-function NavFilterModel(config::VectorTracking, layout::NavFilterLayout, cycle_time)
+function NavFilterModel(config::NavigationFilterConfig, layout::NavFilterLayout, cycle_time)
     n = num_nav_states(config, layout)
     model = NavFilterModel(
         cycle_time,
@@ -385,7 +385,7 @@ function NavFilterModel(config::VectorTracking, layout::NavFilterLayout, cycle_t
     rebuild_nav_filter_model!(model, config, cycle_time)
 end
 
-function rebuild_nav_filter_model!(model::NavFilterModel, config::VectorTracking, cycle_time)
+function rebuild_nav_filter_model!(model::NavFilterModel, config::NavigationFilterConfig, cycle_time)
     T = ustrip(s, cycle_time)
     nav_filter_process_model!(model.F, config, model.idxs, T)
     nav_filter_process_noise_covariance!(model.Q, config, model.idxs, T)
@@ -404,7 +404,7 @@ end
 # is cheap and allocates nothing.
 function ensure_nav_filter_cycle_time!(
     model::NavFilterModel,
-    config::VectorTracking,
+    config::NavigationFilterConfig,
     cycle_time,
 )
     cycle_time == model.cycle_time && return model

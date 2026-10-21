@@ -384,7 +384,7 @@ the difference between the two key sets is what the filter predicted through
 an obscuration. Emptied while the scalar solve is in control.
 """
 mutable struct VectorNavigation{G<:Tuple,SB<:Tuple}
-    const config::VectorTracking
+    const filter_config::NavigationFilterConfig
     const enabled::Bool
     const layout::NavFilterLayout
     const model::NavFilterModel
@@ -422,7 +422,7 @@ mutable struct VectorNavigation{G<:Tuple,SB<:Tuple}
 end
 
 function VectorNavigation(
-    config::Union{VectorTracking,Nothing},
+    filter_config::Union{NavigationFilterConfig,Nothing},
     pairs::Tuple,
     inner::AbstractDopplerEstimator;
     vt_update_interval,
@@ -432,11 +432,11 @@ function VectorNavigation(
     enable_ionospheric_correction::Bool,
     enable_tropospheric_correction::Bool,
 )
-    filter_config = something(config, VectorTracking())
+    config = something(filter_config, NavigationFilterConfig())
     signals = map(first, pairs)
     layout = NavFilterLayout(signals)
-    model = NavFilterModel(filter_config, layout, uconvert(s, vt_update_interval))
-    n = num_nav_states(filter_config, layout)
+    model = NavFilterModel(config, layout, uconvert(s, vt_update_interval))
+    n = num_nav_states(config, layout)
     groups = map(pairs) do (signal, decoding_signal)
         prototype = SatVectorPLLAndDLL(init_estimator_state(inner, signal, 0.0Hz, 0.0Hz), false)
         VTSlotGroup(signal, decoding_signal, prototype, max_satellites_per_signal, vt_update_interval)
@@ -444,8 +444,8 @@ function VectorNavigation(
     max_members = max_satellites_per_signal * length(signals)
     sat_states = map(_satellite_state_buffer, groups)
     VectorNavigation(
-        filter_config,
-        !isnothing(config),
+        config,
+        !isnothing(filter_config),
         layout,
         model,
         zeros(n),
@@ -857,7 +857,7 @@ function _measurement_update!(nav::VectorNavigation, T)
     candidates = buffers.candidates
     measured = buffers.measured_pseudoranges
     constraints = buffers.observability.hub_offset_constraints
-    use_rates = nav.config.use_pseudorange_rates
+    use_rates = nav.filter_config.use_pseudorange_rates
     num_sats = length(candidates)
     resize!(buffers.candidate_positions, num_sats)
     for (k, j) in enumerate(candidates)
@@ -1106,7 +1106,7 @@ end
 function _seed!(nav::VectorNavigation, groups, cycle_time)
     buffers = nav.buffers
     model = nav.model
-    ensure_nav_filter_cycle_time!(model, nav.config, cycle_time)
+    ensure_nav_filter_cycle_time!(model, nav.filter_config, cycle_time)
     T = ustrip(s, model.cycle_time)
     pvt = nav.pvt
     nav.primary_clock_index = initial_nav_state!(nav.x, nav.P, nav.layout, model.idxs, pvt)
@@ -1146,7 +1146,7 @@ end
 # NCO commands, and manage the membership (admission, availability,
 # release, fallback to scalar tracking). Returns `(released, fell_back)`.
 function _run_cycle!(nav::VectorNavigation, groups, cycle_time)
-    config = nav.config
+    config = nav.filter_config
     buffers = nav.buffers
     model = nav.model
     idxs = model.idxs

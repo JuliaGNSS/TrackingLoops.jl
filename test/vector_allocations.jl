@@ -29,7 +29,7 @@ end
     (GPSL1CA(), GalileoE1B()),
 )
     cycle = 100 * SAMPLES_PER_MS
-    scalar = SimReceiver(; signals, config = nothing)
+    scalar = SimReceiver(; signals, filter_config = nothing)
     _, sample, _ = run_simulation!(scalar, 3)
     @test measure_navigation(scalar, sample + cycle) == 0
 
@@ -77,7 +77,7 @@ end
     ("two bands", (; signals = (GPSL1CA(), GPSL2CM()), range_biases = (0.0, 4.0))),
 )
     cycle = 100 * SAMPLES_PER_MS
-    scalar = SimReceiver(; kw..., config = nothing)
+    scalar = SimReceiver(; kw..., filter_config = nothing)
     _, sample, _ = run_simulation!(scalar, 3)
     @test measure_navigation(scalar, sample + cycle) == 0
     rx = SimReceiver(; kw...)
@@ -92,13 +92,13 @@ end
     # and still does on Julia 1.10, which GNSSDecoder does not check for allocations
     # either. The allocation-free loop process is built with juliac on 1.12 or later.
     # Here the GGTO also collapses the Galileo clock onto the GPS one.
-    for config in (nothing, VectorTracking())
-        rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1), config)
+    for filter_config in (nothing, NavigationFilterConfig())
+        rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1), filter_config)
         galileo = only(rx.channels[2])
         galileo.decoder = with_zero_ggto(galileo.decoder)
         _, sample, _ = run_simulation!(rx, 20)
-        @test rx.vt.running == !isnothing(config)
-        isnothing(config) ||
+        @test rx.vt.running == !isnothing(filter_config)
+        isnothing(filter_config) ||
             @test !isempty(rx.vt.buffers.observability.hub_offset_constraints)
         @test measure_navigation(rx, sample + 100 * SAMPLES_PER_MS) == 0 skip = VERSION < v"1.11"
     end
