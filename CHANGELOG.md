@@ -1,5 +1,77 @@
 # Changelog
 
+# [6.0.0](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v5.1.2...v6.0.0) (2026-10-21)
+
+
+* feat(estimators)!: carry the bit clock's sync polarity on LoopRecord ([1abc7be](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/1abc7bef9fb3689ae0ddd0f8c6207ce949d8e2fa))
+* feat(vector)!: set the carrier NCO from the navigation filter alone ([8f41ff3](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/8f41ff3bd9c1399fc30342e81c98578b1bef5da8))
+* refactor(vector)!: rename member_sats to vector_loop_members ([8fe05b9](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/8fe05b920ad995673d009e88c359b524de9e4503))
+* refactor(vector)!: rename VectorPLLAndDLL's cycle_time to vt_update_interval ([ad4e0a6](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/ad4e0a6f63945d23bdde95aa8ca4d12b239c8ef1))
+* refactor(vector)!: rename VectorTracking to NavigationFilterConfig ([785e5f0](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/785e5f0de2061c85a6661ddcf29a84d4a65da746))
+* refactor(vector)!: rename VTStatus to NavigationStatus and its enabled to seeded ([8938ac5](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/8938ac5805253a21d1e720d8de6a54f0fe934c6d))
+
+
+### Bug Fixes
+
+* **vector:** apply the elevation mask before the measurement update ([2813e9d](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/2813e9d058c8fa6fc6053e4f1756a7552da5d00e))
+
+
+### Features
+
+* **estimators:** report whether the carrier loop is phase-locked ([874f104](https://github.com/JuliaGNSS/TrackingLoops.jl/commit/874f104dfc13d88b4464814e1f45c3cfb13175d6))
+
+
+### BREAKING CHANGES
+
+* member_sats is vector_loop_members. Call
+vector_loop_members(estimator) where member_sats(estimator) was called;
+the result is unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+* VectorTracking is NavigationFilterConfig and
+VectorPLLAndDLL's config keyword is filter_config. Construct
+NavigationFilterConfig(; ...) where VectorTracking(; ...) was
+constructed and pass it as filter_config = ... where config = ... was
+passed; filter_config = nothing still solves the scalar PVT only. The
+keywords and the defaults are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+* VectorPLLAndDLL's cycle_time keyword is
+vt_update_interval. Pass vt_update_interval = … where cycle_time = … was
+passed; the value and its meaning are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+* VTStatus is NavigationStatus and its enabled field is
+seeded. Replace VTStatus with NavigationStatus and status.enabled with
+status.seeded; the other fields are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+* the vector loop's FLL branch is gone, and with it
+VectorPLLAndDLL's vector_fll_loop_filter_bandwidth keyword,
+LoopBandwidths' vector_fll field and keyword,
+default_vector_fll_loop_filter_bandwidth,
+effective_vector_fll_loop_filter_bandwidth and
+MAX_VECTOR_FLL_LOOP_BANDWIDTH_CYCLE_PRODUCT. Drop them; set the residual
+PLL's bandwidth with VectorPLLAndDLL's residual_pll_loop_filter_bandwidth
+keyword instead. While a satellite is in the vector loop,
+carrier_loop_stage reports VECTOR_LOOP, a new CarrierLoopStage value,
+where it reported NARROW_PLL (compare against VECTOR_LOOP there), and
+phase_lock_indicator reads the residual PLL's indicator, on the prompts
+it rotated, where it read the frozen inner loop's. A fallback releases,
+as VT_FALLBACK, every satellite still in the vector loop, those that
+missed the cycle's epoch too, which stayed in the loop before.
+CarrierLoopStaging's fields changed: its phase-lock averages and
+indicator are a PhaseLockDetector in its lock_detector field. Code that
+reads them, or builds a staging field by field, follows;
+CarrierLoopStaging(filter_type) is unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+* LoopRecord gains a last field, bit_polarity. A host
+calling LoopRecord's full positional constructor passes it (0 before the
+sync); the other constructors set it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
 ## [5.1.2](https://github.com/JuliaGNSS/TrackingLoops.jl/compare/v5.1.1...v5.1.2) (2026-10-20)
 
 
