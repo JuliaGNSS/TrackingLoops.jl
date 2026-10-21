@@ -65,7 +65,13 @@ residual_pll_error(sat, before) =
         @test sat.carrier_doppler ≈ TL._doppler_at(state.ramp, state.residual_pll.prompt_center + T) atol = 1e-4
         # …which the residual PLL's residual brings onto the incoming carrier.
         @test abs(TL._residual_doppler(state.residual_pll)) < 0.1
-        @test phase_lock_indicator(state) > 0.9
+        @test phase_lock_indicator(state) > 0.9 && phase_locked(state)
+        # The residual PLL's own lock decides, not the indicator alone.
+        unlocked = TL.SatVectorPLLAndDLL(state; residual_pll = TL.ResidualPLL(state.residual_pll;
+            lock = TL.ResidualPLLLock(state.residual_pll.lock.lock_detector, false, 0)))
+        @test phase_lock_indicator(unlocked) > 0.9 && !phase_locked(unlocked)
+        # Out of the vector loop, the inner loop's.
+        @test phase_locked(TL._release_from_vector_loop(state)) == phase_locked(state.inner)
     end
     @test rx.sats[1].state.residual_pll.bandwidth == 10.0Hz
     narrow = SimReceiver(; estimator_kw = (; residual_pll_loop_filter_bandwidth = 7.0Hz))

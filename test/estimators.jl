@@ -341,12 +341,14 @@ end
     # The NCO-referenced loop pulls in at 18 Hz, more slowly than the conventional
     # loop's 50 Hz.
     @test FLL_ASSISTED_PLL < stages[900] && last(stages) == NARROW_PLL
-    @test phase_lock_indicator(state) > 0.99
+    @test phase_lock_indicator(state) > 0.99 && phase_locked(state)
     @test abs(word - 130.0) < 0.1
     # A reset keeps the staging, a fresh state starts it over.
     reset = reset_estimator_state(estimator, state, 130.0Hz, 0.0Hz)
     @test reset.staging == state.staging
     @test carrier_loop_stage(reset) == NARROW_PLL
+    # Before the averages span their time the indicator is `NaN`: not locked.
+    @test !phase_locked(init_estimator_state(estimator, LOOP_SIGNAL, 130.0Hz, 0.0Hz))
     @test carrier_loop_stage(init_estimator_state(estimator, LOOP_SIGNAL, 130.0Hz, 0.0Hz)) ==
           FLL_ASSISTED_PLL
 end

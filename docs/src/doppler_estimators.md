@@ -111,7 +111,7 @@ an estimate of `cos 2φ`, from exponential averages of the driver's prompts over
 0.1 s or 25 records, whichever is longer. The signal power `A²` comes from the
 prompts' moments, `√(2 M₂² − M₄)`, which the noise cancels from, so a locked loop
 does not read low at a low C/N₀. It reads lock at 0.5, an RMS phase error of
-about 30°. Dropping the FLL feeds the FLL-assisted filter a zero FLL input, which
+about 30°, which [`phase_locked`](@ref) reports. Dropping the FLL feeds the FLL-assisted filter a zero FLL input, which
 is exactly the third-order PLL, so the switch is free, and the FLL discriminator
 is no longer formed.
 

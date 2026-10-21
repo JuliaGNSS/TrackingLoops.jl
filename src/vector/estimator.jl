@@ -320,12 +320,14 @@ reset_estimator_state(
 
 # In the vector loop the residual PLL follows the carrier, whatever stage the inner
 # loop's staging had reached: the stage is the residual PLL, and the phase-lock
-# indicator is the residual PLL's; out of it, the inner loop's.
+# indicator and the lock are the residual PLL's; out of it, the inner loop's.
 carrier_loop_stage(state::SatVectorPLLAndDLL) =
     state.in_vector_loop ? VECTOR_LOOP : carrier_loop_stage(state.inner)
 phase_lock_indicator(state::SatVectorPLLAndDLL) =
     state.in_vector_loop ? state.residual_pll.lock.lock_detector.indicator :
     phase_lock_indicator(state.inner)
+phase_locked(state::SatVectorPLLAndDLL) =
+    state.in_vector_loop ? state.residual_pll.lock.locked : phase_locked(state.inner)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

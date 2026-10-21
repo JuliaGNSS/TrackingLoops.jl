@@ -953,6 +953,21 @@ locked; it only gets noisier. `NaN` until the averages span that time.
 phase_lock_indicator(state::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndDLL}) =
     state.staging.lock_detector.indicator
 
+"""
+    phase_locked(state) -> Bool
+
+Whether the carrier loop of a scalar estimator's per-satellite state, or of a
+[`VectorPLLAndDLL`](@ref)'s, is phase-locked, as the loop itself decides it. A
+scalar loop is locked while its [`phase_lock_indicator`](@ref) reads at least
+0.5, the threshold its staging moves on; `false` while the indicator is still
+`NaN`. In the vector loop it is the residual PLL's lock, which also asks that
+the C/N₀ the rotated prompts' moments read be no more than 6 dB below the
+estimator's `lock_cn0_threshold`: on bare noise the indicator alone reads lock
+now and then. Out of the vector loop, the inner loop's.
+"""
+phase_locked(state::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndDLL}) =
+    phase_lock_indicator(state) >= _PHASE_LOCK_THRESHOLD
+
 "The estimator-state type a Doppler estimator produces (for slot typing)."
 estimator_state_type(estimator::AbstractDopplerEstimator, driver_signal::AbstractGNSSSignal) =
     typeof(init_estimator_state(estimator, driver_signal, 0.0Hz, 0.0Hz))

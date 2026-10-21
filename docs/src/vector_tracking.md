@@ -222,8 +222,8 @@ for the data.
   `lock_cn0_threshold` and its decoding signal holds the bit sync, as for any
   satellite. The residual PLL reads its own phase lock, `⟨I² − Q²⟩ / A²` on the
   prompts it rotated over 0.1 s (at least 0.5) with the C/N₀ the same moments
-  read (no more than 6 dB below `lock_cn0_threshold`), which
-  [`phase_lock_indicator`](@ref) reports. While the host's C/N₀ is below
+  read (no more than 6 dB below `lock_cn0_threshold`). [`phase_locked`](@ref)
+  reports that lock and [`phase_lock_indicator`](@ref) the indicator. While the host's C/N₀ is below
   `lock_cn0_threshold` — no signal — it holds its residual at the filter's
   Doppler, so it does not integrate a fade's noise into tens of hertz and
   pulls in again from the filter's prediction once the signal is back. (The
