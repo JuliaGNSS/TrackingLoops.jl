@@ -243,8 +243,8 @@ What the latest navigation cycle of a [`VectorPLLAndDLL`](@ref) did (see
 
   - `running`: vector tracking is running after this cycle;
   - `position_std`, `clock_std`: the filter's 1σ 3-D position and primary-clock
-    uncertainties (`NaN` while not running). A degenerate geometry shows up
-    here rather than in the starvation timer;
+    uncertainties (`NaN` unless the filter ran or fell back this cycle). A
+    degenerate geometry shows up here rather than in the starvation timer;
   - `time_with_insufficient_meas`: how long the filter has been coasting on
     epochs it could not solve, counted against `insufficient_meas_timeout`;
     nonzero means the loop is on its way out, paid back at half rate;
