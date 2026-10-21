@@ -208,6 +208,19 @@ _reset_to_ramp(residual_pll::ResidualPLL, lock::ResidualPLLLock) =
     replica_cycles
 end
 
+# The residual phase (cycles) predicted at `time` (s), after the latest prompt: the replica
+# advancing by the second half of the driver's last record (`previous_replica_half`), then
+# by the words it ran on from that record's end, at `fs` (Hz). `NaN` while that half is
+# unknown. Exact from the record's end on; within the half it takes the later words to have
+# run there.
+@inline function _residual_phase_after(residual_pll::ResidualPLL, ramp::CarrierRamp, previous_replica_half, time, fs, words)
+    previous_cycles, previous_duration = previous_replica_half
+    isnan(previous_cycles) && return NaN
+    previous_end = residual_pll.prompt_center + Float64(ustrip(s, previous_duration))
+    word, _ = mean_nco_word(words, previous_end * fs, time * fs)
+    _predicted_phase(residual_pll, ramp, time, previous_cycles + word * (time - previous_end))
+end
+
 # One record through the residual PLL: predict the phase to the prompt, wipe it, and run
 # the loop filter on the discriminator. `replica_cycles` is the replica's advance from the
 # previous prompt's centre to this one's. Returns the residual PLL and the wiped prompt.
@@ -306,13 +319,8 @@ function _symbol_prompt_phase(
     driver && return residual_pll.prompt_phase
     fs = _sampling_frequency_hz(record)
     center = (record.sample_index - record.integrated_samples / 2) / fs
-    if center > residual_pll.prompt_center + 0.5 / fs
-        previous_cycles, previous_duration = previous_replica_half
-        isnan(previous_cycles) && return NaN
-        previous_end = residual_pll.prompt_center + Float64(ustrip(s, previous_duration))
-        word, _ = mean_nco_word(words, previous_end * fs, center * fs)
-        return _predicted_phase(residual_pll, ramp, center, previous_cycles + word * (center - previous_end))
-    end
+    center > residual_pll.prompt_center + 0.5 / fs &&
+        return _residual_phase_after(residual_pll, ramp, previous_replica_half, center, fs, words)
     history.count == 0 && return NaN
     n = Base.length(history.centers)
     nearest = history.newest

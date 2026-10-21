@@ -890,6 +890,49 @@ alone reads lock now and then. Out of the vector loop, the inner loop's.
 phase_locked(state::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndDLL}) =
     phase_lock_indicator(state) >= _PHASE_LOCK_THRESHOLD
 
+"""
+    carrier_phase_correction(state, words, sample, sampling_frequency) -> Float64
+
+The carrier phase (cycles) the loop estimates the incoming carrier to lead the
+replica by at `sample` (of the records' grid at `sampling_frequency`), with
+`words` the words the replica ran on up to there, an [`NCOTimeline`](@ref) or
+a [`FixedNCOWord`](@ref). The replica's carrier phase plus this is the loop's
+estimate of the incoming carrier phase, the carrier-phase measurement a host
+reports (RINEX `L`).
+
+A scalar loop steers its replica onto the incoming carrier, so the replica's
+phase is its estimate and this is `0.0`; so is a [`VectorPLLAndDLL`](@ref)'s
+out of the vector loop. In it the navigation filter sets the carrier NCO and
+the residual PLL follows the carrier the NCO leaves without steering it, so
+the replica's phase alone drifts off the carrier, by whole cycles over time:
+this is the residual PLL's prediction at `sample`, from its latest prompt on,
+counting every cycle, never folded (`0.0` before its first prompt). Meant for
+a sample at or after the end of the driver's latest record, as a host's
+replica phase after its last record is.
+
+Like a scalar PLL's replica phase, it is ambiguous by half a cycle under the
+Costas discriminator, and [`phase_locked`](@ref) says whether it can be
+trusted. It steps where the loop does not follow the carrier continuously,
+which a RINEX host flags in the loss-of-lock indicator:
+
+  - by half a cycle when the record's `carrier_phase_polarity` turns
+    four-quadrant (a synced pilot) and the residual PLL finds itself half a
+    cycle off the polarity's frame;
+  - on a release from the vector loop, when [`carrier_loop_stage`](@ref)
+    leaves `VECTOR_LOOP`: the correction drops to zero while the scalar loop
+    pulls its replica in afresh from where the NCO left it, so the phase steps
+    by the residual and may slip.
+
+A satellite added to the vector loop keeps its phase: the residual PLL starts
+at zero on the phase-locked scalar loop's replica.
+"""
+carrier_phase_correction(
+    ::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndDLL},
+    words,
+    sample,
+    sampling_frequency,
+) = 0.0
+
 "The estimator-state type a Doppler estimator produces (for slot typing)."
 estimator_state_type(estimator::AbstractDopplerEstimator, driver_signal::AbstractGNSSSignal) =
     typeof(init_estimator_state(estimator, driver_signal, 0.0Hz, 0.0Hz))

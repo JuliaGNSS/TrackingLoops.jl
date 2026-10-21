@@ -219,6 +219,14 @@ the carrier on the prompts the NCO leaves, for the data.
   moments read up to the threshold on bare noise, so they do not decide that.
   With the signal there, in phase lock or not, its loop runs on and pulls in by
   itself.
+- **Carrier phase.** The replica's carrier phase is the NCO's, which the
+  filter sets, so it is not the incoming carrier's: a host that measures the
+  carrier phase (RINEX `L`) adds [`carrier_phase_correction`](@ref), the
+  residual PLL's predicted residual at the sample it reads the replica at,
+  whole cycles included (zero out of the vector loop and for the scalar
+  loops). It steps by half a cycle where a pilot turns the discriminator
+  four-quadrant and the residual PLL moves to its frame, and by the residual
+  on a release.
 - **Hand-over.** A satellite is added at its scalar loop's word, which its
   residual PLL starts from. It is released into its scalar loop at the residual
   PLL's estimate of the incoming Doppler and its rate (the ramp's plus the
