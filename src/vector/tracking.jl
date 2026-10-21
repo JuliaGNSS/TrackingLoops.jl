@@ -253,7 +253,7 @@ What the latest navigation cycle of a [`VectorPLLAndDLL`](@ref) did (see
     (vector tracking stopped) and `released` (some satellite was released; see
     [`release_reason`](@ref)).
 
-The per-member report of the latest cycle is [`member_sats`](@ref).
+The per-member report of the latest cycle is [`vector_loop_members`](@ref).
 """
 struct NavigationStatus
     running::Bool
@@ -376,7 +376,7 @@ it steps: the slots, the bias layout of its signals, the navigation filter's
 process model, state and covariance, and every buffer a cycle needs.
 
 It holds the latest solution (`pvt`, a `PVTSolution` whose containers every
-cycle reuses) and the per-member report of the latest cycle (`member_sats`):
+cycle reuses) and the per-member report of the latest cycle (`vector_loop_members`):
 every member of the loop, measured *and* coasted, keyed exactly as `pvt.sats`
 is, each with the satellite position, transmit time and post-fit residuals that
 update produced. `pvt.sats` carries only the members the update measured, so
@@ -400,7 +400,7 @@ mutable struct VectorNavigation{G<:Tuple,SB<:Tuple}
     # Constant part of the reported epoch (seconds), cached once resolved — see
     # `time_epoch_offset`. `nothing` until a primary-system member has been measured.
     time_epoch_offset::Union{Nothing,Int}
-    const member_sats::Dictionary{Tuple{Symbol,Int},SatInfo}
+    const vector_loop_members::Dictionary{Tuple{Symbol,Int},SatInfo}
     pvt::PVTSolution
     status::NavigationStatus
     const workspace::PVTWorkspace
@@ -552,14 +552,14 @@ function _satellite_report(nav, groups::Tuple, signal::S, prn) where {S}
 end
 
 """
-    member_sats(estimator::VectorPLLAndDLL)
+    vector_loop_members(estimator::VectorPLLAndDLL)
 
 The per-member report of the latest cycle: every member of the vector loop,
 measured *and* coasted, keyed `(signal_id, prn)` as the solution's `sats` are,
 each with the satellite position, transmit time and post-fit residuals. Empty
 while the scalar solve is in control.
 """
-member_sats(estimator::VectorPLLAndDLL) = estimator.navigation.member_sats
+vector_loop_members(estimator::VectorPLLAndDLL) = estimator.navigation.vector_loop_members
 
 """
     release_reason(estimator::VectorPLLAndDLL, signal, prn) -> VTReleaseReason
@@ -1314,15 +1314,15 @@ function _write_solution!(nav::VectorNavigation, groups)
     # measured — which is what `calc_pvt` reports for a scalar solve, so a consumer reads
     # `pvt.sats` the same way under either tracking mode and `pvt.dop` above describes
     # exactly this set. The coasted members are reported, with their own post-fit
-    # residuals, in `member_sats`.
+    # residuals, in `vector_loop_members`.
     solution = empty_keeping_capacity!(nav.pvt)
     sats = solution.sats
     for j in candidates
         set!(sats, _member_key(layout, members[j]), _member_info(buffers, j))
     end
-    member_sats = empty_keeping_capacity!(nav.member_sats)
+    vector_loop_members = empty_keeping_capacity!(nav.vector_loop_members)
     for j in eachindex(members)
-        set!(member_sats, _member_key(layout, members[j]), _member_info(buffers, j))
+        set!(vector_loop_members, _member_key(layout, members[j]), _member_info(buffers, j))
     end
 
     # Only the biases this update measured, as `calc_pvt` reports only the ones it

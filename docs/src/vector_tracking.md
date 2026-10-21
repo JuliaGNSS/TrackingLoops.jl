@@ -277,7 +277,7 @@ scalar PVT's before the filter is seeded) and [`navigation_status`](@ref) the
 back, released a satellite) and the filter's position and clock uncertainties,
 also at hand as [`position_uncertainty`](@ref) and
 [`clock_uncertainty`](@ref). [`release_reason`](@ref) says whether and why the
-latest cycle released a satellite, and [`member_sats`](@ref) reports every
+latest cycle released a satellite, and [`vector_loop_members`](@ref) reports every
 member of the loop, measured and coasted.
 
 [`navigation_cycle`](@ref) counts the cycles, so a consumer that polls it after

@@ -61,7 +61,7 @@ end
     @test pipeline_code_errors(tail) < 0.05
     @test all(sat -> sat.state.in_vector_loop, rx.sats)
     @test 0.0u"m" < navigation_status(rx.estimator).position_std < 3.0u"m"
-    @test keys(member_sats(rx.estimator)) == keys(navigation_solution(rx.estimator).sats)
+    @test keys(vector_loop_members(rx.estimator)) == keys(navigation_solution(rx.estimator).sats)
     # Each satellite took up every cycle once.
     @test all(sat -> sat.state.cycle_id == nav.cycle_id, rx.sats)
     @test nav.registrations == length(rx.sats)
@@ -407,7 +407,7 @@ first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
     @test pipeline_errors(rx, tail) < 3.0
     @test pipeline_code_errors(tail) < 0.2
     # The solution and the members are keyed by the driver.
-    @test all(key -> first(key) == :GPSL1C_P, keys(member_sats(estimator)))
+    @test all(key -> first(key) == :GPSL1C_P, keys(vector_loop_members(estimator)))
     @test all(key -> first(key) == :GPSL1C_P, keys(navigation_solution(estimator).sats))
     # Warm, a pair's records step without allocating.
     for sat in Iterators.flatten((rx.sats, rx.passengers))

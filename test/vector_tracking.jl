@@ -16,7 +16,7 @@ using Geodesy: ENUfromECEF, wgs84
     @test navigation_status(estimator) == NavigationStatus()
     @test !navigation_status(estimator).running
     @test navigation_solution(estimator) === nav.pvt
-    @test isempty(member_sats(estimator))
+    @test isempty(vector_loop_members(estimator))
     @test release_reason(estimator, GPSL1CA(), 5) == VT_NOT_RELEASED
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     @test (state.slot_index, state.registration, state.cycle_id) == (0, 0, -1)
@@ -79,7 +79,7 @@ end
     @test seed.status.num_members == length(rx.sats)
     # The emitted solution is the scalar fix, with no per-member report of the filter.
     @test length(seed.pvt.sats) == length(rx.sats)
-    @test isempty(vt.member_sats)
+    @test isempty(vt.vector_loop_members)
     # Every fix satellite took itself into the loop with corrections, and joined with
     # empty accumulators to accumulate from now on.
     for (sat, slot) in zip(rx.sats, channel_slots(rx.group, rx.sats))
@@ -196,7 +196,7 @@ end
     @test pvt.dop !== nothing
     @test 0 < pvt.dop.GDOP < 10
     @test length(pvt.sats) == length(rx.sats)
-    @test keys(member_sats(rx.estimator)) == keys(pvt.sats)
+    @test keys(vector_loop_members(rx.estimator)) == keys(pvt.sats)
     @test isempty(pvt.inter_system_biases)
     @test position_error(rx, result) < 0.5
     @test norm(SVector(pvt.velocity.x, pvt.velocity.y, pvt.velocity.z) - rx.truth.velocity) < 0.05
@@ -218,8 +218,8 @@ end
 @testset "Membership: out of lock coasts, a dropped satellite is released" begin
     rx = SimReceiver()
     _, sample, _ = run_simulation!(rx, 5)
-    # Out of lock: still a member, unmeasured, still steered, in `member_sats` but not in
-    # the solution's `sats`.
+    # Out of lock: still a member, unmeasured, still steered, in `vector_loop_members` but
+    # not in the solution's `sats`.
     prn = rx.sats[1].decoder.prn
     coast!(v, sat, epoch, landing, nav) =
         (fill_slot!(v, sat, epoch, landing, nav); v.prn == prn && (v.in_lock = false))
@@ -228,7 +228,7 @@ end
     @test rx.sats[1].state.in_vector_loop
     @test release_reason(rx.estimator, GPSL1CA(), prn) == VT_NOT_RELEASED
     @test !haskey(results[1].pvt.sats, key)
-    @test haskey(member_sats(rx.estimator), key)
+    @test haskey(vector_loop_members(rx.estimator), key)
     @test results[1].status.num_members == length(rx.sats)
     @test !results[1].status.released
     # No record for two cycles: dropped, released as ineligible, and re-seeded from the
@@ -250,7 +250,7 @@ end
     @test sat.state.inner.init_carrier_doppler ≈ sat.carrier_doppler * Hz atol = 0.01Hz
     @test sat.state.inner.init_code_doppler == sat.code_doppler * Hz
     @test results[1].status.num_members == length(rx.sats) - 1
-    @test !haskey(member_sats(rx.estimator), (:GPSL1CA, dropped.prn))
+    @test !haskey(vector_loop_members(rx.estimator), (:GPSL1CA, dropped.prn))
     @test all(v.release_reason == VT_NOT_RELEASED for v in channel_slots(rx.group, rx.sats) if v !== dropped)
 end
 
