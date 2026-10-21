@@ -705,7 +705,7 @@ function _navigation_cycle!(nav::VectorNavigation, now)
     else
         # This cycle's solution comes from the scalar solve, so the filter has no
         # per-member report to make.
-        empty_keeping_capacity!(nav.member_sats)
+        empty_keeping_capacity!(nav.vector_loop_members)
         previous_pvt = nav.pvt
         pvt = _solve_scalar_pvt!(nav, groups)
         # `calc_pvt!` returns the very solution it was handed on an epoch it cannot

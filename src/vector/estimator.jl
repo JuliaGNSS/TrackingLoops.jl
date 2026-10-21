@@ -38,7 +38,7 @@ no vector-specific code: it builds a satellite's state with
 [`init_estimator_state`](@ref) for its driver and steps it with every record of
 the satellite, like any other loop's. Read the results with
 [`navigation_solution`](@ref), [`navigation_status`](@ref),
-[`release_reason`](@ref), [`member_sats`](@ref), [`position_uncertainty`](@ref)
+[`release_reason`](@ref), [`vector_loop_members`](@ref), [`position_uncertainty`](@ref)
 and [`clock_uncertainty`](@ref), all keyed by the driver.
 
 The engine runs no bit clock and no C/N₀ estimator of its own: it reads the
