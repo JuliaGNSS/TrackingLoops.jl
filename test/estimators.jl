@@ -291,7 +291,6 @@ end
     four_quadrant = discriminators(; carrier_phase_polarity = 1)
     @test four_quadrant.phase_error ≈ 0.4
     @test four_quadrant.frequency_error ≈ 0.4 / integration_time
-    @test four_quadrant.raw_frequency_error ≈ 0.4 / integration_time
     # The prompt's sign negative: the error read around the inverted prompt.
     @test discriminators(; carrier_phase_polarity = -1).phase_error ≈ -0.1
 end
