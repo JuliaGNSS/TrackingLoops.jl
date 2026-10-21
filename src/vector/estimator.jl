@@ -264,6 +264,15 @@ phase_lock_indicator(state::SatVectorPLLAndDLL) =
     phase_lock_indicator(state.inner)
 phase_locked(state::SatVectorPLLAndDLL) =
     state.in_vector_loop ? state.residual_pll.lock.locked : phase_locked(state.inner)
+function carrier_phase_correction(state::SatVectorPLLAndDLL, words, sample, sampling_frequency)
+    residual_pll = state.residual_pll
+    state.in_vector_loop || return 0.0
+    # Both are set by the first driver record.
+    isnan(residual_pll.prompt_center) && return 0.0
+    isnan(first(state.previous_replica_half)) && return 0.0
+    fs = Float64(ustrip(Hz, sampling_frequency))
+    _residual_phase_after(residual_pll, state.ramp, state.previous_replica_half, sample / fs, fs, words)
+end
 
 
 # ─────────────────────────────────────────────────────────────────────────────

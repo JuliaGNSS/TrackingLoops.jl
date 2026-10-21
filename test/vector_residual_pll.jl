@@ -78,6 +78,29 @@ residual_pll_error(sat, before) =
     @test narrow.sats[1].state.residual_pll.bandwidth == 7.0Hz
 end
 
+@testset "The carrier phase correction brings the replica onto the incoming carrier" begin
+    # Through the engine: the correction at the end of the latest record and later on is the
+    # simulated carrier phase error against the replica, the residual PLL having taken over
+    # from the phase-locked scalar loop on it.
+    rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()))
+    _, sample, diverged = run_simulation!(rx, 60)
+    @test !diverged
+    fs = ustrip(Hz, SIM_FS)
+    for channels in rx.channels, sat in channels
+        @test sat.state.in_vector_loop
+        words = sim_words(sat, NO_LANDING_SAMPLE)
+        @test carrier_phase_correction(sat.state, words, sample, SIM_FS) ≈ sat.phase_error atol = 1e-4
+        dt = 2e-3
+        f_true = true_doppler(sat, rx.truth, sim_time(rx, sample) + dt / 2)
+        @test carrier_phase_correction(sat.state, words, sample + round(Int, dt * fs), SIM_FS) ≈
+            sat.phase_error + (f_true - sat.carrier_doppler) * dt atol = 1e-4
+        # Out of the vector loop the replica is the loop's estimate.
+        @test carrier_phase_correction(TL._release_from_vector_loop(sat.state), words, sample, SIM_FS) == 0.0
+    end
+    scalar = init_estimator_state(ConventionalAssistedPLLAndDLL(), GPSL1CA(), 100.0Hz, 0.0Hz)
+    @test carrier_phase_correction(scalar, FixedNCOWord(100.0, 0.0), 0, SIM_FS) == 0.0
+end
+
 @testset "The residual PLL's phase jitter at 40 dB-Hz is the scalar PLL's or less, on $(nameof(typeof(signal)))" for signal in (
     GPSL1CA(),
     GalileoE1B(),
@@ -195,6 +218,30 @@ function step_residual(residual, ends; ramp = TL.CarrierRamp(100.0, 0.0, 0.0), s
         on_record(state, k)
     end
     state
+end
+
+@testset "The carrier phase correction counts the cycles the replica drifts off by" begin
+    # The incoming carrier 5 Hz off the filter's ramp, as a ramp with a biased clock drift
+    # would leave it: the replica drifts off by 15 cycles over 3 s. Once the residual PLL
+    # has settled from the hand-over, the correction minus the true residual at each
+    # record's end — and halfway into the next — stays where it was: no cycle, no half
+    # cycle is lost.
+    residual(t) = 5.0 * t
+    words = FixedNCOWord(100.0, 0.0)
+    offsets = Float64[]
+    corrections = Float64[]
+    step_residual(residual, 1000:1000:3_000_000; scalar_doppler = 105.0, on_record = (state, k) -> begin
+        k > 1500 || return
+        @test state.in_vector_loop && phase_locked(state)
+        sample = 1000 * k
+        correction = carrier_phase_correction(state, words, sample, 1e6Hz)
+        push!(corrections, correction)
+        push!(offsets, correction - residual(sample / 1e6))
+        @test carrier_phase_correction(state, words, sample + 500, 1e6Hz) - residual((sample + 500) / 1e6) ≈
+            last(offsets) atol = 1e-4
+    end)
+    @test last(corrections) - first(corrections) > 7
+    @test maximum(abs, offsets .- first(offsets)) < 1e-4
 end
 
 @testset "Out of phase lock with the signal there, the residual PLL pulls in by itself" begin
