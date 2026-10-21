@@ -74,7 +74,10 @@ decodes or weights by C/N₀ (the vector loop; the scalar loops ignore it):
   - `new_soft_bits`: exactly the soft bits *this record* appended — a view of
     the bit buffer's vector, valid for the duration of the call, so it does not
     matter when the host drains the buffer;
-  - `cn0_estimator`: the signal's C/N₀ estimator, for [`estimate_cn0`](@ref).
+  - `cn0_estimator`: the signal's C/N₀ estimator, for [`estimate_cn0`](@ref);
+  - `bit_polarity`: the sign the bit clock's sync found its soft bits at (`-1`
+    where it negates the accumulated prompts' real part, `+1` where it keeps
+    it, `0` before the sync).
 
 `carrier_phase_polarity` says how the carrier discriminators read the record:
 the sign of its prompt where the replica wiped every sign modulation off it — a
@@ -106,6 +109,7 @@ struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F,CN0<:AbstractCN0
     new_soft_bits::SoftBitsView
     cn0_estimator::CN0
     carrier_phase_polarity::Int8
+    bit_polarity::Int8
 end
 
 LoopRecord(
@@ -137,6 +141,7 @@ LoopRecord(
     _no_soft_bits(),
     NoCN0Estimator(),
     Int8(carrier_phase_polarity),
+    Int8(0),
 )
 
 LoopRecord(
@@ -167,6 +172,7 @@ LoopRecord(
     _no_soft_bits(),
     NoCN0Estimator(),
     Int8(carrier_phase_polarity),
+    Int8(0),
 )
 
 """
@@ -213,6 +219,7 @@ function LoopRecord(
         view(soft_bits, first_new:num_soft_bits),
         state.cn0_estimator,
         state.last_carrier_phase_polarity,
+        synced ? bit_buffer.polarity : Int8(0),
     )
 end
 
