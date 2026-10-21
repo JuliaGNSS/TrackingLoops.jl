@@ -103,18 +103,21 @@ end
         push!(changes, record.sync_change)
         if record.bit_synced
             @test record.blocks_into_symbol == state.bit_buffer.prompt_accumulator_integrated_code_blocks
+            # The sign the sync found the soft bits at.
+            @test record.bit_polarity == state.bit_buffer.polarity != 0
             # Drained after every other record: the next record's bits are still its own.
             iseven(k) && empty!(get_soft_bits(state))
         else
             @test record.blocks_into_symbol == 0
             @test isempty(record.new_soft_bits)
+            @test record.bit_polarity == 0
         end
     end
     @test count(==(SYNC_FOUND), changes) == 1
     @test count(==(SYNC_LOST), changes) == 0
     # A record without the state: no sync, no bits, no C/N₀.
     plain = LoopRecord(signal, epl(1.0), 0.0, 4000, 4000, 4000, 1, fs)
-    @test !plain.bit_synced && plain.sync_change == SYNC_UNCHANGED
+    @test !plain.bit_synced && plain.sync_change == SYNC_UNCHANGED && plain.bit_polarity == 0
     @test isempty(plain.new_soft_bits) && plain.cn0_estimator isa NoCN0Estimator
     # A restarted bit clock reports no new bits.
     @test restart_bit_clock(state).last_num_new_soft_bits == 0
