@@ -73,21 +73,22 @@ below ~30 dB-Hz; it straddles a flip with probability `(M−1)/L` (~0.6 dB below
 # The window is capped by the loop's coherence time, not by the bit period
 
 A longer window buys little spread (the same records are only partitioned
-differently: 5 to 20 records gains 0.8 dB at a true 25 dB-Hz), while residual phase
-noise costs a *bias* averaging cannot remove. In the loop at a true 25 dB-Hz, GPS L1
-C/A at 1 ms records, the median C/N₀ reported:
+differently), while residual phase noise costs a *bias* averaging cannot remove.
+GPS L1 C/A at 1 ms records, locked at 45 dB-Hz and faded to a true 25 dB-Hz, median /
+10th percentile over 96 runs:
 
-| window                          | 2 records | 5    | 10   | 20 (one full bit) |
-|:------------------------------- | ---------:| ----:| ----:| -----------------:|
-| conventional PLL before staging | 24.6      | 22.9 | 19.8 | 15.9              |
-| staged loop, narrowed (48 runs) | 24.6      | 24.6 | 24.7 | 24.7              |
+| PLL                        | 2 records   | 5           | 10          | 20 (one bit) |
+|:-------------------------- | -----------:| -----------:| -----------:| ------------:|
+| default, narrowed to 18 Hz | 24.8 / 21.1 | 24.7 / 22.7 | 24.7 / 22.8 | 24.7 / 22.6  |
+| 40 Hz                      | 24.8 / 18.3 | 24.0 / 19.0 | 22.7 / -Inf | 18.2 / -Inf  |
 
-Once narrowed on phase lock (see [`CarrierLoopStage`](@ref)) the loop holds the phase
-over a whole bit, so the window length hardly matters (tenth percentile 22.0 dB-Hz at
-5 records, 22.5 at 20, locked at 45 dB-Hz and faded to 25 dB-Hz). A loop that has not
-narrowed or does not hold phase over a bit loses as the first row does, hence the
-short default (~5 ms, see [`default_cn0_estimator`](@ref)). Raise it for a pilot, a
-narrow carrier loop or a signal that is never weak.
+The default loop (see [`CarrierLoopStage`](@ref)) has narrowed by the fade and holds
+phase over a whole bit: past five records the window changes neither the bias nor
+the spread (standard deviation 1.6 dB at 5 records, 1.4 at 20). A wider PLL does
+not, and the whole-bit window reads `-Inf` ("no signal") in 30 of the 96 runs. The
+default (~5 ms, see [`default_cn0_estimator`](@ref)) therefore stays short, for a
+loop that has not narrowed or runs wider; raise it where the PLL is narrow, for a
+pilot or for a signal that is never weak.
 
 Where no window is admissible the `fallback` is reported (by default
 [`MomentsCN0Estimator`](@ref), with its noise floor), e.g. for records integrated
