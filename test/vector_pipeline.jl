@@ -137,7 +137,7 @@ end
     # below the 35 dB-Hz lock threshold: two measured are too few, so the loop falls back
     # to scalar tracking, whose loops keep the faded signals, and seeds anew from the
     # first scalar fix once they are back above it.
-    rx = PipelineReceiver(; num_sats = 8, config = VectorTracking(; insufficient_meas_timeout = 1.0s),
+    rx = PipelineReceiver(; num_sats = 8, filter_config = NavigationFilterConfig(; insufficient_meas_timeout = 1.0s),
         estimator_kw = (; lock_cn0_threshold = 35dBHz))
     results, start, diverged = run_pipeline!(rx, 30.0)
     @test !diverged && results[end].status.running
@@ -161,7 +161,7 @@ end
     # before the epoch the filter falls back at: the others are past the next epoch by
     # then, so the cycle runs without it — and it is not stale yet. It is released all
     # the same, and its scalar loop tracks it until the filter seeds anew.
-    rx = PipelineReceiver(; num_sats = 8, config = VectorTracking(; insufficient_meas_timeout = 1.0s),
+    rx = PipelineReceiver(; num_sats = 8, filter_config = NavigationFilterConfig(; insufficient_meas_timeout = 1.0s),
         estimator_kw = (; lock_cn0_threshold = 35dBHz))
     results, start, diverged = run_pipeline!(rx, 30.0)
     @test !diverged && results[end].status.running

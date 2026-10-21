@@ -408,7 +408,7 @@ record_ms(signal) = round(Int, 1000 * get_code_length(signal) / ustrip(Hz, get_c
 function SimReceiver(;
     signals = (GPSL1CA(),),
     inner = ConventionalAssistedPLLAndDLL(),
-    config = VectorTracking(),
+    filter_config = NavigationFilterConfig(),
     num_sats = typemax(Int), # or one count per signal
     range_biases = map(_ -> 0.0, signals), # per signal (m)
     atmosphere = false, # delay the true ranges by the modelled atmosphere
@@ -426,7 +426,7 @@ function SimReceiver(;
     t0 = maximum(maximum(calc_corrected_time, last(f)) for f in fixtures) + 0.075
     truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0, truth_kw...)
     delays = atmosphere ? sim_atmosphere(signals, fixtures, first(gps_states), t0) : NO_ATMOSPHERE
-    estimator = VectorPLLAndDLL(signals...; inner, config, approximate_year = 2021,
+    estimator = VectorPLLAndDLL(signals...; inner, filter_config, approximate_year = 2021,
         vt_update_interval = nominal_records * 1.0ms,
         enable_ionospheric_correction = correct_atmosphere,
         enable_tropospheric_correction = correct_atmosphere, estimator_kw...)
@@ -595,7 +595,7 @@ function PipelineReceiver(
     ::Val{pilot};
     num_sats = typemax(Int),
     inner = ConventionalAssistedPLLAndDLL(),
-    config = VectorTracking(),
+    filter_config = NavigationFilterConfig(),
     delay_records = 0,
     cn0_dbhz = 45.0,
     lead = 8.0,
@@ -612,7 +612,7 @@ function PipelineReceiver(
     t0 = next_subframe1_start(maximum(calc_corrected_time, states)) - lead
     truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0)
     ranging = pilot ? (GPSL1C_P() => GPSL1CA(),) : (GPSL1CA(),)
-    estimator = something(estimator, VectorPLLAndDLL(ranging...; inner, config, approximate_year = 2021,
+    estimator = something(estimator, VectorPLLAndDLL(ranging...; inner, filter_config, approximate_year = 2021,
         enable_ionospheric_correction = false, enable_tropospheric_correction = false,
         estimator_kw...))
     decoders = decoders[1:min(num_sats, end)]

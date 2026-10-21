@@ -39,7 +39,7 @@ tail_code_errors(results) = maximum(r -> maximum(abs, r.code_errors), results)
     # rotating it but leaving out the rate of the rotation and the light time, 0.6 mm/s.
     @test norm(mean(velocity_errors)) < 5e-4
     # The pseudorange-only loop (VDLL) closes as well.
-    rx = SimReceiver(; config = VectorTracking(; use_pseudorange_rates = false))
+    rx = SimReceiver(; filter_config = NavigationFilterConfig(; use_pseudorange_rates = false))
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
     @test tail_errors(rx, results[51:end]) < 0.5

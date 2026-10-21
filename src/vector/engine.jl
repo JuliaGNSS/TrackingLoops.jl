@@ -44,7 +44,7 @@ end
 function VectorPLLAndDLL(
     signals::Union{AbstractGNSSSignal,Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}}...;
     inner::AbstractDopplerEstimator = ConventionalAssistedPLLAndDLL(),
-    config::Union{VectorTracking,Nothing} = VectorTracking(),
+    filter_config::Union{NavigationFilterConfig,Nothing} = NavigationFilterConfig(),
     vt_update_interval = 100.0ms,
     lock_cn0_threshold = 30.0dBHz,
     residual_pll_loop_filter_bandwidth = default_residual_pll_loop_filter_bandwidth(),
@@ -80,7 +80,7 @@ function VectorPLLAndDLL(
     residual_pll_loop_filter_bandwidth > 0.0Hz ||
         throw(ArgumentError("`residual_pll_loop_filter_bandwidth` must be positive"))
     navigation = VectorNavigation(
-        config,
+        filter_config,
         pairs,
         inner;
         vt_update_interval = T,
@@ -689,7 +689,7 @@ end
 #     `insufficient_meas_timeout` of unsolvable epochs, or with no member left, every
 #     satellite in the loop is released — those that missed the epoch too — and the
 #     next cycle solves the scalar PVT again.
-#   - Built with `config = nothing`: the scalar PVT only.
+#   - Built with `filter_config = nothing`: the scalar PVT only.
 function _navigation_cycle!(nav::VectorNavigation, now)
     groups = nav.groups
     buffers = nav.buffers

@@ -82,20 +82,20 @@ end
     @test bds.time == 86.0
 end
 
-@testset "VectorTracking configuration" begin
-    config = VectorTracking()
+@testset "NavigationFilterConfig configuration" begin
+    config = NavigationFilterConfig()
     @test config.use_pseudorange_rates # VDFLL by default
     @test config.motion_model_order == 2
     @test config.clock_model_order == 2
     @test config.insufficient_meas_timeout == 10.0s
 
-    vdll = VectorTracking(use_pseudorange_rates = false)
+    vdll = NavigationFilterConfig(use_pseudorange_rates = false)
     @test !vdll.use_pseudorange_rates
 
-    @test_throws ArgumentError VectorTracking(motion_model_order = 0)
-    @test_throws ArgumentError VectorTracking(motion_model_order = 4)
-    @test_throws ArgumentError VectorTracking(clock_model_order = 0)
-    @test_throws ArgumentError VectorTracking(clock_model_order = 3)
+    @test_throws ArgumentError NavigationFilterConfig(motion_model_order = 0)
+    @test_throws ArgumentError NavigationFilterConfig(motion_model_order = 4)
+    @test_throws ArgumentError NavigationFilterConfig(clock_model_order = 0)
+    @test_throws ArgumentError NavigationFilterConfig(clock_model_order = 3)
 end
 
 @testset "Navigation filter layout from the configured signals" begin
@@ -180,7 +180,7 @@ end
 end
 
 @testset "Navigation filter process model" begin
-    config = VectorTracking()
+    config = NavigationFilterConfig()
     T = 0.1
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
     nav = TL.NavFilterModel(config, layout, 100.0ms)
@@ -206,7 +206,7 @@ end
 
     # Position-only, bias-only model: pure identity dynamics.
     nav1 = TL.NavFilterModel(
-        VectorTracking(; motion_model_order = 1, clock_model_order = 1),
+        NavigationFilterConfig(; motion_model_order = 1, clock_model_order = 1),
         TL.NavFilterLayout((GPSL1CA(),)),
         100.0ms,
     )
@@ -222,7 +222,7 @@ end
     # bands drift apart can be described without touching the source.
     @test nav_ifb.Q[ifb_index, ifb_index] ≈ ustrip(u"m/sqrt(s)", config.ifb_noise_density)^2 * T
     loose_ifb = TL.NavFilterModel(
-        VectorTracking(; ifb_noise_density = 0.05u"m/sqrt(s)"),
+        NavigationFilterConfig(; ifb_noise_density = 0.05u"m/sqrt(s)"),
         TL.NavFilterLayout((GPSL1CA(), GPSL5I())),
         100.0ms,
     )
@@ -258,7 +258,7 @@ end
     σ_j = σ_a / τ   # jerk making up one manoeuvre
     T = 0.1
     layout = TL.NavFilterLayout((GPSL1CA(),))
-    config(order) = VectorTracking(; motion_model_order = order, acceleration_noise_std = acc)
+    config(order) = NavigationFilterConfig(; motion_model_order = order, acceleration_noise_std = acc)
     axis_block(order) = TL.NavFilterModel(config(order), layout, T * s).Q[1:order, 1:order]
 
     @test TL.MANOEUVRE_TIME == 2.0s
@@ -311,7 +311,7 @@ end
 end
 
 @testset "Measurement prediction" begin
-    config = VectorTracking()
+    config = NavigationFilterConfig()
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
     nav = TL.NavFilterModel(config, layout, 100.0ms)
     idxs = nav.idxs
@@ -358,8 +358,8 @@ end
     sat_position = SVector(2.6e7, 0.0, 0.0)
     user_pos = SVector(6.378e6, 0.0, 0.0)
     for order in (1, 2, 3)
-        idxs = TL.NavFilterIndices(VectorTracking(; motion_model_order = order), layout)
-        x = zeros(TL.num_nav_states(VectorTracking(; motion_model_order = order), layout))
+        idxs = TL.NavFilterIndices(NavigationFilterConfig(; motion_model_order = order), layout)
+        x = zeros(TL.num_nav_states(NavigationFilterConfig(; motion_model_order = order), layout))
         x[idxs.pos] = user_pos
         order >= 2 && (x[idxs.vel] = [3.0, 4.0, 0.0])
         order >= 3 && (x[idxs.acc] = [5.0, 0.0, 0.0])
@@ -681,7 +681,7 @@ end
 
     # The position uncertainty reported with the solution is the root sum of the position
     # variances, read off the position block of P.
-    idxs = TL.NavFilterIndices(VectorTracking(), layout)
+    idxs = TL.NavFilterIndices(NavigationFilterConfig(), layout)
     P = zeros(10, 10)
     P[idxs.pos, idxs.pos] = Diagonal([9.0, 16.0, 144.0])
     @test TL.position_uncertainty(P, idxs) ≈ sqrt(169.0)
@@ -805,7 +805,7 @@ end
     # on top of it a second time. A satellite the filter moved 10 m towards
     # therefore gets the same single-counted NCO update as above, not double.
     layout = TL.NavFilterLayout((GPSL1CA(),))
-    idxs = TL.NavFilterIndices(VectorTracking(), layout)
+    idxs = TL.NavFilterIndices(NavigationFilterConfig(), layout)
     user_pos = SVector(6.378e6, 0.0, 0.0)
     x = zeros(8)
     x[idxs.pos] = user_pos
@@ -926,7 +926,7 @@ end
 
 @testset "Initial navigation state from a scalar fix" begin
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GPSL5I()))
-    config = VectorTracking()
+    config = NavigationFilterConfig()
     idxs = TL.NavFilterIndices(config, layout)
     n = TL.num_nav_states(config, layout)
     pvt = PVTSolution(;
@@ -963,7 +963,7 @@ end
     @test x[idxs.ifb[1]] == 0.0
     @test P[idxs.ifb[1], idxs.ifb[1]] == 30.0^2
     # A third-order motion model starts with zero acceleration, of its own variance.
-    config3 = VectorTracking(; motion_model_order = 3)
+    config3 = NavigationFilterConfig(; motion_model_order = 3)
     idxs_acc = TL.NavFilterIndices(config3, layout)
     n_acc = TL.num_nav_states(config3, layout)
     x_acc, P_acc = zeros(n_acc), zeros(n_acc, n_acc)
@@ -977,7 +977,7 @@ end
 
 @testset "The seeded covariance is the fix's, scaled by its geometry" begin
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
-    config = VectorTracking()
+    config = NavigationFilterConfig()
     idxs = TL.NavFilterIndices(config, layout)
     n = TL.num_nav_states(config, layout)
     user = SVector(6.378e6, 0.0, 0.0)
@@ -1035,7 +1035,7 @@ end
     # last Cholesky pivot slightly positive rather than failing the factorization, and
     # the inverse would seed the Galileo clock with a variance of about 10¹⁵ m².
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GalileoE5aI()))
-    config = VectorTracking()
+    config = NavigationFilterConfig()
     idxs = TL.NavFilterIndices(config, layout)
     n = TL.num_nav_states(config, layout)
     user = SVector(6.378e6, 0.0, 0.0)

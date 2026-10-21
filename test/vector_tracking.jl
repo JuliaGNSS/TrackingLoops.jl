@@ -23,7 +23,7 @@ using Geodesy: ENUfromECEF, wgs84
     @test !state.in_vector_loop
     @test VectorPLLAndDLL(GPSL1CA(); vt_update_interval = 20ms).navigation.vt_update_interval == 0.02s
     @test VectorPLLAndDLL(GPSL1CA(); lock_cn0_threshold = 35dBHz).navigation.lock_cn0_threshold_dbhz == 35.0
-    @test !VectorPLLAndDLL(GPSL1CA(); config = nothing).navigation.enabled
+    @test !VectorPLLAndDLL(GPSL1CA(); filter_config = nothing).navigation.enabled
 end
 
 @testset "The estimator rejects what it cannot track" begin
@@ -54,7 +54,7 @@ end
 end
 
 @testset "Without a configuration only the scalar PVT is solved" begin
-    rx = SimReceiver(; config = nothing)
+    rx = SimReceiver(; filter_config = nothing)
     @test !rx.vt.enabled
     results, _, diverged = run_simulation!(rx, 5)
     @test !diverged
