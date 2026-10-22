@@ -6,7 +6,7 @@
 using Random: Xoshiro, randn
 using Statistics: mean, std
 using Unitful: ms, kHz, MHz
-using TrackingLoops: get_prompt_buffer, get_current_index, get_fallback_cn0_estimator
+using TrackingLoops: get_prompt_buffer, get_current_index
 
 # Float64 throughout, matching what the tracking loop produces
 # (`integrated_samples / sampling_frequency`); `1ms` would make the density a
@@ -399,7 +399,7 @@ end
             reference = cn0_fold(NoiseRefCN0Estimator(; num_records = 400), prompts, context)
             @test Base.length(nwpr) == 0
             @test estimate_cn0(nwpr, CN0_T) ==
-                  estimate_cn0(get_fallback_cn0_estimator(nwpr), CN0_T)
+                  estimate_cn0(nwpr.fallback, CN0_T)
             @test cn0_db(estimate_cn0(reference, CN0_T)) ≈ 30 atol = 1.0
 
             # On pure noise NWPR's moment-ratio fallback manufactures signal power;
@@ -482,7 +482,7 @@ end
         single = update(single, 1.0 + 0.0im)
     end
     @test Base.length(single) == 0
-    @test estimate_cn0(single, 1ms) == estimate_cn0(get_fallback_cn0_estimator(single), 1ms)
+    @test estimate_cn0(single, 1ms) == estimate_cn0(single.fallback, 1ms)
 end
 
 @testset "NWPR CN0 estimator noise floor beats the moment ratio (issue #217)" begin
@@ -633,7 +633,7 @@ end
     end
     @test Base.length(estimator) == 0
     @test estimate_cn0(estimator, 1ms) ==
-          estimate_cn0(get_fallback_cn0_estimator(estimator), 1ms)
+          estimate_cn0(estimator.fallback, 1ms)
     # Once synced its bit is 10 blocks long, and the replica wipes the overlay.
     for bit_block_index in repeat(0:9, 3)
         estimator = update(estimator, 1.0 + 0.0im, context(GPSL5I(), 10, bit_block_index))
@@ -678,7 +678,7 @@ end
     end
     @test Base.length(estimator) == 0
     @test estimate_cn0(estimator, 20ms) ==
-          estimate_cn0(get_fallback_cn0_estimator(estimator), 20ms)
+          estimate_cn0(estimator.fallback, 20ms)
 end
 
 @testset "NWPR CN0 estimator skips a record spanning no whole code block" begin
@@ -701,7 +701,7 @@ end
     end
     @test Base.length(estimator) == 1
     @test estimator.num_records_per_ratio == 5
-    @test Base.length(get_fallback_cn0_estimator(estimator)) == 6
+    @test Base.length(estimator.fallback) == 6
 end
 
 # Reduced form of Tracking.jl's `test/cn0_estimator_comparison.jl`: the same
