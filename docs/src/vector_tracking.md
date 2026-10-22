@@ -13,9 +13,9 @@ The filter is an unscented Kalman filter over position, velocity, one clock bias
 per GNSS time system (all driven by the one oscillator's drift) and one
 inter-frequency bias per band beyond the reference band. It follows the bias
 model of [PositionVelocityTime.jl](https://github.com/JuliaGNSS/PositionVelocityTime.jl):
-which biases a cycle can determine is decided per cycle, and clocks collapse
-onto a hub system's through the broadcast offset (GGTO, BGTO) when the
-measurements cannot separate them. With `use_pseudorange_rates = true` (the
+which biases a cycle can determine is decided per cycle, and where the
+measurements cannot separate two clocks, a broadcast offset between their
+systems (GGTO, BGTO) ties them as a pseudo-measurement. With `use_pseudorange_rates = true` (the
 default) it also measures the pseudorange rates (VDFLL); with `false` it is a
 VDLL, and the carrier NCOs' Doppler comes from the code measurements alone.
 

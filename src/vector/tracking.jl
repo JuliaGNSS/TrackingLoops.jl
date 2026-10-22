@@ -297,7 +297,9 @@ mutable struct VTBuffers{SB<:Tuple}
     landing_position::Vector{SVector{3,Float64}}
     landing_columns::BiasColumns
     landing_range::Vector{Float64}
-    observability::ObservabilityWorkspace
+    # The cycle's bias-layout decision, and its constraints over the filter's clocks.
+    bias_layout::BiasLayout
+    time_offset_constraints::Vector{Tuple{Int,Int,Float64}}
     time_update::KFTUIntermediate{Float64}
     measurement_updates::Vector{Union{Nothing,MeasurementBuffers{_UKFIntermediate}}}
     dense_clock_indices::Vector{Int}
@@ -309,6 +311,7 @@ mutable struct VTBuffers{SB<:Tuple}
 end
 
 _capacity_vector(::Type{T}, n) where {T} = sizehint!(T[], n)
+
 
 function VTBuffers(sat_states::Tuple, num_states, layout::NavFilterLayout, max_members)
     num_clocks = num_clock_biases(layout)
@@ -338,7 +341,8 @@ function VTBuffers(sat_states::Tuple, num_states, layout::NavFilterLayout, max_m
         [zero(SVector{3,Float64})],
         BiasColumns([1], num_clocks, [0], num_ifbs),
         [0.0],
-        ObservabilityWorkspace(max_members),
+        BiasLayout(),
+        _capacity_vector(Tuple{Int,Int,Float64}, num_clocks),
         KFTUIntermediate(Float64, num_states),
         # One per possible measurement count, so a membership change never builds one.
         Union{Nothing,MeasurementBuffers{_UKFIntermediate}}[
@@ -721,7 +725,6 @@ function _collect_members!(j, group, g, buffer, nav, T)
                 linear_cn0_floor(slot.cn0_dbhz),
                 slot.early_late_spacing,
                 ustrip(s, slot.coherent_integration_time),
-                row.time_offsets,
             ),
         )
     end
@@ -818,7 +821,7 @@ function _measurement_update!(nav::VectorNavigation, T)
     members = buffers.members
     candidates = buffers.candidates
     measured = buffers.measured_pseudoranges
-    constraints = buffers.observability.hub_offset_constraints
+    constraints = buffers.time_offset_constraints
     use_rates = nav.filter_config.use_pseudorange_rates
     num_sats = length(candidates)
     resize!(buffers.candidate_positions, num_sats)
@@ -840,11 +843,11 @@ function _measurement_update!(nav::VectorNavigation, T)
             R[num_sats+k, num_sats+k] = pseudorange_rate_noise_variance(member, T)
         end
     end
-    # Each clock collapse is one extra row after the pseudorange and rate rows.
+    # Each time-offset constraint is one extra row after the pseudorange and rate rows.
     offset = num_sats + num_rate_rows
     for (i, (_, _, isb)) in enumerate(constraints)
         z[offset+i] = isb
-        R[offset+i, offset+i] = HUB_OFFSET_STD^2
+        R[offset+i, offset+i] = TIME_OFFSET_STD^2
     end
     h! = VTMeasurementModel(
         nav.model.idxs,
@@ -1131,25 +1134,22 @@ function _run_cycle!(nav::VectorNavigation, groups, cycle_time)
     for (j, member) in enumerate(members)
         member.available && above_horizon[j] && push!(candidates, j)
     end
-    # The bare floor (position and one clock from four satellites), so an epoch without
-    # candidates counts as unsolvable.
-    observability = BiasObservability(4, 4, 0)
-    # No innovation gate: the observability watchdog catches divergence, and a gate
+    # Decided every cycle, without candidates too (unsolvable, no constraint), so nothing
+    # below reads an earlier cycle's decision.
+    candidate_rows = view(buffers.rows, candidates)
+    solvable = decide_bias_layout!(buffers.bias_layout, candidate_rows)
+    time_offset_constraints!(buffers.time_offset_constraints, nav.layout, buffers.bias_layout)
+    # No innovation gate: the starvation watchdog catches divergence, and a gate
     # could release a healthy satellite whose large but explained innovation the update
     # would absorb (e.g. a constellation's first measurements).
-    if !isempty(candidates)
-        observability =
-            assess_bias_observability!(buffers.observability, nav.layout, members, candidates)
-        _measurement_update!(nav, T)
-    end
-    num_candidates = length(candidates)
+    isempty(candidates) || _measurement_update!(nav, T)
 
     _predict_members!(nav)
 
     # Starvation watchdog (see `NavigationStatus`): solvability only; the solution's
     # certainty is reported as `position_std`, not policed.
     time_with_insufficient_meas =
-        is_epoch_solvable(observability, num_candidates) ?
+        solvable ?
         max(0.0s, nav.time_with_insufficient_meas - cycle_time / 2) :
         nav.time_with_insufficient_meas + cycle_time
 
@@ -1162,7 +1162,7 @@ function _run_cycle!(nav::VectorNavigation, groups, cycle_time)
     end
 
     nav.primary_clock_index =
-        select_primary_clock_index(nav.layout, members, candidates, nav.primary_clock_index)
+        select_primary_clock_index(nav.layout, candidate_rows, buffers.bias_layout, nav.primary_clock_index)
     nav.time_epoch_offset = rolled_over_time_epoch_offset(
         _resolve_time_epoch_offset(nav),
         nav.time_epoch_offset,
@@ -1256,6 +1256,12 @@ function _write_solution!(nav::VectorNavigation, groups)
             continue
         inter_system_biases[time_system] = (x[idxs.clock_biases[index]] - primary_clock_bias) * m
     end
+    # The broadcast offsets the cycle took as given, as `calc_pvt` reports them.
+    time_offset_constraints = solution.time_offset_constraints
+    for (clock, target_clock, offset) in buffers.time_offset_constraints
+        system, target = layout.time_systems[clock], layout.time_systems[target_clock]
+        push!(time_offset_constraints, TimeOffsetConstraint(system, target, offset * m))
+    end
     inter_frequency_biases = solution.inter_frequency_biases
     for (index, band) in enumerate(layout.extra_bands)
         _is_measured(member -> member.ifb_index == index, members, candidates) || continue
@@ -1275,6 +1281,7 @@ function _write_solution!(nav::VectorNavigation, groups)
         layout.time_systems[nav.primary_clock_index],
         inter_system_biases,
         inter_frequency_biases,
+        time_offset_constraints,
     )
     nothing
 end

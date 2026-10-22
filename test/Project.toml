@@ -1,6 +1,7 @@
 [deps]
 Accessors = "7d9f7c33-5ae7-4f3b-8dc6-eff91059b697"
 AllocCheck = "9b6a8646-10ed-4001-bbdc-1d2f46dfbb1a"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 GNSSDecoder = "bf6b1ec8-12ad-4501-972c-3dec0d675c2b"
 GNSSSignals = "52c80523-2a4e-5c38-8979-05588f836870"
 Geodesy = "0ef565a4-170c-5f04-8de2-149903a85f3d"
@@ -21,12 +22,13 @@ TrackingLoops = {path = ".."}
 [compat]
 Accessors = "0.1"
 AllocCheck = "0.2.6"
+Dates = "<0.0.1, 1"
 Geodesy = "1"
 GNSSDecoder = "5"
 GNSSSignals = "4"
 InteractiveUtils = "<0.0.1, 1"
 LinearAlgebra = "<0.0.1, 1"
-PositionVelocityTime = "7"
+PositionVelocityTime = "8"
 Random = "<0.0.1, 1"
 StaticArrays = "1"
 Statistics = "<0.0.1, 1"
