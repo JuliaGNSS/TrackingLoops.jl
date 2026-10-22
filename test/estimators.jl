@@ -25,7 +25,7 @@ loop_epl(late, prompt, early) =
     EarlyPromptLateCorrelator(SVector{3,ComplexF64}(late, prompt, early), 0.5)
 
 function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, phi0 = 0.8, steps = 600)
-    code_doppler = handover * Hz * get_code_center_frequency_ratio(LOOP_SIGNAL)
+    code_doppler = handover * Hz * get_chip_rate_to_center_frequency_ratio(LOOP_SIGNAL)
     state = init_estimator_state(estimator, LOOP_SIGNAL, handover * Hz, code_doppler)
     timeline = NCOTimeline()
     reset_timeline!(timeline, handover, ustrip(Hz, code_doppler))
