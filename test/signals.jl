@@ -99,7 +99,7 @@ function _sig_test_bandwidths(signal, carrier)
     @test @inferred(default_wide_carrier_loop_filter_bandwidth(signal)) == 50.0Hz
     @test @inferred(default_narrow_carrier_loop_filter_bandwidth(signal)) == 18.0Hz
     @test @inferred(default_fll_assist_loop_filter_bandwidth(signal)) == 5.0Hz
-    primary_period = get_code_length(signal) / get_code_frequency(signal)
+    primary_period = get_code_length(signal) / get_chip_rate(signal)
     @test @inferred(
         effective_carrier_loop_filter_bandwidth(
             default_narrow_carrier_loop_filter_bandwidth(signal),
@@ -195,7 +195,7 @@ end
 end
 
 @testset "Galileo E1B reports one symbol per code block ($(nameof(typeof(signal))))" for signal in
-                                                                                         (GalileoE1B(), GalileoE1B_BOC11())
+                                                                                         (GalileoE1B(CBOC), GalileoE1B())
     _sig_test_symbol_is_code_block(signal, 1, UInt8)
     _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
     _sig_test_bandwidths(signal, 18.0Hz)
@@ -203,7 +203,7 @@ end
 end
 
 @testset "Galileo E1C locks its CS25 secondary code ($(nameof(typeof(signal))))" for signal in
-                                                                                       (GalileoE1C(), GalileoE1C_BOC11())
+                                                                                       (GalileoE1C(CBOC), GalileoE1C())
     @test get_secondary_code_length(signal) == 25
     _sig_test_secondary_search(signal, 1, UInt32, (0, 11, 24))
     _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
@@ -298,7 +298,7 @@ end
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt128
     @test uses_soft_secondary_code_detection(signal) == true
-    @test get_carrier_phase_offset(signal) ≈ π
+    @test get_carrier_phase_offset(signal) == 0.5
 end
 
 @testset "BeiDou B1C data reports one symbol per code block" begin

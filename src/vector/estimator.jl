@@ -48,7 +48,7 @@ loop](@ref vector-carrier)):
     PLL's, and [`carrier_loop_stage`](@ref) reports `VECTOR_LOOP`;
   - the code filter is frozen and the filter's code correction replaces its output:
     `code_doppler = init_code_doppler + code_freq_update +
-    (carrier_doppler - init_carrier_doppler) · code_center_frequency_ratio`;
+    (carrier_doppler - init_carrier_doppler) · chip_rate_to_center_frequency_ratio`;
   - the DLL output (chips) and the FLL discriminator (Hz) are accumulated for the
     filter;
   - the engine decodes the decoding signal's prompts rotated by the residual PLL's

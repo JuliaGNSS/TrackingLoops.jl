@@ -129,7 +129,7 @@ end
 
 @testset "DLL discriminator" begin
     gpsl1 = GPSL1CA()
-    sampling_frequency = get_code_frequency(gpsl1) * 4
+    sampling_frequency = get_chip_rate(gpsl1) * 4
 
     very_early_correlator =
         EarlyPromptLateCorrelator(SVector(1.0 + 0.0im, 0.5 + 0.0im, 0.0 + 0.0im), 0.5)
@@ -146,7 +146,7 @@ end
         get_early_late_sample_spacing(
             prompt_correlator,
             sampling_frequency,
-            get_code_frequency(gpsl1),
+            get_chip_rate(gpsl1),
         )
     ) == 4
 
@@ -243,7 +243,7 @@ function dll_disc_s_curve_slope(
     prn = 1,
     offsets = -0.05:0.005:0.05,
 )
-    code_frequency = get_code_frequency(signal)
+    code_frequency = get_chip_rate(signal)
     chips_per_sample = upreferred(code_frequency / sampling_frequency)
     samples_per_code = round(Int, get_code_length(signal) / chips_per_sample)
     shifts = get_correlator_sample_shifts(correlator, sampling_frequency, code_frequency)
@@ -271,11 +271,11 @@ end
         0.02
     # VEML on BOC(1,1) — the normalization's own correlation model — at two
     # sampling rates that quantize the taps differently.
-    @test dll_disc_s_curve_slope(GalileoE1B_BOC11(), veml, 20MHz) ≈ 1.0 atol = 0.02
-    @test dll_disc_s_curve_slope(GalileoE1B_BOC11(), veml, 79.5MHz) ≈ 1.0 atol = 0.02
+    @test dll_disc_s_curve_slope(GalileoE1B(), veml, 20MHz) ≈ 1.0 atol = 0.02
+    @test dll_disc_s_curve_slope(GalileoE1B(), veml, 79.5MHz) ≈ 1.0 atol = 0.02
     # VEML on the full modulations: the residual gain error is the modulation
     # mismatch against the BOC(1,1) model.
-    @test dll_disc_s_curve_slope(GalileoE1B(), veml, 20MHz) ≈ 1.0 atol = 0.1
-    @test dll_disc_s_curve_slope(GPSL1C_P(), veml, 20MHz) ≈ 1.0 atol = 0.1
-    @test dll_disc_s_curve_slope(GalileoE1C(), veml, 20MHz) ≈ 1.0 atol = 0.2
+    @test dll_disc_s_curve_slope(GalileoE1B(CBOC), veml, 20MHz) ≈ 1.0 atol = 0.1
+    @test dll_disc_s_curve_slope(GPSL1C_P(TMBOC), veml, 20MHz) ≈ 1.0 atol = 0.1
+    @test dll_disc_s_curve_slope(GalileoE1C(CBOC), veml, 20MHz) ≈ 1.0 atol = 0.2
 end
