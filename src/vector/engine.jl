@@ -13,7 +13,7 @@ _ranging_pair(pair::Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}) = (pair.fir
 _is_plain_pair((driver, decoding)) = typeof(driver) == typeof(decoding)
 
 function _check_ranging_pair((driver, decoding))
-    if iszero(get_data_frequency(decoding))
+    if iszero(get_bit_rate(decoding))
         hint =
             _is_plain_pair((driver, decoding)) ?
             "; pair it with its data component, `$(nameof(typeof(driver)))() => data`" : ""
@@ -24,11 +24,11 @@ function _check_ranging_pair((driver, decoding))
             ),
         )
     end
-    get_code_frequency(decoding) == get_code_frequency(driver) || throw(
+    get_chip_rate(decoding) == get_chip_rate(driver) || throw(
         ArgumentError(
             "a decoding signal must have its driver's chip rate: " *
-            "$(nameof(typeof(decoding))) has $(get_code_frequency(decoding)), " *
-            "$(nameof(typeof(driver))) $(get_code_frequency(driver))",
+            "$(nameof(typeof(decoding))) has $(get_chip_rate(decoding)), " *
+            "$(nameof(typeof(driver))) $(get_chip_rate(driver))",
         ),
     )
     nothing
@@ -387,7 +387,7 @@ function _commands_at_landing(
     )
     lead = max(lead, 0.0)
     T = _update_interval_seconds(nav)
-    code_frequency = ustrip(Hz, get_code_frequency(group.driver_signal))
+    code_frequency = ustrip(Hz, get_chip_rate(group.driver_signal))
     _, code_word = mean_nco_word(words, slot.driver_last_end_sample, landing)
     chips =
         slot.chips_since_epoch + (landing - slot.driver_last_end_sample) / fs * (code_frequency + code_word)
@@ -438,7 +438,7 @@ function _snapshot_driver!(
         return state
     fs = _sampling_frequency_hz(record)
     epoch_time = _epoch_time(nav, nav.pending_epoch)
-    code_frequency = ustrip(Hz, get_code_frequency(group.driver_signal))
+    code_frequency = ustrip(Hz, get_chip_rate(group.driver_signal))
     epoch_sample = epoch_time * fs
     _, code_word = mean_nco_word(words, slot.driver_last_end_sample, epoch_sample)
     chips_to_epoch = (epoch_time - slot.driver_last_end_time) * (code_frequency + code_word)
@@ -466,7 +466,7 @@ function _snapshot_decoding!(nav::VectorNavigation, group::VTSlotGroup, slot::VT
     fs = _sampling_frequency_hz(record)
     epoch_time = _epoch_time(nav, nav.pending_epoch)
     signal = group.decoding_signal
-    code_frequency = ustrip(Hz, get_code_frequency(signal))
+    code_frequency = ustrip(Hz, get_chip_rate(signal))
     _, code_word = mean_nco_word(words, slot.decoding_last_end_sample, epoch_time * fs)
     chips_to_epoch = (epoch_time - slot.decoding_last_end_time) * (code_frequency + code_word)
     slot.epoch_decoder = slot.running_decoder
@@ -483,7 +483,7 @@ function _complete_snapshot!(nav::VectorNavigation, group::VTSlotGroup, slot::VT
     epoch = nav.pending_epoch
     slot.snapshot_epoch < epoch && slot.driver_epoch == epoch && slot.decoding_epoch == epoch ||
         return nothing
-    code_frequency = ustrip(Hz, get_code_frequency(group.decoding_signal))
+    code_frequency = ustrip(Hz, get_chip_rate(group.decoding_signal))
     decoder, code_phase = _decoder_at_code_phase(
         slot.epoch_decoder,
         _code_phase_on_driver(group, slot),
@@ -512,7 +512,7 @@ function _code_phase_on_driver(group::VTSlotGroup, slot::VTSlot)
     slot.epoch_bit_synced && !isnan(driver_phase) || return code_phase
     decoding = group.decoding_signal
     chips_per_symbol =
-        ustrip(Hz, get_code_frequency(decoding)) / ustrip(Hz, get_data_frequency(decoding))
+        ustrip(Hz, get_chip_rate(decoding)) / ustrip(Hz, get_bit_rate(decoding))
     period = min(Float64(get_code_length(group.driver_signal)), chips_per_symbol)
     code_phase + rem(driver_phase - code_phase, period, RoundNearest)
 end
@@ -550,12 +550,12 @@ end
 # edge, or past the next one) shifts the decoder's symbol count instead, which is all
 # the transmit time reads.
 function _decoder_at_code_phase(decoder::GNSSDecoderState, code_phase, code_frequency)
-    num_bits = decoder.num_bits_after_valid_syncro_sequence
-    isnothing(num_bits) && return decoder, code_phase
-    chips_per_symbol = code_frequency / ustrip(Hz, get_data_frequency(decoder))
+    num_symbols = decoder.num_bits_since_sync
+    isnothing(num_symbols) && return decoder, code_phase
+    chips_per_symbol = code_frequency / ustrip(Hz, get_bit_rate(decoder))
     shift = floor(Int, code_phase / chips_per_symbol)
     shift == 0 && return decoder, code_phase
-    GNSSDecoderState(decoder; num_bits_after_valid_syncro_sequence = num_bits + shift),
+    GNSSDecoderState(decoder; num_bits_since_sync = num_symbols + shift),
     code_phase - shift * chips_per_symbol
 end
 
@@ -648,7 +648,7 @@ end
 #     accumulated discriminators fused, commands for every member. Admitted are
 #     satellites decoded, healthy, in lock and `ADMISSION_ELEVATION` above the
 #     horizon; members out of lock stay in the loop unmeasured. After
-#     `insufficient_meas_timeout` of unsolvable epochs, or with no member left, every
+#     `insufficient_measurements_timeout` of unsolvable epochs, or with no member left, every
 #     satellite in the loop is released (those that missed the epoch too) and the next
 #     cycle solves the scalar PVT.
 #   - `filter_config = nothing`: the scalar PVT only.
@@ -681,7 +681,7 @@ function _navigation_cycle!(nav::VectorNavigation, now)
         nav.running,
         nav.running || fell_back ? position_uncertainty(nav) * m : NaN * m,
         nav.running || fell_back ? clock_uncertainty(nav) * m : NaN * m,
-        nav.time_with_insufficient_meas,
+        nav.time_with_insufficient_measurements,
         num_members,
         seeded,
         fell_back,
@@ -700,7 +700,7 @@ end
 function _advance_driver!(group::VTSlotGroup, slot::VTSlot, record::LoopRecord, words)
     signal = group.driver_signal
     fs = _sampling_frequency_hz(record)
-    code_frequency = ustrip(Hz, get_code_frequency(signal))
+    code_frequency = ustrip(Hz, get_chip_rate(signal))
     _, code_word = mean_nco_word(words, slot.driver_last_end_sample, record.sample_index)
     slot.chips_since_epoch +=
         (record.sample_index - slot.driver_last_end_sample) / fs * (code_frequency + code_word)
@@ -713,7 +713,7 @@ function _advance_driver!(group::VTSlotGroup, slot::VTSlot, record::LoopRecord, 
         get_early_late_sample_spacing(
             record.filtered_correlator,
             record.sampling_frequency,
-            get_code_frequency(signal),
+            get_chip_rate(signal),
         ) * code_frequency / fs
     nothing
 end
@@ -786,8 +786,8 @@ function _decode_record!(
         slot.symbol_from_edge = false
     else
         rotation =
-            get_carrier_phase_offset(group.driver_signal) - get_carrier_phase_offset(group.decoding_signal) -
-            2π * phase
+            2π * (get_carrier_phase_offset(group.driver_signal) - get_carrier_phase_offset(group.decoding_signal) -
+            phase)
         slot.symbol_accumulator += ComplexF64(get_prompt(record.filtered_correlator)) * cis(rotation)
     end
     isempty(soft_bits) && return nothing

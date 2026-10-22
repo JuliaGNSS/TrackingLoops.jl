@@ -61,7 +61,7 @@ end
     @test pipeline_code_errors(tail) < 0.05
     @test all(sat -> sat.state.in_vector_loop, rx.sats)
     @test 0.0u"m" < navigation_status(rx.estimator).position_std < 3.0u"m"
-    @test keys(vector_loop_members(rx.estimator)) == keys(navigation_solution(rx.estimator).sats)
+    @test keys(vector_loop_members(rx.estimator)) == keys(navigation_solution(rx.estimator).satellites)
     # Each satellite took up every cycle once.
     @test all(sat -> sat.state.cycle_id == nav.cycle_id, rx.sats)
     @test nav.registrations == length(rx.sats)
@@ -84,7 +84,7 @@ end
         @test report.epoch ≈ navigation_epoch(estimator)
         @test 40 < report.cn0_dbhz < 50
         @test TL.is_decoding_completed_for_positioning(report.decoder)
-        @test report.decoder.data.sqrt_A == sat.decoder.data.sqrt_A
+        @test get_broadcast_ephemeris(report.decoder) == get_broadcast_ephemeris(sat.decoder)
     end
     @test satellite_report(estimator, GPSL1CA(), 32) === nothing
     @test satellite_report(estimator, GalileoE1B(), rx.sats[1].decoder.prn) === nothing
@@ -137,7 +137,7 @@ end
     # below the 35 dB-Hz lock threshold: two measured are too few, so the loop falls back
     # to scalar tracking, whose loops keep the faded signals, and seeds anew from the
     # first scalar fix once they are back above it.
-    rx = PipelineReceiver(; num_sats = 8, filter_config = NavigationFilterConfig(; insufficient_meas_timeout = 1.0s),
+    rx = PipelineReceiver(; num_sats = 8, filter_config = NavigationFilterConfig(; insufficient_measurements_timeout = 1.0s),
         estimator_kw = (; lock_cn0_threshold = 35dBHz))
     results, start, diverged = run_pipeline!(rx, 30.0)
     @test !diverged && results[end].status.running
@@ -161,7 +161,7 @@ end
     # before the epoch the filter falls back at: the others are past the next epoch by
     # then, so the cycle runs without it — and it is not stale yet. It is released all
     # the same, and its scalar loop tracks it until the filter seeds anew.
-    rx = PipelineReceiver(; num_sats = 8, filter_config = NavigationFilterConfig(; insufficient_meas_timeout = 1.0s),
+    rx = PipelineReceiver(; num_sats = 8, filter_config = NavigationFilterConfig(; insufficient_measurements_timeout = 1.0s),
         estimator_kw = (; lock_cn0_threshold = 35dBHz))
     results, start, diverged = run_pipeline!(rx, 30.0)
     @test !diverged && results[end].status.running
@@ -170,7 +170,7 @@ end
     # The cycle that coasted to the timeout is the last before the fallback.
     pause_start = Ref(Inf)
     paused(t, i) = begin
-        if isinf(pause_start[]) && rx.vt.time_with_insufficient_meas >= 0.95s
+        if isinf(pause_start[]) && rx.vt.time_with_insufficient_measurements >= 0.95s
             pause_start[] = t + 0.05
         end
         i == 7 && pause_start[] <= t <= pause_start[] + 0.19
@@ -361,7 +361,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # The host's bit clock and C/N₀ estimator, and pilot + data pairs.
 
-using PositionVelocityTime: calc_uncorrected_time
+using PositionVelocityTime: calc_uncorrected_transmit_time
 
 # Per satellite, the transmit time of its latest snapshot minus the true one at that
 # epoch, as a range (m).
@@ -372,7 +372,7 @@ function snapshot_range_errors(rx)
         slot = group.slots[sat.state.slot_index]
         t = rx.truth.t0 + TL._epoch_time(nav, slot.snapshot_epoch)
         u_true = uncorrected_time(sat, first(true_transmit(sat, rx.truth, t)))
-        (calc_uncorrected_time(TL._satellite_state(group.driver_signal, slot)) - u_true) *
+        (calc_uncorrected_transmit_time(TL._satellite_state(group.driver_signal, slot)) - u_true) *
             TL.SPEED_OF_LIGHT
     end
 end
@@ -408,7 +408,7 @@ first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
     @test pipeline_code_errors(tail) < 0.2
     # The solution and the members are keyed by the driver.
     @test all(key -> first(key) == :GPSL1C_P, keys(vector_loop_members(estimator)))
-    @test all(key -> first(key) == :GPSL1C_P, keys(navigation_solution(estimator).sats))
+    @test all(key -> first(key) == :GPSL1C_P, keys(navigation_solution(estimator).satellites))
     # Warm, a pair's records step without allocating.
     for sat in Iterators.flatten((rx.sats, rx.passengers))
         sizehint!(sat.loop.bit_buffer.soft_bits, 64)
@@ -500,8 +500,8 @@ end
     @test any(r -> r.status.seeded, results1)
     @test [r.pvt.position for r in results1] == [r.pvt.position for r in results2]
     for (a, b) in zip(rx1.vt.groups[1].slots, rx2.vt.groups[1].slots)
-        @test a.running_decoder.num_bits_after_valid_syncro_sequence ==
-              b.running_decoder.num_bits_after_valid_syncro_sequence
+        @test a.running_decoder.num_bits_since_sync ==
+              b.running_decoder.num_bits_since_sync
     end
 end
 

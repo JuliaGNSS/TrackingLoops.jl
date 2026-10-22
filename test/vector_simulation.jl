@@ -20,20 +20,25 @@ using PositionVelocityTime:
     _PRECOMPILE_GPS_L1CA_STATES,
     _PRECOMPILE_GALILEO_E1B_STATES,
     _precompile_cnav,
-    day_of_year,
     predict_atmospheric_delays,
     satellite_measurement,
-    select_ionospheric_correction,
-    calc_corrected_time,
+    select_ionospheric_parameters,
+    calc_transmit_time,
+    IonosphericModel,
     correct_clock,
     calc_satellite_position_and_velocity,
     calc_satellite_clock_drift,
-    calc_ρ_hat!,
+    predict_pseudoranges!,
     BiasColumns,
     SatelliteState,
     SignalGroup,
     calc_pvt
-using GNSSDecoder: GNSSDecoder, GNSSDecoderState, get_time_of_week
+using GNSSDecoder:
+    GNSSDecoder,
+    GNSSDecoderState,
+    get_broadcast_ephemeris,
+    get_broadcast_time_of_week,
+    get_group_delay
 import PositionVelocityTime
 using Geodesy: ECEF
 using LinearAlgebra: norm
@@ -100,21 +105,22 @@ truth_clock_bias(truth::SimTruth, t) = truth.clock_bias + truth.clock_drift * (t
 # One simulated channel.
 # The atmosphere the true ranges pass through: PositionVelocityTime's ionospheric
 # `correction` (held as `Any`, the way `predict_atmospheric_delays` takes it) and the
-# troposphere's day of year, or none at all.
+# start of the GPS week the receiver times count in, which dates the models, or none at
+# all.
 struct SimAtmosphere
     enabled::Bool
     correction::Any
-    doy::Int
+    week_start::TAITime
 end
-const NO_ATMOSPHERE = SimAtmosphere(false, nothing, 1)
+const NO_ATMOSPHERE = SimAtmosphere(false, nothing, TAITime(0, 0.0))
 
 # The atmosphere over the fixture satellites of `signals`, dated by a GPS fixture `state`
 # at time of week `t`.
 function sim_atmosphere(signals, fixtures, state, t)
-    row = satellite_measurement(state, 2021)
-    correction = select_ionospheric_correction(
+    measurement = satellite_measurement(state, 2021)
+    correction = select_ionospheric_parameters(
         map((signal, f) -> SignalGroup(signal, last(f)), signals, fixtures))
-    SimAtmosphere(true, correction, day_of_year(row.system_start_time, row.week, t))
+    SimAtmosphere(true, correction, get_week_start_epoch(measurement.time_system, measurement.week))
 end
 
 mutable struct SimSat{D,E,S,L}
@@ -158,20 +164,23 @@ end
 # tropospheric models, which the filter corrects with.
 function atmospheric_delay(sat::SimSat, r, position, t)
     sat.atmosphere.enabled || return 0.0
-    rows = [(; position, center_frequency = sat.center_frequency)]
-    only(predict_atmospheric_delays([r[1], r[2], r[3], 0.0], rows,
-        sat.atmosphere.correction, t, sat.atmosphere.doy, true))
+    measurements = [(; position, center_frequency = sat.center_frequency)]
+    only(predict_atmospheric_delays([r[1], r[2], r[3], 0.0], measurements,
+        IonosphericModel(sat.atmosphere.correction), sat.atmosphere.week_start + t, true))
 end
 
 # The satellite state of a replica at uncorrected transmit time `u`.
 function replica_satellite_state(sat::SimSat, u)
-    rate = ustrip(Hz, get_data_frequency(sat.decoder))
+    rate = ustrip(Hz, get_bit_rate(sat.decoder))
     elapsed = u - sat.base_tow
-    num_bits = floor(Int, elapsed * rate)
-    decoder = GNSSDecoderState(sat.decoder; num_bits_after_valid_syncro_sequence = num_bits)
-    code_phase = (elapsed - num_bits / rate) * sat.code_frequency
-    SatelliteState(; decoder, system = sat.signal, code_phase, carrier_doppler = sat.carrier_doppler * Hz)
+    num_symbols = floor(Int, elapsed * rate)
+    decoder = GNSSDecoderState(sat.decoder; num_bits_since_sync = num_symbols)
+    code_phase = (elapsed - num_symbols / rate) * sat.code_frequency
+    SatelliteState(; decoder, signal = sat.signal, code_phase, carrier_doppler = sat.carrier_doppler * Hz)
 end
+
+# The satellite's broadcast ephemeris and clock; every fixture is decoded in full.
+ephemeris(sat::SimSat) = something(get_broadcast_ephemeris(sat.decoder))
 
 # The true transmit time solved from `t_t` on for a receiver clock reading `t` (seconds
 # of week), the satellite position and velocity there, and the range PositionVelocityTime
@@ -183,9 +192,9 @@ function solve_transmit(sat::SimSat, truth::SimTruth, t, t_t)
     ρ = [0.0]
     position = velocity = zero(SVector{3,Float64})
     for _ = 1:4
-        orbit = calc_satellite_position_and_velocity(sat.decoder, t_t)
+        orbit = calc_satellite_position_and_velocity(ephemeris(sat), t_t)
         position, velocity = orbit.position, orbit.velocity
-        calc_ρ_hat!(ρ, [SVector{3,Float64}(position)], ξ, columns)
+        predict_pseudoranges!(ρ, [SVector{3,Float64}(position)], ξ, columns)
         delay = sat.range_bias + atmospheric_delay(sat, r, SVector{3,Float64}(position), t)
         t_t = t - (ρ[1] + delay) / TrackingLoops.SPEED_OF_LIGHT
     end
@@ -197,7 +206,7 @@ end
 function true_transmit(sat::SimSat, truth::SimTruth, t)
     t_t, position, velocity, _ = solve_transmit(sat, truth, t, sat.transmit_time)
     sat.transmit_time = t_t
-    t_t, position, velocity, calc_satellite_clock_drift(sat.decoder, t_t)
+    t_t, position, velocity, calc_satellite_clock_drift(ephemeris(sat), t_t)
 end
 
 # The true carrier Doppler (Hz) at receiver time `t`: the rate of the range the code is
@@ -209,7 +218,7 @@ function true_doppler(sat::SimSat, truth::SimTruth, t; h = 0.01)
     _, _, _, ρ_before = solve_transmit(sat, truth, t - h, sat.transmit_time)
     t_t, = solve_transmit(sat, truth, t, sat.transmit_time)
     rate = -(ρ_after - ρ_before) / 2h +
-           calc_satellite_clock_drift(sat.decoder, t_t) * TrackingLoops.SPEED_OF_LIGHT
+           calc_satellite_clock_drift(ephemeris(sat), t_t) * TrackingLoops.SPEED_OF_LIGHT
     rate / (TrackingLoops.SPEED_OF_LIGHT / sat.center_frequency)
 end
 
@@ -218,10 +227,10 @@ end
 function SimSat(signal, decoder, estimator, truth::SimTruth, t; range_bias = 0.0,
         atmosphere = NO_ATMOSPHERE, stream = nothing, cn0_dbhz = Inf, seed = decoder.prn,
         cn0_estimator = default_cn0_estimator(signal, 100))
-    base_tow = Float64(get_time_of_week(decoder))
-    code_frequency = Float64(ustrip(Hz, get_code_frequency(signal)))
+    base_tow = Float64(get_broadcast_time_of_week(decoder))
+    code_frequency = Float64(ustrip(Hz, get_chip_rate(signal)))
     center_frequency = Float64(ustrip(Hz, get_center_frequency(signal)))
-    ratio = get_code_center_frequency_ratio(signal)
+    ratio = get_chip_rate_to_center_frequency_ratio(signal)
     noise_std = isinf(cn0_dbhz) ? 0.0 : sqrt(1 / (2 * 10^(cn0_dbhz / 10) * 1e-3))
     noise_density = 10^(-cn0_dbhz / 10)
     probe = SimSat(signal, decoder, base_tow, code_frequency, center_frequency,
@@ -249,7 +258,7 @@ end
 function uncorrected_time(sat::SimSat, t_t)
     u = t_t
     for _ = 1:3
-        u += t_t - correct_clock(sat.decoder, sat.signal, u)
+        u += t_t - correct_clock(ephemeris(sat), something(get_group_delay(sat.decoder, sat.signal), 0.0), u)
     end
     u
 end
@@ -275,9 +284,9 @@ function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_inde
     code_error = (u_true - u_replica) * sat.code_frequency
     mean_phase = sat.phase_error + (f_true - carrier) * dt / 2
     correlator_template = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0, 0, 0), 0.5)
-    d = TrackingLoops.get_early_late_sample_spacing(correlator_template, SIM_FS, get_code_frequency(sat.signal)) *
+    d = TrackingLoops.get_early_late_sample_spacing(correlator_template, SIM_FS, get_chip_rate(sat.signal)) *
         sat.code_frequency / fs
-    bit = isnothing(sat.stream) || iszero(get_data_frequency(sat.signal)) ? true :
+    bit = isnothing(sat.stream) || iszero(get_bit_rate(sat.signal)) ? true :
         lnav_bit(sat.stream, floor(Int, u_true * 50))
     amplitude = sat.in_view ? (bit ? sat.amplitude : -sat.amplitude) : 0.0
     rotation = cis(2π * mean_phase)
@@ -356,7 +365,7 @@ function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_loc
         TrackingLoops.get_early_late_sample_spacing(
             EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0, 0, 0), 0.5),
             SIM_FS,
-            get_code_frequency(sat.signal),
+            get_chip_rate(sat.signal),
         ) * sat.code_frequency / fs
     slot.in_lock = in_lock
     slot.pvt_ready = in_lock
@@ -403,7 +412,7 @@ per_signal(n::Tuple, signals) = n
 per_signal(n, signals) = map(_ -> n, signals)
 
 # The record length of a signal: one code period, in milliseconds.
-record_ms(signal) = round(Int, 1000 * get_code_length(signal) / ustrip(Hz, get_code_frequency(signal)))
+record_ms(signal) = round(Int, 1000 * get_code_length(signal) / ustrip(Hz, get_chip_rate(signal)))
 
 function SimReceiver(;
     signals = (GPSL1CA(),),
@@ -423,7 +432,7 @@ function SimReceiver(;
     fixtures = map(fixture_decoders, signals)
     gps_states = last(fixture_decoders(GPSL1CA()))
     fix = calc_pvt(SignalGroup(GPSL1CA(), gps_states); approximate_year = 2021)
-    t0 = maximum(maximum(calc_corrected_time, last(f)) for f in fixtures) + 0.075
+    t0 = maximum(maximum(calc_transmit_time, last(f)) for f in fixtures) + 0.075
     truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0, truth_kw...)
     delays = atmosphere ? sim_atmosphere(signals, fixtures, first(gps_states), t0) : NO_ATMOSPHERE
     estimator = VectorPLLAndDLL(signals...; inner, filter_config, approximate_year = 2021,
@@ -526,8 +535,8 @@ function run_simulation!(
         push!(results, (; pvt, status, code_errors, time = sim_time(receiver, sample),
             reasons = [slot.release_reason for (group, channels) in zip(receiver.groups, receiver.channels)
                        for slot in channel_slots(group, channels)],
-            measured = collect(keys(pvt.sats)),
-            max_rate_residual = maximum(v -> abs(v.rate_residual), values(pvt.sats); init = 0.0u"m/s")))
+            measured = collect(keys(pvt.satellites)),
+            max_rate_residual = maximum(v -> abs(v.rate_residual), values(pvt.satellites); init = 0.0u"m/s")))
     end
     results, sample, false
 end
@@ -552,13 +561,14 @@ position_error(receiver, result) =
 # do. L1 C/A is not L1C-P's data component, but it shares its chip rate and stands in
 # for one with the bits at hand — and its code is ten times shorter than the pilot's.
 
-# PositionVelocityTime pairs an L1C-P range with the L1C-D message; the stand-in pair
-# ranges it with the LNAV message, whose group delay is the L1 C/A one.
-PositionVelocityTime.correct_by_group_delay(
+# GNSSDecoder pairs an L1C-P range with the L1C-D message; the stand-in pair ranges it
+# with the LNAV message, whose group delay is the L1 C/A one. A signal instance builds
+# its codes, so the one asked is built once.
+const LNAV_GROUP_DELAY_SIGNAL = GPSL1CA()
+GNSSDecoder.get_group_delay(
     decoder::GNSSDecoderState{<:GNSSDecoder.GPSL1CAData},
     ::GPSL1C_P,
-    t,
-) = t - decoder.data.T_GD
+) = get_group_delay(decoder, LNAV_GROUP_DELAY_SIGNAL)
 
 struct PipelineReceiver{E,S,P}
     sats::Vector{S}
@@ -609,7 +619,7 @@ function PipelineReceiver(
 ) where {pilot}
     decoders, states = fixture_decoders(GPSL1CA())
     fix = calc_pvt(SignalGroup(GPSL1CA(), states); approximate_year = 2021)
-    t0 = next_subframe1_start(maximum(calc_corrected_time, states)) - lead
+    t0 = next_subframe1_start(maximum(calc_transmit_time, states)) - lead
     truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0)
     ranging = pilot ? (GPSL1C_P() => GPSL1CA(),) : (GPSL1CA(),)
     estimator = something(estimator, VectorPLLAndDLL(ranging...; inner, filter_config, approximate_year = 2021,
@@ -664,14 +674,14 @@ function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample,
     # The correlator as a device reports it: summed over the record's samples, and a
     # passenger's prompt in its own carrier-phase frame, which `apply_record` turns
     # back onto the driver's.
-    driver_phase = get_carrier_phase_offset(owner.signal)
-    rotation = cis(get_carrier_phase_offset(sat.signal) - driver_phase)
+    driver_phase_offset = get_carrier_phase_offset(owner.signal)
+    rotation = cispi(2 * (get_carrier_phase_offset(sat.signal) - driver_phase_offset))
     raw = EarlyPromptLateCorrelator(
         get_accumulators(correlator) .* (rotation * num_samples * get_code_amplitude(sat.signal)), 0.5)
     output = CorrelatorOutput(raw, num_samples, sample_index, code_phase)
     noise_ready = sim_time(receiver, sample_index) - receiver.truth.t0 >= receiver.noise_ready_after
     sat.loop, _, filtered, _, _ = apply_record(sat.loop, sat.signal, sat.decoder.prn, output, SIM_FS,
-        sat.noise_density / Hz, noise_ready, driver_phase)
+        sat.noise_density / Hz, noise_ready, driver_phase_offset)
     record = LoopRecord(sat.signal, filtered, output, sat.loop, SIM_FS;
         prn = sat.decoder.prn)
     owner.state, new_carrier, new_code = if receiver.measuring[]
@@ -781,7 +791,7 @@ function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
             pvt = nav.pvt
             push!(results, (; pvt = deepcopy(pvt), status = nav.status, code_errors = copy(code_errors),
                 time = receiver.truth.t0 + TrackingLoops._epoch_time(nav, nav.cycle_epoch),
-                measured = collect(keys(pvt.sats)),
+                measured = collect(keys(pvt.satellites)),
                 reasons = [release_reason(estimator, sat.signal, sat.decoder.prn) for sat in receiver.sats]))
         end
     end

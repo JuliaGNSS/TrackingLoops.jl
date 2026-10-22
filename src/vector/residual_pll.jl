@@ -283,7 +283,7 @@ PromptHistory(length::Int) = PromptHistory(fill(NaN, length), fill(NaN, length),
 # counted in chips as `_phase_lock_time_constant` counts. None for a plain signal.
 function _prompt_history_length(driver::AbstractGNSSSignal, decoding::AbstractGNSSSignal, vt_update_interval)
     typeof(driver) == typeof(decoding) && return 0
-    chips = round(Int, get_code_frequency(driver) * vt_update_interval / 2)
+    chips = round(Int, get_chip_rate(driver) * vt_update_interval / 2)
     cld(chips, get_code_length(driver)) + 1
 end
 

@@ -14,7 +14,7 @@ function dll_disc(
     code_doppler,
     sampling_frequency,
 )
-    code_frequency = code_doppler + get_code_frequency(signal)
+    code_frequency = code_doppler + get_chip_rate(signal)
     code_phase_delta = code_frequency / sampling_frequency
     E = abs(get_early(correlator))
     L = abs(get_late(correlator))
@@ -71,7 +71,7 @@ function dll_disc(
     code_doppler,
     sampling_frequency,
 )
-    code_frequency = code_doppler + get_code_frequency(signal)
+    code_frequency = code_doppler + get_chip_rate(signal)
     code_phase_delta = upreferred(code_frequency / sampling_frequency)
     inner_offset =
         calc_preferred_code_shift_to_sample_shift(

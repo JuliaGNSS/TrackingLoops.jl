@@ -3,11 +3,12 @@
 # model and its noise, the bias observability and the loop-closure maths.
 using LinearAlgebra: diag, eigvals, Symmetric, I, Diagonal, norm, isposdef
 using Accessors: @set
-using GNSSDecoder: GNSSDecoderState
-using PositionVelocityTime: PositionVelocityTime, SPEED_OF_LIGHT, BiasColumns, calc_ρ_hat!,
-    calc_H!, calc_DOP!, time_scale_offset_to_gpst, broadcast_time_offset,
-    CANDIDATE_HUB_SYSTEMS, NO_TIME_OFFSET, PVTSolution, TAITime, InterFrequencyBias,
-    SignalGroup
+using GNSSDecoder: GNSSDecoder, GNSSDecoderState
+using Dictionaries: Dictionary
+using PositionVelocityTime: PositionVelocityTime, SPEED_OF_LIGHT, BiasColumns, predict_pseudoranges!,
+    calc_design_matrix!, calc_dop!, has_broadcast_time_offset,
+    PVTSolution, InterFrequencyBias,
+    SignalGroup, SatelliteMeasurement
 using Geodesy: ECEF
 
 const TL = TrackingLoops
@@ -24,22 +25,18 @@ function _test_member(;
     signal = GPSL1CA(),
     available = true,
     time = 0.0,
-    sat_position = SVector(2.6e7, 0.0, 0.0),
-    sat_velocity = SVector(0.0, 0.0, 0.0),
+    sat_pos = SVector(2.6e7, 0.0, 0.0),
+    sat_vel = SVector(0.0, 0.0, 0.0),
     sat_clock_drift = 0.0,
     code_discriminator = 0.0,
     pseudorange_rate = 0.0,
     cn0_lin = 10^4.5, # 45 dB-Hz
     early_late_spacing = 1.0,
     coherent_integration_time = nothing,
-    decoder = nothing,
 )
     c = SPEED_OF_LIGHT
-    code_frequency = Float64(ustrip(Hz, get_code_frequency(signal)))
+    code_frequency = Float64(ustrip(Hz, get_chip_rate(signal)))
     tcoh = something(coherent_integration_time, get_code_length(signal) / code_frequency)
-    time_offsets =
-        isnothing(decoder) ? ntuple(_ -> NO_TIME_OFFSET, 3) :
-        map(hub -> broadcast_time_offset(decoder, hub; approximate_year = 2021), CANDIDATE_HUB_SYSTEMS)
     TL.VTMember(
         group,
         slot,
@@ -51,18 +48,48 @@ function _test_member(;
         code_frequency,
         available,
         time,
-        # The same instant on the GPS Time count: differs from `time` by the
-        # signal's defined scale offset (0 for GPST/GST, −14 s for BDT).
-        time - time_scale_offset_to_gpst(get_time_system(signal)),
-        sat_position,
-        sat_velocity,
+        # The same instant on the GPS Time count: differs from `time` by the leap
+        # seconds between the two (0 for GPST/GST, −14 s for BDT).
+        time - ustrip(s, get_leap_second_offset(GPST(), get_time_system(signal))),
+        sat_pos,
+        sat_vel,
         sat_clock_drift,
         code_discriminator,
         pseudorange_rate,
         cn0_lin,
         early_late_spacing,
         tcoh,
-        time_offsets,
+    )
+end
+
+# A measurement for the bias-layout and reference-clock tests, which read only its
+# classification: the PRN, the signal's time system and band, and `decoder`'s broadcast
+# offsets, and the DOP and seed tests its position. The rest are placeholders.
+function _test_measurement(;
+    prn = 1,
+    signal = GPSL1CA(),
+    time = 0.0,
+    decoder = nothing,
+    sat_pos = SVector(2.6e7, 0.0, 0.0),
+)
+    time_system = get_time_system(signal)
+    time_offset(target) =
+        isnothing(decoder) ? nothing : GNSSDecoder.get_broadcast_time_offset(decoder, target, time)
+    SatelliteMeasurement(
+        prn,
+        get_signal_id(signal),
+        get_band_id(signal),
+        time_system,
+        time,
+        sat_pos,
+        SVector(0.0, 0.0, 0.0),
+        0.0,
+        Float64(ustrip(Hz, get_center_frequency(signal))),
+        0.0,
+        0,
+        time_offset(GPST()),
+        time_offset(GST()),
+        time_offset(BDT()),
     )
 end
 
@@ -72,13 +99,13 @@ end
     # *differences* across members — `reference_time`, the pseudoranges — must
     # therefore use `time_gpst_count`, not `time`; mixing raw counts hands every
     # BeiDou member 14 s × c ≈ 4.2×10⁹ m of structural pseudorange offset that
-    # the ns-scale BGTO collapse constraint then fights rather than absorbs.
+    # the ns-scale BGTO constraint then fights rather than absorbs.
     gps = _test_member(; time = 100.0)
     bds = _test_member(; group = 2, signal = BeiDouB2aI(), clock_bias_index = 2, time = 86.0)
     @test gps.time_gpst_count == 100.0
     @test bds.time_gpst_count ≈ gps.time_gpst_count
     # The own-scale transmit time stays untouched — it is what the ephemeris,
-    # the clock polynomial and `calc_steering_offset` are evaluated at.
+    # the clock polynomial and the broadcast time offsets are evaluated at.
     @test bds.time == 86.0
 end
 
@@ -87,7 +114,7 @@ end
     @test config.use_pseudorange_rates # VDFLL by default
     @test config.motion_model_order == 2
     @test config.clock_model_order == 2
-    @test config.insufficient_meas_timeout == 10.0s
+    @test config.insufficient_measurements_timeout == 10.0s
 
     vdll = NavigationFilterConfig(use_pseudorange_rates = false)
     @test !vdll.use_pseudorange_rates
@@ -319,43 +346,43 @@ end
     # One GPS satellite along +x, one Galileo along +z: each pseudorange
     # carries its own system's clock bias.
     members = [
-        _test_member(; prn = 1, clock_bias_index = 1, sat_position = SVector(2.6e7, 0.0, 0.0)),
+        _test_member(; prn = 1, clock_bias_index = 1, sat_pos = SVector(2.6e7, 0.0, 0.0)),
         _test_member(;
             group = 2,
             prn = 2,
             clock_bias_index = 2,
             signal = GalileoE1B(),
-            sat_position = SVector(0.0, 0.0, 2.6e7),
+            sat_pos = SVector(0.0, 0.0, 2.6e7),
         ),
     ]
     bias_columns = TL.member_bias_columns(members, layout)
-    @test bias_columns.clock_bias_indices == [1, 2]
+    @test bias_columns.clock_columns == [1, 2]
     @test bias_columns.num_clock_biases == 2
-    @test bias_columns.num_ifb == 0
-    @test TL.member_bias_columns(members, layout, [2]).clock_bias_indices == [2]
+    @test bias_columns.num_ifbs == 0
+    @test TL.member_bias_columns(members, layout, [2]).clock_columns == [2]
 
     user_pos = SVector(6.378e6, 0.0, 0.0)
     x = zeros(9)
     x[idxs.pos] = user_pos
     x[idxs.clock_biases] = [100.0, 200.0]
     ξ = TL.position_and_bias_vector(x, idxs)
-    positions = [member.sat_position for member in members]
+    positions = [member.sat_pos for member in members]
 
-    psr = calc_ρ_hat!(zeros(2), positions, ξ, bias_columns)
+    psr = predict_pseudoranges!(zeros(2), positions, ξ, bias_columns)
     @test psr[1] ≈ 2.6e7 - 6.378e6 + 100.0
     @test psr[2] ≈ norm(user_pos - [0.0, 0.0, 2.6e7]) + 200.0 rtol = 1e-5
 
     # The prediction is Doppler-signed: a satellite closing head-on with 1000 m/s reads
     # +1000 m/s (scaled by the light time, a receiver second spanning `1 + 1000 / c`
     # seconds of its transmission), the negative of `calc_pseudorange_rate`.
-    closing = _test_member(; sat_position = SVector(2.6e7, 0.0, 0.0),
-        sat_velocity = SVector(-1000.0, 0.0, 0.0))
+    closing = _test_member(; sat_pos = SVector(2.6e7, 0.0, 0.0),
+        sat_vel = SVector(-1000.0, 0.0, 0.0))
     @test TL.predict_pseudorange_rate(x, idxs, closing) ≈
           1000.0 * (1 + 1000.0 / SPEED_OF_LIGHT) atol = 1e-6
 
     # The rate is predicted at the epoch, from the state as it stands, whatever the
     # motion model.
-    sat_position = SVector(2.6e7, 0.0, 0.0)
+    sat_pos = SVector(2.6e7, 0.0, 0.0)
     user_pos = SVector(6.378e6, 0.0, 0.0)
     for order in (1, 2, 3)
         idxs = TL.NavFilterIndices(NavigationFilterConfig(; motion_model_order = order), layout)
@@ -364,12 +391,12 @@ end
         order >= 2 && (x[idxs.vel] = [3.0, 4.0, 0.0])
         order >= 3 && (x[idxs.acc] = [5.0, 0.0, 0.0])
         x[idxs.clock_drift] = 10.0
-        member = _test_member(; sat_position,
-            sat_velocity = SVector(-1000.0, 0.0, 0.0), sat_clock_drift = 1e-9)
+        member = _test_member(; sat_pos,
+            sat_vel = SVector(-1000.0, 0.0, 0.0), sat_clock_drift = 1e-9)
         pos, vel, drift = TL.nav_filter_states(x, idxs)
         @test TL.predict_pseudorange_rate(x, idxs, member) ==
-              -TL.calc_pseudorange_rate(pos, vel, drift, member.sat_position,
-                  member.sat_velocity, member.sat_clock_drift)
+              -TL.calc_pseudorange_rate(pos, vel, drift, member.sat_pos,
+                  member.sat_vel, member.sat_clock_drift)
     end
 end
 
@@ -465,219 +492,106 @@ function with_gal_bgto(decoder, a_0gal)
     @set decoder.data = data
 end
 
-@testset "Bias observability and the broadcast-clock collapse" begin
-    assess(layout, members, candidates) = TL.assess_bias_observability!(
-        TL.ObservabilityWorkspace(),
-        layout,
-        members,
-        candidates,
-    )
-    function assess_with_constraints(layout, members, candidates)
-        ws = TL.ObservabilityWorkspace()
-        obs = TL.assess_bias_observability!(ws, layout, members, candidates)
-        obs, copy(ws.hub_offset_constraints)
+@testset "A cycle's bias layout and its broadcast time offsets" begin
+    # The decision itself is `decide_bias_layout!`'s; these check what the vector loop
+    # makes of it: the candidate subset, and its constraints on the filter's clock states.
+    function assess(layout, measurements, candidates)
+        bias_layout = TL.BiasLayout()
+        solvable = TL.decide_bias_layout!(bias_layout, view(measurements, candidates))
+        constraints = TL.time_offset_constraints!(Tuple{Int,Int,Float64}[], layout, bias_layout)
+        solvable, constraints
     end
-    # GPS on L1 + Galileo on E1B and E5a: 2 clock biases, 1 inter-frequency
-    # bias, so a full independent layout needs 3 + 2 + 1 = 6 pseudoranges.
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GalileoE5aI()))
     gps_clock = layout.clock_bias_index_by_group[1]
     gal_clock = layout.clock_bias_index_by_group[2]
-    l5_ifb = layout.ifb_index_by_group[3]
-    @test l5_ifb != 0
+    gps(prn) = _test_measurement(; prn)
+    e1b(prn) = _test_measurement(; prn, signal = GalileoE1B())
+    e5a(prn) = _test_measurement(; prn, signal = GalileoE5aI())
 
-    gps(prn) = _test_member(; prn, group = 1, clock_bias_index = gps_clock)
-    e1b(prn) = _test_member(; prn, group = 2, signal = GalileoE1B(), clock_bias_index = gal_clock)
-    e5a(prn) = _test_member(;
-        prn,
-        group = 3,
-        signal = GalileoE5aI(),
-        clock_bias_index = gal_clock,
-        ifb_index = l5_ifb,
-    )
+    # Only the candidates count.
+    @test assess(layout, [gps(i) for i = 1:4], 1:4) == (true, [])
+    @test assess(layout, [gps(i) for i = 1:4], 1:3) == (false, [])
 
-    # Only the bias states a measurement actually touches are unknowns: GPS
-    # alone on L1 leaves the Galileo clock and the L5 bias out of the count.
-    obs, constraints = assess_with_constraints(layout, [gps(i) for i = 1:5], 1:5)
-    @test obs.num_unknowns == 4          # 3 position + 1 GPS clock
-    @test isempty(constraints) # nothing to collapse
+    # Five measurements are one short of 3 + 2 clocks + 1 IFB, and without a decoded GGTO
+    # nothing can tie the two clocks.
+    measurements = [gps(1), gps(2), gps(3), e1b(4), e5a(5)]
+    @test assess(layout, measurements, 1:5) == (false, [])
 
-    # All three signals present and plentiful: everything is estimated
-    # independently, with no broadcast GGTO error entering the solution.
-    members = [gps(1), gps(2), gps(3), gps(4), e1b(5), e1b(6), e5a(7), e5a(8)]
-    obs, constraints = assess_with_constraints(layout, members, 1:8)
-    @test obs.num_unknowns == 6          # 3 + 2 clocks + 1 IFB
-    @test obs.num_distinct_sats_required == 5 # 3 position + 2 clocks
-    @test obs.num_distinct_sats == 8
-    @test TL.is_epoch_solvable(obs, 8)
-    @test isempty(constraints)
-
-    # The same layout with only five measurements is one short. Without a
-    # decoded GGTO there is nothing to collapse onto, so the epoch stays
-    # under-determined and the count says so.
-    members = [gps(1), gps(2), gps(3), e1b(4), e5a(5)]
-    obs, constraints = assess_with_constraints(layout, members, 1:5)
-    @test obs.num_unknowns == 6
-    @test length(members) < obs.num_unknowns
-    @test !TL.is_epoch_solvable(obs, length(members))
-    @test isempty(constraints)
-
-    # With the GGTO decoded, the Galileo clock collapses onto the GPS one: one
-    # unknown fewer, and the collapse is handed back as the pseudo-measurement
-    # `clk_GST - clk_GPST = -c * GGTO`.
+    # With the GGTO decoded, the Galileo clock is tied to the GPS one by the
+    # pseudo-measurement `clk_GST - clk_GPST = -c * GGTO`.
     ggto_decoder = with_ggto(GNSSDecoderState(GalileoE1B(), 4), 1e-9)
-    ggto_e1b = _test_member(;
-        prn = 4,
-        group = 2,
-        signal = GalileoE1B(),
-        clock_bias_index = gal_clock,
-        decoder = ggto_decoder,
-    )
-    @test PositionVelocityTime.time_offset_available(ggto_decoder, GPST())
-    members = [gps(1), gps(2), gps(3), ggto_e1b, e5a(5)]
-    obs, constraints = assess_with_constraints(layout, members, 1:5)
-    @test obs.num_unknowns == 5
-    @test length(members) >= obs.num_unknowns
+    measurements[4] = _test_measurement(; prn = 4, signal = GalileoE1B(), decoder = ggto_decoder)
+    @test has_broadcast_time_offset(measurements[4], GPST())
+    solvable, constraints = assess(layout, measurements, 1:5)
+    @test solvable
     gst_state, gpst_state, isb = only(constraints)
     @test gst_state == gal_clock
     @test gpst_state == gps_clock
     @test isb ≈ -SPEED_OF_LIGHT * 1e-9
 
-    # A disconnected coverage graph — GPS only on L1, Galileo only on E5a, no
-    # E1B to link the bands — leaves the L5 bias collinear with the Galileo
-    # clock however many satellites there are. Without a collapse the unknowns are
-    # counted on the epoch's own coverage graph, as `decide_bias_layout` counts them:
-    # with the two bands in separate components neither carries an observable
-    # inter-frequency bias, so the E5a delay folds into the Galileo clock and the epoch
-    # has 3 + 2 unknowns, not 6.
-    members = [gps(1), gps(2), gps(3), gps(4), gps(5), gps(6), e5a(7)]
-    obs, constraints = assess_with_constraints(layout, members, 1:7)
-    @test obs.num_unknowns == 5
-    @test isempty(constraints) # this E5a member carries no GGTO
-    members[7] = _test_member(;
-        prn = 7,
-        group = 3,
-        signal = GalileoE5aI(),
-        clock_bias_index = gal_clock,
-        ifb_index = l5_ifb,
-        decoder = with_ggto(GNSSDecoderState(GalileoE5aI(), 7), 2e-9),
-    )
-    # Merging Galileo onto GPS reconnects the two bands, which both removes a clock unknown
-    # *and* makes the E5a inter-frequency bias observable (and countable) again — so the
-    # merged count is recomputed on the merged graph rather than decremented: 3 + 1 clock +
-    # 1 IFB. The two effects happen to cancel here; they are separately real.
-    obs, constraints = assess_with_constraints(layout, members, 1:7)
-    @test obs.num_unknowns == 5
-    @test length(constraints) == 1
-
-    # A band whose component reference carries no measurement this cycle is not an unknown
-    # of the cycle: with the L1 satellites gone, the L5 delay is collinear with the (single)
-    # GPS clock and folds into it, so four L5 satellites determine the epoch.
-    dual_band = TL.NavFilterLayout((GPSL1CA(), GPSL5I()))
-    @test dual_band.ifb_index_by_group[2] != 0
-    l5(prn) = _test_member(;
-        prn,
-        group = 2,
-        signal = GPSL5I(),
-        clock_bias_index = dual_band.clock_bias_index_by_group[2],
-        ifb_index = dual_band.ifb_index_by_group[2],
-    )
-    obs, constraints = assess_with_constraints(dual_band, [l5(i) for i = 1:4], 1:4)
-    @test obs.num_unknowns == 4
-    @test obs.num_distinct_sats == 4
-    @test TL.is_epoch_solvable(obs, 4)
-    @test isempty(constraints)
-
-    # With both bands present the bias is observable again and does count.
-    l1(prn) = _test_member(; prn, group = 1)
-    both_bands = [l1(1), l1(2), l1(3), l5(1), l5(2)]
-    @test assess(dual_band, both_bands, 1:5).num_unknowns == 5
-
-    # The measurement count alone is not enough: three satellites tracked on two bands each
-    # make six measurements against five unknowns, so the count passes — but a satellite's
-    # second band is not a second line of sight. `decide_bias_layout` makes the same
-    # distinction with the same `(time system, PRN)` identification.
-    three_sats_two_bands = [l1(1), l1(2), l1(3), l5(1), l5(2), l5(3)]
-    obs = assess(dual_band, three_sats_two_bands, 1:6)
-    @test obs.num_unknowns == 5
-    @test 6 >= obs.num_unknowns              # the plain count is satisfied …
-    @test obs.num_distinct_sats == 3         # … by three satellites' worth of geometry
-    @test obs.num_distinct_sats_required == 4
-    @test !TL.is_epoch_solvable(obs, 6)
-
-    # A fourth satellite on either band supplies the missing line of sight.
-    obs = assess(dual_band, [three_sats_two_bands; l1(4)], 1:7)
-    @test obs.num_distinct_sats == 4
-    @test TL.is_epoch_solvable(obs, 7)
-    # Only the candidates count.
-    @test assess(dual_band, [three_sats_two_bands; l1(4)], 1:6).num_distinct_sats == 3
-
-    # A mixed epoch collapses each non-GPS clock through its own broadcast offset —
-    # Galileo through the GGTO, BeiDou through the BGTO — independently and in one cycle.
-    # B1I is on its own carrier, so the independent layout's coverage graph is
-    # disconnected and the collapse is what reconnects it: 3 + 3 clocks + 0 IFBs recounted
-    # as 3 + 1 clock + 1 IFB.
+    # A mixed epoch ties each non-GPS clock through its own broadcast offset, Galileo
+    # through the GGTO and BeiDou through the BGTO, in one cycle: B1I is on its own band,
+    # and only both offsets together connect the coverage graph.
     tri = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), BeiDouB1I()))
     gps_tri, gal_tri, bds_tri = tri.clock_bias_index_by_group
-    gal_member = _test_member(;
+    gal_measurement = _test_measurement(;
         prn = 4,
-        group = 2,
         signal = GalileoE1B(),
-        clock_bias_index = gal_tri,
         decoder = with_ggto(GNSSDecoderState(GalileoE1B(), 4), 1e-9),
     )
     bds_decoder = with_bgto(GNSSDecoderState(BeiDouB1I(), 21), 3e-9)
-    bds_member = _test_member(;
-        prn = 21,
-        group = 3,
-        signal = BeiDouB1I(),
-        clock_bias_index = bds_tri,
-        decoder = bds_decoder,
-    )
-    @test PositionVelocityTime.time_offset_available(bds_decoder, GPST())
-    gps_of(prn) = _test_member(; prn, group = 1, clock_bias_index = gps_tri)
-    mixed = [gps_of(1), gps_of(2), gps_of(3), gal_member, bds_member]
-    obs, constraints = assess_with_constraints(tri, mixed, 1:5)
-    @test obs.num_unknowns == 5              # 3 position + the surviving GPS clock + 1 IFB
-    @test obs.num_distinct_sats_required == 4
-    @test TL.is_epoch_solvable(obs, 5)
+    bds_measurement = _test_measurement(; prn = 21, signal = BeiDouB1I(), decoder = bds_decoder)
+    @test has_broadcast_time_offset(bds_measurement, GPST())
+    solvable, constraints = assess(tri, [gps(1), gps(2), gps(3), gal_measurement, bds_measurement], 1:5)
+    @test solvable
     @test length(constraints) == 2
     by_state = Dict(state => (ref, isb) for (state, ref, isb) in constraints)
     @test by_state[gal_tri][1] == gps_tri
     @test by_state[gal_tri][2] ≈ -SPEED_OF_LIGHT * 1e-9
     @test by_state[bds_tri][1] == gps_tri
-    # Explicit tolerance: `calc_steering_offset` recovers the ~ns BDT steering residual by
-    # subtracting the defined 14 s back out of `A_0`, which costs one ULP at 14.
-    @test by_state[bds_tri][2] ≈ -SPEED_OF_LIGHT * 3e-9 atol = 1e-5
+    @test by_state[bds_tri][2] ≈ -SPEED_OF_LIGHT * 3e-9
 
-    # Only the systems that actually carry an offset collapse.
-    mixed[5] = _test_member(; prn = 21, group = 3, signal = BeiDouB1I(), clock_bias_index = bds_tri)
-    obs, constraints = assess_with_constraints(tri, mixed, 1:5)
-    @test length(constraints) == 1
-    @test only(constraints)[1] == gal_tri
-    @test obs.num_unknowns == 5               # 3 position + GPS clock + BeiDou clock
-
-    # The hub is not GPS-specific: with GPS absent, the same cycle collapses onto
-    # Galileo instead, in the same fixed hub order as `decide_bias_layout`.
+    # Without GPS, BeiDou's offset toward Galileo System Time ties the two.
     duo = TL.NavFilterLayout((GalileoE1B(), BeiDouB1I()))
     gal_duo, bds_duo = duo.clock_bias_index_by_group
     bds_gal_decoder = with_gal_bgto(GNSSDecoderState(BeiDouB1I(), 22), 4e-9)
-    @test PositionVelocityTime.time_offset_available(bds_gal_decoder, GST())
-    bds_gal_member = _test_member(;
-        prn = 22,
-        group = 2,
-        signal = BeiDouB1I(),
-        clock_bias_index = bds_duo,
-        decoder = bds_gal_decoder,
-    )
-    gal_of(prn) = _test_member(; prn, group = 1, signal = GalileoE1B(), clock_bias_index = gal_duo)
-    obs, constraints = assess_with_constraints(duo, [gal_of(1), gal_of(2), gal_of(3), bds_gal_member], 1:4)
+    bds_gal_measurement = _test_measurement(; prn = 22, signal = BeiDouB1I(), decoder = bds_gal_decoder)
+    @test has_broadcast_time_offset(bds_gal_measurement, GST())
+    measurements = [e1b(1), e1b(2), e1b(3), e1b(4), bds_gal_measurement]
+    solvable, constraints = assess(duo, measurements, 1:5)
+    @test solvable
     gst_constraint = only(constraints)
     @test gst_constraint[1] == bds_duo
     @test gst_constraint[2] == gal_duo
-    @test gst_constraint[3] ≈ -SPEED_OF_LIGHT * 4e-9 atol = 1e-5
-    # The collapse reconnects the disjoint L1/B1I split: 3 position + one merged
-    # clock + the now-observable B1I inter-frequency bias.
-    @test obs.num_unknowns == 5
+    @test gst_constraint[3] ≈ -SPEED_OF_LIGHT * 4e-9
+    # An epoch that even the constraint leaves short is unsolvable, but keeps it, so the
+    # clocks stay tied.
+    @test assess(duo, measurements, 2:5) == (false, [gst_constraint])
+
+    # The layout is reused from cycle to cycle, and the constraints follow the latest.
+    bias_layout = TL.BiasLayout()
+    constraints = Tuple{Int,Int,Float64}[]
+    function cycle_constraints(candidates)
+        TL.decide_bias_layout!(bias_layout, view(measurements, candidates))
+        TL.time_offset_constraints!(constraints, duo, bias_layout)
+    end
+    @test length(cycle_constraints(1:5)) == 1
+    # A cycle without candidates is decided too, with no constraint left over.
+    @test isempty(cycle_constraints(1:0))
+    # Without a broadcast offset there is nothing to keep: the E1B satellites alone.
+    @test isempty(cycle_constraints(1:3))
+
+    # The outage of the review: two GPS satellites and one Galileo satellite with a decoded
+    # GGTO cannot determine the state even with the clocks tied, but the GGTO still ties
+    # them.
+    pair = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
+    gps_pair, gal_pair = pair.clock_bias_index_by_group
+    outage = [gps(1), gps(2), _test_measurement(; prn = 3, signal = GalileoE1B(), decoder = ggto_decoder)]
+    solvable, constraints = assess(pair, outage, 1:3)
+    @test !solvable
+    clock, target_clock, isb = only(constraints)
+    @test (clock, target_clock) == (gal_pair, gps_pair)
+    @test isb ≈ -SPEED_OF_LIGHT * 1e-9
 
     # The position uncertainty reported with the solution is the root sum of the position
     # variances, read off the position block of P.
@@ -687,107 +601,76 @@ end
     @test TL.position_uncertainty(P, idxs) ≈ sqrt(169.0)
 end
 
-@testset "Dense bias columns for DOP" begin
-    # The filter's fixed bias layout carries a clock for every configured
-    # constellation, but a DOP design matrix must only carry the columns the
-    # epoch can determine — an empty column would make `HᵀH` singular and
-    # `calc_DOP!` report -1 whenever a constellation is missing.
+@testset "The DOP's clock column of the reference system" begin
+    # The DOP takes the cycle's decided columns, numbered in order of first appearance:
+    # Galileo's clock first here.
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GalileoE5aI()))
-    gal_clock = layout.clock_bias_index_by_group[2]
-    l5_ifb = layout.ifb_index_by_group[3]
-    members = [
-        _test_member(; prn, group = 2, signal = GalileoE1B(), clock_bias_index = gal_clock) for
-        prn = 1:5
+    measurements = [
+        [_test_measurement(; prn, signal = GalileoE1B()) for prn = 1:3]
+        [_test_measurement(; prn) for prn = 4:6]
     ]
-    columns, primary = TL.dense_bias_columns(members, 1, 2, 1)
-    @test columns.num_clock_biases == 1
-    @test columns.num_ifb == 0
-    @test all(columns.clock_bias_indices .== 1)
-    @test primary == 1 # the GPS primary is not present; falls back to the first
-
-    # Adding an E5a member brings its band's bias back as a real column.
-    push!(
-        members,
-        _test_member(;
-            prn = 9,
-            group = 3,
-            signal = GalileoE5aI(),
-            clock_bias_index = gal_clock,
-            ifb_index = l5_ifb,
-        ),
+    bias_layout = TL.BiasLayout()
+    function column(time_system, candidates)
+        TL.decide_bias_layout!(bias_layout, view(measurements, candidates))
+        TL.clock_column(bias_layout, view(measurements, candidates), time_system)
+    end
+    @test column(GST(), 1:6) == 1
+    @test column(GPST(), 1:6) == 2
+    # Systems a constraint ties together share their group's column.
+    measurements[1] = _test_measurement(;
+        prn = 1,
+        signal = GalileoE1B(),
+        decoder = with_ggto(GNSSDecoderState(GalileoE1B(), 1), 1e-9),
     )
-    columns, _ = TL.dense_bias_columns(members, gal_clock, 2, 1)
-    @test columns.num_clock_biases == 1
-    @test columns.num_ifb == 1
-    @test columns.ifb_indices == [0, 0, 0, 0, 0, 1]
-
-    # A rank-deficient design is what `calc_DOP!` reports with its sentinel, a determined
-    # one a real geometry.
-    lone = [_test_member(; prn = 1)]
-    columns, _ = TL.dense_bias_columns(lone, 1, 1, 0)
-    H = calc_H!(zeros(1, 4), [lone[1].sat_position], [6.378e6, 0.0, 0.0, 0.0], columns)
-    @test calc_DOP!(zeros(4, 4), H, ECEF(6.378e6, 0.0, 0.0), 1).GDOP < 0
+    @test column(GST(), [1, 4, 5, 6]) == column(GPST(), [1, 4, 5, 6]) == 1
+    # A system without a measurement is a caller's error.
+    @test_throws ArgumentError column(BDT(), 1:6)
 end
 
-@testset "Solution epoch from the cached week offset" begin
-    # Until an epoch offset has been resolved there is no epoch to report, so the solution
-    # carries no timestamp and reads as "no fix" — as it must.
-    @test isnothing(TL.solution_time(nothing, 123.25s, 0.0))
+@testset "The receive epoch crosses into the next week by itself" begin
+    # The time of week the pseudoranges difference against is read off the receive epoch,
+    # so one cycle before a week crossover and one after are one cycle apart, the time of
+    # week starting over.
+    before = get_week_start_epoch(GPST(), 2052) + (GNSSSignals.SECONDS_PER_WEEK - 0.05)
+    after = before + 0.1
+    @test get_time_of_week(GPST(), before) ≈ GNSSSignals.SECONDS_PER_WEEK - 0.05
+    @test get_time_of_week(GPST(), after) ≈ 0.05
+    @test after - before ≈ 0.1
 
-    # With the offset known, the epoch is the clock-bias-corrected reference time on top of
-    # it: a receiver clock one light-second fast puts the same reference time one second
-    # earlier.
-    week_offset = 2052 * TL.SECONDS_PER_WEEK
-    epoch = TL.solution_time(week_offset, 123.25s, 0.0)
-    @test epoch == TAITime(week_offset + 123, 0.25)
-    @test epoch - TL.solution_time(week_offset, 123.25s, SPEED_OF_LIGHT) ≈ 1.0 rtol = 1e-9
-
-    # The offset is read off a primary-system row: week, start epoch and the scale offset
-    # that puts a BDT count onto the GPS Time count.
+    # A measurement's transmit time on the GPS Time count: a BDT count reads 14 s below.
     states = PositionVelocityTime._precompile_states(
         GPSL1CA(), PositionVelocityTime._PRECOMPILE_GPS_L1CA_STATES, identity, GPSL1CA())
-    row = only(PositionVelocityTime.collect_measurements(
+    measurement = only(PositionVelocityTime.collect_measurements(
         SignalGroup(GPSL1CA(), states[1:1]);
         approximate_year = 2021,
     )[1])
-    @test TL.time_epoch_offset(row) ==
-          row.week * TL.SECONDS_PER_WEEK + row.system_start_epoch.second
-
-    # A week rollover takes a week off the time of week, so the offset — the only other place
-    # the run's absolute epoch is held — has to gain one, or every later solution would be
-    # timestamped exactly one week in the past.
-    @test TL.rolled_over_time_epoch_offset(week_offset, week_offset, true) ==
-          week_offset + TL.SECONDS_PER_WEEK
-    @test TL.rolled_over_time_epoch_offset(week_offset, week_offset, false) == week_offset
-    # An offset first resolved on the very cycle that wraps comes from a decoder that has
-    # rolled its own week number over already, so it must not be advanced a second time.
-    @test TL.rolled_over_time_epoch_offset(week_offset, nothing, true) == week_offset
-    @test isnothing(TL.rolled_over_time_epoch_offset(nothing, nothing, true))
-
-    # End to end across the boundary: one cycle before the wrap and one after must be a
-    # single integration time apart, not a week.
-    before = TL.solution_time(week_offset, (TL.SECONDS_PER_WEEK - 0.1) * s, 0.0)
-    after = TL.solution_time(TL.rolled_over_time_epoch_offset(week_offset, week_offset, true), 0.0s, 0.0)
-    @test after - before ≈ 0.1 rtol = 1e-6
+    @test TL.calc_leap_second_correction(measurement, GPST()) == 0
+    beidou = @set measurement.time_system = BDT()
+    @test TL.calc_leap_second_correction(beidou, GPST()) == 14
 end
 
-@testset "Reporting primary clock selection" begin
-    layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
-    gps_clock, gal_clock = layout.clock_bias_index_by_group
-    gps(prn) = _test_member(; prn, group = 1, clock_bias_index = gps_clock)
-    e1b(prn) = _test_member(; prn, group = 2, signal = GalileoE1B(), clock_bias_index = gal_clock)
-    both = [gps(1), gps(2), e1b(3)]
+@testset "Reporting reference clock selection" begin
+    layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), BeiDouB1I()))
+    gps_clock, gal_clock, bds_clock = layout.clock_bias_index_by_group
+    gps(prn) = _test_measurement(; prn)
+    e1b(prn) = _test_measurement(; prn, signal = GalileoE1B())
+    galileo_heavy = [gps(1), e1b(2), e1b(3)]
+    function select(measurements, current_index)
+        bias_layout = TL.BiasLayout()
+        TL.decide_bias_layout!(bias_layout, measurements)
+        TL.select_reference_clock_index(layout, measurements, bias_layout, current_index)
+    end
 
     # Kept while its own time system still contributes a measurement — no flicker.
-    @test TL.select_primary_clock_index(layout, both, 1:3, gal_clock) == gal_clock
-    @test TL.select_primary_clock_index(layout, both, 1:3, gps_clock) == gps_clock
-    # Re-picked when the current primary's system is absent (index 0 is never
-    # present): GPST is preferred when GPS is in the fix.
-    @test TL.select_primary_clock_index(layout, both, 1:3, 0) == gps_clock
-    # Else the most-populated time system (GPS absent ⇒ Galileo).
-    @test TL.select_primary_clock_index(layout, [e1b(2), e1b(3)], 1:2, gps_clock) == gal_clock
+    @test select(galileo_heavy, gps_clock) == gps_clock
+    # Re-picked when its system is absent: the system with the most satellites…
+    @test select(galileo_heavy, bds_clock) == gal_clock
+    @test select([e1b(2), e1b(3)], gps_clock) == gal_clock
+    # …ties going to the first to appear.
+    @test select([e1b(2), gps(1)], bds_clock) == gal_clock
+    @test select([gps(1), e1b(2)], bds_clock) == gps_clock
     # No included measurements at all: keep whatever it was.
-    @test TL.select_primary_clock_index(layout, both, Int[], gps_clock) == gps_clock
+    @test select(SatelliteMeasurement[], gps_clock) == gps_clock
 end
 
 @testset "NCO loop-closure corrections" begin
@@ -812,7 +695,7 @@ end
     x_updated = copy(x)
     x_updated[idxs.pos] = user_pos .+ [10.0, 0.0, 0.0] # +x is towards the satellite
     columns = TL.member_bias_columns([member], layout)
-    predict(x) = calc_ρ_hat!(zeros(1), [member.sat_position], TL.position_and_bias_vector(x, idxs), columns)[1]
+    predict(x) = predict_pseudoranges!(zeros(1), [member.sat_pos], TL.position_and_bias_vector(x, idxs), columns)[1]
     @test predict(x_updated) - predict(x) ≈ -10.0 rtol = 1e-3
     @test TL.nco_code_correction(predict(x_updated), predict(x), member.code_frequency, 0.1) ≈
           10.0 * member.code_frequency / (0.1 * c) rtol = 1e-3
@@ -827,7 +710,7 @@ end
     steered = @set steered.pseudorange_rate = 800.0 + 5.0 * steered.wavelength
     diverged = _test_member(; prn = 9, pseudorange_rate = -600.0)
     residual, rate_residual = TL.post_fit_residuals(steered, 2.05e7, 2.05e7, 800.0)
-    # Both go straight into `SatInfo`'s unit-typed fields, so the units are part of the
+    # Both go straight into `SatelliteInfo`'s unit-typed fields, so the units are part of the
     # contract: metres and metres per second.
     @test residual isa typeof(1.0u"m")
     @test rate_residual isa typeof(1.0u"m/s")
@@ -919,9 +802,9 @@ end
     # Receive just after the week rollover (TOW 0.05 s), transmit just before it
     # (TOW 604799.97 s): the 0.08 s light-travel difference straddles 604800 s and
     # must fold back rather than read as a ~604800 s (≈1.8e11 m) pseudorange.
-    @test TL.pseudorange_from_tows(0.05, 604799.97) ≈ 0.08 * c rtol = 1e-6
+    @test TL.calc_pseudorange(0.05, 604799.97) ≈ 0.08 * c rtol = 1e-6
     # Mid-week (no wrap) is unaffected.
-    @test TL.pseudorange_from_tows(100.08, 100.0) ≈ 0.08 * c rtol = 1e-6
+    @test TL.calc_pseudorange(100.08, 100.0) ≈ 0.08 * c rtol = 1e-6
 end
 
 @testset "Initial navigation state from a scalar fix" begin
@@ -932,14 +815,14 @@ end
     pvt = PVTSolution(;
         position = ECEF(4.0e6, 4.0e5, 4.9e6),
         velocity = ECEF(1.0, 2.0, 3.0),
-        relative_clock_drift = 1e-7,
+        clock_drift = 1e-7 * SPEED_OF_LIGHT * u"m/s",
         reference_system = GST(),
-        inter_system_biases = Dict{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}(GPST() => 12.0u"m"),
-        inter_frequency_biases = Dict(:L5 => InterFrequencyBias(3.0u"m", :L1)),
+        inter_system_biases = Dictionary{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}([GPST()], [12.0u"m"]),
+        inter_frequency_biases = Dictionary([:L5], [InterFrequencyBias(3.0u"m", :L1)]),
     )
     x, P = zeros(n), zeros(n, n)
-    primary = TL.initial_nav_state!(x, P, layout, idxs, pvt)
-    @test primary == 2 # Galileo's clock
+    reference = TL.initial_nav_state!(x, P, layout, idxs, pvt)
+    @test reference == 2 # Galileo's clock
     @test TL.nav_filter_states(x, idxs)[1] == [4.0e6, 4.0e5, 4.9e6]
     @test TL.nav_filter_states(x, idxs)[2] == [1.0, 2.0, 3.0]
     @test x[idxs.clock_drift] ≈ 1e-7 * SPEED_OF_LIGHT
@@ -958,7 +841,7 @@ end
     TL.initial_nav_state!(x3, P3, layout3, idxs3, pvt)
     @test P3[idxs3.clock_biases[3], idxs3.clock_biases[3]] == 100.0^2
     # A band the fix did not measure starts from zero with the generous RF-chain variance.
-    pvt_l1 = @set pvt.inter_frequency_biases = Dict{Symbol,InterFrequencyBias}()
+    pvt_l1 = @set pvt.inter_frequency_biases = Dictionary{Symbol,InterFrequencyBias}()
     TL.initial_nav_state!(x, P, layout, idxs, pvt_l1)
     @test x[idxs.ifb[1]] == 0.0
     @test P[idxs.ifb[1], idxs.ifb[1]] == 30.0^2
@@ -975,6 +858,20 @@ end
     @test x_acc[idxs_acc.vel] == x[idxs.vel]
 end
 
+# The fix's bias layout, as `_seed_fix_covariance!` decides it, and its design at `user`.
+function _fix_design(layout, measurements, user)
+    fix_bias_layout = TL.BiasLayout()
+    @test TL.decide_bias_layout!(fix_bias_layout, measurements)
+    columns = TL.fit_bias_columns(fix_bias_layout)
+    num_columns = TL.num_parameters(columns)
+    ξ = [user; zeros(num_columns - 3)]
+    H = calc_design_matrix!(zeros(length(measurements), num_columns), [measurement.position for measurement in measurements], ξ, columns)
+    fix_bias_layout, H
+end
+
+# Satellites 2·10⁷ m from `user` along `directions`.
+_fix_positions(user, directions) = [user + 2.0e7 * SVector(d) / norm(SVector(d)) for d in directions]
+
 @testset "The seeded covariance is the fix's, scaled by its geometry" begin
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
     config = NavigationFilterConfig()
@@ -984,22 +881,19 @@ end
     # Four GPS satellites and one Galileo satellite, the Galileo clock determined by its
     # lone satellite alone — the inter-system bias is as wrong as the position along it.
     directions = [(1.0, 0.0, 0.0), (0.6, 0.8, 0.0), (0.6, -0.4, 0.7), (0.5, -0.3, -0.8), (0.7, 0.5, 0.5)]
-    members = [
-        _test_member(; group = k == 5 ? 2 : 1, slot = k, prn = k, clock_bias_index = k == 5 ? 2 : 1,
-            sat_position = user + 2.0e7 * SVector(d) / norm(SVector(d))) for (k, d) in enumerate(directions)
+    measurements = [
+        _test_measurement(; prn = k, signal = k == 5 ? GalileoE1B() : GPSL1CA(), sat_pos) for
+        (k, sat_pos) in enumerate(_fix_positions(user, directions))
     ]
-    positions = [member.sat_position for member in members]
-    gst_bias = Dict{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}(GST() => 2.0u"m")
+    gst_bias = Dictionary{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}([GST()], [2.0u"m"])
     pvt = PVTSolution(; position = ECEF(user...), reference_system = GPST(), inter_system_biases = gst_bias)
-    clock_columns, ifb_columns = zeros(Int, 2), zeros(Int, 0)
-    columns, primary = TL.dense_bias_columns!(Int[], Int[], clock_columns, ifb_columns, members, eachindex(members), 1)
-    H = calc_H!(zeros(5, 5), positions, [user..., 0.0, 0.0], columns)
-    dop = calc_DOP!(zeros(5, 5), H, ECEF(user...), primary)
+    fix_bias_layout, H = _fix_design(layout, measurements, user)
+    dop = calc_dop!(zeros(5, 5), H, ECEF(user...), 1)
 
     x, P = zeros(n), zeros(n, n)
     TL.initial_nav_state!(x, P, layout, idxs, pvt)
     seeded = copy(P)
-    @test TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(5, 5), clock_columns, ifb_columns)
+    @test TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(5, 5), fix_bias_layout)
     block = [idxs.pos; idxs.clock_biases]
     @test P[block, block] ≈ TL.FIX_PSEUDORANGE_STD^2 * inv(H' * H)
     @test TL.position_uncertainty(P, idxs) ≈ TL.FIX_PSEUDORANGE_STD * dop.PDOP
@@ -1016,7 +910,7 @@ end
     pvt_gps = @set pvt.inter_system_biases = empty(gst_bias)
     x2, P2 = zeros(n), zeros(n, n)
     TL.initial_nav_state!(x2, P2, layout, idxs, pvt_gps)
-    @test TL.seed_fix_covariance!(P2, idxs, layout, pvt_gps, 1, H, zeros(5, 5), clock_columns, ifb_columns)
+    @test TL.seed_fix_covariance!(P2, idxs, layout, pvt_gps, 1, H, zeros(5, 5), fix_bias_layout)
     gal = idxs.clock_biases[2]
     @test P2[gal, gal] == 100.0^2
     @test all(iszero, P2[gal, setdiff(1:n, gal)])
@@ -1024,36 +918,45 @@ end
 
     # A rank-deficient design leaves the seed as it was.
     P3 = copy(seeded)
-    H_degenerate = calc_H!(zeros(5, 5), fill(positions[1], 5), [user..., 0.0, 0.0], columns)
-    @test !TL.seed_fix_covariance!(P3, idxs, layout, pvt, 1, H_degenerate, zeros(5, 5), clock_columns, ifb_columns)
+    H_degenerate = calc_design_matrix!(zeros(5, 5), fill(measurements[1].position, 5), [user..., 0.0, 0.0], TL.fit_bias_columns(fix_bias_layout))
+    @test !TL.seed_fix_covariance!(P3, idxs, layout, pvt, 1, H_degenerate, zeros(5, 5), fix_bias_layout)
     @test P3 == seeded
 end
 
-@testset "A singular design the factorization lets through leaves the seed as it was" begin
-    # Galileo seen on E5a alone: the L5 inter-frequency-bias column duplicates the
-    # Galileo clock column, so `HᵀH` is singular. For this geometry rounding can leave its
-    # last Cholesky pivot slightly positive rather than failing the factorization, and
-    # the inverse would seed the Galileo clock with a variance of about 10¹⁵ m².
+@testset "A bias the fix's epoch does not determine keeps its seed" begin
+    # Galileo seen on E5a alone: the L5 inter-frequency bias is collinear with the
+    # Galileo clock, so the fix's layout has no column for it, and the seed fills the
+    # position and both clocks while the bias keeps its variance.
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GalileoE5aI()))
     config = NavigationFilterConfig()
     idxs = TL.NavFilterIndices(config, layout)
     n = TL.num_nav_states(config, layout)
     user = SVector(6.378e6, 0.0, 0.0)
     directions = [(1.0, 0.0, 0.0), (0.6, 0.8, 0.0), (0.6, -0.4, 0.7), (0.5, -0.3, -0.8), (0.7, 0.5, 0.5), (0.4, -0.7, -0.6)]
-    members = [
-        _test_member(; group = k <= 4 ? 1 : 3, slot = k, prn = k, clock_bias_index = k <= 4 ? 1 : 2,
-            ifb_index = k <= 4 ? 0 : 1, signal = k <= 4 ? GPSL1CA() : GalileoE5aI(),
-            sat_position = user + 2.0e7 * SVector(d) / norm(SVector(d))) for (k, d) in enumerate(directions)
+    measurements = [
+        _test_measurement(; prn = k, signal = k <= 4 ? GPSL1CA() : GalileoE5aI(), sat_pos) for
+        (k, sat_pos) in enumerate(_fix_positions(user, directions))
     ]
-    positions = [member.sat_position for member in members]
-    gst_bias = Dict{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}(GST() => 2.0u"m")
+    gst_bias = Dictionary{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}([GST()], [2.0u"m"])
     pvt = PVTSolution(; position = ECEF(user...), reference_system = GPST(), inter_system_biases = gst_bias)
-    clock_columns, ifb_columns = zeros(Int, 2), zeros(Int, 1)
-    columns, _ = TL.dense_bias_columns!(Int[], Int[], clock_columns, ifb_columns, members, eachindex(members), 1)
-    H = calc_H!(zeros(6, 6), positions, [user..., 0.0, 0.0, 0.0], columns)
+    fix_bias_layout, H = _fix_design(layout, measurements, user)
+    @test TL.fit_bias_columns(fix_bias_layout).num_ifbs == 0
     x, P = zeros(n), zeros(n, n)
     TL.initial_nav_state!(x, P, layout, idxs, pvt)
     seeded = copy(P)
-    @test !TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(6, 6), clock_columns, ifb_columns)
-    @test P == seeded
+    @test TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(5, 5), fix_bias_layout)
+    block = [idxs.pos; idxs.clock_biases]
+    @test P[block, block] ≈ TL.FIX_PSEUDORANGE_STD^2 * inv(H' * H)
+    l5 = idxs.ifb[1]
+    @test P[l5, :] == seeded[l5, :]
+
+    # A design with that bias as a column anyway is singular. Rounding can leave the last
+    # Cholesky pivot of this geometry slightly positive rather than failing the
+    # factorization, and the inverse would seed the Galileo clock with a variance of about
+    # 10¹⁵ m²; the pivot check leaves the seed as it was.
+    columns = BiasColumns([1, 1, 1, 1, 2, 2], 2, [0, 0, 0, 0, 1, 1], 1)
+    H_singular = calc_design_matrix!(zeros(6, 6), [measurement.position for measurement in measurements], [user..., 0.0, 0.0, 0.0], columns)
+    P2 = copy(seeded)
+    @test !TL.seed_fix_covariance!(P2, idxs, layout, pvt, 1, H_singular, zeros(6, 6), fix_bias_layout)
+    @test P2 == seeded
 end

@@ -99,7 +99,7 @@ function _sig_test_bandwidths(signal, carrier)
     @test @inferred(default_wide_carrier_loop_filter_bandwidth(signal)) == 50.0Hz
     @test @inferred(default_narrow_carrier_loop_filter_bandwidth(signal)) == 18.0Hz
     @test @inferred(default_fll_assist_loop_filter_bandwidth(signal)) == 5.0Hz
-    primary_period = get_code_length(signal) / get_code_frequency(signal)
+    primary_period = get_code_length(signal) / get_chip_rate(signal)
     @test @inferred(
         effective_carrier_loop_filter_bandwidth(
             default_narrow_carrier_loop_filter_bandwidth(signal),
@@ -298,7 +298,7 @@ end
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt128
     @test uses_soft_secondary_code_detection(signal) == true
-    @test get_carrier_phase_offset(signal) ≈ π
+    @test get_carrier_phase_offset(signal) == 0.5
 end
 
 @testset "BeiDou B1C data reports one symbol per code block" begin

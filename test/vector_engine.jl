@@ -57,7 +57,7 @@ end
     reacquired, = step_loop(estimator, reacquired, engine_record(7, 12_000), words, NO_LANDING_SAMPLE)
     @test reacquired.slot_index == 1 && reacquired.registration == 3
     @test slot.registration == 3
-    @test isnothing(slot.running_decoder.num_bits_after_valid_syncro_sequence)
+    @test isnothing(slot.running_decoder.num_bits_since_sync)
     # A third satellite finds no free slot and grows the group.
     third = init_estimator_state(estimator, GPSL1CA(), 10.0Hz, 0.0Hz)
     third, = step_loop(estimator, third, engine_record(11, 12_000), words, NO_LANDING_SAMPLE)
@@ -117,7 +117,7 @@ function take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fractio
     TL._snapshot_driver!(nav, group, slot, group.prototype, record, words)
     TL._snapshot_decoding!(nav, group, slot, record, words)
     TL._complete_snapshot!(nav, group, slot)
-    slot.decoder.num_bits_after_valid_syncro_sequence, slot.code_phase
+    slot.decoder.num_bits_since_sync, slot.code_phase
 end
 
 @testset "The snapshot reads the code phase from the last symbol edge" begin
@@ -125,7 +125,7 @@ end
     nav = VectorPLLAndDLL(signal).navigation
     group = nav.groups[1]
     slot = group.slots[1]
-    decoder = GNSSDecoderState(GNSSDecoderState(signal, 3); num_bits_after_valid_syncro_sequence = 10)
+    decoder = GNSSDecoderState(GNSSDecoderState(signal, 3); num_bits_since_sync = 10)
     code_frequency = 1.023e6
     fs = 4e6
     snapshot(blocks, fraction, end_sample, epoch_sample; kw...) =
@@ -133,8 +133,8 @@ end
     # The epoch (sample 400 000) lies 1000 samples past the last record end: five
     # blocks into the symbol, 0.2 chips past the block boundary, and the chips the
     # replica runs on to the epoch.
-    num_bits, code_phase = snapshot(5, 0.2, 399_000, 400_000)
-    @test num_bits == 10
+    num_symbols, code_phase = snapshot(5, 0.2, 399_000, 400_000)
+    @test num_symbols == 10
     @test code_phase ≈ 5 * 1023 + 0.2 + 1000 / fs * code_frequency
     @test slot.snapshot_epoch == 1 && nav.num_snapshots == 1
     # The code Doppler counts.
@@ -142,19 +142,19 @@ end
     @test with_doppler - code_phase ≈ 1000 / fs * 2.0
     # A record that ended just short of the symbol edge it is counted up to: the phase
     # is the one before the edge, read against one symbol fewer.
-    num_bits, code_phase = snapshot(0, -0.3, 400_000 - 1, 400_000)
-    @test num_bits == 9
+    num_symbols, code_phase = snapshot(0, -0.3, 400_000 - 1, 400_000)
+    @test num_symbols == 9
     @test code_phase ≈ 20460 - 0.3 + 1 / fs * code_frequency
     # A bit edge exactly at the last record end.
-    num_bits, code_phase = snapshot(0, 0.0, 399_000, 400_000)
-    @test num_bits == 10
+    num_symbols, code_phase = snapshot(0, 0.0, 399_000, 400_000)
+    @test num_symbols == 10
     @test code_phase ≈ 1000 / fs * code_frequency
     # The replica run on past the next edge before the epoch: one symbol more.
-    num_bits, code_phase = snapshot(19, 0.5, 400_000 - 4000, 400_000)
-    @test num_bits == 11
+    num_symbols, code_phase = snapshot(19, 0.5, 400_000 - 4000, 400_000)
+    @test num_symbols == 11
     @test code_phase ≈ 19 * 1023 + 0.5 + 4000 / fs * code_frequency - 20460
     # Without the replica's code phase the record is taken to end on a block boundary.
-    num_bits, code_phase = snapshot(5, NaN, 399_000, 400_000)
+    num_symbols, code_phase = snapshot(5, NaN, 399_000, 400_000)
     @test code_phase ≈ 5 * 1023 + 1000 / fs * code_frequency
     # Out of sync there is no lock, and no symbol edge to count from.
     snapshot(5, 0.2, 399_000, 400_000; synced = false)
@@ -181,7 +181,7 @@ end
     @test group.decoding_signal isa GPSL2CM
     slot = group.slots[1]
     @test slot.running_decoder isa typeof(GNSSDecoderState(GPSL2CM(), 1))
-    decoder = GNSSDecoderState(GNSSDecoderState(GPSL2CM(), 3); num_bits_after_valid_syncro_sequence = 10)
+    decoder = GNSSDecoderState(GNSSDecoderState(GPSL2CM(), 3); num_bits_since_sync = 10)
     code_frequency = 511.5e3
     fs = 4e6
     chips = 1000 / fs * code_frequency
@@ -189,21 +189,21 @@ end
         blocks = 0, fraction, driver_phase, end_sample = 399_000, kw...)
     # The data record ended 0.2 chips past a CM code boundary, the pilot's replica
     # 0.25 chips past one, 3 CM codes into the CL code: the pilot's phase is taken.
-    num_bits, code_phase = snapshot(0.2, 3 * 10230 + 0.25)
-    @test num_bits == 10
+    num_symbols, code_phase = snapshot(0.2, 3 * 10230 + 0.25)
+    @test num_symbols == 10
     @test code_phase ≈ 0.25 + chips
     # At an epoch one sample after the records' end, the data record 0.1 chips past
     # the boundary but the pilot's replica, at the end of its code, 0.3 chips short of
     # it: one symbol fewer, read up to the edge.
     one_sample = code_frequency / fs
-    num_bits, code_phase = take_snapshot!(nav, group, slot, decoder, 400_000;
+    num_symbols, code_phase = take_snapshot!(nav, group, slot, decoder, 400_000;
         blocks = 0, fraction = 0.1, driver_phase = 767_250 - 0.3, end_sample = 399_999)
-    @test num_bits == 9
+    @test num_symbols == 9
     @test code_phase ≈ 10230 - 0.3 + one_sample
     # The data record behind the pilot's: its last record ended 4000 samples before the
     # pilot's, and the symbol it counts in moved on by those chips.
-    num_bits, code_phase = snapshot(0.2, 0.25 + 4000 / fs * code_frequency; decoding_end = 395_000)
-    @test num_bits == 10
+    num_symbols, code_phase = snapshot(0.2, 0.25 + 4000 / fs * code_frequency; decoding_end = 395_000)
+    @test num_symbols == 10
     @test code_phase ≈ 0.25 + 4000 / fs * code_frequency + chips
     # Without the pilot's code phase the data's count stands.
     _, code_phase = snapshot(0.2, NaN)

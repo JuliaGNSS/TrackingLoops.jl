@@ -386,7 +386,7 @@ end
     @test [d.first_sample for d in despreads] == 101:4000:36101
     @test all(d -> d.num_samples == 4000, despreads)
     @test all(d -> d.prn == 1 && d.signal === signal, despreads)
-    @test all(d -> d.code_frequency == get_code_frequency(signal), despreads)
+    @test all(d -> d.code_frequency == get_chip_rate(signal), despreads)
     @test all(d -> d.sampling_frequency === fs, despreads)
     rng = Xoshiro(3)
     for d in despreads

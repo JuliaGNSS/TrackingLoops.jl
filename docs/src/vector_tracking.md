@@ -17,9 +17,9 @@ The filter is an unscented Kalman filter over position, velocity, one clock bias
 per GNSS time system (all driven by the one oscillator's drift) and one
 inter-frequency bias per band beyond the reference band. It follows the bias
 model of [PositionVelocityTime.jl](https://github.com/JuliaGNSS/PositionVelocityTime.jl):
-which biases a cycle can determine is decided per cycle, and clocks collapse
-onto a hub system's through the broadcast offset (GGTO, BGTO) when the
-measurements cannot separate them. With `use_pseudorange_rates = true` (the
+which biases a cycle can determine is decided per cycle, and where the
+measurements cannot separate two clocks, a broadcast offset between their
+systems (GGTO, BGTO) ties them as a pseudo-measurement. With `use_pseudorange_rates = true` (the
 default) it also measures the pseudorange rates (VDFLL); with `false` it is a
 VDLL, and the carrier NCOs' Doppler comes from the code measurements alone.
 
@@ -95,7 +95,7 @@ record, and builds the record from it:
 
 ```julia
 loop, prompt, filtered, blocks, overshoot =
-    apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready, driver_phase)
+    apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready, driver_phase_offset)
 record = LoopRecord(signal, filtered, output, loop, fs; prn)
 state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words, landing_sample)
 ```
@@ -149,7 +149,7 @@ every satellite starts on its scalar loop:
    the vector loop's estimate of the Doppler and its rate (see
    [The carrier in the vector loop](@ref vector-carrier)) and its carrier-loop
    staging restarts, so it pulls in afresh, FLL-assisted at the wide bandwidth.
-5. After `insufficient_meas_timeout` of unsolvable cycles, or with no member
+5. After `insufficient_measurements_timeout` of unsolvable cycles, or with no member
    left, every satellite in the loop, members that missed the epoch included, is
    released ([`VT_FALLBACK`](@ref TrackingLoops.VTReleaseReason)) and the scalar PVT runs again
    until a fresh fix seeds the filter anew.

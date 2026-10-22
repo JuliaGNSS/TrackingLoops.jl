@@ -25,11 +25,11 @@ end
 function report(io, cycle, pvt, status)
     print(io, "cycle ", cycle, ":")
     for x in (pvt.position.x, pvt.position.y, pvt.position.z, pvt.velocity.x,
-        pvt.velocity.y, pvt.velocity.z, ustrip(pvt.time_correction),
-        status.position_std.val, status.time_with_insufficient_meas.val)
+        pvt.velocity.y, pvt.velocity.z, ustrip(pvt.clock_bias),
+        status.position_std.val, status.time_with_insufficient_measurements.val)
         print(io, " ", x)
     end
-    print(io, " ", length(pvt.sats))
+    print(io, " ", length(pvt.satellites))
     print(io, " ", status.num_members)
     print(io, " ", status.running)
     print(io, " ", status.seeded)

@@ -18,7 +18,7 @@ function fixture_group(signal, make_data)
     estimator = VectorPLLAndDLL()
     sats = map(states) do state
         estimator_state = init_estimator_state(estimator, signal, state.carrier_doppler,
-            state.carrier_doppler * get_code_center_frequency_ratio(signal))
+            state.carrier_doppler * get_chip_rate_to_center_frequency_ratio(signal))
         VTSat(state.decoder, estimator_state; active = true, code_phase = state.code_phase,
             carrier_doppler = state.carrier_doppler, code_doppler = 0.0Hz,
             code_phase_at_landing = state.code_phase,

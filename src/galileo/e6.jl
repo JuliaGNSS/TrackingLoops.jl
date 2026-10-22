@@ -4,7 +4,7 @@
 # the 1 ms / 5115-chip primary code (5.115 Mcps) and are tracked as two
 # independent BPSK(5) signals, the same data/pilot split as Galileo E1 and E5.
 #
-# E6-C sits at π carrier phase against E6-B (OS SIS ICD Eq. 10); GNSSSignals
+# E6-C sits half a cycle off E6-B in carrier phase (OS SIS ICD Eq. 10); GNSSSignals
 # reports it via `get_carrier_phase_offset`, which the shared driver loop reads
 # generically.
 

@@ -20,7 +20,7 @@ using Random: MersenneTwister
     @test length(get_soft_bits(state)) >= 8
     @test all(abs.(get_soft_bits(state)) .> 0)
     # C/N0: |P|²/N0 − 1/T with |P| = 0.5 and N0 = 1e-6/Hz over 1 ms records.
-    cn0 = estimate_cn0(state, 1023 / get_code_frequency(signal))
+    cn0 = estimate_cn0(state, 1023 / get_chip_rate(signal))
     @test 10 * log10(ustrip(Hz, Unitful.linear(cn0))) ≈ 10 * log10(0.25 / 1e-6 - 1000) atol = 1e-6
     # A restarted bit clock forgets sync and keeps the rest.
     restarted = restart_bit_clock(state)

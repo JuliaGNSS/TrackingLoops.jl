@@ -381,7 +381,7 @@ function noise_despreads(
     intermediate_frequency,
 )
     num_samples = max(0, Int(last_sample) - Int(first_sample) + 1)
-    code_period = get_code_length(signal) / get_code_frequency(signal)
+    code_period = get_code_length(signal) / get_chip_rate(signal)
     slice_duration = num_samples / sampling_frequency
     num_code_periods = round(Int, uconvert(NoUnits, slice_duration / code_period))
     num_sub = num_samples == 0 ? 0 : min(num_samples, max(1, num_code_periods))
@@ -415,7 +415,7 @@ Base.length(despreads::NoiseDespreads) = despreads.num_sub
         slice_start,
         slice_stop - slice_start + 1,
         code_phase,
-        get_code_frequency(signal),
+        get_chip_rate(signal),
         carrier_frequency,
         despreads.sampling_frequency,
     )

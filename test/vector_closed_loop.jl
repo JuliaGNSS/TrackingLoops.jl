@@ -69,7 +69,7 @@ end
     results, _, diverged = run_simulation!(rx, 120; outage)
     @test !diverged
     @test all(r -> r.status.running && r.status.num_members == length(rx.sats), results)
-    @test all(r -> r.status.time_with_insufficient_meas == 0.0s, results)
+    @test all(r -> r.status.time_with_insufficient_measurements == 0.0s, results)
     @test all(r -> all(==(VT_NOT_RELEASED), r.reasons), results)
     during = results[25:70]
     # The coasting members are reported but not measured.
@@ -92,7 +92,7 @@ end
         (fill_slot!(slot, sat, epoch, landing, nav; in_lock = false); slot.pvt_ready = false)
     results, sample, diverged = run_simulation!(rx, 105; start_sample = sample, fill! = unlocked!)
     @test !diverged
-    timers = [r.status.time_with_insufficient_meas for r in results]
+    timers = [r.status.time_with_insufficient_measurements for r in results]
     # Strictly beyond the ten-second timeout: the 101st unsolvable cycle.
     fallback = findfirst(r -> r.status.fell_back, results)
     @test fallback == 101
@@ -104,7 +104,7 @@ end
     @test results[fallback].status.num_members == 0
     @test all(==(VT_FALLBACK), results[fallback].reasons)
     # A fallback cycle still emits its (predicted) solution.
-    @test results[fallback].pvt.time isa PositionVelocityTime.TAITime
+    @test results[fallback].pvt.time isa TAITime
     @test isempty(results[fallback].measured)
     # The released satellites run their scalar loops: nothing steered, nothing accumulated.
     @test all(sat -> !sat.state.in_vector_loop && sat.state.code_freq_update == 0.0Hz, rx.sats)
@@ -275,12 +275,12 @@ end
     @test tail_errors(rx, tail) < 0.2
     @test tail_code_errors(tail) < 0.005
     ifb = results[end].pvt.inter_frequency_biases[:L2]
-    @test ifb.reference == :L1
+    @test ifb.reference_band == :L1
     @test abs(ifb.value - 4.0u"m") < 0.05u"m"
     @test count(key -> first(key) === :GPSL2CM, results[end].measured) == length(rx.channels[2])
 end
 
-@testset "A scarce constellation's clock collapses onto GPS through the GGTO" begin
+@testset "A scarce constellation's clock is tied to GPS through the GGTO" begin
     # Three GPS satellites and one Galileo satellite cannot determine a position and two
     # clocks. The Galileo satellite broadcasts the GGTO, so its clock is tied to the GPS
     # one by a pseudo-measurement, in the scalar fix that seeds the filter and in every
@@ -293,14 +293,22 @@ end
     @test results[1].status.seeded
     @test all(r -> r.status.running && r.status.num_members == 4, results)
     @test all(r -> length(r.measured) == 4, results)
-    gst_clock, gpst_clock, isb = only(rx.vt.buffers.observability.hub_offset_constraints)
+    gst_clock, gpst_clock, isb = only(rx.vt.buffers.time_offset_constraints)
     @test (gst_clock, gpst_clock) == (2, 1)
     @test isb == 0.0
+    # The DOP takes the layout's linked-group columns, so an epoch whose clocks a
+    # broadcast offset ties reports one.
+    @test all(r -> !isnothing(r.pvt.dop), results)
     tail = results[51:end]
     @test tail_errors(rx, tail) < 0.5
     @test tail_code_errors(tail) < 0.005
     @test abs(results[end].pvt.inter_system_biases[GST()]) < 0.05u"m"
-    # Without the GGTO there is nothing to collapse onto, and no fix to seed from.
+    # The solution reports the broadcast offset it took, as `calc_pvt` does.
+    @test all(results) do r
+        bias = only(r.pvt.applied_broadcast_inter_system_biases)
+        (bias.system, bias.target, bias.value) == (GST(), GPST(), 0.0u"m")
+    end
+    # Without the GGTO nothing ties the clocks, and there is no fix to seed from.
     rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1))
     results, _, _ = run_simulation!(rx, 5)
     @test all(r -> !r.status.running && !r.status.seeded, results)

@@ -9,8 +9,8 @@
 # The bias model follows `PositionVelocityTime`: one clock bias per GNSS time system
 # (all driven by one oscillator drift) and one inter-frequency bias per band beyond a
 # reference band; pseudoranges are corrected for the broadcast ionosphere and the
-# Saastamoinen troposphere. Which biases an epoch can determine is decided per cycle as
-# `decide_bias_layout` does (see `assess_bias_observability!`).
+# Saastamoinen troposphere. Which biases an epoch can determine is decided per cycle by
+# `decide_bias_layout!` (see `time_offset_constraints!`).
 #
 # The per-record `VectorPLLAndDLL` accumulates discriminators and applies the filter's
 # commands; this file holds the model above it (the cycle is in `vector/tracking.jl`):
@@ -23,7 +23,7 @@
                            acceleration_noise_std = 5.0m/s^2,
                            h0 = 2e-19, hm2 = 2e-20,
                            ifb_noise_density = 0.01m/sqrt(1.0s),
-                           insufficient_meas_timeout = 10.0s)
+                           insufficient_measurements_timeout = 10.0s)
 
 Configuration of the vector-tracking navigation filter of a [`VectorPLLAndDLL`](@ref).
 The defaults suit a vehicle with a consumer-grade front end.
@@ -47,7 +47,7 @@ The defaults suit a vehicle with a consumer-grade front end.
   covering the front end's thermal drift: by default a bias wanders ~`0.01 m` (1σ) in
   one second. Raise it for bands that are less thermally coupled, lower it for a
   calibrated front end.
-- `insufficient_meas_timeout`: how long the filter may coast on unsolvable epochs (too few
+- `insufficient_measurements_timeout`: how long the filter may coast on unsolvable epochs (too few
   measurements or distinct satellites for the unknowns) before falling back to scalar
   tracking. Solution uncertainty is reported, not policed: see
   [`NavigationStatus`](@ref)'s `position_std`.
@@ -60,7 +60,7 @@ struct NavigationFilterConfig
     h0::Float64
     hm2::Float64
     ifb_noise_density::typeof(1.0m / sqrt(1.0s))
-    insufficient_meas_timeout::typeof(1.0s)
+    insufficient_measurements_timeout::typeof(1.0s)
 end
 
 function NavigationFilterConfig(;
@@ -71,7 +71,7 @@ function NavigationFilterConfig(;
     h0 = 2e-19,
     hm2 = 2e-20,
     ifb_noise_density = 0.01m / sqrt(1.0s),
-    insufficient_meas_timeout = 10.0s,
+    insufficient_measurements_timeout = 10.0s,
 )
     1 <= motion_model_order <= 3 ||
         throw(ArgumentError("motion_model_order must be 1, 2 or 3"))
@@ -84,7 +84,7 @@ function NavigationFilterConfig(;
         h0,
         hm2,
         ifb_noise_density,
-        insufficient_meas_timeout,
+        insufficient_measurements_timeout,
     )
 end
 
@@ -94,7 +94,7 @@ end
 # Which clock-bias and IFB state each signal group (by position in the signal tuple)
 # maps to. Built from the *configured* signals so the state dimension is fixed for the
 # run (a constellation without measurements coasts on its process noise); IFB columns
-# follow `band_ifb_layout` (a band alone on its constellation folds into that clock).
+# follow `ifb_layout` (a band alone on its constellation folds into that clock).
 struct NavFilterLayout
     time_systems::Vector{SupportedTimeSystem} # clock-bias state order
     extra_bands::Vector{Symbol}               # inter-frequency-bias state order
@@ -110,28 +110,20 @@ function NavFilterLayout(signals::Tuple{Vararg{AbstractGNSSSignal}})
     band_per_group = collect(Symbol, map(get_band_id, signals))
     time_systems = unique(time_system_per_group)
     ifb_indices, extra_bands, reference_bands, _ =
-        band_ifb_layout(time_system_per_group, band_per_group)
+        ifb_layout(time_system_per_group, band_per_group)
     NavFilterLayout(
         time_systems,
         collect(Symbol, extra_bands),
         collect(Symbol, reference_bands),
-        Int[_time_system_index(time_systems, ts) for ts in time_system_per_group],
+        Int[something(findfirst(other -> other === ts, time_systems)) for ts in time_system_per_group],
         collect(Int, ifb_indices),
         band_per_group,
         collect(Symbol, map(get_signal_id, signals)),
     )
 end
 
-# The position of `time_system` in `time_systems`, `0` if absent.
-function _time_system_index(time_systems, time_system)
-    for (index, other) in enumerate(time_systems)
-        other === time_system && return index
-    end
-    0
-end
-
 num_clock_biases(layout::NavFilterLayout) = length(layout.time_systems)
-num_ifb(layout::NavFilterLayout) = length(layout.extra_bands)
+num_ifbs(layout::NavFilterLayout) = length(layout.extra_bands)
 
 # Indices of the state vector
 # `[x, ẋ, (ẍ), y, ẏ, (ÿ), z, ż, (z̈), clock_bias_1..M, (clock_drift), ifb_1..B]`;
@@ -149,7 +141,7 @@ function NavFilterIndices(
     motion_model_order::Int,
     clock_model_order::Int,
     num_clock_biases::Int,
-    num_ifb::Int,
+    num_ifbs::Int,
 )
     pos = [1 + (i - 1) * motion_model_order for i = 1:3]
     vel = motion_model_order >= 2 ? pos .+ 1 : Int[]
@@ -157,7 +149,7 @@ function NavFilterIndices(
     clock_biases = 3 * motion_model_order .+ (1:num_clock_biases)
     clock_drift = clock_model_order >= 2 ? clock_biases[end] + 1 : 0
     ifb_offset = max(clock_drift, clock_biases[end])
-    ifb = ifb_offset .+ (1:num_ifb)
+    ifb = ifb_offset .+ (1:num_ifbs)
     NavFilterIndices(pos, vel, acc, collect(clock_biases), clock_drift, collect(ifb))
 end
 
@@ -165,14 +157,14 @@ NavFilterIndices(config::NavigationFilterConfig, layout::NavFilterLayout) = NavF
     config.motion_model_order,
     config.clock_model_order,
     num_clock_biases(layout),
-    num_ifb(layout),
+    num_ifbs(layout),
 )
 
 num_nav_states(config::NavigationFilterConfig, layout::NavFilterLayout) =
     3 * config.motion_model_order +
     num_clock_biases(layout) +
     (config.clock_model_order >= 2 ? 1 : 0) +
-    num_ifb(layout)
+    num_ifbs(layout)
 
 # (position, velocity, clock drift) of a state vector, zeros for unmodelled ones.
 @inline function nav_filter_states(x, idxs::NavFilterIndices)
@@ -187,7 +179,7 @@ num_nav_states(config::NavigationFilterConfig, layout::NavFilterLayout) =
 end
 
 # The `[x, y, z, tc₁..tc_M, ifb₁..ifb_B]` sub-vector PositionVelocityTime's
-# measurement helpers (`calc_ρ_hat!`, `calc_H!`) expect, written into `ξ`.
+# measurement helpers (`predict_pseudoranges!`, `calc_design_matrix!`) expect, written into `ξ`.
 function position_and_bias_vector!(ξ, x, idxs::NavFilterIndices)
     for i = 1:3
         ξ[i] = x[idxs.pos[i]]
@@ -324,7 +316,7 @@ function rebuild_nav_filter_model!(model::NavFilterModel, config::NavigationFilt
     model
 end
 
-# Rebuild `F`/`Q` whenever the measured cycle time changes at all: `reference_time`
+# Rebuild `F`/`Q` whenever the measured cycle time changes at all: the receive epoch
 # advances by it, so a nominal-interval model mispredicts the clock bias by `drift·ΔT`.
 # Chunk quantisation alone overshoots by up to a chunk (e.g. 4 ms on 100 ms), metres at a
 # TCXO's hundreds of m/s of drift against centimetres of clock process noise. The rebuild
@@ -381,20 +373,18 @@ struct VTMember
     available::Bool        # usable as a measurement this cycle (in code lock)
     time::Float64          # corrected transmit time (own system's time of week, s)
     # `time` on the GPS Time count (BDT reads 14 s below GPST). Used wherever times are
-    # differenced across members (`reference_time`, pseudoranges), as in `calc_pvt`;
+    # differenced across members (the receive epoch's time of week, pseudoranges), as in
+    # `calc_pvt`;
     # broadcast polynomials are evaluated at the own-scale `time`.
     time_gpst_count::Float64
-    sat_position::SVector{3,Float64}
-    sat_velocity::SVector{3,Float64}
+    sat_pos::SVector{3,Float64}
+    sat_vel::SVector{3,Float64}
     sat_clock_drift::Float64 # s/s
     code_discriminator::Float64 # accumulated DLL output, moved to the epoch (chips)
     pseudorange_rate::Float64 # measured λ·(replica Doppler + mean FLL) at the epoch (m/s)
     cn0_lin::Float64         # C/N₀, linear (Hz); C/N₀ without `_lin` is in dB-Hz
     early_late_spacing::Float64 # chips
     coherent_integration_time::Float64 # s, per coherent correlator dump (sets DLL/FLL noise)
-    # The member's broadcast offsets toward `CANDIDATE_HUB_SYSTEMS`, in that order,
-    # as its measurement row carries them.
-    time_offsets::NTuple{3,BroadcastTimeOffset}
 end
 
 # Code phase (chips) the code correction steered out over the cycle's second half,
@@ -456,91 +446,30 @@ function linear_cn0_floor(cn0_dbhz)
     isnan(cn0_lin) ? 1.0 : max(cn0_lin, 1.0)
 end
 
-# Pseudorange (m) from receive and transmit times of week, folded across a week
-# rollover.
-pseudorange_from_tows(receive_tow, transmit_tow) =
-    fold_week_crossover(receive_tow - transmit_tow) * SPEED_OF_LIGHT
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Measurement prediction
 
 # Clock/IFB columns of the members at `indices` as PositionVelocityTime's `BiasColumns`,
-# so its `calc_ρ_hat!` / `calc_H!` model the pseudoranges.
+# so its `predict_pseudoranges!` / `calc_design_matrix!` model the pseudoranges.
 function member_bias_columns!(columns::BiasColumns, members, indices)
-    resize!(columns.clock_bias_indices, length(indices))
-    resize!(columns.ifb_indices, length(indices))
+    resize!(columns.clock_columns, length(indices))
+    resize!(columns.ifb_columns, length(indices))
     for (k, j) in enumerate(indices)
-        columns.clock_bias_indices[k] = members[j].clock_bias_index
-        columns.ifb_indices[k] = members[j].ifb_index
+        columns.clock_columns[k] = members[j].clock_bias_index
+        columns.ifb_columns[k] = members[j].ifb_index
     end
     columns
 end
 
 member_bias_columns(members, layout::NavFilterLayout, indices = eachindex(members)) =
     member_bias_columns!(
-        BiasColumns(Int[], num_clock_biases(layout), Int[], num_ifb(layout)),
+        BiasColumns(Int[], num_clock_biases(layout), Int[], num_ifbs(layout)),
         members,
         indices,
     )
 
-# The same columns restricted to the bias states these members occupy, renumbered
-# densely, plus `primary_clock_index` in that numbering (1 if absent). For DOP: an
-# all-zero column of a missing constellation makes `HᵀH` singular (`calc_DOP!` → −1).
-# `clock_columns` / `ifb_columns` are scratch of the layout's clock and IFB counts, left
-# holding each state's dense column (0 if unoccupied).
-function dense_bias_columns!(
-    clock_indices::Vector{Int},
-    ifb_indices::Vector{Int},
-    clock_columns::Vector{Int},
-    ifb_columns::Vector{Int},
-    members,
-    indices,
-    primary_clock_index::Int,
-)
-    fill!(clock_columns, 0)
-    fill!(ifb_columns, 0)
-    for j in indices
-        clock_columns[members[j].clock_bias_index] = 1
-        members[j].ifb_index != 0 && (ifb_columns[members[j].ifb_index] = 1)
-    end
-    num_clocks = 0
-    for i in eachindex(clock_columns)
-        clock_columns[i] == 0 && continue
-        num_clocks += 1
-        clock_columns[i] = num_clocks
-    end
-    num_ifbs = 0
-    for i in eachindex(ifb_columns)
-        ifb_columns[i] == 0 && continue
-        num_ifbs += 1
-        ifb_columns[i] = num_ifbs
-    end
-    resize!(clock_indices, length(indices))
-    resize!(ifb_indices, length(indices))
-    for (k, j) in enumerate(indices)
-        clock_indices[k] = clock_columns[members[j].clock_bias_index]
-        ifb_indices[k] = members[j].ifb_index == 0 ? 0 : ifb_columns[members[j].ifb_index]
-    end
-    primary =
-        1 <= primary_clock_index <= length(clock_columns) &&
-        clock_columns[primary_clock_index] != 0 ? clock_columns[primary_clock_index] : 1
-    BiasColumns(clock_indices, num_clocks, ifb_indices, num_ifbs), primary
-end
-
-function dense_bias_columns(members, primary_clock_index::Int, num_clocks, num_ifbs)
-    dense_bias_columns!(
-        Int[],
-        Int[],
-        zeros(Int, num_clocks),
-        zeros(Int, num_ifbs),
-        members,
-        eachindex(members),
-        primary_clock_index,
-    )
-end
-
 # The pseudorange rate (m/s) the epoch state `x` predicts for `member`: the derivative of
-# the pseudorange `calc_ρ_hat!` models, Earth rotation included (PositionVelocityTime's
+# the pseudorange `predict_pseudoranges!` models, Earth rotation included (PositionVelocityTime's
 # `calc_pseudorange_rate`), negated to the sign of the measured `λ · carrier_doppler`
 # (positive while closing).
 @inline function predict_pseudorange_rate(x, idxs::NavFilterIndices, member::VTMember)
@@ -549,14 +478,14 @@ end
         user_pos,
         user_vel,
         user_clock_drift,
-        member.sat_position,
-        member.sat_velocity,
+        member.sat_pos,
+        member.sat_vel,
         member.sat_clock_drift,
     )
 end
 
 # Measurement model `h!(y, x)`: the candidates' pseudoranges, then their rates when
-# fused, then one row per hub constraint (the offset between two clock states). A
+# fused, then one row per time-offset constraint (the offset between two clock states). A
 # callable struct, not a closure, so the update is concrete and allocation-free.
 struct VTMeasurementModel
     idxs::NavFilterIndices
@@ -573,7 +502,7 @@ function (model::VTMeasurementModel)(y, x)
     idxs = model.idxs
     num_sats = length(model.positions)
     position_and_bias_vector!(model.ξ, x, idxs)
-    calc_ρ_hat!(y, model.positions, model.ξ, model.columns)
+    predict_pseudoranges!(y, model.positions, model.ξ, model.columns)
     offset = num_sats
     if model.use_rates
         for (k, j) in enumerate(model.candidates)
@@ -581,8 +510,8 @@ function (model::VTMeasurementModel)(y, x)
         end
         offset += num_sats
     end
-    for (i, (clock_index, hub_clock_index, _)) in enumerate(model.constraints)
-        y[offset+i] = x[idxs.clock_biases[clock_index]] - x[idxs.clock_biases[hub_clock_index]]
+    for (i, (clock_index, target_clock_index, _)) in enumerate(model.constraints)
+        y[offset+i] = x[idxs.clock_biases[clock_index]] - x[idxs.clock_biases[target_clock_index]]
     end
     y
 end
@@ -632,198 +561,45 @@ function pseudorange_rate_noise_variance(member::VTMember, T)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Bias observability
+# The bias layout of a cycle
 
-# Accuracy (m) credited to a broadcast GGTO / BGTO when it collapses a clock onto the
-# hub's: the Galileo OS SDD (Issue 1.2, Nov 2021) commits the GGTO to < 20 ns (95 %),
-# σ ≈ 10 ns ≈ 3 m; the BGTO, with no published commitment, is credited the same. Too
-# coarse to use when the geometry observes the offset, hence the collapse only for
-# unsupported independent layouts.
-const HUB_OFFSET_STD = 3.0
+# Accuracy (m) credited to a broadcast GGTO / BGTO when it ties two clocks: the Galileo OS
+# SDD (Issue 1.2, Nov 2021) commits the GGTO to < 20 ns (95 %), σ ≈ 10 ns ≈ 3 m; the BGTO,
+# with no published commitment, is credited the same. Too coarse to use when the geometry
+# observes the offset, hence a constraint only where the satellites cannot separate the
+# clocks.
+const TIME_OFFSET_STD = 3.0
 
-# The bias-layout decision for one measurement set, mirroring `decide_bias_layout`.
-#
-# `num_unknowns`: 3 + the clock biases + the *observable* IFBs of the layout in force
-# (merged under a collapse) — the measurement count needed. `num_distinct_sats_required`
-# (3 + clock biases) is the independent second condition on distinct satellites: a
-# second band of a satellite adds no line of sight (three satellites on two bands pass
-# the count but not this). Neither condition is sufficient; residual degeneracy is
-# reported via `NavigationStatus`'s `position_std`.
-#
-# A collapse leaves one `(clock_index, hub_clock_index, isb)` per collapsed system in the
-# workspace's `hub_offset_constraints`: the pseudo-measurement
-# `x[clock_index] - x[hub_clock_index] = isb` rather than a merged column, so the state
-# dimension stays fixed and the clock stays available for epochs that observe it.
-struct BiasObservability
-    num_unknowns::Int
-    num_distinct_sats_required::Int
-    num_distinct_sats::Int
-end
+# A cycle's bias layout is `decide_bias_layout!`'s decision on the candidates' measurements, a
+# `BiasLayout`, so it agrees with `calc_pvt` on solvability, the broadcast time offsets it
+# takes as given and the DOP columns. The filter keeps a clock state per configured time
+# system; each `ClockConstraint` of the layout enters it as the pseudo-measurement
+# `x[clock] - x[target_clock] = offset` (`time_offset_constraints!`), so the clocks stay
+# separate states, available for epochs that observe them. An unsolvable epoch's layout
+# still ties every pair of clocks a broadcast offset can tie, so the offsets keep the
+# clocks tied through the outage the starvation watchdog times.
 
-# The scratch of `assess_bias_observability!`, and where it leaves the hub constraints.
-struct ObservabilityWorkspace
-    time_systems::Vector{SupportedTimeSystem}
-    merged_time_systems::Vector{SupportedTimeSystem}
-    bands::Vector{Symbol}
-    scratch::BandLayoutScratch{Symbol}
-    ifb_indices::Vector{Int}
-    extra_bands::Vector{Symbol}
-    reference_bands::Vector{Symbol}
-    collapsed::Vector{SupportedTimeSystem}
-    hub_offset_constraints::Vector{Tuple{Int,Int,Float64}}
-end
+# The clock-bias state of `time_system`. Every measurement's time system has one, so a missing one
+# is a caller's error and throws.
+clock_bias_index(layout::NavFilterLayout, time_system) =
+    something(findfirst(other -> other === time_system, layout.time_systems))
 
-function ObservabilityWorkspace(max_measurements::Integer = 0)
-    ws = ObservabilityWorkspace(
-        SupportedTimeSystem[],
-        SupportedTimeSystem[],
-        Symbol[],
-        BandLayoutScratch{Symbol}(),
-        Int[],
-        Symbol[],
-        Symbol[],
-        SupportedTimeSystem[],
-        Tuple{Int,Int,Float64}[],
-    )
-    for v in (ws.time_systems, ws.merged_time_systems, ws.bands, ws.ifb_indices)
-        sizehint!(v, max_measurements)
+# The inter-frequency-bias state of `band`, `0` for a band without one: a reference band,
+# or a band the configured layout gives no state.
+ifb_index(layout::NavFilterLayout, band) =
+    something(findfirst(==(band), layout.extra_bands), 0)
+
+# The constraints of `bias_layout`, into `constraints`, as `(clock, target_clock, offset)`
+# over the filter's clock states.
+function time_offset_constraints!(constraints, layout::NavFilterLayout, bias_layout)
+    empty!(constraints)
+    for constraint in bias_layout.constraints
+        clock = clock_bias_index(layout, bias_layout.clock_systems[constraint.column])
+        target_clock = clock_bias_index(layout, bias_layout.clock_systems[constraint.target_column])
+        push!(constraints, (clock, target_clock, constraint.value))
     end
-    ws
+    constraints
 end
-
-# Whether a measurement set meets both conditions of `BiasObservability`.
-is_epoch_solvable(obs::BiasObservability, num_measurements) =
-    num_measurements >= obs.num_unknowns &&
-    obs.num_distinct_sats >= obs.num_distinct_sats_required
-
-# The number of distinct entries of `values`, without a set.
-function _num_distinct(values)
-    count = 0
-    for j in eachindex(values)
-        seen = false
-        for i in firstindex(values):(j-1)
-            if values[i] === values[j]
-                seen = true
-                break
-            end
-        end
-        seen || (count += 1)
-    end
-    count
-end
-
-# `(num_unknowns, num_distinct_sats_required, num_components)` of one measurement set
-# (see `BiasObservability`), read off the *epoch's own* (constellation × band) coverage
-# graph, not the configured layout, so an IFB unobservable this epoch is not counted.
-function epoch_bias_unknowns!(ws::ObservabilityWorkspace, time_systems, bands)
-    num_components = band_ifb_layout!(
-        ws.ifb_indices,
-        ws.extra_bands,
-        ws.reference_bands,
-        ws.scratch,
-        time_systems,
-        bands,
-    )
-    num_distinct_sats_required = 3 + _num_distinct(time_systems)
-    num_distinct_sats_required + length(ws.extra_bands),
-    num_distinct_sats_required,
-    num_components
-end
-
-# Decide this cycle's bias layout as `decide_bias_layout` does: independent biases when
-# the coverage graph is connected and the epoch solvable, otherwise the broadcast clock
-# collapse, which removes a clock unknown and reconnects a disjoint band split. Its
-# constraints are left in `ws.hub_offset_constraints`.
-function assess_bias_observability!(
-    ws::ObservabilityWorkspace,
-    layout::NavFilterLayout,
-    members,
-    candidate_indices,
-)
-    num_measurements = length(candidate_indices)
-    constraints = empty!(ws.hub_offset_constraints)
-    time_systems = resize!(ws.time_systems, num_measurements)
-    bands = resize!(ws.bands, num_measurements)
-    for (k, j) in enumerate(candidate_indices)
-        time_systems[k] = layout.time_systems[members[j].clock_bias_index]
-        bands[k] = layout.band_by_group[members[j].group]
-    end
-    # Distinct satellites by `(clock-bias state ≙ time system, PRN)`: a PRN is unique only
-    # within its GNSS.
-    num_distinct_sats = 0
-    for (k, j) in enumerate(candidate_indices)
-        seen = false
-        for i in 1:(k-1)
-            other = members[candidate_indices[i]]
-            if other.clock_bias_index == members[j].clock_bias_index &&
-               other.prn == members[j].prn
-                seen = true
-                break
-            end
-        end
-        seen || (num_distinct_sats += 1)
-    end
-
-    num_unknowns, num_distinct_required, num_components =
-        epoch_bias_unknowns!(ws, time_systems, bands)
-    independent = BiasObservability(num_unknowns, num_distinct_required, num_distinct_sats)
-    if num_components == 1 && is_epoch_solvable(independent, num_measurements)
-        return independent
-    end
-
-    # Collapse onto the first hub (GPST, GST, BDT, as `decide_bias_layout`) that yields a
-    # constraint, for systems whose clock and the hub's both have measurements.
-    for hub_offset_index in eachindex(CANDIDATE_HUB_SYSTEMS)
-        hub = _candidate_hub(hub_offset_index)
-        hub_clock_index = _time_system_index(layout.time_systems, hub)
-        (hub_clock_index == 0 || _time_system_index(time_systems, hub) == 0) && continue
-        collapsed = empty!(ws.collapsed)
-        for clock_index in eachindex(layout.time_systems)
-            time_system = layout.time_systems[clock_index]
-            (time_system === hub || _time_system_index(time_systems, time_system) == 0) &&
-                continue
-            # The offset is constellation-wide: the first decoded copy serves (as in
-            # `calc_hub_range_offsets`).
-            offset_member = 0
-            for j in candidate_indices
-                if members[j].clock_bias_index == clock_index &&
-                   members[j].time_offsets[hub_offset_index].available
-                    offset_member = j
-                    break
-                end
-            end
-            offset_member == 0 && continue
-            member = members[offset_member]
-            # Δt = (system time) − (hub time), so the clock sits −c·Δt from the hub's,
-            # the sign of `decide_bias_layout`'s `inter_system_biases`.
-            isb =
-                -SPEED_OF_LIGHT *
-                calc_steering_offset(member.time_offsets[hub_offset_index], member.time)
-            push!(constraints, (clock_index, hub_clock_index, isb))
-            push!(collapsed, time_system)
-        end
-        isempty(constraints) && continue
-        # Recount on the merged graph: reconnected components turn former reference
-        # bands into observable IFBs again.
-        merged = resize!(ws.merged_time_systems, num_measurements)
-        for k in eachindex(time_systems)
-            merged[k] =
-                _time_system_index(collapsed, time_systems[k]) != 0 ? hub : time_systems[k]
-        end
-        merged_unknowns, merged_distinct_required, _ = epoch_bias_unknowns!(ws, merged, bands)
-        # Returned even if still unsolvable: the merge only lowers both requirements (one
-        # clock fewer per collapsed system, at most one IFB back), so
-        # solvability agrees with `decide_bias_layout`, and the constraints are free
-        # information.
-        return BiasObservability(merged_unknowns, merged_distinct_required, num_distinct_sats)
-    end
-
-    independent
-end
-
-# `CANDIDATE_HUB_SYSTEMS[i]`, spelled out so the type is the closed union rather than
-# whatever indexing the heterogeneous tuple infers.
-_candidate_hub(i)::SupportedTimeSystem = i == 1 ? GPST() : i == 2 ? GST() : BDT()
 
 # 1σ 3-D position uncertainty (m) of a navigation-filter covariance.
 function position_uncertainty(P, idxs::NavFilterIndices)
@@ -874,68 +650,38 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # PVT solution from the navigation filter
 
-# The clock-bias state to report against: kept while its system has a measurement among
-# `candidates` (no flicker), else re-picked as `PositionVelocityTime` does — GPST if
-# present, else the system with most measurements (ties by state order). Picking only
-# present systems keeps a week number, and so a timestamp, available.
-function select_primary_clock_index(layout::NavFilterLayout, members, candidates, current_index)
-    isempty(candidates) && return current_index
-    for j in candidates
-        members[j].clock_bias_index == current_index && return current_index
+# The clock-bias state to report against, among the cycle's `candidate_measurements`: kept while
+# its system has a measurement (no flicker), else the reference system of the cycle's
+# `bias_layout`, `select_reference_system`'s pick, the one `calc_pvt` reports against.
+# Picking only present systems keeps a week number, and so a timestamp, available.
+# Without measurements it is kept; `_seed!` sets it before the first cycle.
+function select_reference_clock_index(
+    layout::NavFilterLayout,
+    candidate_measurements,
+    bias_layout,
+    current_index,
+)
+    isempty(candidate_measurements) && return current_index
+    current = layout.time_systems[current_index]
+    for measurement in candidate_measurements
+        measurement.time_system === current && return current_index
     end
-    gpst_index = _time_system_index(layout.time_systems, GPST())
-    if gpst_index != 0
-        for j in candidates
-            members[j].clock_bias_index == gpst_index && return gpst_index
-        end
-    end
-    best_index = 0
-    best_count = 0
-    for index in eachindex(layout.time_systems)
-        n = 0
-        for j in candidates
-            members[j].clock_bias_index == index && (n += 1)
-        end
-        if n > best_count
-            best_index, best_count = index, n
-        end
-    end
-    best_index
+    clock_bias_index(layout, select_reference_system(bias_layout))
 end
 
-# The epoch offset for the next cycle, advanced by a week when `reference_time` has just
-# wrapped (else every later `pvt.time` is a week early). Only an already cached offset
-# is advanced; a freshly resolved one comes from a decoder that has rolled over too.
-rolled_over_time_epoch_offset(resolved, cached, week_rollover) =
-    week_rollover && !isnothing(cached) ? cached + SECONDS_PER_WEEK : resolved
-
-# The constant part of the solution's epoch from a primary-system measurement row: week
-# in seconds + start epoch + the scale offset to the GPS Time count `reference_time`
-# runs on (`VTMember.time_gpst_count`). Resolved once and cached, so a solution cannot
-# lose its timestamp (by which consumers tell a fix from a non-fix); the cache
-# survives a change of primary clock, since with the scale offset all systems' offsets
-# agree to within their broadcast steering (ns). Rows exist only for
-# satellites decoded for positioning, with the week rollover resolved.
-time_epoch_offset(row::SatelliteMeasurement) =
-    row.week * SECONDS_PER_WEEK +
-    row.system_start_epoch.second +
-    round(Int, row.count_offset_to_gpst)
-
-# Absolute solution epoch: clock-corrected `reference_time` plus the cached offset, or
-# `nothing` without one.
-function solution_time(time_epoch_offset, reference_time, primary_clock_bias)
-    isnothing(time_epoch_offset) && return nothing
-    corrected_reference_time = ustrip(s, reference_time) - primary_clock_bias / SPEED_OF_LIGHT
-    TAITime(
-        time_epoch_offset + floor(Int, corrected_reference_time),
-        corrected_reference_time - floor(corrected_reference_time),
-    )
+# The DOP design column of `time_system`'s clock among `measurements`: its linked group in
+# `bias_layout`, shared by the systems a constraint ties together.
+function clock_column(bias_layout, measurements, time_system)
+    for (k, measurement) in enumerate(measurements)
+        measurement.time_system === time_system && return bias_layout.clock_group_columns[k]
+    end
+    throw(ArgumentError("no measurement is of the time system"))
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Initialization
 
-# Initial `x` and `P` from a scalar PVT fix; returns the primary clock index. The primary
+# Initial `x` and `P` from a scalar PVT fix; returns the reference clock index. The reference
 # clock bias starts at zero (the reference epoch is already corrected by it); other biases
 # are seeded where the fix observed them, else zero with a generous variance. The fixed
 # variances are a fallback for `seed_fix_covariance!`.
@@ -970,20 +716,20 @@ function initial_nav_state!(x, P, layout::NavFilterLayout, idxs::NavFilterIndice
         end
     end
     if idxs.clock_drift != 0
-        x[idxs.clock_drift] = pvt.relative_clock_drift * c
+        x[idxs.clock_drift] = ustrip(m / s, pvt.clock_drift)
         P[idxs.clock_drift, idxs.clock_drift] = init_std_clock_drift^2
     end
 
     reference_system = pvt.reference_system
-    primary_clock_index =
-        isnothing(reference_system) ? 0 :
-        _time_system_index(layout.time_systems, reference_system)
-    primary_clock_index == 0 && (primary_clock_index = 1)
+    # A reference system the layout lacks falls back to the first clock.
+    reference_clock_index =
+        isnothing(reference_system) ? 1 :
+        something(findfirst(other -> other === reference_system, layout.time_systems), 1)
     for (index, time_system) in enumerate(layout.time_systems)
         state_index = idxs.clock_biases[index]
-        if index == primary_clock_index
+        if index == reference_clock_index
             P[state_index, state_index] = init_std_clock_bias^2
-        elseif _fix_seeds_clock(pvt, layout, primary_clock_index, index)
+        elseif _fix_seeds_clock(pvt, layout, reference_clock_index, index)
             x[state_index] = ustrip(m, pvt.inter_system_biases[time_system])
             P[state_index, state_index] = init_std_clock_bias^2
         else
@@ -999,87 +745,62 @@ function initial_nav_state!(x, P, layout::NavFilterLayout, idxs::NavFilterIndice
             P[state_index, state_index] = init_std_unseeded_ifb^2
         end
     end
-    primary_clock_index
+    reference_clock_index
 end
 
-# Whether the fix estimated clock-bias state `index` (primary, or via an inter-system bias).
-_fix_seeds_clock(pvt::PVTSolution, layout::NavFilterLayout, primary_clock_index, index) =
-    index == primary_clock_index || haskey(pvt.inter_system_biases, layout.time_systems[index])
+# Whether the fix estimated clock-bias state `index` (the reference clock, or via an inter-system bias).
+_fix_seeds_clock(pvt::PVTSolution, layout::NavFilterLayout, reference_clock_index, index) =
+    index == reference_clock_index || haskey(pvt.inter_system_biases, layout.time_systems[index])
 
 # Whether the fix seeds IFB state `index`: only against the layout's reference band.
 function _fix_seeds_ifb(pvt::PVTSolution, layout::NavFilterLayout, index)
     band = layout.extra_bands[index]
     haskey(pvt.inter_frequency_biases, band) &&
-        pvt.inter_frequency_biases[band].reference == layout.reference_bands[index]
+        pvt.inter_frequency_biases[band].reference_band == layout.reference_bands[index]
 end
 
 # UERE (m) a scalar fix's covariance is scaled by in `seed_fix_covariance!`.
 const FIX_PSEUDORANGE_STD = 1.0
 
-# Smallest Cholesky pivot ratio (smallest / largest diagonal) taken as full rank. An
-# exactly singular `HᵀH` (e.g. an IFB duplicating a single-band constellation's clock)
-# often factors with a tiny positive pivot, giving 10¹⁵ m² variances; 10⁻⁶ admits
-# condition numbers up to ~10¹².
-const FIX_MIN_PIVOT_RATIO = 1e-6
-
 # Overwrite the position/bias block of `P` with the fix's covariance `σ² (HᵀH)⁻¹`,
-# `σ = FIX_PSEUDORANGE_STD`, for the fix's design `H` over `dense_bias_columns!`'s
-# columns (state maps `clock_columns`, `ifb_columns`). A geometry-blind variance would
-# trust a GDOP-40 fix like a GDOP-2 one (JuliaGNSS/TrackingLoops.jl#16), and the full
-# block keeps the position–clock correlations. Unseeded bias states keep their variance,
-# uncorrelated, though the position's variance still counts them as unknowns.
-# `normal_matrix` is square scratch of `H`'s column count. Returns `false`, leaving `P`
-# unchanged, for a rank-deficient `H`.
+# `σ = FIX_PSEUDORANGE_STD`, for the fix's design `H` over `fix_bias_layout`'s fit columns. A
+# geometry-blind variance would trust a GDOP-40 fix like a GDOP-2 one
+# (JuliaGNSS/TrackingLoops.jl#16), and the full block keeps the position–clock
+# correlations. Unseeded bias states keep their variance, uncorrelated, though the
+# position's variance still counts them as unknowns. `normal_matrix` is square scratch of
+# `H`'s column count. Returns `false`, leaving `P` unchanged, for a rank-deficient `H`, by
+# the test PositionVelocityTime's `calc_fit_covariance!` and `calc_dop` share.
 function seed_fix_covariance!(
     P,
     idxs::NavFilterIndices,
     layout::NavFilterLayout,
     pvt::PVTSolution,
-    primary_clock_index,
+    reference_clock_index,
     H,
     normal_matrix,
-    clock_columns,
-    ifb_columns,
+    fix_bias_layout::BiasLayout,
 )
-    mul!(normal_matrix, H', H)
-    factorization = cholesky!(Symmetric(normal_matrix); check = false)
-    _has_full_rank(factorization) || return false
-    covariance = LinearAlgebra.inv!(factorization)
+    calc_fit_covariance!(normal_matrix, H) || return false
+    covariance = Symmetric(normal_matrix, :U)
     σ² = FIX_PSEUDORANGE_STD^2
     num_columns = size(covariance, 1)
     for column = 1:num_columns, row = 1:num_columns
-        i = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_columns, ifb_columns, row)
-        j = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_columns, ifb_columns, column)
+        i = _fix_state_index(idxs, layout, pvt, reference_clock_index, fix_bias_layout, row)
+        j = _fix_state_index(idxs, layout, pvt, reference_clock_index, fix_bias_layout, column)
         i == 0 || j == 0 || (P[i, j] = σ² * covariance[row, column])
     end
     true
 end
 
-# Whether a normal-matrix Cholesky succeeded with no negligible pivot
-# (`FIX_MIN_PIVOT_RATIO`).
-function _has_full_rank(factorization)
-    issuccess(factorization) || return false
-    factors = factorization.factors
-    smallest, largest = Inf, 0.0
-    for k in axes(factors, 1)
-        smallest = min(smallest, factors[k, k])
-        largest = max(largest, factors[k, k])
-    end
-    smallest > FIX_MIN_PIVOT_RATIO * largest
-end
-
-# The state behind `column` of the fix's dense design, `0` for an unseeded bias.
-function _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_columns, ifb_columns, column)
+# The state behind `column` of the fix's design, `0` for an unseeded bias.
+function _fix_state_index(idxs, layout, pvt, reference_clock_index, fix_bias_layout, column)
     column <= 3 && return idxs.pos[column]
-    for (index, dense) in enumerate(clock_columns)
-        dense == column - 3 || continue
-        return _fix_seeds_clock(pvt, layout, primary_clock_index, index) ?
+    columns = fit_bias_columns(fix_bias_layout)
+    if column - 3 <= columns.num_clock_biases
+        index = clock_bias_index(layout, fix_bias_layout.clock_systems[column-3])
+        return _fix_seeds_clock(pvt, layout, reference_clock_index, index) ?
                idxs.clock_biases[index] : 0
     end
-    num_clocks = count(!iszero, clock_columns)
-    for (index, dense) in enumerate(ifb_columns)
-        dense == column - 3 - num_clocks || continue
-        return _fix_seeds_ifb(pvt, layout, index) ? idxs.ifb[index] : 0
-    end
-    0
+    index = ifb_index(layout, fix_bias_layout.extra_bands[column-3-columns.num_clock_biases])
+    index == 0 || !_fix_seeds_ifb(pvt, layout, index) ? 0 : idxs.ifb[index]
 end
