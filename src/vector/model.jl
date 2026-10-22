@@ -202,12 +202,6 @@ function position_and_bias_vector!(ξ, x, idxs::NavFilterIndices)
     ξ
 end
 
-position_and_bias_vector(x, idxs::NavFilterIndices) = position_and_bias_vector!(
-    Vector{Float64}(undef, 3 + length(idxs.clock_biases) + length(idxs.ifb)),
-    x,
-    idxs,
-)
-
 # Process model F: a kinematic block per axis, every clock bias integrates the one
 # drift, IFBs are constant.
 function nav_filter_process_model!(F, config::NavigationFilterConfig, idxs::NavFilterIndices, T)
@@ -475,13 +469,6 @@ function member_bias_columns!(columns::BiasColumns, members, indices)
     end
     columns
 end
-
-member_bias_columns(members, layout::NavFilterLayout, indices = eachindex(members)) =
-    member_bias_columns!(
-        BiasColumns(Int[], num_clock_biases(layout), Int[], num_ifb(layout)),
-        members,
-        indices,
-    )
 
 # The same columns restricted to the bias states these members occupy, renumbered
 # densely, plus `primary_clock_index` in that numbering (1 if absent). For DOP: an

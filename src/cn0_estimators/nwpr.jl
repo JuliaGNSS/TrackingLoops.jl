@@ -216,7 +216,6 @@ get_buffered_narrowband_powers(estimator::NWPRCN0Estimator) =
 get_buffered_wideband_powers(estimator::NWPRCN0Estimator) =
     estimator.buffered_wideband_powers
 get_current_index(estimator::NWPRCN0Estimator) = estimator.ratio_current_index
-get_fallback_cn0_estimator(estimator::NWPRCN0Estimator) = estimator.fallback
 
 # Ring slots in use at the current `M`, capped by the buffer.
 @inline function _num_ratios(estimator::NWPRCN0Estimator)
