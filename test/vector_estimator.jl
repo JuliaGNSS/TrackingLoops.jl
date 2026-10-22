@@ -109,7 +109,7 @@ end
     ramp = TL.CarrierRamp(110.0, 4.0, 0.0)
     state = commanded(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz), ramp; code_update = -0.25Hz)
     words = FixedNCOWord(100.0, 0.1)
-    ratio = get_code_center_frequency_ratio(signal)
+    ratio = get_chip_rate_to_center_frequency_ratio(signal)
     for landing in (NO_LANDING_SAMPLE, Int64(15000))
         commands = map((cis(0.0), cis(0.2), -cis(0.1))) do prompt
             _, carrier, code = step_satellite(estimator, state, prompt_record(signal, prompt, 5000, fs), words, landing)
@@ -176,7 +176,7 @@ end
     sampling_frequency = 5e6Hz
     gpsl1 = GPSL1CA()
     carrier_doppler = 100.0Hz
-    init_code_doppler = carrier_doppler * get_code_center_frequency_ratio(gpsl1)
+    init_code_doppler = carrier_doppler * get_chip_rate_to_center_frequency_ratio(gpsl1)
     num_samples = 5000
     accumulators = (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im)
     estimator = VectorPLLAndDLL(GPSL1CA(); inner)
@@ -387,7 +387,7 @@ end
     _, carrier_doppler, code_doppler =
         step_satellite(estimator, reset, record, FixedNCOWord(150.0, 0.2), NO_LANDING_SAMPLE)
     @test carrier_doppler == 104.0Hz
-    @test code_doppler ≈ 0.2Hz + (carrier_doppler - 150.0Hz) * get_code_center_frequency_ratio(GPSL1CA())
+    @test code_doppler ≈ 0.2Hz + (carrier_doppler - 150.0Hz) * get_chip_rate_to_center_frequency_ratio(GPSL1CA())
 end
 
 @testset "Releasing re-seeds the inner loop, with $(nameof(typeof(inner)))" for inner in (

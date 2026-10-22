@@ -174,7 +174,7 @@ whose pre-sync replica carries a secondary chip uses this to pick the records to
 multiply by that chip.
 """
 is_dataless_with_secondary_code(signal::AbstractGNSSSignal) =
-    iszero(get_data_frequency(signal)) && get_secondary_code_length(signal) > 1
+    iszero(get_bit_rate(signal)) && get_secondary_code_length(signal) > 1
 
 # A record's carrier phase polarity (see `fold_record`). `bit_buffer` is the one the
 # record was correlated with, before the fold. The sync read its polarity off the
@@ -194,7 +194,7 @@ is_dataless_with_secondary_code(signal::AbstractGNSSSignal) =
 """
     fold_record(signal, prn, bit_buffer, cn0_estimator, post_corr_filter, output,
                 sampling_frequency, noise_density, noise_density_ready,
-                driver_carrier_phase;
+                driver_carrier_phase_offset;
                 overlay_wiped = has_bit_or_secondary_code_been_found(bit_buffer))
         -> (bit_buffer, cn0_estimator, post_corr_filter, prompt, filtered_correlator,
             bit_block_count, integrated_code_blocks, overshoot, carrier_phase_polarity)
@@ -223,7 +223,7 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
     sampling_frequency,
     noise_density,
     noise_density_ready::Bool,
-    driver_carrier_phase::Real;
+    driver_carrier_phase_offset::Real;
     overlay_wiped::Bool = has_bit_or_secondary_code_been_found(bit_buffer),
 )
     bit_buffer_before = bit_buffer
@@ -245,7 +245,7 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
     # Floor at 1 for the fractional-block record right after a sync phase snap.
     integrated_code_blocks = max(1, bit_block_count)
     # Onto the driver's (real) phase frame for sync search and bit accumulation.
-    bit_prompt = prompt * _carrier_phase_derotation(driver_carrier_phase, signal)
+    bit_prompt = prompt * _carrier_phase_derotation(driver_carrier_phase_offset, signal)
     drop_prompt = _drops_unwiped_prompt(signal, synced_before, overlay_wiped)
     scalar_noise_density = _reduce_noise_density(noise_density, weights)
     cn0_estimator = _update_cn0_estimator(
@@ -287,7 +287,7 @@ end
 """
     apply_record(state::SignalLoopState, signal, prn, output, sampling_frequency,
                  noise_density, noise_density_ready,
-                 driver_carrier_phase = get_carrier_phase_offset(signal);
+                 driver_carrier_phase_offset = get_carrier_phase_offset(signal);
                  overlay_wiped = has_bit_or_secondary_code_been_found(state))
         -> (state, prompt, filtered_correlator, integrated_code_blocks, overshoot)
 
@@ -299,7 +299,7 @@ JuliaGNSS/Tracking.jl#238). The new state keeps the filtered prompt and what the
 record did, for a [`LoopRecord`](@ref) built from it. Nothing here logs; the caller
 reports `overshoot` (Tracking.jl warns once per satellite).
 
-`driver_carrier_phase` is the carrier-phase offset (`get_carrier_phase_offset`) of
+`driver_carrier_phase_offset` is the carrier-phase offset (cycles, `get_carrier_phase_offset`) of
 the satellite's estimator-driver signal; the bit-buffer prompt is de-rotated against
 it. The default (the signal's own) suits the driver; a passenger component (the data
 half of a pilot/data pair) must be handed the driver's.
@@ -325,7 +325,7 @@ and its polarity is `0`.
     sampling_frequency,
     noise_density,
     noise_density_ready::Bool,
-    driver_carrier_phase::Real = get_carrier_phase_offset(signal);
+    driver_carrier_phase_offset::Real = get_carrier_phase_offset(signal);
     overlay_wiped::Bool = has_bit_or_secondary_code_been_found(state.bit_buffer),
 )
     was_synced = has_bit_or_secondary_code_been_found(state.bit_buffer)
@@ -348,7 +348,7 @@ and its polarity is `0`.
         sampling_frequency,
         noise_density,
         noise_density_ready,
-        driver_carrier_phase;
+        driver_carrier_phase_offset;
         overlay_wiped,
     )
     is_synced = has_bit_or_secondary_code_been_found(bit_buffer)
