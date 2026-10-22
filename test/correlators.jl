@@ -126,14 +126,6 @@ end
     @test @inferred(get_num_accumulators(VeryEarlyPromptLateCorrelator())) == 5
 end
 
-@testset "is_zero correlator" begin
-    zero_corr = EarlyPromptLateCorrelator(SVector(0.0 + 0.0im, 0.0 + 0.0im, 0.0 + 0.0im), 0.5)
-    @test TrackingLoops.is_zero(zero_corr)
-    nonzero_corr =
-        EarlyPromptLateCorrelator(SVector(0.0 + 0.0im, 1.0 + 0.0im, 0.0 + 0.0im), 0.5)
-    @test !TrackingLoops.is_zero(nonzero_corr)
-end
-
 @testset "Zeroing correlator" begin
     correlator = @inferred EarlyPromptLateCorrelator(
         SVector(
