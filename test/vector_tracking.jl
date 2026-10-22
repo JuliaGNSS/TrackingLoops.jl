@@ -120,9 +120,9 @@ end
     T = 0.1
     # The corrections the cycle left, recomputed from the updated state the way
     # GNSSReceiver computed them: all members at once, from the epoch's rows.
-    ξ = TL.position_and_bias_vector(vt.x, idxs)
+    ξ = position_and_bias_vector(vt.x, idxs)
     predicted = calc_ρ_hat!(zeros(length(members)), [m.sat_position for m in members], ξ,
-        TL.member_bias_columns(members, vt.layout))
+        member_bias_columns(members, vt.layout))
     user_pos, user_vel, user_drift = TL.nav_filter_states(vt.x, idxs)
     for (j, member) in enumerate(members)
         sat = rx.sats[member.slot_index]

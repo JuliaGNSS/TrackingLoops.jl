@@ -169,15 +169,6 @@ end
 """
 $(SIGNATURES)
 
-Is zero correlator
-"""
-function is_zero(correlator::AbstractCorrelator)
-    get_prompt(correlator)[1] == 0
-end
-
-"""
-$(SIGNATURES)
-
 Filter the correlator by the function `post_corr_filter`
 """
 # `where {F}` forces specialisation; an unspecialised `map` is a dynamic call a

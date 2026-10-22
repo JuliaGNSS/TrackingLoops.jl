@@ -12,6 +12,15 @@ using Geodesy: ECEF
 
 const TL = TrackingLoops
 
+# The model's non-mutating forms of `position_and_bias_vector!` and `member_bias_columns!`.
+position_and_bias_vector(x, idxs) =
+    TL.position_and_bias_vector!(Vector{Float64}(undef, 3 + length(idxs.clock_biases) + length(idxs.ifb)), x, idxs)
+member_bias_columns(members, layout, indices = eachindex(members)) = TL.member_bias_columns!(
+    BiasColumns(Int[], TL.num_clock_biases(layout), Int[], TL.num_ifb(layout)),
+    members,
+    indices,
+)
+
 # A `VTMember` with hand-picked geometry for the measurement-model tests; the
 # defaults describe a GPS L1 C/A satellite straight overhead along +x, at 45 dB-Hz,
 # with a one-chip early-late spacing and one code period of coherent integration.
@@ -169,7 +178,7 @@ end
     @test vel == [4.0, 5.0, 6.0]
     @test clock_drift == 9.0
     # The [x, y, z, tc₁.., ifb₁..] sub-vector PositionVelocityTime consumes.
-    @test TL.position_and_bias_vector(x, idxs) == [1.0, 2.0, 3.0, 7.0, 8.0, 10.0]
+    @test position_and_bias_vector(x, idxs) == [1.0, 2.0, 3.0, 7.0, 8.0, 10.0]
 
     # Unmodelled derivatives read as zero.
     idxs1 = TL.NavFilterIndices(1, 1, 1, 0)
@@ -328,17 +337,17 @@ end
             sat_position = SVector(0.0, 0.0, 2.6e7),
         ),
     ]
-    bias_columns = TL.member_bias_columns(members, layout)
+    bias_columns = member_bias_columns(members, layout)
     @test bias_columns.clock_bias_indices == [1, 2]
     @test bias_columns.num_clock_biases == 2
     @test bias_columns.num_ifb == 0
-    @test TL.member_bias_columns(members, layout, [2]).clock_bias_indices == [2]
+    @test member_bias_columns(members, layout, [2]).clock_bias_indices == [2]
 
     user_pos = SVector(6.378e6, 0.0, 0.0)
     x = zeros(9)
     x[idxs.pos] = user_pos
     x[idxs.clock_biases] = [100.0, 200.0]
-    ξ = TL.position_and_bias_vector(x, idxs)
+    ξ = position_and_bias_vector(x, idxs)
     positions = [member.sat_position for member in members]
 
     psr = calc_ρ_hat!(zeros(2), positions, ξ, bias_columns)
@@ -811,8 +820,8 @@ end
     x[idxs.pos] = user_pos
     x_updated = copy(x)
     x_updated[idxs.pos] = user_pos .+ [10.0, 0.0, 0.0] # +x is towards the satellite
-    columns = TL.member_bias_columns([member], layout)
-    predict(x) = calc_ρ_hat!(zeros(1), [member.sat_position], TL.position_and_bias_vector(x, idxs), columns)[1]
+    columns = member_bias_columns([member], layout)
+    predict(x) = calc_ρ_hat!(zeros(1), [member.sat_position], position_and_bias_vector(x, idxs), columns)[1]
     @test predict(x_updated) - predict(x) ≈ -10.0 rtol = 1e-3
     @test TL.nco_code_correction(predict(x_updated), predict(x), member.code_frequency, 0.1) ≈
           10.0 * member.code_frequency / (0.1 * c) rtol = 1e-3
