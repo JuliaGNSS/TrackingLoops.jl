@@ -472,66 +472,6 @@ member_bias_columns(members, layout::NavFilterLayout, indices = eachindex(member
         indices,
     )
 
-# The constraints of `dense_bias_columns!`'s columns: shared and never pushed to, so
-# building them allocates nothing (the four-argument `BiasColumns` builds a new vector).
-const NO_CLOCK_CONSTRAINTS = ClockConstraint[]
-
-# The same columns restricted to the bias states these members occupy, renumbered
-# densely, plus `primary_clock_index` in that numbering (1 if absent). For DOP: an
-# all-zero column of a missing constellation makes `HᵀH` singular (`calc_DOP!` → −1).
-# `clock_columns` / `ifb_columns` are scratch of the layout's clock and IFB counts, left
-# holding each state's dense column (0 if unoccupied).
-function dense_bias_columns!(
-    clock_indices::Vector{Int},
-    ifb_indices::Vector{Int},
-    clock_columns::Vector{Int},
-    ifb_columns::Vector{Int},
-    members,
-    indices,
-    primary_clock_index::Int,
-)
-    fill!(clock_columns, 0)
-    fill!(ifb_columns, 0)
-    for j in indices
-        clock_columns[members[j].clock_bias_index] = 1
-        members[j].ifb_index != 0 && (ifb_columns[members[j].ifb_index] = 1)
-    end
-    num_clocks = 0
-    for i in eachindex(clock_columns)
-        clock_columns[i] == 0 && continue
-        num_clocks += 1
-        clock_columns[i] = num_clocks
-    end
-    num_ifbs = 0
-    for i in eachindex(ifb_columns)
-        ifb_columns[i] == 0 && continue
-        num_ifbs += 1
-        ifb_columns[i] = num_ifbs
-    end
-    resize!(clock_indices, length(indices))
-    resize!(ifb_indices, length(indices))
-    for (k, j) in enumerate(indices)
-        clock_indices[k] = clock_columns[members[j].clock_bias_index]
-        ifb_indices[k] = members[j].ifb_index == 0 ? 0 : ifb_columns[members[j].ifb_index]
-    end
-    primary =
-        1 <= primary_clock_index <= length(clock_columns) &&
-        clock_columns[primary_clock_index] != 0 ? clock_columns[primary_clock_index] : 1
-    BiasColumns(clock_indices, num_clocks, ifb_indices, num_ifbs, NO_CLOCK_CONSTRAINTS), primary
-end
-
-function dense_bias_columns(members, primary_clock_index::Int, num_clocks, num_ifbs)
-    dense_bias_columns!(
-        Int[],
-        Int[],
-        zeros(Int, num_clocks),
-        zeros(Int, num_ifbs),
-        members,
-        eachindex(members),
-        primary_clock_index,
-    )
-end
-
 # The pseudorange rate (m/s) the epoch state `x` predicts for `member`: the derivative of
 # the pseudorange `calc_ρ_hat!` models, Earth rotation included (PositionVelocityTime's
 # `calc_pseudorange_rate`), negated to the sign of the measured `λ · carrier_doppler`
@@ -636,7 +576,8 @@ const TIME_OFFSET_STD = 3.0
 
 # A cycle's bias layout is `decide_bias_layout!`'s decision on the candidates' rows, a
 # `BiasLayout`, so it agrees with `calc_pvt` on solvability, the broadcast time offsets it
-# takes as given. The filter keeps a clock state per configured time system; each `ClockConstraint` of the layout enters it as the pseudo-measurement
+# takes as given and the DOP columns. The filter keeps a clock state per configured time
+# system; each `ClockConstraint` of the layout enters it as the pseudo-measurement
 # `x[clock] - x[target_clock] = offset` (`time_offset_constraints!`), so the clocks stay
 # separate states, available for epochs that observe them. An unsolvable epoch's layout
 # still ties every pair of clocks a broadcast offset can tie, so the offsets keep the
@@ -646,6 +587,11 @@ const TIME_OFFSET_STD = 3.0
 # is a caller's error and throws.
 clock_bias_index(layout::NavFilterLayout, time_system) =
     something(time_system_index(layout.time_systems, time_system))
+
+# The inter-frequency-bias state of `band`, `0` for a band without one: a reference band,
+# or a band the configured layout gives no state.
+ifb_index(layout::NavFilterLayout, band) =
+    something(findfirst(==(band), layout.extra_bands), 0)
 
 # The constraints of `bias_layout`, into `constraints`, as `(clock, target_clock, offset)`
 # over the filter's clock states.
@@ -725,6 +671,15 @@ function select_primary_clock_index(
         row.time_system === current && return current_index
     end
     clock_bias_index(layout, select_reference_system(bias_layout))
+end
+
+# The DOP design column of `time_system`'s clock among `rows`: its linked group in
+# `bias_layout`, shared by the systems a constraint ties together.
+function clock_column(bias_layout, rows, time_system)
+    for (k, row) in enumerate(rows)
+        row.time_system === time_system && return bias_layout.clock_group_indices[k]
+    end
+    throw(ArgumentError("no row is of the time system"))
 end
 
 # The epoch offset for the next cycle, advanced by a week when `reference_time` has just
@@ -847,13 +802,12 @@ const FIX_PSEUDORANGE_STD = 1.0
 const FIX_MIN_PIVOT_RATIO = 1e-6
 
 # Overwrite the position/bias block of `P` with the fix's covariance `σ² (HᵀH)⁻¹`,
-# `σ = FIX_PSEUDORANGE_STD`, for the fix's design `H` over `dense_bias_columns!`'s
-# columns (state maps `clock_columns`, `ifb_columns`). A geometry-blind variance would
-# trust a GDOP-40 fix like a GDOP-2 one (JuliaGNSS/TrackingLoops.jl#16), and the full
-# block keeps the position–clock correlations. Unseeded bias states keep their variance,
-# uncorrelated, though the position's variance still counts them as unknowns.
-# `normal_matrix` is square scratch of `H`'s column count. Returns `false`, leaving `P`
-# unchanged, for a rank-deficient `H`.
+# `σ = FIX_PSEUDORANGE_STD`, for the fix's design `H` over `fix_bias_layout`'s fit columns. A
+# geometry-blind variance would trust a GDOP-40 fix like a GDOP-2 one
+# (JuliaGNSS/TrackingLoops.jl#16), and the full block keeps the position–clock
+# correlations. Unseeded bias states keep their variance, uncorrelated, though the
+# position's variance still counts them as unknowns. `normal_matrix` is square scratch of
+# `H`'s column count. Returns `false`, leaving `P` unchanged, for a rank-deficient `H`.
 function seed_fix_covariance!(
     P,
     idxs::NavFilterIndices,
@@ -862,8 +816,7 @@ function seed_fix_covariance!(
     primary_clock_index,
     H,
     normal_matrix,
-    clock_columns,
-    ifb_columns,
+    fix_bias_layout::BiasLayout,
 )
     mul!(normal_matrix, H', H)
     factorization = cholesky!(Symmetric(normal_matrix); check = false)
@@ -872,8 +825,8 @@ function seed_fix_covariance!(
     σ² = FIX_PSEUDORANGE_STD^2
     num_columns = size(covariance, 1)
     for column = 1:num_columns, row = 1:num_columns
-        i = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_columns, ifb_columns, row)
-        j = _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_columns, ifb_columns, column)
+        i = _fix_state_index(idxs, layout, pvt, primary_clock_index, fix_bias_layout, row)
+        j = _fix_state_index(idxs, layout, pvt, primary_clock_index, fix_bias_layout, column)
         i == 0 || j == 0 || (P[i, j] = σ² * covariance[row, column])
     end
     true
@@ -892,18 +845,15 @@ function _has_full_rank(factorization)
     smallest > FIX_MIN_PIVOT_RATIO * largest
 end
 
-# The state behind `column` of the fix's dense design, `0` for an unseeded bias.
-function _fix_state_index(idxs, layout, pvt, primary_clock_index, clock_columns, ifb_columns, column)
+# The state behind `column` of the fix's design, `0` for an unseeded bias.
+function _fix_state_index(idxs, layout, pvt, primary_clock_index, fix_bias_layout, column)
     column <= 3 && return idxs.pos[column]
-    for (index, dense) in enumerate(clock_columns)
-        dense == column - 3 || continue
+    columns = fit_columns(fix_bias_layout)
+    if column - 3 <= columns.num_clock_biases
+        index = clock_bias_index(layout, fix_bias_layout.clock_systems[column-3])
         return _fix_seeds_clock(pvt, layout, primary_clock_index, index) ?
                idxs.clock_biases[index] : 0
     end
-    num_clocks = count(!iszero, clock_columns)
-    for (index, dense) in enumerate(ifb_columns)
-        dense == column - 3 - num_clocks || continue
-        return _fix_seeds_ifb(pvt, layout, index) ? idxs.ifb[index] : 0
-    end
-    0
+    index = ifb_index(layout, fix_bias_layout.extra_bands[column-3-columns.num_clock_biases])
+    index == 0 || !_fix_seeds_ifb(pvt, layout, index) ? 0 : idxs.ifb[index]
 end

@@ -303,6 +303,9 @@ end
         (constraint.system, constraint.target) == (GST(), GPST()) && constraint.offset == 0.0u"m"
     end
     @test all(r -> took_the_ggto(r.pvt), results)
+    # The DOP takes the layout's linked-group columns, so an epoch whose clocks a
+    # broadcast offset ties reports one.
+    @test all(r -> !isnothing(r.pvt.dop), results)
     tail = results[51:end]
     @test tail_errors(rx, tail) < 0.5
     @test tail_code_errors(tail) < 0.005

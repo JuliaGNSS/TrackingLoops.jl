@@ -302,16 +302,11 @@ mutable struct VTBuffers{SB<:Tuple}
     time_offset_constraints::Vector{Tuple{Int,Int,Float64}}
     time_update::KFTUIntermediate{Float64}
     measurement_updates::Vector{Union{Nothing,MeasurementBuffers{_UKFIntermediate}}}
-    dense_clock_indices::Vector{Int}
-    dense_ifb_indices::Vector{Int}
-    clock_columns::Vector{Int}
-    ifb_columns::Vector{Int}
     design_matrix::Matrix{Float64}
     normal_matrices::Vector{Matrix{Float64}}
 end
 
 _capacity_vector(::Type{T}, n) where {T} = sizehint!(T[], n)
-
 
 function VTBuffers(sat_states::Tuple, num_states, layout::NavFilterLayout, max_members)
     num_clocks = num_clock_biases(layout)
@@ -348,10 +343,6 @@ function VTBuffers(sat_states::Tuple, num_states, layout::NavFilterLayout, max_m
         Union{Nothing,MeasurementBuffers{_UKFIntermediate}}[
             MeasurementBuffers(num_states, k) for k = 1:max_measurements
         ],
-        _capacity_vector(Int, max_members),
-        _capacity_vector(Int, max_members),
-        zeros(Int, num_clocks),
-        zeros(Int, num_ifbs),
         zeros(max(max_members, 1), num_lsq),
         [zeros(n, n) for n = 1:num_lsq],
     )
@@ -1006,7 +997,9 @@ function _add_fix_satellites!(num_added, group, g, buffer, nav)
 end
 
 # Scale the seeded covariance by the fix's geometry (`seed_fix_covariance!`) at the
-# seeded position. `candidates` serves as scratch; every cycle rebuilds it.
+# seeded position, over the bias layout `calc_pvt` decided for the fix. `candidates` and
+# the bias-layout workspace serve as scratch: every cycle decides its layout before
+# anything reads it.
 function _seed_fix_covariance!(nav::VectorNavigation)
     buffers = nav.buffers
     members = buffers.members
@@ -1021,23 +1014,15 @@ function _seed_fix_covariance!(nav::VectorNavigation)
     for (k, j) in enumerate(included)
         buffers.candidate_positions[k] = members[j].sat_position
     end
-    columns, _ = dense_bias_columns!(
-        buffers.dense_clock_indices,
-        buffers.dense_ifb_indices,
-        buffers.clock_columns,
-        buffers.ifb_columns,
-        members,
-        included,
-        nav.primary_clock_index,
-    )
-    num_columns = 3 + columns.num_clock_biases + columns.num_ifb
-    length(included) < num_columns && return false
-    if size(buffers.design_matrix, 1) < length(included)
-        buffers.design_matrix = zeros(2 * length(included), size(buffers.design_matrix, 2))
+    fix_bias_layout = buffers.bias_layout
+    decide_bias_layout!(fix_bias_layout, view(buffers.rows, included)) || return false
+    H = _design_matrix!(buffers, nav.x, idxs, fit_columns(fix_bias_layout), length(included))
+    # A broadcast offset is credited `TIME_OFFSET_STD`, as in the filter's update, not the
+    # pseudoranges' `FIX_PSEUDORANGE_STD`: its rows follow the satellites'. A loop, as
+    # `H[rows, :] .*= w` would copy the right-hand slice.
+    for row in (length(included)+1):size(H, 1), column in axes(H, 2)
+        H[row, column] *= FIX_PSEUDORANGE_STD / TIME_OFFSET_STD
     end
-    H = view(buffers.design_matrix, 1:length(included), 1:num_columns)
-    position_and_bias_vector!(buffers.ξ, nav.x, idxs)
-    calc_H!(H, buffers.candidate_positions, buffers.ξ, columns)
     seed_fix_covariance!(
         nav.P,
         idxs,
@@ -1045,10 +1030,22 @@ function _seed_fix_covariance!(nav::VectorNavigation)
         nav.pvt,
         nav.primary_clock_index,
         H,
-        buffers.normal_matrices[num_columns],
-        buffers.clock_columns,
-        buffers.ifb_columns,
+        buffers.normal_matrices[size(H, 2)],
+        fix_bias_layout,
     )
+end
+
+# The design matrix of the first `num_sats` of `buffers.candidate_positions` over
+# `bias_columns`, linearised at `x`, a row per satellite and then per constraint: a view
+# of `buffers.design_matrix`, grown if short.
+function _design_matrix!(buffers, x, idxs, bias_columns::BiasColumns, num_sats)
+    num_rows = num_sats + length(bias_columns.constraints)
+    if size(buffers.design_matrix, 1) < num_rows
+        buffers.design_matrix = zeros(2 * num_rows, size(buffers.design_matrix, 2))
+    end
+    H = view(buffers.design_matrix, 1:num_rows, 1:num_lsq_params(bias_columns))
+    position_and_bias_vector!(buffers.ξ, x, idxs)
+    calc_H!(H, buffers.candidate_positions, buffers.ξ, bias_columns)
 end
 
 # Switch to vector tracking off the fresh fix in `nav.pvt`: add its satellites, seed the
@@ -1205,33 +1202,19 @@ function _write_solution!(nav::VectorNavigation, groups)
     primary_clock_bias = x[idxs.clock_biases[nav.primary_clock_index]]
     candidates = buffers.candidates
 
-    # DOP of the measured satellites, or `nothing` without measurements or for a
-    # rank-deficient design (`calc_DOP!`'s all-`-1` sentinel, which `calc_pvt` never
-    # emits either).
+    # DOP of the measured satellites over the cycle's bias layout, as `calc_pvt` computes
+    # it, or `nothing` without measurements or for a rank-deficient design (`calc_DOP!`'s
+    # all-`-1` sentinel, which `calc_pvt` never emits either).
     dop = nothing
     if !isempty(candidates)
-        columns, primary_column = dense_bias_columns!(
-            buffers.dense_clock_indices,
-            buffers.dense_ifb_indices,
-            buffers.clock_columns,
-            buffers.ifb_columns,
-            members,
-            candidates,
-            nav.primary_clock_index,
+        cycle_layout = buffers.bias_layout
+        H = _design_matrix!(buffers, x, idxs, dop_columns(cycle_layout), length(candidates))
+        primary_column = clock_column(
+            cycle_layout,
+            view(buffers.rows, candidates),
+            layout.time_systems[nav.primary_clock_index],
         )
-        num_columns = 3 + columns.num_clock_biases + columns.num_ifb
-        if size(buffers.design_matrix, 1) < length(candidates)
-            buffers.design_matrix = zeros(2 * length(candidates), size(buffers.design_matrix, 2))
-        end
-        H = view(buffers.design_matrix, 1:length(candidates), 1:num_columns)
-        position_and_bias_vector!(buffers.ξ, x, idxs)
-        calc_H!(H, buffers.candidate_positions, buffers.ξ, columns)
-        candidate = calc_DOP!(
-            buffers.normal_matrices[num_columns],
-            H,
-            position,
-            primary_column,
-        )
+        candidate = calc_DOP!(buffers.normal_matrices[size(H, 2)], H, position, primary_column)
         candidate.GDOP < 0 || (dop = candidate)
     end
 

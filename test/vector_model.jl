@@ -605,46 +605,30 @@ end
     @test TL.position_uncertainty(P, idxs) ≈ sqrt(169.0)
 end
 
-@testset "Dense bias columns for DOP" begin
-    # The filter's fixed bias layout carries a clock for every configured
-    # constellation, but a DOP design matrix must only carry the columns the
-    # epoch can determine — an empty column would make `HᵀH` singular and
-    # `calc_DOP!` report -1 whenever a constellation is missing.
+@testset "The DOP's clock column of the primary" begin
+    # The DOP takes the cycle's decided columns, numbered in order of first appearance:
+    # Galileo's clock first here.
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GalileoE5aI()))
-    gal_clock = layout.clock_bias_index_by_group[2]
-    l5_ifb = layout.ifb_index_by_group[3]
-    members = [
-        _test_member(; prn, group = 2, signal = GalileoE1B(), clock_bias_index = gal_clock) for
-        prn = 1:5
+    rows = [
+        [_test_row(; prn, signal = GalileoE1B()) for prn = 1:3]
+        [_test_row(; prn) for prn = 4:6]
     ]
-    columns, primary = TL.dense_bias_columns(members, 1, 2, 1)
-    @test columns.num_clock_biases == 1
-    @test columns.num_ifb == 0
-    @test all(columns.clock_bias_indices .== 1)
-    @test primary == 1 # the GPS primary is not present; falls back to the first
-
-    # Adding an E5a member brings its band's bias back as a real column.
-    push!(
-        members,
-        _test_member(;
-            prn = 9,
-            group = 3,
-            signal = GalileoE5aI(),
-            clock_bias_index = gal_clock,
-            ifb_index = l5_ifb,
-        ),
+    bias_layout = TL.BiasLayout()
+    function column(time_system, candidates)
+        TL.decide_bias_layout!(bias_layout, view(rows, candidates))
+        TL.clock_column(bias_layout, view(rows, candidates), time_system)
+    end
+    @test column(GST(), 1:6) == 1
+    @test column(GPST(), 1:6) == 2
+    # Systems a constraint ties together share their group's column.
+    rows[1] = _test_row(;
+        prn = 1,
+        signal = GalileoE1B(),
+        decoder = with_ggto(GNSSDecoderState(GalileoE1B(), 1), 1e-9),
     )
-    columns, _ = TL.dense_bias_columns(members, gal_clock, 2, 1)
-    @test columns.num_clock_biases == 1
-    @test columns.num_ifb == 1
-    @test columns.ifb_indices == [0, 0, 0, 0, 0, 1]
-
-    # A rank-deficient design is what `calc_DOP!` reports with its sentinel, a determined
-    # one a real geometry.
-    lone = [_test_member(; prn = 1)]
-    columns, _ = TL.dense_bias_columns(lone, 1, 1, 0)
-    H = calc_H!(zeros(1, 4), [lone[1].sat_position], [6.378e6, 0.0, 0.0, 0.0], columns)
-    @test calc_DOP!(zeros(4, 4), H, ECEF(6.378e6, 0.0, 0.0), 1).GDOP < 0
+    @test column(GST(), [1, 4, 5, 6]) == column(GPST(), [1, 4, 5, 6]) == 1
+    # A system without a row is a caller's error.
+    @test_throws ArgumentError column(BDT(), 1:6)
 end
 
 @testset "Solution epoch from the cached week offset" begin
@@ -898,6 +882,20 @@ end
     @test x_acc[idxs_acc.vel] == x[idxs.vel]
 end
 
+# The fix's bias layout, as `_seed_fix_covariance!` decides it, and its design at `user`.
+function _fix_design(layout, rows, user)
+    fix_bias_layout = TL.BiasLayout()
+    @test TL.decide_bias_layout!(fix_bias_layout, rows)
+    columns = TL.fit_columns(fix_bias_layout)
+    num_columns = TL.num_lsq_params(columns)
+    ξ = [user; zeros(num_columns - 3)]
+    H = calc_H!(zeros(length(rows), num_columns), [row.position for row in rows], ξ, columns)
+    fix_bias_layout, H
+end
+
+# Satellites 2·10⁷ m from `user` along `directions`.
+_fix_positions(user, directions) = [user + 2.0e7 * SVector(d) / norm(SVector(d)) for d in directions]
+
 @testset "The seeded covariance is the fix's, scaled by its geometry" begin
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
     config = NavigationFilterConfig()
@@ -907,22 +905,19 @@ end
     # Four GPS satellites and one Galileo satellite, the Galileo clock determined by its
     # lone satellite alone — the inter-system bias is as wrong as the position along it.
     directions = [(1.0, 0.0, 0.0), (0.6, 0.8, 0.0), (0.6, -0.4, 0.7), (0.5, -0.3, -0.8), (0.7, 0.5, 0.5)]
-    members = [
-        _test_member(; group = k == 5 ? 2 : 1, slot = k, prn = k, clock_bias_index = k == 5 ? 2 : 1,
-            sat_position = user + 2.0e7 * SVector(d) / norm(SVector(d))) for (k, d) in enumerate(directions)
+    rows = [
+        _test_row(; prn = k, signal = k == 5 ? GalileoE1B() : GPSL1CA(), sat_position) for
+        (k, sat_position) in enumerate(_fix_positions(user, directions))
     ]
-    positions = [member.sat_position for member in members]
     gst_bias = Dict{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}(GST() => 2.0u"m")
     pvt = PVTSolution(; position = ECEF(user...), reference_system = GPST(), inter_system_biases = gst_bias)
-    clock_columns, ifb_columns = zeros(Int, 2), zeros(Int, 0)
-    columns, primary = TL.dense_bias_columns!(Int[], Int[], clock_columns, ifb_columns, members, eachindex(members), 1)
-    H = calc_H!(zeros(5, 5), positions, [user..., 0.0, 0.0], columns)
-    dop = calc_DOP!(zeros(5, 5), H, ECEF(user...), primary)
+    fix_bias_layout, H = _fix_design(layout, rows, user)
+    dop = calc_DOP!(zeros(5, 5), H, ECEF(user...), 1)
 
     x, P = zeros(n), zeros(n, n)
     TL.initial_nav_state!(x, P, layout, idxs, pvt)
     seeded = copy(P)
-    @test TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(5, 5), clock_columns, ifb_columns)
+    @test TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(5, 5), fix_bias_layout)
     block = [idxs.pos; idxs.clock_biases]
     @test P[block, block] ≈ TL.FIX_PSEUDORANGE_STD^2 * inv(H' * H)
     @test TL.position_uncertainty(P, idxs) ≈ TL.FIX_PSEUDORANGE_STD * dop.PDOP
@@ -939,7 +934,7 @@ end
     pvt_gps = @set pvt.inter_system_biases = empty(gst_bias)
     x2, P2 = zeros(n), zeros(n, n)
     TL.initial_nav_state!(x2, P2, layout, idxs, pvt_gps)
-    @test TL.seed_fix_covariance!(P2, idxs, layout, pvt_gps, 1, H, zeros(5, 5), clock_columns, ifb_columns)
+    @test TL.seed_fix_covariance!(P2, idxs, layout, pvt_gps, 1, H, zeros(5, 5), fix_bias_layout)
     gal = idxs.clock_biases[2]
     @test P2[gal, gal] == 100.0^2
     @test all(iszero, P2[gal, setdiff(1:n, gal)])
@@ -947,36 +942,45 @@ end
 
     # A rank-deficient design leaves the seed as it was.
     P3 = copy(seeded)
-    H_degenerate = calc_H!(zeros(5, 5), fill(positions[1], 5), [user..., 0.0, 0.0], columns)
-    @test !TL.seed_fix_covariance!(P3, idxs, layout, pvt, 1, H_degenerate, zeros(5, 5), clock_columns, ifb_columns)
+    H_degenerate = calc_H!(zeros(5, 5), fill(rows[1].position, 5), [user..., 0.0, 0.0], TL.fit_columns(fix_bias_layout))
+    @test !TL.seed_fix_covariance!(P3, idxs, layout, pvt, 1, H_degenerate, zeros(5, 5), fix_bias_layout)
     @test P3 == seeded
 end
 
-@testset "A singular design the factorization lets through leaves the seed as it was" begin
-    # Galileo seen on E5a alone: the L5 inter-frequency-bias column duplicates the
-    # Galileo clock column, so `HᵀH` is singular. For this geometry rounding can leave its
-    # last Cholesky pivot slightly positive rather than failing the factorization, and
-    # the inverse would seed the Galileo clock with a variance of about 10¹⁵ m².
+@testset "A bias the fix's epoch does not determine keeps its seed" begin
+    # Galileo seen on E5a alone: the L5 inter-frequency bias is collinear with the
+    # Galileo clock, so the fix's layout has no column for it, and the seed fills the
+    # position and both clocks while the bias keeps its variance.
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GalileoE5aI()))
     config = NavigationFilterConfig()
     idxs = TL.NavFilterIndices(config, layout)
     n = TL.num_nav_states(config, layout)
     user = SVector(6.378e6, 0.0, 0.0)
     directions = [(1.0, 0.0, 0.0), (0.6, 0.8, 0.0), (0.6, -0.4, 0.7), (0.5, -0.3, -0.8), (0.7, 0.5, 0.5), (0.4, -0.7, -0.6)]
-    members = [
-        _test_member(; group = k <= 4 ? 1 : 3, slot = k, prn = k, clock_bias_index = k <= 4 ? 1 : 2,
-            ifb_index = k <= 4 ? 0 : 1, signal = k <= 4 ? GPSL1CA() : GalileoE5aI(),
-            sat_position = user + 2.0e7 * SVector(d) / norm(SVector(d))) for (k, d) in enumerate(directions)
+    rows = [
+        _test_row(; prn = k, signal = k <= 4 ? GPSL1CA() : GalileoE5aI(), sat_position) for
+        (k, sat_position) in enumerate(_fix_positions(user, directions))
     ]
-    positions = [member.sat_position for member in members]
     gst_bias = Dict{PositionVelocityTime.SupportedTimeSystem,typeof(1.0u"m")}(GST() => 2.0u"m")
     pvt = PVTSolution(; position = ECEF(user...), reference_system = GPST(), inter_system_biases = gst_bias)
-    clock_columns, ifb_columns = zeros(Int, 2), zeros(Int, 1)
-    columns, _ = TL.dense_bias_columns!(Int[], Int[], clock_columns, ifb_columns, members, eachindex(members), 1)
-    H = calc_H!(zeros(6, 6), positions, [user..., 0.0, 0.0, 0.0], columns)
+    fix_bias_layout, H = _fix_design(layout, rows, user)
+    @test TL.fit_columns(fix_bias_layout).num_ifb == 0
     x, P = zeros(n), zeros(n, n)
     TL.initial_nav_state!(x, P, layout, idxs, pvt)
     seeded = copy(P)
-    @test !TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(6, 6), clock_columns, ifb_columns)
-    @test P == seeded
+    @test TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(5, 5), fix_bias_layout)
+    block = [idxs.pos; idxs.clock_biases]
+    @test P[block, block] ≈ TL.FIX_PSEUDORANGE_STD^2 * inv(H' * H)
+    l5 = idxs.ifb[1]
+    @test P[l5, :] == seeded[l5, :]
+
+    # A design with that bias as a column anyway is singular. Rounding can leave the last
+    # Cholesky pivot of this geometry slightly positive rather than failing the
+    # factorization, and the inverse would seed the Galileo clock with a variance of about
+    # 10¹⁵ m²; the pivot check leaves the seed as it was.
+    columns = BiasColumns([1, 1, 1, 1, 2, 2], 2, [0, 0, 0, 0, 1, 1], 1)
+    H_singular = calc_H!(zeros(6, 6), [row.position for row in rows], [user..., 0.0, 0.0, 0.0], columns)
+    P2 = copy(seeded)
+    @test !TL.seed_fix_covariance!(P2, idxs, layout, pvt, 1, H_singular, zeros(6, 6), fix_bias_layout)
+    @test P2 == seeded
 end
