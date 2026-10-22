@@ -13,11 +13,19 @@ The filter is an unscented Kalman filter over position, velocity, one clock bias
 per GNSS time system (all driven by the one oscillator's drift) and one
 inter-frequency bias per band beyond the reference band. It follows the bias
 model of [PositionVelocityTime.jl](https://github.com/JuliaGNSS/PositionVelocityTime.jl):
-which biases a cycle can determine is decided per cycle, and clocks collapse
-onto a hub system's through the broadcast offset (GGTO, BGTO) when the
-measurements cannot separate them. With `use_pseudorange_rates = true` (the
+which biases a cycle can determine is decided per cycle, and where the
+measurements cannot separate two clocks, a broadcast offset between their
+systems (GGTO, BGTO) ties them as a pseudo-measurement. With `use_pseudorange_rates = true` (the
 default) it also measures the pseudorange rates (VDFLL); with `false` it is a
 VDLL, and the carrier NCOs' Doppler comes from the code measurements alone.
+
+`NavigationFilterConfig` selects the dynamics with `motion_model_order = 2`
+and `clock_model_order = 2` by default. Motion orders `1`, `2`, and `3` carry
+position, position and velocity, and position, velocity and acceleration,
+respectively. Clock order `1` carries per-system biases; order `2` also carries
+the common oscillator drift. `acceleration_noise_std` describes platform
+manoeuvres at every order; `h0` and `hm2` retain the oscillator's Allan-variance
+coefficients.
 
 ## One estimator does it all
 
@@ -91,7 +99,7 @@ record, and builds the record from it:
 
 ```julia
 loop, prompt, filtered, blocks, overshoot =
-    apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready, driver_phase)
+    apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready, driver_phase_offset)
 record = LoopRecord(signal, filtered, output, loop, fs; prn)
 state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words, landing_sample)
 ```

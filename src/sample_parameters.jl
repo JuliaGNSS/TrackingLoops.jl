@@ -6,7 +6,7 @@ structure allows — the ceiling `calc_num_code_blocks_to_integrate` clamps a
 satellite's preferred integration length against.
 
 One full symbol: the data-bit period for data-bearing signals, or the
-secondary-code period for pilots (`data_frequency == 0`, e.g. GPS L1C-P).
+secondary-code period for pilots (a bit rate of `0 Hz`, e.g. GPS L1C-P).
 Integrating past it would straddle a symbol boundary and average two opposite
 signs away.
 
@@ -17,9 +17,9 @@ deliberately keeps the default: its 1.5 s primary period is already a whole
 coherent integration.
 """
 @inline function max_num_code_blocks_to_integrate(signal::AbstractGNSSSignal)
-    data_freq = get_data_frequency(signal)
+    data_freq = get_bit_rate(signal)
     iszero(data_freq) ? get_secondary_code_length(signal) :
-    Int(get_code_frequency(signal) / (get_code_length(signal) * data_freq))
+    Int(get_chip_rate(signal) / (get_code_length(signal) * data_freq))
 end
 
 """
@@ -73,7 +73,7 @@ record actually covered, recovered from its sample count.
     secondary_code_or_bit_found || return 1
     round(
         Int,
-        integrated_samples * get_code_frequency(signal) /
+        integrated_samples * get_chip_rate(signal) /
         (get_code_length(signal) * sampling_frequency),
     )
 end
