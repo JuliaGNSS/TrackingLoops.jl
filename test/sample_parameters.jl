@@ -2,7 +2,7 @@
     # One data bit for data-bearing signals ...
     @test @inferred(max_num_code_blocks_to_integrate(GPSL1CA())) == 20
     @test @inferred(max_num_code_blocks_to_integrate(GPSL5I())) == 10
-    # ... one secondary-code period for pilots (`data_frequency == 0`).
+    # ... one secondary-code period for pilots (a bit rate of `0 Hz`).
     @test @inferred(max_num_code_blocks_to_integrate(GPSL1C_P())) == 1800
     @test @inferred(max_num_code_blocks_to_integrate(GPSL5Q())) == 20
 

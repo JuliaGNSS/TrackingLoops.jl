@@ -57,7 +57,7 @@ end
     reacquired, = step_loop(estimator, reacquired, engine_record(7, 12_000), words, NO_LANDING_SAMPLE)
     @test reacquired.slot_index == 1 && reacquired.registration == 3
     @test slot.registration == 3
-    @test isnothing(slot.running_decoder.num_bits_after_valid_syncro_sequence)
+    @test isnothing(slot.running_decoder.num_bits_since_time_reference)
     # A third satellite finds no free slot and grows the group.
     third = init_estimator_state(estimator, GPSL1CA(), 10.0Hz, 0.0Hz)
     third, = step_loop(estimator, third, engine_record(11, 12_000), words, NO_LANDING_SAMPLE)
@@ -88,7 +88,7 @@ b1c_subframe1(prn, soh) = Float32[
     # Subframe 1 at both ends of a frame is all the sync reads.
     frame = [b1c_subframe1(30, 10); ones(Float32, 1728); b1c_subframe1(30, 11)]
     decoder = decode!(slot.running_decoder, frame, length(frame))
-    @test decoder.raw_data.soh == 10
+    @test decoder.raw_data.SOH == 10
 end
 
 # Set `slot` up for a snapshot of epoch 1 by a record ending past it, the driver's and
@@ -117,7 +117,7 @@ function take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fractio
     TL._snapshot_driver!(nav, group, slot, group.prototype, record, words)
     TL._snapshot_decoding!(nav, group, slot, record, words)
     TL._complete_snapshot!(nav, group, slot)
-    slot.decoder.num_bits_after_valid_syncro_sequence, slot.code_phase
+    slot.decoder.num_bits_since_time_reference, slot.code_phase
 end
 
 @testset "The snapshot reads the code phase from the last symbol edge" begin
@@ -125,7 +125,7 @@ end
     nav = VectorPLLAndDLL(signal).navigation
     group = nav.groups[1]
     slot = group.slots[1]
-    decoder = GNSSDecoderState(GNSSDecoderState(signal, 3); num_bits_after_valid_syncro_sequence = 10)
+    decoder = GNSSDecoderState(GNSSDecoderState(signal, 3); num_bits_since_time_reference = 10)
     code_frequency = 1.023e6
     fs = 4e6
     snapshot(blocks, fraction, end_sample, epoch_sample; kw...) =
@@ -181,7 +181,7 @@ end
     @test group.decoding_signal isa GPSL2CM
     slot = group.slots[1]
     @test slot.running_decoder isa typeof(GNSSDecoderState(GPSL2CM(), 1))
-    decoder = GNSSDecoderState(GNSSDecoderState(GPSL2CM(), 3); num_bits_after_valid_syncro_sequence = 10)
+    decoder = GNSSDecoderState(GNSSDecoderState(GPSL2CM(), 3); num_bits_since_time_reference = 10)
     code_frequency = 511.5e3
     fs = 4e6
     chips = 1000 / fs * code_frequency

@@ -1,5 +1,5 @@
 # BeiDou B3I is the legacy open-service signal on the 1268.52 MHz carrier
-# (`B3I`): a single BPSK 10230-chip primary code at 10.23 Mcps (1 ms period),
+# (`B3`): a single BPSK 10230-chip primary code at 10.23 Mcps (1 ms period),
 # again with no open-service quadrature counterpart (`get_relative_power` 1.0).
 #
 # Structurally B1I at five times the chipping rate, with the same NH20 overlay
