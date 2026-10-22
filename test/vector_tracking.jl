@@ -1,7 +1,7 @@
 # The navigation cycle, cycle by cycle, on the synthetic satellites of
 # `vector_simulation.jl` with the engine filled by hand: seeding from the scalar fix,
 # the loop closure, membership and release, and the solution.
-using PositionVelocityTime: calc_ρ_hat!, PVTSolution, TAITime
+using PositionVelocityTime: predict_pseudoranges!, PVTSolution
 using Geodesy: ENUfromECEF, wgs84
 
 @testset "The estimator's navigation engine" begin
@@ -62,7 +62,7 @@ end
     @test all(r -> r.status.num_members == 0, results)
     @test all(sat -> !sat.state.in_vector_loop, rx.sats)
     # A scalar fix each cycle, near the truth.
-    @test length(results[end].pvt.sats) == length(rx.sats)
+    @test length(results[end].pvt.observations) == length(rx.sats)
     @test position_error(rx, results[end]) < 3.0
     @test isnan(results[end].status.position_std)
 end
@@ -78,7 +78,7 @@ end
     @test vt.running
     @test seed.status.num_members == length(rx.sats)
     # The emitted solution is the scalar fix, with no per-member report of the filter.
-    @test length(seed.pvt.sats) == length(rx.sats)
+    @test length(seed.pvt.observations) == length(rx.sats)
     @test isempty(vt.vector_loop_members)
     # Every fix satellite took itself into the loop with corrections, and joined with
     # empty accumulators to accumulate from now on.
@@ -90,11 +90,8 @@ end
         @test slot.command_cycle == vt.cycle_id
         @test slot.release_reason == VT_NOT_RELEASED
     end
-    # The reference epoch is the latest transmit time corrected by the fix's clock.
-    members = vt.buffers.members
-    latest = maximum(member.time_gpst_count for member in members)
-    @test ustrip(s, vt.reference_time) ≈
-          latest - ustrip(u"m", seed.pvt.time_correction) / TL.SPEED_OF_LIGHT
+    # The reference epoch is the fix's, with the reference clock starting at zero.
+    @test vt.reference_epoch == seed.pvt.time
     # The seeded state is the fix.
     user_pos, _, _ = TL.nav_filter_states(vt.x, vt.model.idxs)
     @test user_pos == SVector(seed.pvt.position.x, seed.pvt.position.y, seed.pvt.position.z)
@@ -110,6 +107,23 @@ end
     @test all(sat -> !sat.state.in_vector_loop, rx.sats)
 end
 
+@testset "A failed scalar attempt retains the previous fix without reseeding" begin
+    for filter_config in (nothing, NavigationFilterConfig())
+        rx = SimReceiver(; filter_config)
+        _, sample, _ = run_simulation!(rx, 1)
+        previous_fix = navigation_solution(rx.estimator)
+        @test previous_fix.time !== nothing
+        foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
+        rx.vt.running = false
+        fill_unready!(slot, sat, epoch, landing, nav) =
+            (fill_slot!(slot, sat, epoch, landing, nav); slot.pvt_ready = false)
+        results, _, _ = run_simulation!(rx, 1; start_sample = sample, fill! = fill_unready!)
+        @test navigation_solution(rx.estimator) === previous_fix
+        @test !only(results).status.seeded
+        @test !only(results).status.running
+    end
+end
+
 @testset "Without an NCO delay the corrections are the residuals at the updated state" begin
     rx = SimReceiver()
     run_simulation!(rx, 3)
@@ -119,24 +133,27 @@ end
     idxs = vt.model.idxs
     T = 0.1
     # The corrections the cycle left, recomputed from the updated state the way
-    # GNSSReceiver computed them: all members at once, from the epoch's rows.
+    # GNSSReceiver computed them: all members at once, from the epoch's measurements.
     ξ = TL.position_and_bias_vector(vt.x, idxs)
-    predicted = calc_ρ_hat!(zeros(length(members)), [m.sat_position for m in members], ξ,
+    predicted = predict_pseudoranges!(zeros(length(members)), [m.sat_pos for m in members], ξ,
         TL.member_bias_columns(members, vt.layout))
     user_pos, user_vel, user_drift = TL.nav_filter_states(vt.x, idxs)
     for (j, member) in enumerate(members)
         sat = rx.sats[member.slot_index]
         slot = rx.group.slots[member.slot_index]
         @test slot.member_index == j
-        measured = TL.pseudorange_from_tows(ustrip(s, vt.reference_time), member.time_gpst_count) -
+        reference_system = TL._reference_system(vt)
+        measured = TL.calc_pseudorange(get_time_of_week(reference_system, vt.reference_epoch), member.time,
+                       get_time_system_offset(buffers.measurements[j].time_system, reference_system)) -
                    buffers.delays[j]
         # The carrier NCO is commanded the Doppler of the rate predicted where the
         # command lands — at the epoch, with the satellite there; the measured rate, a
         # mean over the past cycle, does not enter it.
-        orbit = calc_satellite_position_and_velocity(slot.decoder, member.time)
+        ephemeris = something(GNSSDecoder.get_broadcast_ephemeris(slot.decoder))
+        orbit = calc_satellite_position_and_velocity(ephemeris, member.time)
         rate_at_epoch = -TL.calc_pseudorange_rate(user_pos, user_vel, user_drift,
-            member.sat_position, orbit.velocity, calc_satellite_clock_drift(slot.decoder, member.time))
-        @test SVector{3,Float64}(orbit.position) == member.sat_position
+            member.sat_pos, orbit.velocity, calc_satellite_clock_drift(ephemeris, member.time))
+        @test SVector{3,Float64}(orbit.position) == member.sat_pos
         # The measurement the last update fused against the one the corrections use.
         @test measured === buffers.measured_pseudoranges[j]
         # The satellite took the corrections up where its command lands, at the epoch:
@@ -195,21 +212,21 @@ end
     @test pvt.reference_system === GPST()
     @test pvt.dop !== nothing
     @test 0 < pvt.dop.GDOP < 10
-    @test length(pvt.sats) == length(rx.sats)
-    @test keys(vector_loop_members(rx.estimator)) == keys(pvt.sats)
+    @test length(pvt.observations) == length(rx.sats)
+    @test keys(vector_loop_members(rx.estimator)) == keys(pvt.observations)
     @test isempty(pvt.inter_system_biases)
     @test position_error(rx, result) < 0.5
     @test norm(SVector(pvt.velocity.x, pvt.velocity.y, pvt.velocity.z) - rx.truth.velocity) < 0.05
     @test 0.0u"m" < result.status.position_std < 10.0u"m"
     @test result.status.clock_std > 0.0u"m"
-    # The filter's clock drift is reported as the relative drift.
-    @test pvt.relative_clock_drift * TL.SPEED_OF_LIGHT ≈ rx.truth.clock_drift atol = 0.05
+    # The filter's clock drift is reported in m/s, the rate of the clock bias.
+    @test ustrip(u"m/s", pvt.clock_drift) ≈ rx.truth.clock_drift atol = 0.05
     # Timestamps advance by the cycle.
     @test results[end].pvt.time - results[end-1].pvt.time ≈ 0.1 atol = 1e-6
     # The same solution object is returned and kept.
     @test pvt === navigation_solution(rx.estimator)
     # Steered members' post-fit residuals are their discriminators alone: small.
-    for info in values(pvt.sats)
+    for info in values(pvt.observations)
         @test abs(info.residual) < 1.0u"m"
         @test abs(info.rate_residual) < 0.05u"m/s"
     end
@@ -227,7 +244,7 @@ end
     key = (:GPSL1CA, prn)
     @test rx.sats[1].state.in_vector_loop
     @test release_reason(rx.estimator, GPSL1CA(), prn) == VT_NOT_RELEASED
-    @test !haskey(results[1].pvt.sats, key)
+    @test !haskey(results[1].pvt.observations, key)
     @test haskey(vector_loop_members(rx.estimator), key)
     @test results[1].status.num_members == length(rx.sats)
     @test !results[1].status.released
@@ -354,18 +371,18 @@ end
     results, sample, _ = run_simulation!(rx, 10; fill! = gps_only!)
     @test results[end].status.running
     @test !haskey(results[end].pvt.inter_system_biases, GST())
-    @test all(key -> first(key) === :GPSL1CA, keys(results[end].pvt.sats))
+    @test all(key -> first(key) === :GPSL1CA, keys(results[end].pvt.observations))
     results, _, _ = run_simulation!(rx, 3; start_sample = sample)
     @test haskey(results[end].pvt.inter_system_biases, GST())
 end
 
-@testset "A re-seed reads the epoch offset afresh" begin
+@testset "A re-seed takes the receive epoch afresh from the fix" begin
     rx = SimReceiver()
     results, sample, _ = run_simulation!(rx, 5)
     before = results[end].pvt.time
-    # The scalar solve takes over, and the cached epoch offset is a week stale, as after
-    # a GPST week rollover no running cycle saw.
-    rx.vt.time_epoch_offset -= TL.SECONDS_PER_WEEK
+    # The scalar solve takes over from a receive epoch a week off, which the re-seed must
+    # not carry over.
+    rx.vt.reference_epoch -= GNSSSignals.SECONDS_PER_WEEK
     foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
     rx.vt.running = false
     results, _, _ = run_simulation!(rx, 2; start_sample = sample)

@@ -94,7 +94,7 @@ end
 
 @testset "Correlator sample shifts" begin
     gpsl1 = GPSL1CA()
-    code_frequency = get_code_frequency(gpsl1)
+    code_frequency = get_chip_rate(gpsl1)
     sampling_frequency = code_frequency * 4
     correlator = EarlyPromptLateCorrelator()
     @test @inferred(
@@ -102,13 +102,13 @@ end
     ) == -2:2:2
 
     galileo_e1b = GalileoE1B()
-    sampling_frequency = get_code_frequency(galileo_e1b) * 4
+    sampling_frequency = get_chip_rate(galileo_e1b) * 4
     correlator = VeryEarlyPromptLateCorrelator()
     @test @inferred(
         get_correlator_sample_shifts(correlator, sampling_frequency, code_frequency)
     ) == -2:1:2
 
-    sampling_frequency = get_code_frequency(galileo_e1b) * 8
+    sampling_frequency = get_chip_rate(galileo_e1b) * 8
     @test @inferred(
         get_correlator_sample_shifts(correlator, sampling_frequency, code_frequency)
     ) == [-5, -1, 0, 1, 5]
@@ -186,7 +186,7 @@ end
 end
 
 @testset "Early late sample spacing" begin
-    code_frequency = get_code_frequency(GPSL1CA())
+    code_frequency = get_chip_rate(GPSL1CA())
     two_ants = SVector(1.0 + 0.0im, 1.0 + 0.0im)
     correlator = @inferred EarlyPromptLateCorrelator(SVector(two_ants, two_ants, two_ants), 0.5)
     @test get_early_late_sample_spacing(correlator, 2e6Hz, code_frequency) == 2

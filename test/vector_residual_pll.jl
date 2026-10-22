@@ -471,8 +471,8 @@ end
     # Every decoder decoded the subframes broadcast while the filter set the carrier, up
     # to a minute after the receiver started, from the engine's own soft bits.
     @test all(slot -> slot.symbol_from_edge, slots)
-    @test all(slot -> TL.GNSSDecoder.get_time_of_week(slot.running_decoder) >=
-        TL.GNSSDecoder.get_time_of_week(rx.sats[1].decoder) + 60, slots)
+    @test all(slot -> get_broadcast_time_of_week(slot.running_decoder) >=
+        get_broadcast_time_of_week(rx.sats[1].decoder) + 60, slots)
     prn = rx.sats[1].decoder.prn
     elapsed(r) = r.time - rx.truth.t0
     measured(r) = (:GPSL1CA, prn) in r.measured

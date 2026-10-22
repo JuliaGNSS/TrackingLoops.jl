@@ -736,9 +736,9 @@ Takes effect at the next detector call.
 
 # Primary-code blocks per navigation bit; 0 for pilots, which callers must guard.
 @inline function _calc_num_code_blocks_that_form_a_bit(signal::AbstractGNSSSignal)
-    data_freq = get_data_frequency(signal)
+    data_freq = get_bit_rate(signal)
     iszero(data_freq) && return 0
-    Int(get_code_frequency(signal) / (get_code_length(signal) * data_freq))
+    Int(get_chip_rate(signal) / (get_code_length(signal) * data_freq))
 end
 
 """
