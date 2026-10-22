@@ -50,7 +50,7 @@ const _PHASE_LOCK_TIME_CONSTANT = 0.1s
 const _MIN_PHASE_LOCK_RECORDS = 25
 
 @inline function _phase_lock_time_constant(signal::AbstractGNSSSignal, num_code_blocks)
-    chips = round(Int, get_code_frequency(signal) * _PHASE_LOCK_TIME_CONSTANT)
+    chips = round(Int, get_chip_rate(signal) * _PHASE_LOCK_TIME_CONSTANT)
     max(cld(chips, num_code_blocks * get_code_length(signal)), _MIN_PHASE_LOCK_RECORDS)
 end
 

@@ -206,7 +206,7 @@ end
 
 # Whole code blocks covering ~5 ms, at least two.
 @inline function _default_narrowband_code_blocks(signal::AbstractGNSSSignal)
-    code_period = get_code_length(signal) / get_code_frequency(signal)
+    code_period = get_code_length(signal) / get_chip_rate(signal)
     max(2, round(Int, 5ms / code_period))
 end
 

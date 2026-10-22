@@ -88,10 +88,9 @@ end
 
 @testset "Cycles with a decoded GGTO are allocation-free" begin
     # Real Galileo satellites broadcast the GGTO and the fixtures do not, so it is set by
-    # hand. Reading it allocated before GNSSDecoder 5.0.2 (JuliaGNSS/GNSSDecoder.jl#101),
-    # and still does on Julia 1.10, which GNSSDecoder does not check for allocations
-    # either. The allocation-free loop process is built with juliac on 1.12 or later.
-    # Here the GGTO also collapses the Galileo clock onto the GPS one.
+    # hand. Reading it allocates on Julia 1.10, which GNSSDecoder does not check for
+    # allocations. The allocation-free loop process is built with juliac on 1.12 or later.
+    # Here the GGTO also ties the Galileo clock to the GPS one.
     for filter_config in (nothing, NavigationFilterConfig())
         rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1), filter_config)
         galileo = only(rx.channels[2])
@@ -99,7 +98,7 @@ end
         _, sample, _ = run_simulation!(rx, 20)
         @test rx.vt.running == !isnothing(filter_config)
         isnothing(filter_config) ||
-            @test !isempty(rx.vt.buffers.observability.hub_offset_constraints)
+            @test !isempty(rx.vt.buffers.time_offset_constraints)
         @test measure_navigation(rx, sample + 100 * SAMPLES_PER_MS) == 0 skip = VERSION < v"1.11"
     end
 end

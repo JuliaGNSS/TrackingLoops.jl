@@ -43,7 +43,7 @@ end
     for slot in pipeline_slots(rx)
         @test slot.occupied
         @test slot.decoding_bit_synced
-        @test TL.is_decoding_completed_for_positioning(slot.running_decoder)
+        @test TL.has_positioning_data(slot.running_decoder)
         @test slot.in_lock && slot.pvt_ready
         @test 40 < slot.cn0_dbhz < 50
     end
@@ -61,7 +61,7 @@ end
     @test pipeline_code_errors(tail) < 0.05
     @test all(sat -> sat.state.in_vector_loop, rx.sats)
     @test 0.0u"m" < navigation_status(rx.estimator).position_std < 3.0u"m"
-    @test keys(vector_loop_members(rx.estimator)) == keys(navigation_solution(rx.estimator).sats)
+    @test keys(vector_loop_members(rx.estimator)) == keys(navigation_solution(rx.estimator).observations)
     # Each satellite took up every cycle once.
     @test all(sat -> sat.state.cycle_id == nav.cycle_id, rx.sats)
     @test nav.registrations == length(rx.sats)
@@ -83,8 +83,8 @@ end
         @test report.release_reason == VT_NOT_RELEASED
         @test report.epoch ≈ navigation_epoch(estimator)
         @test 40 < report.cn0_dbhz < 50
-        @test TL.is_decoding_completed_for_positioning(report.decoder)
-        @test report.decoder.data.sqrt_A == sat.decoder.data.sqrt_A
+        @test TL.has_positioning_data(report.decoder)
+        @test get_broadcast_ephemeris(report.decoder) == get_broadcast_ephemeris(sat.decoder)
     end
     @test satellite_report(estimator, GPSL1CA(), 32) === nothing
     @test satellite_report(estimator, GalileoE1B(), rx.sats[1].decoder.prn) === nothing
@@ -251,7 +251,7 @@ end
     @test gone_slot.occupied
     @test gone_slot.prn == newcomer_decoder.prn
     @test gone_slot.running_decoder.prn == newcomer_decoder.prn
-    @test !TL.is_decoding_completed_for_positioning(gone_slot.running_decoder)
+    @test !TL.has_positioning_data(gone_slot.running_decoder)
     @test nav.registrations == 9
     # Dropping, freeing and taking the slot over allocated nothing, and neither did the
     # warm records and cycles around it.
@@ -361,7 +361,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # The host's bit clock and C/N₀ estimator, and pilot + data pairs.
 
-using PositionVelocityTime: calc_uncorrected_time
+using PositionVelocityTime: calc_uncorrected_transmit_time
 
 # Per satellite, the transmit time of its latest snapshot minus the true one at that
 # epoch, as a range (m).
@@ -372,7 +372,7 @@ function snapshot_range_errors(rx)
         slot = group.slots[sat.state.slot_index]
         t = rx.truth.t0 + TL._epoch_time(nav, slot.snapshot_epoch)
         u_true = uncorrected_time(sat, first(true_transmit(sat, rx.truth, t)))
-        (calc_uncorrected_time(TL._satellite_state(group.driver_signal, slot)) - u_true) *
+        (calc_uncorrected_transmit_time(TL._signal_observation(group.driver_signal, slot)) - u_true) *
             TL.SPEED_OF_LIGHT
     end
 end
@@ -390,7 +390,7 @@ first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
     for sat in rx.sats
         slot = group.slots[sat.state.slot_index]
         @test slot.decoding_bit_synced
-        @test TL.is_decoding_completed_for_positioning(slot.running_decoder)
+        @test TL.has_positioning_data(slot.running_decoder)
         @test slot.in_lock && slot.pvt_ready
         report = satellite_report(estimator, GPSL1C_P(), sat.decoder.prn)
         @test report.bit_synced && report.in_vector_loop
@@ -408,7 +408,7 @@ first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
     @test pipeline_code_errors(tail) < 0.2
     # The solution and the members are keyed by the driver.
     @test all(key -> first(key) == :GPSL1C_P, keys(vector_loop_members(estimator)))
-    @test all(key -> first(key) == :GPSL1C_P, keys(navigation_solution(estimator).sats))
+    @test all(key -> first(key) == :GPSL1C_P, keys(navigation_solution(estimator).observations))
     # Warm, a pair's records step without allocating.
     for sat in Iterators.flatten((rx.sats, rx.passengers))
         sizehint!(sat.loop.bit_buffer.soft_bits, 64)
@@ -500,8 +500,8 @@ end
     @test any(r -> r.status.seeded, results1)
     @test [r.pvt.position for r in results1] == [r.pvt.position for r in results2]
     for (a, b) in zip(rx1.vt.groups[1].slots, rx2.vt.groups[1].slots)
-        @test a.running_decoder.num_bits_after_valid_syncro_sequence ==
-              b.running_decoder.num_bits_after_valid_syncro_sequence
+        @test a.running_decoder.num_bits_since_time_reference ==
+              b.running_decoder.num_bits_since_time_reference
     end
 end
 
@@ -533,7 +533,7 @@ end
         report = satellite_report(rx.estimator, GPSL1CA(), sat.decoder.prn)
         @test report.bit_synced && !report.in_lock && !report.pvt_ready
         @test report.cn0_dbhz == -Inf
-        @test TL.is_decoding_completed_for_positioning(report.decoder)
+        @test TL.has_positioning_data(report.decoder)
     end
     results, _, diverged = run_pipeline!(rx, 1.0; start_sample = sample)
     @test !diverged
