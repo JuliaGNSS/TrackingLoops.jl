@@ -797,13 +797,13 @@ end
     @test TL.mean_code_disc_at_epoch(nothing_accumulated, 0.1) == 0.0
 end
 
-@testset "Pseudorange differencing across a GNSS week rollover" begin
+@testset "Pseudorange differencing across a GNSS week crossover" begin
     c = SPEED_OF_LIGHT
-    # Receive just after the week rollover (TOW 0.05 s), transmit just before it
+    # Receive just after the week crossover (TOW 0.05 s), transmit just before it
     # (TOW 604799.97 s): the 0.08 s light-travel difference straddles 604800 s and
     # must fold back rather than read as a ~604800 s (≈1.8e11 m) pseudorange.
     @test TL.calc_pseudorange(0.05, 604799.97) ≈ 0.08 * c rtol = 1e-6
-    # Mid-week (no wrap) is unaffected.
+    # Mid-week (no crossover) is unaffected.
     @test TL.calc_pseudorange(100.08, 100.0) ≈ 0.08 * c rtol = 1e-6
 end
 
