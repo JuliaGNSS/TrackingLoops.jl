@@ -275,7 +275,7 @@ end
 function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, record::LoopRecord)
     slot.running_decoder =
         slot.prn == prn && slot.registration > 0 ? reset_decoder_state!(slot.running_decoder) :
-        _rebind_decoder(slot.running_decoder, prn)
+        reset_decoder_state!(slot.running_decoder, prn)
     slot.prn = prn
     slot.occupied = true
     slot.registration = nav.registrations
@@ -319,19 +319,6 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     slot.release_reason = VT_NOT_RELEASED
     slot.command_cycle = -1
     slot.member_index = 0
-    nothing
-end
-
-# `decoder`'s containers rebound to `prn`, with sync, vote tally and data cleared
-# (GNSSDecoder keeps everything PRN-specific in `state.prn`).
-function _rebind_decoder(decoder::GNSSDecoderState{D}, prn::Int) where {D}
-    restarted = reset_decoder_state!(decoder)
-    _clear_vote_tally!(restarted.cache)
-    GNSSDecoderState(prn, D(), D(), restarted.constants, restarted.cache, nothing, false)
-end
-
-@inline function _clear_vote_tally!(cache)
-    hasfield(typeof(cache), :old_data) && empty!(getfield(cache, :old_data))
     nothing
 end
 
