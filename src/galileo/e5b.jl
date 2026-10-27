@@ -1,7 +1,7 @@
 # Galileo E5b is the upper sideband of the E5 AltBOC(15,10) signal on the
 # 1207.14 MHz carrier (`E5b`, shared with BeiDou B2b); the OS SIS ICD (§2.3.1.2)
 # allows processing E5a and E5b as two separate QPSK signals: E5b-I
-# carries I/NAV at 250 sym/s under a CS4 overlay, E5b-Q is a dataless pilot
+# carries I/NAV at 250 bit/s under a CS4 overlay, E5b-Q is a dataless pilot
 # under a per-SVID CS100 overlay. Tracked as two independent signals.
 
 """
@@ -9,7 +9,7 @@ $(SIGNATURES)
 
 Hard-path secondary-code sync detector for Galileo E5b-I over the shared CS4
 code (`1110`; OS SIS ICD v2.2 §3.5.1) — see `_detect_secondary_code_sync`. One
-CS4 period is exactly one 250 sym/s I/NAV symbol. The default detector is the soft
+CS4 period is exactly one 250 bit/s I/NAV bit. The default detector is the soft
 one ([`uses_soft_secondary_code_detection`](@ref)).
 """
 @inline function detect_bit_or_secondary_code_sync(

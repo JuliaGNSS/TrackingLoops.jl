@@ -79,9 +79,8 @@ end
 @testset "CN0UpdateContext derives the bit grid" begin
     bit_buffer = BitBuffer{UInt64}()
     # Positional form: noise density and integration time default to `nothing`.
-    positional = @inferred CN0UpdateContext(GPSL1CA(), 2, 20, 3, bit_buffer)
+    positional = @inferred CN0UpdateContext(GPSL1CA(), 2, 3, bit_buffer)
     @test positional.num_code_blocks == 2
-    @test positional.num_code_blocks_per_bit == 20
     @test positional.bit_code_block_index == 3
     @test positional.noise_density === nothing
     @test positional.integration_time === nothing
@@ -89,7 +88,6 @@ end
     # Derived form: the grid comes from the signal and the bit buffer, and is
     # marked unknown while sync has not been found.
     context_l1ca = @inferred CN0UpdateContext(GPSL1CA(), bit_buffer, 1)
-    @test context_l1ca.num_code_blocks_per_bit == 20
     @test context_l1ca.bit_code_block_index == -1
     synced_buffer = BitBuffer{UInt64}(
         zero(UInt64),
@@ -372,21 +370,20 @@ end
 end
 
 @testset "The signals NWPR cannot serve, the noise reference can (issue #217)" begin
-    # One symbol per code block, or a secondary code before sync: NWPR admits no
+    # One bit per code block, or a secondary code before sync: NWPR admits no
     # coherent window ever and reports its fallback; the noise reference has no
     # window, so these are ordinary records to it.
     bit_buffer = BitBuffer{UInt64}()
     cases = (
-        ("GPS L1C-D, synced", GPSL1C_D(), 1, 0),
-        ("Galileo E1B, synced", GalileoE1B(), 1, 0),
-        ("GPS L5I, pre-sync", GPSL5I(), 10, -1),
+        ("GPS L1C-D, synced", GPSL1C_D(), 0),
+        ("Galileo E1B, synced", GalileoE1B(), 0),
+        ("GPS L5I, pre-sync", GPSL5I(), -1),
     )
-    for (name, signal, blocks_per_bit, block_index) in cases
+    for (name, signal, block_index) in cases
         @testset "$name" begin
             context = CN0UpdateContext(
                 signal,
                 1,
-                blocks_per_bit,
                 block_index,
                 bit_buffer,
                 CN0_N₀,
@@ -521,15 +518,15 @@ end
     # Feed a constant prompt and walk the bit grid by hand, so only the window
     # logic is under test.
     bit_buffer = BitBuffer{UInt64}()
-    context(signal, blocks_per_bit, bit_block_index) =
-        CN0UpdateContext(signal, 1, blocks_per_bit, bit_block_index, bit_buffer)
+    context(signal, bit_block_index) =
+        CN0UpdateContext(signal, 1, bit_block_index, bit_buffer)
     fresh() = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 20)
 
     # GPS L1 C/A, synced: one window per 20-block navigation bit, and it only
     # starts on a bit boundary.
     estimator = fresh()
     for bit_block_index in [10:19; repeat(0:19, 2)]
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), bit_block_index))
     end
     @test Base.length(estimator) == 2
     @test estimator.num_records_per_ratio == 20
@@ -538,21 +535,21 @@ end
     # the bit from its start.
     capped = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 5)
     for bit_block_index in repeat(0:19, 2)
-        capped = update(capped, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        capped = update(capped, 1.0 + 0.0im, context(GPSL1CA(), bit_block_index))
     end
     @test Base.length(capped) == 8
     @test capped.num_records_per_ratio == 5
     # A window that would run past the end of the bit is not opened at all.
     ragged = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 6)
     for bit_block_index in repeat(0:19, 2)
-        ragged = update(ragged, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        ragged = update(ragged, 1.0 + 0.0im, context(GPSL1CA(), bit_block_index))
     end
     @test Base.length(ragged) == 6
     @test ragged.num_records_per_ratio == 6
     # A cap above the bit period cannot lengthen the window past the bit.
     wide = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 50)
     for bit_block_index in repeat(0:19, 2)
-        wide = update(wide, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        wide = update(wide, 1.0 + 0.0im, context(GPSL1CA(), bit_block_index))
     end
     @test Base.length(wide) == 2
     @test wide.num_records_per_ratio == 20
@@ -560,7 +557,7 @@ end
     # Not synced yet: a short unaligned window, five blocks by default.
     estimator = fresh()
     for _ = 1:20
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
+        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), -1))
     end
     @test Base.length(estimator) == 4
     @test estimator.num_records_per_ratio == 5
@@ -571,13 +568,13 @@ end
         num_presync_narrowband_code_blocks = 2,
     )
     for _ = 1:8
-        two_block = update(two_block, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
+        two_block = update(two_block, 1.0 + 0.0im, context(GPSL1CA(), -1))
     end
     @test Base.length(two_block) == 4
     @test two_block.num_records_per_ratio == 2
     # Switching to the post-sync window restarts the ring.
     for bit_block_index = 0:19
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), bit_block_index))
     end
     @test Base.length(estimator) == 1
     @test estimator.num_records_per_ratio == 20
@@ -586,14 +583,14 @@ end
     # dropped when the first bit-aligned one completes.
     same_length = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 5)
     for _ = 1:20
-        same_length = update(same_length, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
+        same_length = update(same_length, 1.0 + 0.0im, context(GPSL1CA(), -1))
     end
     @test Base.length(same_length) == 4
     @test same_length.num_records_per_ratio == 5
     @test !same_length.ratios_are_bit_aligned
     for bit_block_index = 0:4
         same_length =
-            update(same_length, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+            update(same_length, 1.0 + 0.0im, context(GPSL1CA(), bit_block_index))
     end
     @test same_length.num_records_per_ratio == 5     # window length unchanged ...
     @test same_length.ratios_are_bit_aligned
@@ -603,13 +600,13 @@ end
     # into the bit-aligned window.
     estimator = fresh()
     for _ = 1:9
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
+        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), -1))
     end
     @test estimator.num_accumulated_records == 4
-    estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, 5))
+    estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 5))
     @test estimator.num_accumulated_records == 0     # dropped, not continued
     for bit_block_index in [6:19; 0:19]
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), bit_block_index))
     end
     @test estimator.num_records_per_ratio == 20
     @test Base.length(estimator) == 1
@@ -618,10 +615,10 @@ end
     # there rather than dropping the record.
     restarted = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 5)
     for bit_block_index = 0:2
-        restarted = update(restarted, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        restarted = update(restarted, 1.0 + 0.0im, context(GPSL1CA(), bit_block_index))
     end
     @test restarted.num_accumulated_records == 3
-    restarted = update(restarted, 1.0 + 0.0im, context(GPSL1CA(), 20, 5))
+    restarted = update(restarted, 1.0 + 0.0im, context(GPSL1CA(), 5))
     @test restarted.num_accumulated_records == 1
     @test restarted.num_accumulated_code_blocks == 1
 
@@ -629,29 +626,29 @@ end
     # window is opened and the fallback is reported.
     estimator = fresh()
     for _ = 1:40
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL5I(), 10, -1))
+        estimator = update(estimator, 1.0 + 0.0im, context(GPSL5I(), -1))
     end
     @test Base.length(estimator) == 0
     @test estimate_cn0(estimator, 1ms) ==
           estimate_cn0(estimator.fallback, 1ms)
     # Once synced its bit is 10 blocks long, and the replica wipes the overlay.
     for bit_block_index in repeat(0:9, 3)
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL5I(), 10, bit_block_index))
+        estimator = update(estimator, 1.0 + 0.0im, context(GPSL5I(), bit_block_index))
     end
     @test Base.length(estimator) == 3
     @test estimator.num_records_per_ratio == 10
 
-    # One symbol per code block (GPS L1C-D, Galileo E1B): no coherent window.
+    # One bit per code block (GPS L1C-D, Galileo E1B): no coherent window.
     estimator = fresh()
     for _ = 1:40
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1C_D(), 1, 0))
+        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1C_D(), 0))
     end
     @test Base.length(estimator) == 0
 
     # A pilot has no bit grid to respect post-sync: windows run back to back.
     estimator = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 5)
     for _ = 1:20
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1C_P(), 0, 0))
+        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1C_P(), 0))
     end
     @test Base.length(estimator) == 4
     @test estimator.num_records_per_ratio == 5
@@ -660,7 +657,7 @@ end
 @testset "NWPR CN0 estimator when a record outgrows its own window" begin
     bit_buffer = BitBuffer{UInt64}()
     context(num_code_blocks, bit_block_index) =
-        CN0UpdateContext(GPSL1CA(), num_code_blocks, 20, bit_block_index, bit_buffer)
+        CN0UpdateContext(GPSL1CA(), num_code_blocks, bit_block_index, bit_buffer)
 
     # Records as long as a whole navigation bit close every window on a single
     # record; the windows buffered before the switch have to go with it.
@@ -686,7 +683,7 @@ end
     # window untouched; its prompt still reaches the fallback.
     bit_buffer = BitBuffer{UInt64}()
     context(num_code_blocks, bit_block_index) =
-        CN0UpdateContext(GPSL1CA(), num_code_blocks, 20, bit_block_index, bit_buffer)
+        CN0UpdateContext(GPSL1CA(), num_code_blocks, bit_block_index, bit_buffer)
 
     estimator = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 5)
     for bit_block_index = 0:2
