@@ -114,6 +114,6 @@ its runner-up, so it declines to lock. A GEO satellite therefore tracks and can 
 ranged on, but stays in the one-block pre-sync integration and decodes no bits. It
 takes both the missing overlay and the D2 rate: without an overlay at the D1 rate the
 bins would reduce to GPS L1 C/A's bit-edge search and lock on the symbol boundary
-(`test/signals.jl` tests both cases). Decoding a GEO satellite needs a per-PRN data
-rate upstream: `get_bit_rate` is per signal type and reports the D1 50 Hz for
-every PRN.
+(`test/signals.jl` tests both cases). GNSSSignals states the D2 rate per PRN
+(`get_code_blocks_per_bit(signal, prn)`), but TrackingLoops does not use it yet, so a
+GEO satellite is tracked and ranged on but not decoded.

@@ -97,7 +97,7 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     decoding_last_end_sample::Int
     decoding_last_end_time::Float64 # s
     decoding_bit_synced::Bool
-    decoding_blocks_into_symbol::Int
+    decoding_blocks_into_bit::Int
     decoding_code_phase_fraction::Float64 # chips past the nearest code-block boundary
     # The fold the decoding signal's bit sync was found in: its later records were
     # correlated before the sync.

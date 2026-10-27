@@ -56,7 +56,7 @@ by C/N₀ (the vector loop; the scalar loops ignore it):
 
   - `bit_synced`: whether the bit clock holds bit or secondary-code sync;
   - `sync_change`: whether this record found or lost it ([`SyncChange`](@ref));
-  - `blocks_into_symbol`: code blocks integrated into the current data symbol
+  - `blocks_into_bit`: code blocks integrated into the current navigation bit
     (`0` before sync);
   - `new_soft_bits`: exactly the soft bits *this record* appended, a view of the
     bit buffer's vector valid for the call, so it does not matter when the host
@@ -89,7 +89,7 @@ struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F,CN0<:AbstractCN0
     code_phase::Float64
     bit_synced::Bool
     sync_change::SyncChange
-    blocks_into_symbol::Int
+    blocks_into_bit::Int
     new_soft_bits::SoftBitsView
     cn0_estimator::CN0
     carrier_phase_polarity::Int8

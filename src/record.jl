@@ -61,7 +61,7 @@ function SignalLoopState(
     # Seed the sync accumulators at the detector's length so no later record,
     # re-arm or bit-clock restart (they zero in place) allocates.
     if uses_soft_bit_edge_detection(signal)
-        _seed_phase_accumulators!(bit_buffer.phase_acc, _calc_num_code_blocks_that_form_a_bit(signal))
+        _seed_phase_accumulators!(bit_buffer.phase_acc, get_code_blocks_per_bit(signal))
     elseif uses_soft_secondary_code_detection(signal)
         _seed_phase_accumulators!(bit_buffer.phase_acc, get_secondary_code_length(signal))
     end

@@ -16,11 +16,8 @@ multi-block data bit nor an overlay; Galileo E5a-QP overrides it to a whole
 deliberately keeps the default: its 1.5 s primary period is already a whole
 coherent integration.
 """
-@inline function max_num_code_blocks_to_integrate(signal::AbstractGNSSSignal)
-    data_freq = get_bit_rate(signal)
-    iszero(data_freq) ? get_secondary_code_length(signal) :
-    Int(get_chip_rate(signal) / (get_code_length(signal) * data_freq))
-end
+@inline max_num_code_blocks_to_integrate(signal::AbstractGNSSSignal) =
+    max(get_secondary_code_length(signal), get_code_blocks_per_bit(signal))
 
 """
 $(SIGNATURES)

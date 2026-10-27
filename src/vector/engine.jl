@@ -290,7 +290,7 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     slot.decoding_last_end_sample = start
     slot.decoding_last_end_time = start / fs
     slot.decoding_bit_synced = false
-    slot.decoding_blocks_into_symbol = 0
+    slot.decoding_blocks_into_bit = 0
     slot.decoding_code_phase_fraction = NaN
     slot.sync_fold_end = typemin(Int)
     slot.symbol_accumulator = zero(ComplexF64)
@@ -498,9 +498,8 @@ function _code_phase_on_driver(group::VTSlotGroup, slot::VTSlot)
     driver_phase = slot.epoch_driver_code_phase
     slot.epoch_bit_synced && !isnan(driver_phase) || return code_phase
     decoding = group.decoding_signal
-    chips_per_symbol =
-        ustrip(Hz, get_chip_rate(decoding)) / ustrip(Hz, get_bit_rate(decoding))
-    period = min(Float64(get_code_length(group.driver_signal)), chips_per_symbol)
+    chips_per_bit = get_code_blocks_per_bit(decoding) * get_code_length(decoding)
+    period = min(Float64(get_code_length(group.driver_signal)), chips_per_bit)
     code_phase + rem(driver_phase - code_phase, period, RoundNearest)
 end
 
@@ -528,7 +527,7 @@ end
 # data-symbol edge: the bit clock's whole code blocks plus the phase past the block
 # boundary. Meaningless (and unread) before bit sync.
 function _code_phase_from_symbol_edge(signal::AbstractGNSSSignal, slot::VTSlot)
-    blocks = slot.decoding_bit_synced ? slot.decoding_blocks_into_symbol : 0
+    blocks = slot.decoding_bit_synced ? slot.decoding_blocks_into_bit : 0
     fraction = slot.decoding_code_phase_fraction
     blocks * get_code_length(signal) + (isnan(fraction) ? 0.0 : fraction)
 end
@@ -730,7 +729,7 @@ function _advance_decoding!(
     slot.decoding_last_end_sample = record.sample_index
     slot.decoding_last_end_time = record.sample_index / fs
     slot.decoding_bit_synced = record.bit_synced && !unwiped_after_sync
-    slot.decoding_blocks_into_symbol = record.blocks_into_symbol
+    slot.decoding_blocks_into_bit = record.blocks_into_bit
     slot.decoding_code_phase_fraction =
         isnan(record.code_phase) ? NaN :
         mod(record.code_phase + code_length / 2, code_length) - code_length / 2

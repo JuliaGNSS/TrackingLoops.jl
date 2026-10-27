@@ -105,7 +105,7 @@ function take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fractio
     slot.driver_epoch = slot.decoding_epoch = slot.snapshot_epoch = typemin(Int)
     slot.running_decoder = decoder
     slot.decoding_bit_synced = synced
-    slot.decoding_blocks_into_symbol = blocks
+    slot.decoding_blocks_into_bit = blocks
     slot.decoding_code_phase_fraction = fraction
     slot.decoding_last_end_sample = decoding_end
     slot.decoding_last_end_time = decoding_end / fs

@@ -631,11 +631,16 @@ for [`get_soft_bits`](@ref).
     get_soft_bits(bit_buffer::BitBuffer)
     get_soft_bits(state::SignalLoopState)
 
-The soft bits decoded so far: per navigation bit, the polarity-corrected real part
+The soft bits collected so far: per navigation bit, the polarity-corrected real part
 of the summed de-rotated prompts. The sign is the hard decision, the magnitude the
 reliability, ready for soft-decision decoding (e.g. Viterbi for Galileo E1B, LDPC
 for GPS L1C-D). Bits recovered from the pre-sync window are sign votes scaled by the
 sync-time prompt magnitude, to stay comparable.
+
+Outside GNSSDecoder, a bit is a bit as tracked: a channel symbol before
+error-correction decoding. On a signal with forward error correction (GPS L2C, L5 and
+L1C-D, Galileo, the BeiDou B-CNAV family) the decoder recovers the message bits from
+them; elsewhere they are the message bits.
 
 The buffer's own vector, not a copy: drain it (`empty!`) after reading. A
 [`SignalLoopState`](@ref)'s holds 64 bits before it allocates.
@@ -693,7 +698,7 @@ TrackingLoops.uses_soft_bit_edge_detection(::SomeSignal) = false
 Constant-folded per signal type.
 """
 @inline uses_soft_bit_edge_detection(signal::AbstractGNSSSignal) =
-    _calc_num_code_blocks_that_form_a_bit(signal) > 1 &&
+    get_code_blocks_per_bit(signal) > 1 &&
     get_secondary_code_length(signal) == 1
 
 """
@@ -734,12 +739,6 @@ Takes effect at the next detector call.
 """
 @inline get_bit_edge_detection_confidence(::AbstractGNSSSignal) = 0.999
 
-# Primary-code blocks per navigation bit; 0 for pilots, which callers must guard.
-@inline function _calc_num_code_blocks_that_form_a_bit(signal::AbstractGNSSSignal)
-    data_freq = get_bit_rate(signal)
-    iszero(data_freq) && return 0
-    Int(get_chip_rate(signal) / (get_code_length(signal) * data_freq))
-end
 
 """
 $(SIGNATURES)
@@ -761,31 +760,31 @@ function buffer(
     integrated_code_blocks,
     prompt,
 ) where {B<:Unsigned}
-    num_code_blocks_that_form_a_bit = _calc_num_code_blocks_that_form_a_bit(signal)
+    num_code_blocks_per_bit = get_code_blocks_per_bit(signal)
 
     if (bit_buffer.found == false)
         return _buffer_find_bit(
             signal,
             prn,
             bit_buffer,
-            num_code_blocks_that_form_a_bit,
+            num_code_blocks_per_bit,
             integrated_code_blocks,
             prompt,
         )
     end
 
     # Pilots: nothing to decode; the lock still anchors the code phase.
-    num_code_blocks_that_form_a_bit == 0 && return bit_buffer
+    num_code_blocks_per_bit == 0 && return bit_buffer
 
     prompt_accumulator = bit_buffer.prompt_accumulator + prompt
     prompt_accumulator_integrated_code_blocks =
         bit_buffer.prompt_accumulator_integrated_code_blocks + integrated_code_blocks
 
-    if prompt_accumulator_integrated_code_blocks > num_code_blocks_that_form_a_bit
+    if prompt_accumulator_integrated_code_blocks > num_code_blocks_per_bit
         # Overshoot (e.g. 18 + a 3-block record for L1 C/A): resync rather than
         # emit at `>=`, see the docstring. Must not allocate or format a string.
         return _resync_bit_buffer(bit_buffer)
-    elseif prompt_accumulator_integrated_code_blocks == num_code_blocks_that_form_a_bit
+    elseif prompt_accumulator_integrated_code_blocks == num_code_blocks_per_bit
         bit_acc =
             bit_buffer.polarity < 0 ? -real(prompt_accumulator) : real(prompt_accumulator)
         push!(bit_buffer.soft_bits, Float32(bit_acc))
@@ -834,7 +833,7 @@ function _buffer_find_bit(
     signal,
     prn::Integer,
     bit_buffer::BitBuffer{B},
-    num_code_blocks_that_form_a_bit,
+    num_code_blocks_per_bit,
     integrated_code_blocks,
     prompt,
 ) where {B<:Unsigned}
@@ -850,7 +849,7 @@ function _buffer_find_bit(
     # compile time.
     phase_acc = bit_buffer.phase_acc
     if uses_soft_bit_edge_detection(signal)
-        blocks_per_bit = num_code_blocks_that_form_a_bit
+        blocks_per_bit = num_code_blocks_per_bit
         _is_seeded(phase_acc, blocks_per_bit) ||
             _seed_phase_accumulators!(phase_acc, blocks_per_bit)
         _update_phase_accumulators!(
@@ -920,7 +919,7 @@ function _buffer_find_bit(
             phase_acc,
         )
     end
-    if num_code_blocks_that_form_a_bit == 0
+    if num_code_blocks_per_bit == 0
         # Dataless, no overlay (Galileo E5a-QP): avoid dividing by zero below.
         return BitBuffer{B}(
             code_block_buffer,
@@ -935,8 +934,8 @@ function _buffer_find_bit(
         )
     end
     num_bits = min(
-        div(code_block_buffer_length, num_code_blocks_that_form_a_bit),
-        div(sizeof(code_block_buffer) * 8, num_code_blocks_that_form_a_bit),
+        div(code_block_buffer_length, num_code_blocks_per_bit),
+        div(sizeof(code_block_buffer) * 8, num_code_blocks_per_bit),
     )
     # Hoisted: capturing `sync` (assigned in several branches) would box it, ~80 B per
     # pre-sync block.
@@ -944,9 +943,9 @@ function _buffer_find_bit(
     for bit_index = num_bits:-1:1     # oldest recovered bit first
         # Lock polarity applies here too (JuliaGNSS/Tracking.jl#127).
         bit_sum =
-            sum(0:(num_code_blocks_that_form_a_bit-1)) do code_block_index
+            sum(0:(num_code_blocks_per_bit-1)) do code_block_index
                 buffer_code_block_index =
-                    (bit_index - 1) * num_code_blocks_that_form_a_bit + code_block_index
+                    (bit_index - 1) * num_code_blocks_per_bit + code_block_index
                 ((code_block_buffer & (one(B) << buffer_code_block_index)) > 0) * 2 - 1
             end * sync_polarity
         # Sign votes scaled to soft-bit units (see `get_soft_bits`).
