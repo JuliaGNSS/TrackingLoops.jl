@@ -503,6 +503,74 @@ end
     @test all(iszero, resynced.phase_acc.last_bin_polarity)
 end
 
+@testset "A record that lands exactly on the bit boundary commits the bit" begin
+    # GPS L1 C/A, synced at 17 of the bit's 20 blocks: a 3-block record ends it.
+    signal = GPSL1CA()
+    bit_buffer = BitBuffer(UInt64(0), 0, true, complex(10.0, 0.0), 17)
+    committed = TrackingLoops.buffer(signal, 1, bit_buffer, 3, 3.0 + 0.0im)
+    @test has_bit_or_secondary_code_been_found(committed)
+    @test get_soft_bits(committed) == Float32[13.0]
+    @test committed.prompt_accumulator == 0
+    @test committed.prompt_accumulator_integrated_code_blocks == 0
+end
+
+@testset "A secondary-coded signal's overshoot drops sync and keeps its bits" begin
+    # GPS L5I, one bit per 10-block NH10 period, synced at 8 blocks with one bit stored:
+    # a 3-block record overshoots the period.
+    signal = GPSL5I()
+    soft_bits = Float32[5.0]
+    bit_buffer = BitBuffer{get_code_block_buffer_type(signal)}(
+        0,
+        0,
+        true,
+        4,
+        Int8(1),
+        complex(8.0, 0.0),
+        8,
+        soft_bits,
+        PhaseAccumulators(),
+    )
+    resynced = TrackingLoops.buffer(signal, 1, bit_buffer, 3, 3.0 + 0.0im)
+    @test !has_bit_or_secondary_code_been_found(resynced)
+    @test resynced.secondary_phase == 0
+    @test resynced.polarity == 0
+    @test resynced.prompt_accumulator_integrated_code_blocks == 0
+    @test get_soft_bits(resynced) === soft_bits
+    @test soft_bits == Float32[5.0]
+end
+
+@testset "After an overshoot the buffer locks again and its bits stay whole" begin
+    # GPS L1 C/A, 80 random data bits fed one block at a time. Once synced, the three
+    # blocks from 18 accumulated on arrive as one record, which overshoots the bit.
+    signal = GPSL1CA()
+    prompts = _bb_bitstream(rand(MersenneTwister(2026), 0:1, 80))
+    bit_buffer = BitBuffer{get_code_block_buffer_type(signal)}()
+    num_bits_at_overshoot = -1
+    relocked = false
+    i = 1
+    while i <= length(prompts)
+        if num_bits_at_overshoot < 0 && has_bit_or_secondary_code_been_found(bit_buffer) &&
+           bit_buffer.prompt_accumulator_integrated_code_blocks == 18
+            bit_buffer = TrackingLoops.buffer(signal, 1, bit_buffer, 3, sum(prompts[i:i+2]))
+            @test !has_bit_or_secondary_code_been_found(bit_buffer)
+            num_bits_at_overshoot = length(get_soft_bits(bit_buffer))
+            i += 3
+            continue
+        end
+        bit_buffer = TrackingLoops.buffer(signal, 1, bit_buffer, 1, prompts[i])
+        if num_bits_at_overshoot >= 0
+            relocked |= has_bit_or_secondary_code_been_found(bit_buffer)
+            @test bit_buffer.prompt_accumulator_integrated_code_blocks < BB_L1CA_BLOCKS_PER_BIT
+        end
+        i += 1
+    end
+    @test num_bits_at_overshoot >= 0
+    @test relocked
+    later = get_soft_bits(bit_buffer)[num_bits_at_overshoot+1:end]
+    @test !isempty(later)
+    @test all(bit -> abs(bit) == BB_L1CA_BLOCKS_PER_BIT, later)
+end
+
 @testset "Bit accumulation is unbounded" begin
     signal = GPSL1CA()
     bit_buffer = BitBuffer(UInt128(0), 0, true, complex(0.0, 0.0), 0)
