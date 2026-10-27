@@ -82,35 +82,6 @@ end
     @test effective_code_loop_filter_bandwidth(0.25Hz, 20 * l1ca_period) == 0.25Hz
 end
 
-@testset "The code frequency update runs the DLL discriminator through the filter" begin
-    gpsl1 = GPSL1CA()
-    sampling_frequency = 5e6Hz
-    integration_time = 1ms
-    correlator = EarlyPromptLateCorrelator(
-        SVector(1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im),
-        0.5,
-    )
-    code_filter = SecondOrderBilinearLF()
-    update_code, filter_code = @inferred calculate_code_frequency_update(
-        gpsl1,
-        code_filter,
-        correlator,
-        0.0Hz,
-        sampling_frequency,
-        integration_time,
-        1.0Hz,
-    )
-    expected = filter_loop(
-        code_filter,
-        dll_disc(gpsl1, correlator, 0.0Hz, sampling_frequency),
-        integration_time,
-        1.0Hz,
-    )
-    @test update_code == expected[1]
-    @test filter_code == expected[2]
-    @test update_code != 0.0Hz
-end
-
 @testset "The carrier loop has the configured noise bandwidth" begin
     # Closed loop with white phase noise σ_n: the NCO jitter must be
     # σ² = σ_n² · 2 · BL · T. Fed radians, the loop was ≈5.6× wider.

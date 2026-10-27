@@ -187,29 +187,6 @@ function aid_dopplers(
     init_carrier_doppler + carrier_doppler, init_code_doppler + code_doppler
 end
 
-"""
-    calculate_code_frequency_update(signal, code_loop_filter, correlator, code_doppler,
-                                    sampling_frequency, integration_time, loop_bandwidth)
-        -> (code_freq_update, code_loop_filter)
-
-One code-loop step: the DLL discriminator ([`dll_disc`](@ref)) of `correlator`
-filtered by `code_loop_filter` at `loop_bandwidth`. `code_doppler`, the replica's,
-converts the tap spacing from samples to chips. Returns the code-frequency
-correction (before [`aid_dopplers`](@ref)) and the advanced filter.
-"""
-function calculate_code_frequency_update(
-    signal::AbstractGNSSSignal,
-    code_loop_filter::AbstractLoopFilter,
-    correlator::AbstractCorrelator,
-    code_doppler,
-    sampling_frequency,
-    integration_time,
-    loop_bandwidth,
-)
-    dll_discriminator = dll_disc(signal, correlator, code_doppler, sampling_frequency)
-    filter_loop(code_loop_filter, dll_discriminator, integration_time, loop_bandwidth)
-end
-
 # Rotates a component's bit-buffer prompt onto the real axis, given the loops lock
 # the driver there: a bit-identical no-op (`cispi(0)`) for an in-phase component,
 # `±90°` for a quadrature one (GPS L5 / Galileo E5a I vs Q). The offsets are in cycles.
