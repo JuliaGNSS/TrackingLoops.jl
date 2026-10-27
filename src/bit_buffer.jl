@@ -995,6 +995,13 @@ the replica applies the wrong overlay chip (cf. JuliaGNSS/Tracking.jl#219).
     )
 end
 
+"""
+    reset(bit_buffer::BitBuffer) -> BitBuffer
+
+A bit buffer with no sync and no soft bits, for a signal that is re-acquired: its
+storage is kept (the soft-bit vector is emptied in place), everything it detected
+is cleared.
+"""
 function reset(bit_buffer::BitBuffer{B}) where {B<:Unsigned}
     empty!(bit_buffer.soft_bits)
     BitBuffer{B}(

@@ -57,14 +57,14 @@ Fields:
     beamforming weights, `wᴴR̂w` (see [`AbstractPostCorrFilter`](@ref)).
   - `num_sub_integrations` — `M`, the number of **independent looks**, and so
     the statistical weight (relative variance `1/M`). Not the sample count: for
-    `Σ_m |B_m|²` over `M` sub-integrations of `N` samples each the density needs
+    `Σ_m |B_m|²` over `M` despreads of `N` samples each the density needs
     `M·N`, but one 1 ms coherent despread and 64 16-chip despreads cover the
     same samples with very different precision, so the window weights by `M`.
   - `duration` — the wall-clock span of samples covered, which bounds the
     sliding window. Not `M · N / f_s` in general: the software source's looks
     are simultaneous taps.
   - `prn` — the PRN whose code measured it; also carries the software source's
-    PRN-rotation position (see `_next_noise_prn`).
+    PRN-rotation position (see [`noise_despreads`](@ref)).
 """
 struct NoiseObservation{D,T}
     noise_density::D
@@ -96,10 +96,11 @@ _density_type_for_num_ants(::NumAnts{1}) = NoiseDensity
 _density_type_for_num_ants(::NumAnts{M}) where {M} =
     SMatrix{M,M,NoiseCovarianceElement,M * M}
 
-# The inverse, on the density *type*, so `TrackState` can check any
-# `AbstractNoiseEstimator`'s antenna count through `noise_density_type` alone.
-_num_ants_of_density_type(::Type{NoiseDensity}) = NumAnts(1)
-_num_ants_of_density_type(::Type{<:SMatrix{M,M}}) where {M} = NumAnts(M)
+# The inverse, on the density *type*, so a host can check any `AbstractNoiseEstimator`'s
+# antenna count through `noise_density_type` alone (see `NumAnts`).
+NumAnts(::Type{NoiseDensity}) = NumAnts(1)
+NumAnts(::Type{<:SMatrix{M,M}}) where {M} = NumAnts(M)
+NumAnts(estimator::AbstractNoiseEstimator) = NumAnts(noise_density_type(estimator))
 
 # Retype an observation onto a window's own `{D,T}`, for one assembled by hand
 # (the builders already emit the canonical pair). The identity method is explicit
@@ -184,7 +185,7 @@ cuts host traffic; one observation per dump is what [`noise_observation`](@ref)
 covers.
 
 `duration` defaults to `total_samples / sampling_frequency`, right for
-consecutive sub-integrations. Pass it explicitly when they are **simultaneous**
+consecutive despreads. Pass it explicitly when they are **simultaneous**
 (e.g. correlator taps over the same `N` samples: `N / sampling_frequency`).
 
 For an antenna array, pass `Σ_m B_m·B_mᴴ` as an `SMatrix` (sum the outer
@@ -233,7 +234,7 @@ Build a [`NoiseObservation`](@ref) from a front-end / AGC **power monitor**:
 `Σ|x|²` over `num_samples` raw samples.
 
 This is [`noise_observation_from_correlator`](@ref) at a one-sample
-sub-integration, so `M == num_samples` and no `code_amplitude` applies: the
+despread, so `M == num_samples` and no `code_amplitude` applies: the
 minimum-variance source, but unlike a despread it weights the spectrum flat, not by
 the signal's `|G(f)|²` (see [Noise estimation](@ref)), so it misweights coloured
 interference.
@@ -365,7 +366,7 @@ noise source may need and a `Tracking.BandMeasurement` does not carry.
 Fields:
 
   - `signal` — **the signal being measured** (the estimator's key). Its code
-    period sets the sub-integration length and its code family is what the
+    period sets the despread length and its code family is what the
     reference despreads with, so the measurement carries that signal's spectral
     weighting.
   - `chunk_index` — the index of the chunk being measured, on the same grid
@@ -384,7 +385,7 @@ struct NoiseUpdateContext{S<:AbstractGNSSSignal,DC}
     downconvert_and_correlator::DC
 end
 
-# `_noise_density_and_ready` (below): the signal's density as a plain scalar plus a
+# `get_noise_density_and_ready` (below): the signal's density as a plain scalar plus a
 # "ready" flag, splitting `get_noise_density`'s `Union{Nothing,D}` once per signal per
 # chunk so everything downstream stays monomorphic.
 #
@@ -425,7 +426,17 @@ noise_window_looks(::AbstractNoiseEstimator) = nothing
 @inline _sufficient_looks(::StaticMatrix, ::Nothing) = true
 @inline _sufficient_looks(::StaticMatrix{M,M}, looks::Integer) where {M} = looks >= M
 
-@inline function _noise_density_and_ready(estimator::AbstractNoiseEstimator)
+"""
+    get_noise_density_and_ready(estimator::AbstractNoiseEstimator) -> (density, ready)
+
+The estimator's noise density as a plain value of [`noise_density_type`](@ref), with
+whether a C/N₀ estimator may read it: `ready` only for a finite, positive floor (a
+positive diagonal for a covariance) built from enough looks to span its dimensions
+([`noise_window_looks`](@ref)). Not ready, `density` is a zero of the same type, so a
+host's C/N₀ path stays monomorphic. It is the gate [`NoiseRefCN0Estimator`](@ref)'s
+floor goes through, for a host that wires its noise estimators into the C/N₀ fold.
+"""
+@inline function get_noise_density_and_ready(estimator::AbstractNoiseEstimator)
     density = get_noise_density(estimator)
     D = noise_density_type(estimator)
     isnothing(density) && return (zero(D), false)
@@ -436,10 +447,15 @@ noise_window_looks(::AbstractNoiseEstimator) = nothing
     (d, true)
 end
 
-# Not ready *only* because the look count is short (window still filling), so a
-# zero floor still reaches Tracking.jl's not-ready warning. Used only to keep that
-# warning quiet during a normal multi-antenna startup.
-@inline function _noise_window_filling(estimator::AbstractNoiseEstimator)
+"""
+    get_noise_window_filling(estimator::AbstractNoiseEstimator) -> Bool
+
+Whether [`get_noise_density_and_ready`](@ref) is not ready *only* because the look count is
+still short: the window is filling, as it does for the first observations of a
+multi-antenna covariance. A zero or non-finite floor is not filling. A host reads it to
+keep a not-ready warning quiet during a normal start-up.
+"""
+@inline function get_noise_window_filling(estimator::AbstractNoiseEstimator)
     density = get_noise_density(estimator)
     isnothing(density) && return false
     d = density::noise_density_type(estimator)
