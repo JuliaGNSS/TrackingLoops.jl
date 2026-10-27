@@ -6,6 +6,7 @@
 # workload: `apply_record` and `step_loop` on every record of every channel, and
 # nothing else.
 using TrackingLoops, GNSSSignals, StaticArrays, Unitful, LinearAlgebra
+using TrackingLoops: default_cn0_estimator
 using Unitful: Hz, s, ms
 
 include(joinpath(@__DIR__, "..", "vector_simulation.jl"))
@@ -37,6 +38,29 @@ function report(io, cycle, pvt, status)
     println(io)
 end
 
+# The noise reference as a hardware host fills it: one probe per arm from the estimator's
+# own `Xoshiro`, each dump's taps appended over its own sample count.
+function report_noise(io)
+    signal = GPSL1CA()
+    estimator = CorrelatorNoiseEstimator()
+    for k = 1:20
+        probe = TrackingLoops.next_noise_probe(estimator, signal, 0.0Hz)
+        taps = SVector(
+            complex(probe.code_phase / 1023, 1.0),
+            complex(1.0, ustrip(Hz, probe.carrier_frequency) / 5000),
+            complex(0.5, 0.5),
+        )
+        TrackingLoops.append_noise_correlator_outputs!(estimator, probe, taps, 3990 + k, 4e6Hz)
+        print(io, "noise ", k)
+        print(io, " ", probe.prn)
+        print(io, " ", probe.code_phase)
+        print(io, " ", ustrip(Hz, probe.carrier_frequency))
+        println(io)
+    end
+    print(io, "noise density ", ustrip(Hz^-1, TrackingLoops.get_noise_density(estimator)))
+    println(io)
+end
+
 function (@main)(args::Vector{String})::Cint
     io = Core.stdout
     rx = PipelineReceiver(Val(false))
@@ -54,5 +78,6 @@ function (@main)(args::Vector{String})::Cint
             (status.seeded || last_cycle % 20 == 0) && report(io, last_cycle, nav.pvt, status)
         end
     end
+    report_noise(io)
     return 0
 end

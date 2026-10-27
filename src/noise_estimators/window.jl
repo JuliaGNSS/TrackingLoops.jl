@@ -23,9 +23,10 @@ NoiseWindowTotals{D,T}() where {D,T} = NoiseWindowTotals{D,T}(zero(T), zero(D), 
 $(SIGNATURES)
 
 The signal's noise reference, measured by **despreading a PRN at a random code
-phase and Doppler**. The only shipped [`AbstractNoiseEstimator`](@ref); on a
-hardware path fill it with
-[`append_noise_observation!`](@ref) instead of [`update_noise!`](@ref).
+phase and Doppler**. The only shipped [`AbstractNoiseEstimator`](@ref). A host
+fills it with the despreads [`noise_despreads`](@ref) plans, a software one through
+[`update_noise!`](@ref), or appends the observations it builds itself with
+[`append_noise_observation!`](@ref).
 
 # Why a despread and not a power meter
 
@@ -50,7 +51,7 @@ present signal (spoofed, or visible and not acquired) is frozen, since it drifts
 only at the code Doppler `f_d/1540`. Such a signal has a `3 × 1.5 / 1023 ≈ 0.44 %`
 chance per PRN of sitting in one of the three taps and then adds
 `T·(C/N₀)/3 ≈ 10.5·N₀` (45 dB-Hz) to every observation on that PRN indefinitely
-(≈ +1.5 dB on `N̂₀` after the rotation's dilution). Fresh draws per sub-integration
+(≈ +1.5 dB on `N̂₀` after the rotation's dilution). Fresh draws per despread
 turn that into independent per-observation trials (a hit needs both draws to land,
 so the two randomisations multiply): ≈ 0.07 dB residual for a full sky at
 45 dB-Hz. Landing within ±1 chip of a tracked satellite's peak (≈ 0.6 %,
@@ -67,14 +68,14 @@ lobe. On an FPGA a free-running code generator gives an arbitrary phase for free
 
   - `window_duration`: how far back the sliding window reaches (1 s). Longer means
     lower variance but more smear across AGC changes. The default holds
-    `K_n ≈ 1000` looks per tap at one sub-integration per code period, ≤ 0.08 dB
+    `K_n ≈ 1000` looks per tap at one despread per code period, ≤ 0.08 dB
     from a variance-free reference at every C/N₀.
   - `tap_code_shift`: tap spacing in chips (1.5). Taps help only if independent:
     `corr(|Bᵢ|²,|Bⱼ|²) = |ρᵢⱼ|²`, so at ±0.5 chip three taps are worth 2.25 looks,
     at ≥ 1 chip 2.98. 1.5 chips sits in the autocorrelation null, clear of the 1-
     and 2-chip sidelobes.
   - `carrier_dither`: half-width of the uniform offset added to the nominal IF per
-    sub-integration (5 kHz, the terrestrial Doppler spread). Zero is useful only to
+    despread (5 kHz, the terrestrial Doppler spread). Zero is useful only to
     isolate the code-phase draw in a test.
   - `rng`: source of both draws, seeded `Xoshiro(0)` by default and advanced in
     place. Scattering the draws is the whole requirement (an attacker cannot
@@ -89,7 +90,7 @@ lobe. On an FPGA a free-running code generator gives an arbitrary phase for free
     and read **O(1)**; an O(K) scan per call would make each chunk's cost grow with
     the `K` (≈ 2500 at 1 s and 0.4 ms chunks) the accuracy is bought with.
 
-The sub-integration length is **not** a field: it is the signal's primary code
+The despread length is **not** a field: it is the signal's primary code
 period. Coherent integration buys nothing for noise power (`Var(|B|²) = (E|B|²)²`),
 so only the number of looks matters, yet shorter dumps would cost SIMD efficiency
 and a new kernel (losing bit-identical arithmetic), lose the full-period Gold code's
@@ -136,7 +137,7 @@ function CorrelatorNoiseEstimator(;
         throw(ArgumentError("carrier_dither must not be negative, got $carrier_dither"))
     D = _density_type_for_num_ants(num_ants)
     buffered = NoiseObservation{D,typeof(1.0s)}[]
-    # 4× the 1 ms sub-integration count; see the docstring.
+    # 4× the 1 ms despread count; see the docstring.
     sizehint!(buffered, 4 * max(1, round(Int, window_duration / 1.0ms)) + 1)
     CorrelatorNoiseEstimator(
         uconvert(s, float(window_duration)),
@@ -147,9 +148,6 @@ function CorrelatorNoiseEstimator(;
         rng,
     )
 end
-
-# The antenna count, derived from `D` so window and correlator cannot disagree.
-@inline _num_ants(::CorrelatorNoiseEstimator{D}) where {D} = _num_ants_of_density_type(D)
 
 """
 $(SIGNATURES)
@@ -279,7 +277,7 @@ $(SIGNATURES)
 Measure this signal's noise over samples `first_sample:last_sample` of
 `measurement`, append the observations and return `estimator`. Forwards to
 [`despread_noise!`](@ref) on `context.downconvert_and_correlator`; a loop process
-uses [`append_noise_observation!`](@ref) instead.
+fills the window through [`noise_despreads`](@ref) instead.
 """
 update_noise!(
     estimator::CorrelatorNoiseEstimator,
@@ -299,11 +297,172 @@ update_noise!(
 """
     despread_noise!(backend, estimator, measurement, first_sample, last_sample, context)
 
-The software fill path of a [`CorrelatorNoiseEstimator`](@ref): despread the
-reference over the slice with `backend`'s kernel and append the observations.
-Implemented by Tracking.jl for its backends.
+The software fill path of a [`CorrelatorNoiseEstimator`](@ref): despread each of the
+slice's [`noise_despreads`](@ref) with [`noise_correlator_bank`](@ref)'s taps on `backend`'s
+kernel, the one the prompt goes through, and append it with
+[`append_despread_noise!`](@ref). Implemented by Tracking.jl for its backends, which
+read the sampling and intermediate frequencies off `measurement`.
 """
 function despread_noise! end
+
+"""
+    NoiseProbe
+
+One draw of a [`CorrelatorNoiseEstimator`](@ref)'s reference: despread with `signal`'s
+code for `prn`, starting at `code_phase` chips at the first sample despread, at the
+nominal `code_frequency` and at `carrier_frequency`, the band's intermediate frequency
+plus the dither, with no carrier phase. [`next_noise_probe`](@ref) draws one;
+[`noise_despreads`](@ref) draws one per despread of a slice. A hardware host
+programs a noise channel with it and hands each dump's taps to
+[`append_noise_correlator_outputs!`](@ref).
+"""
+struct NoiseProbe{S<:AbstractGNSSSignal,K,C}
+    signal::S
+    prn::Int
+    code_phase::Float64
+    code_frequency::K
+    carrier_frequency::C
+end
+
+"""
+    NoiseDespread
+
+One despread of a [`CorrelatorNoiseEstimator`](@ref)'s reference, as
+[`noise_despreads`](@ref) plans it: the [`NoiseProbe`](@ref) `probe` over samples
+`sample_range`, sampled at `sampling_frequency`. A software host runs it on its kernel
+and hands the taps to [`append_despread_noise!`](@ref).
+"""
+struct NoiseDespread{P<:NoiseProbe,F}
+    probe::P
+    sample_range::UnitRange{Int}
+    sampling_frequency::F
+end
+
+# The despreads of one slice, drawn as they are iterated.
+struct NoiseDespreads{S<:AbstractGNSSSignal,R<:AbstractRNG,F,I}
+    signal::S
+    prn::Int
+    sample_range::UnitRange{Int}
+    num_despreads::Int
+    sampling_frequency::F
+    intermediate_frequency::I
+    carrier_dither::typeof(1.0Hz)
+    rng::R
+end
+
+"""
+    noise_despreads(estimator::CorrelatorNoiseEstimator, signal::AbstractGNSSSignal,
+                    sample_range, sampling_frequency, intermediate_frequency)
+
+The despreads a host runs to measure `signal`'s noise over samples
+`sample_range`, sampled at `sampling_frequency` on a band at
+`intermediate_frequency`: an iterator of [`NoiseDespread`](@ref)s, empty for an empty
+slice. Iterate it once, in order, and append each despread with
+[`append_despread_noise!`](@ref).
+
+The slice is split into `num_despreads` **equal** despreads,
+
+```julia
+num_despreads = max(1, round(Int, slice_duration / code_period))
+```
+
+with `code_period` the primary code period of `signal` (see
+[`CorrelatorNoiseEstimator`](@ref) for why it is derived, not configured), and at most
+one per sample. Equal slices waste no remainder; the `max(1, …)` keeps a code longer
+than the chunk (10 ms code, 1 ms chunks) from never yielding an observation. Each
+despread is its own observation, so the window's time span does not follow the
+Doppler update rate.
+
+All of them despread the next PRN of the rotation over `signal`'s supported PRNs,
+tracked or not, carried in the newest observation of the window. Each draws a fresh
+[`NoiseProbe`](@ref), a random code phase and a carrier within ±`carrier_dither` of the
+intermediate frequency, from the estimator's `rng` as it is iterated, so every window
+entry is an independent trial. A despread follows no code-period boundary: with a wrong PRN at a
+wrong phase there is nothing to accumulate coherently, so `N̂₀ = |B|²/(N·A_c²·f_s)` is
+unbiased for any `N` and start phase, and no partial accumulator is carried across
+calls. Allocates nothing.
+"""
+function noise_despreads(
+    estimator::CorrelatorNoiseEstimator,
+    signal::AbstractGNSSSignal,
+    sample_range::AbstractUnitRange{<:Integer},
+    sampling_frequency,
+    intermediate_frequency,
+)
+    num_samples = length(sample_range)
+    code_period = get_code_length(signal) / get_chip_rate(signal)
+    slice_duration = num_samples / sampling_frequency
+    num_code_periods = round(Int, uconvert(NoUnits, slice_duration / code_period))
+    num_despreads = num_samples == 0 ? 0 : min(num_samples, max(1, num_code_periods))
+    NoiseDespreads(
+        signal,
+        _next_noise_prn(estimator, signal),
+        sample_range,
+        num_despreads,
+        sampling_frequency,
+        intermediate_frequency,
+        estimator.carrier_dither,
+        estimator.rng,
+    )
+end
+
+Base.length(despreads::NoiseDespreads) = despreads.num_despreads
+
+@inline function Base.iterate(despreads::NoiseDespreads, sub = 1)
+    sub > despreads.num_despreads && return nothing
+    (; signal, sample_range, num_despreads, rng) = despreads
+    first_sample_index = first(sample_range)
+    num_samples = length(sample_range)
+    slice_start = first_sample_index + div((sub - 1) * num_samples, num_despreads)
+    slice_stop = first_sample_index + div(sub * num_samples, num_despreads) - 1
+    probe = _draw_noise_probe(
+        rng,
+        signal,
+        despreads.prn,
+        despreads.intermediate_frequency,
+        despreads.carrier_dither,
+    )
+    NoiseDespread(probe, slice_start:slice_stop, despreads.sampling_frequency), sub + 1
+end
+
+# One probe of `prn`: the code phase first, then the carrier, one draw each from `rng`.
+@inline function _draw_noise_probe(rng, signal::AbstractGNSSSignal, prn, intermediate_frequency, carrier_dither)
+    code_phase = rand(rng) * get_code_length(signal)
+    carrier_frequency = intermediate_frequency + (2 * rand(rng) - 1) * carrier_dither
+    NoiseProbe(signal, Int(prn), code_phase, get_chip_rate(signal), carrier_frequency)
+end
+
+"""
+    next_noise_probe(estimator::CorrelatorNoiseEstimator, signal::AbstractGNSSSignal,
+                     intermediate_frequency) -> NoiseProbe
+
+Draw the next [`NoiseProbe`](@ref) for `signal` on a band at `intermediate_frequency`:
+the next PRN of the rotation (carried in the newest observation of the window, so two
+draws before an append share it), a random code phase and a carrier within
+±`carrier_dither`, from the estimator's `rng`. A hardware host draws one per arm of its
+noise channel and appends every dump with [`append_noise_correlator_outputs!`](@ref); see
+[A hardware noise channel](@ref) for how often to redraw.
+"""
+next_noise_probe(estimator::CorrelatorNoiseEstimator, signal::AbstractGNSSSignal, intermediate_frequency) =
+    _draw_noise_probe(
+        estimator.rng,
+        signal,
+        _next_noise_prn(estimator, signal),
+        intermediate_frequency,
+        estimator.carrier_dither,
+    )
+
+"""
+    noise_correlator_bank(estimator::CorrelatorNoiseEstimator) -> EarlyPromptLateCorrelator
+
+The correlator a [`NoiseProbe`](@ref) runs through: three taps `tap_code_shift` chips
+apart, one column per antenna. At that spacing the taps are independent looks, which
+[`append_noise_correlator_outputs!`](@ref) pools.
+"""
+noise_correlator_bank(estimator::CorrelatorNoiseEstimator) = EarlyPromptLateCorrelator(;
+    num_ants = NumAnts(estimator),
+    preferred_early_late_to_prompt_code_shift = estimator.tap_code_shift,
+)
 
 # Pool the taps of one despread (independent looks at ≥ 1 chip spacing): the scalar
 # power for one antenna, the spatial covariance for an array.
@@ -338,3 +497,55 @@ end
     end
     Int(first(supported_prns))
 end
+
+"""
+    append_noise_correlator_outputs!(estimator::CorrelatorNoiseEstimator, probe::NoiseProbe,
+                       accumulators, num_samples, sampling_frequency) -> estimator
+
+Append the observation of `probe` measured over `num_samples` samples at
+`sampling_frequency`: `accumulators` are the taps of [`noise_correlator_bank`](@ref). The
+taps are independent looks, so they pool into one power sum, or into the spatial covariance
+`Σ b·bᴴ` for an array, which each satellite reduces to its own floor `wᴴR̂w` at C/N₀
+time; the observation spans the samples every tap integrated, under the probe's PRN.
+A hardware host passes each dump's own sample count. Allocates nothing.
+"""
+@inline function append_noise_correlator_outputs!(
+    estimator::CorrelatorNoiseEstimator,
+    probe::NoiseProbe,
+    accumulators,
+    num_samples::Integer,
+    sampling_frequency,
+)
+    num_correlators = length(accumulators)
+    append_noise_observation!(
+        estimator,
+        _noise_observation(
+            _pool_taps(accumulators, NumAnts(estimator)),
+            num_correlators,
+            num_correlators * num_samples,
+            sampling_frequency,
+            get_code_amplitude(probe.signal),
+            probe.prn,
+            num_samples / sampling_frequency,
+        ),
+    )
+end
+
+"""
+    append_despread_noise!(estimator::CorrelatorNoiseEstimator, despread::NoiseDespread,
+                           accumulators) -> estimator
+
+[`append_noise_correlator_outputs!`](@ref) for one of [`noise_despreads`](@ref): the despread's probe
+over its planned samples.
+"""
+@inline append_despread_noise!(
+    estimator::CorrelatorNoiseEstimator,
+    despread::NoiseDespread,
+    accumulators,
+) = append_noise_correlator_outputs!(
+    estimator,
+    despread.probe,
+    accumulators,
+    length(despread.sample_range),
+    despread.sampling_frequency,
+)
