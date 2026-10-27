@@ -422,7 +422,7 @@ end
 @testset "A pair's transmit time is the data's own, on a code $(pilot ? "ten times longer" : "of its own")" for pilot in (false, true)
     # On a clean signal the snapshot's transmit time is the true one to within the
     # sample the record ends on, although the pilot's code is ten data codes long: the
-    # data's bit clock counts the symbols, the pilot's replica places the epoch in
+    # data's bit clock counts the bits, the pilot's replica places the epoch in
     # one. And the scalar fix is the one the data alone gives.
     rx = PipelineReceiver(; pilot, cn0_dbhz = 80.0, num_sats = 6)
     results, _, diverged = run_pipeline!(rx, 27.0)
@@ -478,7 +478,7 @@ end
     @test all(slot -> length(slot.prompt_history.centers) == 6, slots)
     dropped = Ref(0)
     results, _, diverged = run_pipeline!(rx, 4.0; start_sample = sample, on_tick = _ ->
-        (dropped[] += count(slot -> slot.estimator_state.in_vector_loop && !slot.symbol_from_edge, slots)))
+        (dropped[] += count(slot -> slot.estimator_state.in_vector_loop && !slot.bit_from_edge, slots)))
     @test !diverged
     @test all(r -> r.status.running && r.status.num_members == length(rx.sats), results)
     @test dropped[] == 0
