@@ -186,6 +186,28 @@ staging_record(p, num_code_blocks = 1) = LoopRecord(
     @test held.num_locked_records == 201
 end
 
+@testset "A component's prompt is de-rotated against the driver's carrier phase" begin
+    derotation(driver, signal) =
+        TrackingLoops._carrier_phase_derotation(get_carrier_phase_offset(driver), signal)
+    # A quadrature component turns by ∓90° onto the real axis.
+    @test derotation(GPSL5Q(), GPSL5I()) ≈ -im
+    @test real(derotation(GPSL5Q(), GPSL5I()) * 5im) ≈ 5
+    @test derotation(GalileoE5aQ(), GalileoE5aI()) ≈ im
+    @test derotation(GPSL5I(), GPSL5Q()) ≈ im
+    @test real(derotation(GPSL5I(), GPSL5Q()) * -5im) ≈ 5
+    @test derotation(GalileoE5aI(), GalileoE5aQ()) ≈ -im
+    # The driver itself and an in-phase component are left exactly as they are.
+    for (driver, signal) in (
+        (GPSL5Q(), GPSL5Q()),
+        (GalileoE5aQ(), GalileoE5aQ()),
+        (GPSL5I(), GPSL5I()),
+        (GPSL1CA(), GPSL1CA()),
+        (GalileoE1C(), GalileoE1B()),
+    )
+        @test derotation(driver, signal) === 1.0 + 0.0im
+    end
+end
+
 @testset "The carrier loop's stages only advance" begin
     gpsl1 = GPSL1CA()
     staging = TrackingLoops.CarrierLoopStaging(ThirdOrderAssistedBilinearLF)
