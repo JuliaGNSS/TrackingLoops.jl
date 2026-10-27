@@ -61,6 +61,17 @@ CorrelatorOutput(correlator::AbstractCorrelator, integrated_samples::Integer, sa
 type_for_num_ants(num_ants::NumAnts{1}) = ComplexF64
 type_for_num_ants(num_ants::NumAnts{N}) where {N} = SVector{N,ComplexF64}
 
+"""
+    get_initial_accumulator(num_ants::NumAnts,
+                            num_accumulators::NumAccumulators{M}) -> SVector{M}
+    get_initial_accumulator(num_ants::NumAnts, num_accumulators::Integer) -> Vector
+
+The zeroed taps a correlator starts from: `num_accumulators` of them, each a
+`ComplexF64` for one antenna or an `SVector{N,ComplexF64}` for `N` antennas. With
+[`NumAccumulators`](@ref) the tap count is a type parameter and the taps an `SVector`,
+as a custom correlator's keyword constructor builds them; with an integer they are a
+`Vector`.
+"""
 function get_initial_accumulator(
     num_ants::NumAnts,
     num_accumulators::NumAccumulators{M},
@@ -80,7 +91,7 @@ Get number of antennas from correlator
 get_num_ants(correlator::AbstractCorrelator{M}) where {M} = M
 
 # Type-stable `NumAnts{M}`; `NumAnts(get_num_ants(c))` would allocate per record.
-@inline _num_ants_val(::AbstractCorrelator{M}) where {M} = NumAnts{M}()
+@inline NumAnts(::AbstractCorrelator{M}) where {M} = NumAnts{M}()
 
 """
 $(SIGNATURES)
@@ -166,13 +177,15 @@ function zero(correlator::AbstractCorrelator)
     update_accumulator(correlator, zero(correlator.accumulators))
 end
 
+# `where {F}` forces specialisation; an unspecialised `map` is a dynamic call a
+# trimmed binary cannot resolve.
 """
 $(SIGNATURES)
 
-Filter the correlator by the function `post_corr_filter`
+Apply `post_corr_filter` to every accumulator of `correlator`, returning a correlator of
+the same type: the post-correlation filter's step, or any other per-tap map such as
+negating the taps.
 """
-# `where {F}` forces specialisation; an unspecialised `map` is a dynamic call a
-# trimmed binary cannot resolve.
 function apply(post_corr_filter::F, correlator::AbstractCorrelator) where {F}
     update_accumulator(correlator, map(post_corr_filter, get_accumulators(correlator)))
 end
@@ -188,6 +201,14 @@ function normalize(correlator::AbstractCorrelator, integrated_samples, code_ampl
     apply(x -> x / (integrated_samples * code_amplitude), correlator)
 end
 
+"""
+    calc_preferred_code_shift_to_sample_shift(preferred_code_shift, sampling_frequency,
+                                              code_frequency) -> Int
+
+The whole number of samples closest to `preferred_code_shift` chips at
+`sampling_frequency` and `code_frequency`, and at least one, so that two taps never
+coincide. A correlator's [`get_correlator_sample_shifts`](@ref) places its taps with it.
+"""
 function calc_preferred_code_shift_to_sample_shift(
     preferred_code_shift,
     sampling_frequency,

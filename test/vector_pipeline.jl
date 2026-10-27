@@ -233,7 +233,8 @@ end
     @test !gone_slot.occupied
     @test !satellite_report(rx.estimator, GPSL1CA(), gone.decoder.prn).tracked
     @test any(r -> r.status.released, results)
-    @test release_reason(rx.estimator, GPSL1CA(), gone.decoder.prn) in (VT_INELIGIBLE, VT_NOT_RELEASED)
+    gone_report = satellite_report(rx.estimator, GPSL1CA(), gone.decoder.prn)
+    @test gone_report === nothing || gone_report.release_reason in (VT_INELIGIBLE, VT_NOT_RELEASED)
     @test all(r -> r.status.num_members == 7, results[end-2:end])
     # A satellite never seen before takes the free slot: no slot is added, and its
     # decoder starts from nothing.
@@ -396,7 +397,7 @@ first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
         @test report.bit_synced && report.in_vector_loop
         @test report.cn0_dbhz ≈ ustrip(estimate_cn0(sat.loop, 1ms)) atol = 1.0
         @test satellite_report(estimator, GPSL1CA(), sat.decoder.prn) === nothing
-        @test release_reason(estimator, GPSL1C_P(), sat.decoder.prn) == VT_NOT_RELEASED
+        @test satellite_report(estimator, GPSL1C_P(), sat.decoder.prn).release_reason == VT_NOT_RELEASED
     end
     # The first fix comes once every satellite's data is decoded, as on the data alone.
     seed = findfirst(r -> r.status.seeded, results)

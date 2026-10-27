@@ -233,7 +233,7 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
     post_corr_filter = update(post_corr_filter, get_prompt(normalized_correlator))
     # Used twice: to combine the antennas and to reduce the shared noise covariance
     # to this satellite's density.
-    weights = get_weights(post_corr_filter, _num_ants_val(normalized_correlator))
+    weights = get_weights(post_corr_filter, NumAnts(normalized_correlator))
     filtered_correlator = _combine_correlator(normalized_correlator, weights)
     prompt = get_prompt(filtered_correlator)
     bit_block_count = calc_num_code_blocks_for_bit_buffer(

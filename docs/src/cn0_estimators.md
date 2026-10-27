@@ -1,3 +1,7 @@
+```@meta
+CurrentModule = TrackingLoops
+```
+
 # C/N₀ estimation
 
 A C/N₀ estimator is advanced once per record with the record's prompt
@@ -11,16 +15,30 @@ A C/N₀ estimator is advanced once per record with the record's prompt
   measured independently of the signal (see [Noise estimation](@ref));
 - [`NoCN0Estimator`](@ref) — for a component whose C/N₀ is not needed.
 
-[`default_cn0_estimator`](@ref) says which one a signal gets by default.
+[`default_cn0_estimator`](@ref TrackingLoops.default_cn0_estimator) says which one a signal gets by default.
 
-```@autodocs
-Modules = [TrackingLoops]
-Pages = [
-    "cn0_estimators/cn0_estimator.jl",
-    "cn0_estimators/moments.jl",
-    "cn0_estimators/nwpr.jl",
-    "cn0_estimators/noise_ref.jl",
-    "cn0_estimators/no_cn0.jl",
-]
-Private = false
+```@docs
+TrackingLoops.AbstractCN0Estimator
+TrackingLoops.CN0UpdateContext
+TrackingLoops.default_cn0_estimator(::AbstractGNSSSignal, ::Int)
+TrackingLoops.requires_noise_density(::Type{<:AbstractCN0Estimator})
+TrackingLoops.update(::AbstractCN0Estimator, ::Any, ::CN0UpdateContext)
+MomentsCN0Estimator
+estimate_cn0(::MomentsCN0Estimator, ::Any)
+TrackingLoops.update(::MomentsCN0Estimator, ::Any)
+NWPRCN0Estimator
+NWPRCN0Estimator(::AbstractGNSSSignal)
+NWPRCN0Estimator()
+estimate_cn0(::NWPRCN0Estimator, ::Any)
+TrackingLoops.update(::NWPRCN0Estimator, ::Any, ::CN0UpdateContext)
+TrackingLoops.update(::NWPRCN0Estimator, ::Any)
+NoiseRefCN0Estimator
+NoiseRefCN0Estimator()
+estimate_cn0(::NoiseRefCN0Estimator, ::Any)
+TrackingLoops.requires_noise_density(::Type{NoiseRefCN0Estimator})
+TrackingLoops.update(::NoiseRefCN0Estimator, ::Any, ::CN0UpdateContext)
+TrackingLoops.update(::NoiseRefCN0Estimator, ::Any)
+NoCN0Estimator
+estimate_cn0(::NoCN0Estimator, ::Any)
+TrackingLoops.update(::NoCN0Estimator, ::Any)
 ```

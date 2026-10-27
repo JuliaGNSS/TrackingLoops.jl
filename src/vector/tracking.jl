@@ -16,7 +16,7 @@
     VTReleaseReason
 
 Why the latest navigation cycle handed a satellite back to its scalar loop
-(see [`release_reason`](@ref)):
+(a [`satellite_report`](@ref)'s `release_reason`):
 
   - `VT_NOT_RELEASED`: it was not;
   - `VT_INELIGIBLE`: no longer tracked (no record for two navigation cycles),
@@ -240,7 +240,7 @@ What the latest navigation cycle of a [`VectorPLLAndDLL`](@ref) did (see
   - `num_members`: satellites in the vector loop after this cycle;
   - the events `seeded` (a fresh scalar fix seeded the filter), `fell_back`
     (vector tracking stopped) and `released` (some satellite was released; see
-    [`release_reason`](@ref)).
+    the reports' `release_reason`).
 
 The per-member report of the latest cycle is [`vector_loop_members`](@ref).
 """
@@ -535,26 +535,6 @@ satellite position, transmit time and post-fit residuals. Empty while the scalar
 solve is in control.
 """
 vector_loop_members(estimator::VectorPLLAndDLL) = estimator.navigation.vector_loop_members
-
-"""
-    release_reason(estimator::VectorPLLAndDLL, signal, prn) -> VTReleaseReason
-
-Whether and why the latest navigation cycle released satellite `prn` of
-`signal` from the vector loop.
-"""
-function release_reason(estimator::VectorPLLAndDLL, signal::AbstractGNSSSignal, prn::Integer)
-    _release_reason(estimator.navigation.groups, signal, Int(prn))
-end
-
-_release_reason(::Tuple{}, signal, prn) = VT_NOT_RELEASED
-function _release_reason(groups::Tuple, signal::S, prn) where {S}
-    group = first(groups)
-    group.driver_signal isa S || return _release_reason(Base.tail(groups), signal, prn)
-    for slot in group.slots
-        slot.prn == prn && slot.registration > 0 && return slot.release_reason
-    end
-    VT_NOT_RELEASED
-end
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Walking the groups
