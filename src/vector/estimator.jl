@@ -24,7 +24,7 @@ vector-specific code: it builds a satellite's state with
 [`init_estimator_state`](@ref) for its driver and steps it with every record of the
 satellite. Read the results, keyed by the driver, with
 [`navigation_solution`](@ref), [`navigation_status`](@ref),
-[`release_reason`](@ref), [`vector_loop_members`](@ref), [`position_uncertainty`](@ref)
+[`satellite_report`](@ref), [`vector_loop_members`](@ref), [`position_uncertainty`](@ref)
 and [`clock_uncertainty`](@ref).
 
 The engine reads the host's bit clock and C/N₀ estimator from the records (see
