@@ -357,35 +357,35 @@ residual_pll_at(center, prompt_phase; carrier_freq_update = 0.0) = TL.ResidualPL
     state = TL._add_to_vector_loop(init_estimator_state(estimator, signal, 100.0Hz, 0.0Hz))
     sentinel = 12345.0f0
     slot.soft_bit[1] = sentinel
-    # The prompts of one data symbol of value `-1` turn by 0.1 cycle a record at the
+    # The prompts of one data bit of value `-1` turn by 0.1 cycle a record at the
     # filter's Doppler error, and the residual PLL's prediction turns with them: rotated
     # back, they sum to the real axis, which the host's bit clock, signed by its sync
-    # polarity, turns into a soft bit at the record that ends the symbol.
+    # polarity, turns into a soft bit at the record that ends the bit.
     feed!(k, phase; host_bits = Float32[], bit_polarity = 1, unwiped = false) = TL._decode_record!(
         group, slot, decoding_record(signal, -cis(2π * phase), 4000k; host_bits, bit_polarity),
         SatVectorPLLAndDLL(state; residual_pll = residual_pll_at((4000k - 2000) / 4e6, phase)), words, true, unwiped)
-    # A symbol the satellite joins the loop within is the host's.
+    # A bit the satellite joins the loop within is the host's.
     feed!(1, 0.1; host_bits = Float32[0.5])
     @test slot.soft_bit[1] == sentinel
-    @test slot.symbol_from_edge
-    # The next ones are the engine's: three records, the last ending the symbol.
+    @test slot.bit_from_edge
+    # The next ones are the engine's: three records, the last ending the bit.
     feed!(2, 0.2)
     feed!(3, 0.3)
-    @test slot.symbol_accumulator ≈ -2.0
+    @test slot.bit_accumulator ≈ -2.0
     feed!(4, 0.4; host_bits = Float32[0.7])
     @test slot.soft_bit[1] ≈ -3.0f0
-    @test slot.symbol_accumulator == 0.0
+    @test slot.bit_accumulator == 0.0
     feed!(5, 0.5)
     feed!(6, 0.6; host_bits = Float32[0.7], bit_polarity = -1)
     @test slot.soft_bit[1] ≈ 2.0f0
-    # A record correlated before the overlay was wiped breaks the symbol: the host's
+    # A record correlated before the overlay was wiped breaks the bit: the host's
     # soft bits until the next one begins.
     slot.soft_bit[1] = sentinel
     feed!(7, 0.7; unwiped = true)
-    @test !slot.symbol_from_edge && slot.symbol_accumulator == 0.0
+    @test !slot.bit_from_edge && slot.bit_accumulator == 0.0
     feed!(8, 0.8; host_bits = Float32[0.7])
     @test slot.soft_bit[1] == sentinel
-    @test slot.symbol_from_edge
+    @test slot.bit_from_edge
     feed!(9, 0.9; host_bits = Float32[0.7])
     @test slot.soft_bit[1] ≈ -1.0f0
     # Out of the vector loop the engine decodes the host's soft bits.
@@ -394,7 +394,7 @@ residual_pll_at(center, prompt_phase; carrier_freq_update = 0.0) = TL.ResidualPL
     TL._decode_record!(group, slot, decoding_record(signal, cis(0.3), 40000; host_bits = Float32[0.7]),
         out, words, true, false)
     @test slot.soft_bit[1] == sentinel
-    @test !slot.symbol_from_edge
+    @test !slot.bit_from_edge
 end
 
 @testset "A data component's prompt is rotated by the phase the residual PLL estimated for its pilot" begin
@@ -416,12 +416,12 @@ end
             r.sampling_frequency, r.prn, r.code_phase, true, r.sync_change, 0, r.new_soft_bits,
             r.cn0_estimator, Int8(0), Int8(1))
     phase(start, stop; history = history) =
-        TL._symbol_prompt_phase(residual_pll, ramp, half, history, record(start, stop), words, false)
+        TL._bit_prompt_phase(residual_pll, ramp, half, history, record(start, stop), words, false)
     @test phase(16000, 20000) ≈ 0.31
     @test phase(0, 4000) ≈ 0.2
     @test phase(0, 8000) ≈ 0.2 + 2.0 * 0.0005
     # The driver's own record is the prediction it was wiped with.
-    @test TL._symbol_prompt_phase(residual_pll, ramp, half, history, record(16000, 20000), words, true) == 0.31
+    @test TL._bit_prompt_phase(residual_pll, ramp, half, history, record(16000, 20000), words, true) == 0.31
     # Past the latest prompt: the residual Doppler carries it on, the replica on the ramp.
     @test phase(20000, 24000) ≈ 0.31 + 2.0 * 0.001
     # Older than the history reaches by more than a driver record: no phase, rather than
@@ -470,7 +470,7 @@ end
     @test all(slot -> slot.decoding_bit_synced && slot.in_lock, slots)
     # Every decoder decoded the subframes broadcast while the filter set the carrier, up
     # to a minute after the receiver started, from the engine's own soft bits.
-    @test all(slot -> slot.symbol_from_edge, slots)
+    @test all(slot -> slot.bit_from_edge, slots)
     @test all(slot -> get_broadcast_time_of_week(slot.running_decoder) >=
         get_broadcast_time_of_week(rx.sats[1].decoder) + 60, slots)
     prn = rx.sats[1].decoder.prn

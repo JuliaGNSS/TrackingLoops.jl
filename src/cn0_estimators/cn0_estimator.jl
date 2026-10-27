@@ -28,7 +28,7 @@ Fields:
     default configuration; more when the correlate step was lengthened by
     `Tracking.set_preferred_num_code_blocks_to_integrate!` or an external
     producer handed over longer records.
-  - `num_code_blocks_per_bit` — blocks that form one navigation bit (symbol) of
+  - `num_code_periods_per_bit` — blocks that form one navigation bit of
     `signal`; `20` for GPS L1 C/A, `1` for GPS L1C-D / Galileo E1B, and `0` for a
     pilot, which carries no data and therefore has **no** bit grid — post-sync
     its prompts stay coherent for as long as the loops hold them.
@@ -54,7 +54,7 @@ Fields:
 struct CN0UpdateContext{S<:AbstractGNSSSignal,B<:Unsigned,N,T}
     signal::S
     num_code_blocks::Int
-    num_code_blocks_per_bit::Int
+    num_code_periods_per_bit::Int
     bit_code_block_index::Int
     bit_buffer::BitBuffer{B}
     noise_density::N
@@ -66,13 +66,13 @@ end
 @inline CN0UpdateContext(
     signal::AbstractGNSSSignal,
     num_code_blocks::Integer,
-    num_code_blocks_per_bit::Integer,
+    num_code_periods_per_bit::Integer,
     bit_code_block_index::Integer,
     bit_buffer::BitBuffer,
 ) = CN0UpdateContext(
     signal,
     Int(num_code_blocks),
-    Int(num_code_blocks_per_bit),
+    Int(num_code_periods_per_bit),
     Int(bit_code_block_index),
     bit_buffer,
     nothing,
@@ -115,7 +115,7 @@ end
     CN0UpdateContext(
         signal,
         Int(num_code_blocks),
-        _calc_num_code_blocks_that_form_a_bit(signal),
+        get_code_periods_per_bit(signal),
         usable ? bit_buffer.prompt_accumulator_integrated_code_blocks : -1,
         bit_buffer,
         noise_density,

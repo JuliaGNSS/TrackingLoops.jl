@@ -81,7 +81,7 @@ end
     # Positional form: noise density and integration time default to `nothing`.
     positional = @inferred CN0UpdateContext(GPSL1CA(), 2, 20, 3, bit_buffer)
     @test positional.num_code_blocks == 2
-    @test positional.num_code_blocks_per_bit == 20
+    @test positional.num_code_periods_per_bit == 20
     @test positional.bit_code_block_index == 3
     @test positional.noise_density === nothing
     @test positional.integration_time === nothing
@@ -89,7 +89,7 @@ end
     # Derived form: the grid comes from the signal and the bit buffer, and is
     # marked unknown while sync has not been found.
     context_l1ca = @inferred CN0UpdateContext(GPSL1CA(), bit_buffer, 1)
-    @test context_l1ca.num_code_blocks_per_bit == 20
+    @test context_l1ca.num_code_periods_per_bit == 20
     @test context_l1ca.bit_code_block_index == -1
     synced_buffer = BitBuffer{UInt64}(
         zero(UInt64),
@@ -372,7 +372,7 @@ end
 end
 
 @testset "The signals NWPR cannot serve, the noise reference can (issue #217)" begin
-    # One symbol per code block, or a secondary code before sync: NWPR admits no
+    # One bit per code block, or a secondary code before sync: NWPR admits no
     # coherent window ever and reports its fallback; the noise reference has no
     # window, so these are ordinary records to it.
     bit_buffer = BitBuffer{UInt64}()
@@ -641,7 +641,7 @@ end
     @test Base.length(estimator) == 3
     @test estimator.num_records_per_ratio == 10
 
-    # One symbol per code block (GPS L1C-D, Galileo E1B): no coherent window.
+    # One bit per code block (GPS L1C-D, Galileo E1B): no coherent window.
     estimator = fresh()
     for _ = 1:40
         estimator = update(estimator, 1.0 + 0.0im, context(GPSL1C_D(), 1, 0))

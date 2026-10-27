@@ -63,7 +63,7 @@ navigation-bit grid in [`CN0UpdateContext`](@ref):
 | synced, pilot (no bit grid)       | `num_narrowband_code_blocks`, free-running      |
 | unsynced, data, no secondary code | `num_presync_narrowband_code_blocks`, unaligned |
 | unsynced, secondary code          | none: the unknown overlay flips every block     |
-| one symbol per block (L1C-D, E1B) | none: no coherent window beyond one record      |
+| one bit per block (L1C-D, E1B)    | none: no coherent window beyond one record      |
 | record at least as long as window | none: one record has `NBP == WBP`               |
 
 The unaligned pre-sync window exists because bit sync takes seconds and fails
@@ -228,26 +228,26 @@ end
 # report the fallback) and the record's offset in a grid-following window (`-1` =
 # free-running). Cases: see the table in `NWPRCN0Estimator`.
 @inline function _narrowband_window(estimator::NWPRCN0Estimator, context::CN0UpdateContext)
-    num_code_blocks_per_bit = context.num_code_blocks_per_bit
+    num_code_periods_per_bit = context.num_code_periods_per_bit
     if context.bit_code_block_index < 0
         # Bit grid unknown: only a data signal without secondary code is coherent in a bit.
-        num_code_blocks_per_bit > 1 && get_secondary_code_length(context.signal) == 1 ||
+        num_code_periods_per_bit > 1 && get_secondary_code_length(context.signal) == 1 ||
             return (0, -1)
         return (
-            min(estimator.num_presync_narrowband_code_blocks, num_code_blocks_per_bit),
+            min(estimator.num_presync_narrowband_code_blocks, num_code_periods_per_bit),
             -1,
         )
     end
-    # One symbol per code block.
-    num_code_blocks_per_bit == 1 && return (0, -1)
+    # One bit per code block.
+    num_code_periods_per_bit == 1 && return (0, -1)
     # Pilot: secondary code wiped off post-sync, window free-running.
-    num_code_blocks_per_bit == 0 && return (estimator.num_narrowband_code_blocks, -1)
+    num_code_periods_per_bit == 0 && return (estimator.num_narrowband_code_blocks, -1)
     # Data-bearing and synced: tile the bit from its start. The trailing remainder
     # is skipped: a shorter window has another `M` and would restart the ring.
-    window_code_blocks = min(estimator.num_narrowband_code_blocks, num_code_blocks_per_bit)
+    window_code_blocks = min(estimator.num_narrowband_code_blocks, num_code_periods_per_bit)
     window_start =
         div(context.bit_code_block_index, window_code_blocks) * window_code_blocks
-    window_start + window_code_blocks > num_code_blocks_per_bit && return (0, -1)
+    window_start + window_code_blocks > num_code_periods_per_bit && return (0, -1)
     (window_code_blocks, context.bit_code_block_index - window_start)
 end
 
