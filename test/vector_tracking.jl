@@ -17,7 +17,7 @@ using Geodesy: ENUfromECEF, wgs84
     @test !navigation_status(estimator).running
     @test navigation_solution(estimator) === nav.pvt
     @test isempty(vector_loop_members(estimator))
-    @test release_reason(estimator, GPSL1CA(), 5) == VT_NOT_RELEASED
+    @test satellite_report(estimator, GPSL1CA(), 5) === nothing
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     @test (state.slot_index, state.registration, state.cycle_id) == (0, 0, -1)
     @test !state.in_vector_loop
@@ -243,7 +243,7 @@ end
     results, sample, _ = run_simulation!(rx, 1; fill! = coast!, start_sample = sample)
     key = (:GPSL1CA, prn)
     @test rx.sats[1].state.in_vector_loop
-    @test release_reason(rx.estimator, GPSL1CA(), prn) == VT_NOT_RELEASED
+    @test satellite_report(rx.estimator, GPSL1CA(), prn).release_reason == VT_NOT_RELEASED
     @test !haskey(results[1].pvt.observations, key)
     @test haskey(vector_loop_members(rx.estimator), key)
     @test results[1].status.num_members == length(rx.sats)
@@ -257,7 +257,7 @@ end
     sat = rx.sats[2]
     @test results[1].status.released
     @test dropped.release_reason == VT_INELIGIBLE
-    @test release_reason(rx.estimator, GPSL1CA(), dropped.prn) == VT_INELIGIBLE
+    @test satellite_report(rx.estimator, GPSL1CA(), dropped.prn).release_reason == VT_INELIGIBLE
     @test !dropped.occupied
     @test !dropped.estimator_state.in_vector_loop
     @test !sat.state.in_vector_loop

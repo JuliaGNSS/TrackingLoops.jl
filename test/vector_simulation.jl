@@ -795,7 +795,7 @@ function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
             push!(results, (; pvt = deepcopy(pvt), status = nav.status, code_errors = copy(code_errors),
                 time = receiver.truth.t0 + TrackingLoops._epoch_time(nav, nav.cycle_epoch),
                 measured = collect(keys(pvt.observations)),
-                reasons = [release_reason(estimator, sat.signal, sat.decoder.prn) for sat in receiver.sats]))
+                reasons = [satellite_report(estimator, sat.signal, sat.decoder.prn).release_reason for sat in receiver.sats]))
         end
     end
     results, sample, false

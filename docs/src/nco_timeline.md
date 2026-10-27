@@ -1,3 +1,7 @@
+```@meta
+CurrentModule = TrackingLoops
+```
+
 # NCO timeline
 
 An [`NCOCommand`](@ref) describes physical carrier and code Doppler offsets in Hz.
@@ -43,8 +47,17 @@ allocates and never rewrites its history: `schedule_command!` returns `false` fo
 command that does not fit, and the host does not write that command to the device.
 Size the queue for outstanding commands and retire consumed history regularly.
 
-```@autodocs
-Modules = [TrackingLoops]
-Pages = ["nco_timeline.jl"]
-Private = false
+```@docs
+NO_LANDING_SAMPLE
+NCOCommand
+ConstantNCOCommand
+TrackingLoops.ScheduledNCOCommand
+NCOTimeline
+calc_mean_nco_command(::NCOTimeline, ::Real, ::Real)
+get_nco_command(::NCOTimeline, ::Any)
+advance_timeline!(::NCOTimeline, ::Any)
+confirm_command!(::NCOTimeline, ::Any, ::Any)
+cancel_command!(::NCOTimeline, ::Any)
+reset_timeline!(::NCOTimeline, ::Any, ::Any)
+schedule_command!(::NCOTimeline, ::Any, ::Any, ::Any)
 ```
