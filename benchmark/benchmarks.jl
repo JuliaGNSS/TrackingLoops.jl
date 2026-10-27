@@ -1,64 +1,68 @@
-# The loop process's navigation budget: one `update_navigation!` cycle of 18 satellites
-# on two bands (GPS L1 C/A and L5, one inter-frequency bias), from PositionVelocityTime's
-# fixture satellites, against one cycle's worth of per-record `step_loop` for the same
-# channels. Run with AirspeedVelocity's `benchpkg`, or directly:
+# The loop process's navigation budget, on the simulated satellites of the tests
+# (`test/vector_simulation.jl`): one navigation cycle, for GPS L1 C/A alone and with L2C
+# (one inter-frequency bias), and the per-record step of every member between two cycles.
+# Run with AirspeedVelocity's `benchpkg`, or directly:
 #
 #     julia --project=benchmark -e 'include("benchmark/benchmarks.jl"); run(SUITE)'
-using BenchmarkTools, TrackingLoops, GNSSSignals, StaticArrays
-using Unitful: Hz, s
-using PositionVelocityTime:
-    _precompile_states, _precompile_cnav, _PRECOMPILE_GPS_L1CA_STATES
+using BenchmarkTools, TrackingLoops, GNSSSignals, StaticArrays, Unitful
+using TrackingLoops: default_cn0_estimator
+using Unitful: Hz, dBHz, s, ms
+
+# The host's C/N₀ estimator the simulated records carry, as in the tests: it reads the
+# C/N₀ the record was built with.
+struct ReportedCN0 <: TrackingLoops.AbstractCN0Estimator
+    cn0_dbhz::Float64
+end
+TrackingLoops.estimate_cn0(estimator::ReportedCN0, integration_time) = estimator.cn0_dbhz * dBHz
+with_cn0(record::LoopRecord, cn0_dbhz) = LoopRecord(
+    (f === :cn0_estimator ? ReportedCN0(cn0_dbhz) : getfield(record, f) for f in fieldnames(LoopRecord))...,
+)
+
+include(joinpath(@__DIR__, "..", "test", "vector_simulation.jl"))
 
 const SUITE = BenchmarkGroup()
 
-# The fixture satellites of one signal as filled `VTSat`s: in lock, in the vector
-# loop, with a cycle of accumulated discriminators.
-function fixture_group(signal, make_data)
-    states = _precompile_states(signal, _PRECOMPILE_GPS_L1CA_STATES, make_data, GPSL1CA())
-    estimator = VectorPLLAndDLL()
-    sats = map(states) do state
-        estimator_state = init_estimator_state(estimator, signal, state.carrier_doppler,
-            state.carrier_doppler * get_chip_rate_to_center_frequency_ratio(signal))
-        VTSat(state.decoder, estimator_state; active = true, code_phase = state.code_phase,
-            carrier_doppler = state.carrier_doppler, code_doppler = 0.0Hz,
-            code_phase_at_landing = state.code_phase,
-            carrier_doppler_at_landing = state.carrier_doppler, cn0_dbhz = 45.0,
-            in_lock = true, pvt_ready = true)
+# Every member's step, one signal's vector at a time; recursive, so that it unrolls over
+# the signals' tuple.
+step_members(estimator, ::Tuple{}) = nothing
+function step_members(estimator, steps::Tuple)
+    for (state, record, words) in first(steps)
+        TrackingLoops._step_satellite(estimator, state, record, words, NO_LANDING_SAMPLE)
     end
-    VTSignalGroup(signal, sats)
+    step_members(estimator, Base.tail(steps))
 end
 
-# One cycle's worth of accumulated discriminators on every member.
-function accumulate!(groups)
-    for group in groups, sat in group.sats
-        sat.estimator_state = SatVectorPLLAndDLL(sat.estimator_state;
-            code_discr_acc = (100, 0.01), carrier_discr_acc = (100, 5.0Hz))
+for (name, signals) in (("GPS L1 C/A", (GPSL1CA(),)), ("GPS L1 C/A and L2C", (GPSL1CA(), GPSL2CM())))
+    # A running filter, and every slot filled for the next epoch as `run_cycle!` fills
+    # them. Each sample runs the cycle on a copy, so every one starts from the same state.
+    rx = SimReceiver(; signals)
+    _, sample, _ = run_simulation!(rx, 5)
+    rx.vt.running || error("the filter did not start on $name")
+    epoch = sample + rx.cycle_ms * SAMPLES_PER_MS
+    rx.vt.pending_epoch = round(Int, epoch / (rx.nominal_ms * SAMPLES_PER_MS))
+    for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
+        fill_slot!(group.slots[i], sat, epoch, NO_LANDING_SAMPLE, rx.vt)
     end
-    groups
-end
+    now = epoch / ustrip(Hz, SIM_FS)
+    num_satellites = sum(length, rx.channels)
+    SUITE["navigation cycle"]["$num_satellites satellites, $name"] =
+        @benchmarkable TrackingLoops._navigation_cycle!(nav, $now) setup = (nav = deepcopy($(rx.vt))) evals = 1
 
-groups = (fixture_group(GPSL1CA(), identity), fixture_group(GPSL5I(), _precompile_cnav))
-vt = VectorTrackingState(VectorTracking(), groups; approximate_year = 2021)
-update_navigation!(vt, groups, 0.1s) # the scalar fix seeds the filter
-@assert vt.running
-accumulate!(groups)
-update_navigation!(vt, groups, 0.1s)
-
-SUITE["update_navigation!"]["18 satellites, 2 bands"] =
-    @benchmarkable update_navigation!($vt, $groups, 0.1s) setup = accumulate!($groups) evals = 1
-
-# The per-record loop the cycle sits on: 100 records of 1 ms for each of the 18 channels.
-signal = GPSL1CA()
-estimator = VectorPLLAndDLL()
-state = enable_vector_tracking(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz))
-correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
-function records!(state, estimator, signal, correlator, n)
-    for k = 1:n
-        output = CorrelatorOutput(correlator, 4000, 4000k)
-        record = LoopRecord(signal, correlator, cis(0.01), output, 1, 4e6Hz)
-        state, = step_loop(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
+    # One record of every member, stepped from its state at the cycle's end as the
+    # satellite's own loop steps it in the vector loop; one vector per signal, so that
+    # each is stepped with its types known.
+    steps = map(rx.channels) do channels
+        map(channels) do sat
+            num_samples = record_ms(sat.signal) * SAMPLES_PER_MS
+            record_end = sample + num_samples
+            words = sim_words(sat, NO_LANDING_SAMPLE)
+            correlator, = simulate_correlator(sat, rx.truth, sim_time(rx, record_end), num_samples,
+                record_end, words)
+            record = with_cn0(LoopRecord(sat.signal, correlator, sat.previous_prompt, num_samples,
+                record_end, record_end, 1, SIM_FS), 45.0)
+            (sat.state, record, words)
+        end
     end
-    state
+    SUITE["member step"]["$num_satellites members, $name"] =
+        @benchmarkable step_members($(rx.estimator), $steps)
 end
-SUITE["step_loop"]["18 channels × 100 records"] =
-    @benchmarkable records!($state, $estimator, $signal, $correlator, 1800)
