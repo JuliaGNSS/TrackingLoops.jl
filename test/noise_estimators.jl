@@ -172,12 +172,12 @@ end
     @test D === NoiseDensity
     @test Base.return_types(get_noise_density, (typeof(estimator),)) == [Union{Nothing,D}]
     empty_one = CorrelatorNoiseEstimator()
-    @test @inferred(TrackingLoops._noise_density_and_ready(empty_one)) == (zero(D), false)
-    @test !TrackingLoops._noise_window_filling(empty_one)
-    density, ready = @inferred TrackingLoops._noise_density_and_ready(estimator)
+    @test @inferred(noise_density_and_ready(empty_one)) == (zero(D), false)
+    @test !noise_window_filling(empty_one)
+    density, ready = @inferred noise_density_and_ready(estimator)
     @test ready
     @test density == get_noise_density(estimator)
-    @test !TrackingLoops._noise_window_filling(estimator)
+    @test !noise_window_filling(estimator)
 end
 
 @testset "A zero measured floor is not a floor to divide by" begin
@@ -185,14 +185,14 @@ end
     append_noise_observation!(dead, noise_observation_from_samples(0.0, 4000, 4e6Hz))
     D = noise_density_type(dead)
     @test get_noise_density(dead) == zero(D)
-    @test @inferred(TrackingLoops._noise_density_and_ready(dead)) == (zero(D), false)
-    @test !TrackingLoops._noise_window_filling(dead)
+    @test @inferred(noise_density_and_ready(dead)) == (zero(D), false)
+    @test !noise_window_filling(dead)
 
     for bad in (NaN, Inf)
         e = CorrelatorNoiseEstimator()
         append_noise_observation!(e, NoiseObservation(bad / 1.0Hz, 1, 1.0e-3s, Int16(1)))
-        @test @inferred(TrackingLoops._noise_density_and_ready(e)) == (zero(D), false)
-        @test !TrackingLoops._noise_window_filling(e)
+        @test @inferred(noise_density_and_ready(e)) == (zero(D), false)
+        @test !noise_window_filling(e)
     end
 end
 
@@ -303,8 +303,8 @@ end
     @test isnothing(get_noise_density(estimator))
     @test noise_density_type(estimator) === NoiseDensity
     @test isnothing(noise_window_looks(estimator))
-    @test TrackingLoops._noise_density_and_ready(estimator) == (zero(NoiseDensity), false)
-    @test !TrackingLoops._noise_window_filling(estimator)
+    @test noise_density_and_ready(estimator) == (zero(NoiseDensity), false)
+    @test !noise_window_filling(estimator)
     @test (GPSL1CA = CorrelatorNoiseEstimator(), E1B = estimator) isa NoiseEstimators
 end
 
@@ -319,7 +319,7 @@ end
     @test ustrip(Hz^-1, get_noise_density(estimator)) ≈ 2 / 4e6
 end
 
-@testset "The software reference's helpers pool taps and rotate PRNs" begin
+@testset "The noise reference pools a despread's taps" begin
     # Single antenna: the scalar power of the taps.
     taps = SVector(1.0 + 1.0im, 2.0 + 0.0im, 0.0 - 3.0im)
     @test TrackingLoops._pool_taps(taps, NumAnts(1)) == 2.0 + 4.0 + 9.0
@@ -334,21 +334,100 @@ end
     @test pooled ≈ sum(t * t' for t in array_taps)
     @test pooled ≈ pooled'
 
-    # The rotation position is carried in the newest observation.
+    # One despread of 4000 samples with three taps: the pooled power over all the taps'
+    # samples, spanning the despread's duration, under the PRN it used.
     signal = GPSL1CA()
+    despread = NoiseDespread(signal, 7, 1, 4000, 0.0, 1.023e6Hz, 0.0Hz, 4e6Hz)
+    estimator = CorrelatorNoiseEstimator()
+    @test append_despread_noise!(estimator, despread, taps) === estimator
+    observation = only(estimator.buffered)
+    @test observation.noise_density ≈ (2.0 + 4.0 + 9.0) / (3 * 4000 * 4e6Hz)
+    @test observation.num_sub_integrations == 3
+    @test observation.duration ≈ 1.0e-3s
+    @test observation.prn == 7
+    array = CorrelatorNoiseEstimator(; num_ants = NumAnts(2))
+    append_despread_noise!(array, despread, array_taps)
+    @test only(array.buffered).noise_density ≈ pooled / (3 * 4000 * 4e6Hz)
+
+    # Three taps `tap_code_shift` apart, one column per antenna.
+    correlator = noise_correlator(CorrelatorNoiseEstimator(; tap_code_shift = 2.0))
+    @test correlator isa EarlyPromptLateCorrelator
+    @test NumAnts(correlator) === NumAnts(1)
+    @test correlator.preferred_early_late_to_prompt_code_shift == 2.0
+    @test NumAnts(noise_correlator(array)) === NumAnts(2)
+end
+
+# Sums what a host reads off each planned despread, so the plan's iteration can be
+# checked for allocations.
+function sum_noise_despreads(estimator, signal, first_sample, last_sample, fs, f_if)
+    total = 0.0
+    for despread in noise_despreads(estimator, signal, first_sample, last_sample, fs, f_if)
+        total += despread.num_samples + despread.code_phase
+        total += ustrip(Hz, despread.carrier_frequency)
+    end
+    total
+end
+
+function allocations_of_noise_despreads(estimator, signal, first, last, fs, f_if)
+    sum_noise_despreads(estimator, signal, first, last, fs, f_if)
+    @allocated sum_noise_despreads(estimator, signal, first, last, fs, f_if)
+end
+
+@testset "noise_despreads plans the reference's sub-integrations" begin
+    signal = GPSL1CA()
+    fs = 4e6Hz
+    f_if = 100.0Hz
+
+    # 10 ms at 4 MHz is ten code periods: ten equal, contiguous sub-integrations of
+    # one PRN, each drawing its code phase, then its carrier, from the estimator's rng.
+    estimator = CorrelatorNoiseEstimator(; rng = Xoshiro(3))
+    despreads = collect(noise_despreads(estimator, signal, 101, 40100, fs, f_if))
+    @test length(despreads) == 10
+    @test [d.first_sample for d in despreads] == 101:4000:36101
+    @test all(d -> d.num_samples == 4000, despreads)
+    @test all(d -> d.prn == 1 && d.signal === signal, despreads)
+    @test all(d -> d.code_frequency == get_code_frequency(signal), despreads)
+    @test all(d -> d.sampling_frequency === fs, despreads)
+    rng = Xoshiro(3)
+    for d in despreads
+        @test d.code_phase == rand(rng) * 1023
+        @test d.carrier_frequency == f_if + (2 * rand(rng) - 1) * 5000.0Hz
+    end
+    @test all(d -> 0 <= d.code_phase < 1023, despreads)
+    @test all(d -> abs(d.carrier_frequency - f_if) <= 5000.0Hz, despreads)
+
+    # Uneven slices still cover every sample once: 2.5 code periods round to three
+    # sub-integrations.
+    despreads = collect(noise_despreads(estimator, signal, 1, 10001, fs, f_if))
+    @test [d.num_samples for d in despreads] == [3333, 3334, 3334]
+    @test [d.first_sample for d in despreads] == [1, 3334, 6668]
+
+    # A slice shorter than the code still yields one despread; an empty one none, and
+    # at most one per sample.
+    @test length(noise_despreads(estimator, signal, 1, 400, fs, f_if)) == 1
+    @test isempty(noise_despreads(estimator, signal, 5, 4, fs, f_if))
+    @test length(noise_despreads(estimator, signal, 1, 3, 1e2Hz, f_if)) == 3
+
+    # No dither, no carrier offset.
+    undithered = CorrelatorNoiseEstimator(; carrier_dither = 0.0Hz)
+    undithered_despreads = noise_despreads(undithered, signal, 1, 8000, fs, f_if)
+    @test all(d -> d.carrier_frequency == f_if, undithered_despreads)
+
+    # The PRN rotates over the whole code family, carried in the newest observation.
     num_prns = size(GNSSSignals.get_codes(signal), 2)
     estimator = CorrelatorNoiseEstimator()
-    @test TrackingLoops._next_noise_prn(estimator, signal) == 1
-    append_noise_observation!(
-        estimator,
-        noise_observation_from_samples(4000.0, 4000, 4e6Hz; prn = 5),
-    )
-    @test TrackingLoops._next_noise_prn(estimator, signal) == 6
-    append_noise_observation!(
-        estimator,
-        noise_observation_from_samples(4000.0, 4000, 4e6Hz; prn = num_prns),
-    )
-    @test TrackingLoops._next_noise_prn(estimator, signal) == 1
+    for (prn, expected) in ((5, 6), (num_prns, 1))
+        append_noise_observation!(
+            estimator,
+            noise_observation_from_samples(4000.0, 4000, fs; prn),
+        )
+        @test first(noise_despreads(estimator, signal, 1, 4000, fs, f_if)).prn == expected
+    end
+    despread = first(noise_despreads(estimator, signal, 1, 4000, fs, f_if))
+    append_despread_noise!(estimator, despread, SVector(1.0 + 0im, 1.0 + 0im, 1.0 + 0im))
+    @test first(noise_despreads(estimator, signal, 1, 4000, fs, f_if)).prn == 2
+
+    @test allocations_of_noise_despreads(estimator, signal, 1, 40000, fs, f_if) == 0
 end
 
 @testset "The noise builders take per-antenna input" begin
@@ -381,9 +460,9 @@ end
 
     estimator = CorrelatorNoiseEstimator(; num_ants = NumAnts(M))
     @test noise_density_type(estimator) <: SMatrix{M,M}
-    @test TrackingLoops._num_ants(estimator) === NumAnts(M)
-    @test TrackingLoops._num_ants(CorrelatorNoiseEstimator()) === NumAnts(1)
-    @test TrackingLoops._num_ants_of_density_type(NoiseDensity) === NumAnts(1)
+    @test NumAnts(estimator) === NumAnts(M)
+    @test NumAnts(CorrelatorNoiseEstimator()) === NumAnts(1)
+    @test NumAnts(NoiseDensity) === NumAnts(1)
     append_noise_observation!(estimator, obs)
     @test get_noise_density(estimator) ≈ R
 
@@ -419,7 +498,7 @@ end
             else
                 append_noise_observation!(estimator, observation(M, k))
             end
-            _, ready = TrackingLoops._noise_density_and_ready(estimator)
+            _, ready = noise_density_and_ready(estimator)
             if ready && ready_at == 0
                 ready_at = k
             end
@@ -431,8 +510,8 @@ end
     append_noise_observation!(estimator, observation(4, 1))
     @test noise_window_looks(estimator) == 3
     @test !isnothing(get_noise_density(estimator))
-    @test TrackingLoops._noise_window_filling(estimator)
-    density, ready = TrackingLoops._noise_density_and_ready(estimator)
+    @test noise_window_filling(estimator)
+    density, ready = noise_density_and_ready(estimator)
     @test !ready
     @test density == zero(noise_density_type(estimator))
 
@@ -442,8 +521,8 @@ end
         dead,
         noise_observation_from_correlator(zero(SMatrix{4,4,ComplexF64,16}), 3, 12000, fs),
     )
-    @test !TrackingLoops._noise_window_filling(dead)
-    @test !last(TrackingLoops._noise_density_and_ready(dead))
+    @test !noise_window_filling(dead)
+    @test !last(noise_density_and_ready(dead))
     # And a non-finite element is rejected outright.
     bad = CorrelatorNoiseEstimator(; num_ants = NumAnts(2))
     append_noise_observation!(
@@ -455,7 +534,7 @@ end
             fs,
         ),
     )
-    @test !last(TrackingLoops._noise_density_and_ready(bad))
+    @test !last(noise_density_and_ready(bad))
 
     @test TrackingLoops._sufficient_looks(zero(SMatrix{4,4,ComplexF64,16}), nothing)
     @test !TrackingLoops._sufficient_looks(zero(SMatrix{4,4,ComplexF64,16}), 3)

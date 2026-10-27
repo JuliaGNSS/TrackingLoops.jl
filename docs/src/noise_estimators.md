@@ -1,13 +1,17 @@
+```@meta
+CurrentModule = TrackingLoops
+```
+
 # Noise estimation
 
 A noise estimator measures the post-correlation noise density `N₀` of one
 signal, which a [`NoiseRefCN0Estimator`](@ref) divides each record's prompt power
-by. It is fed [`NoiseObservation`](@ref)s — from a correlator tap on a PRN that
+by. It is fed [`NoiseObservation`](@ref TrackingLoops.NoiseObservation)s — from a correlator tap on a PRN that
 is not transmitted ([`noise_observation_from_correlator`](@ref)) or from raw
-samples ([`noise_observation_from_samples`](@ref)) — with
-[`append_noise_observation!`](@ref) or [`update_noise!`](@ref), and read with
-[`get_noise_density`](@ref). [`CorrelatorNoiseEstimator`](@ref) keeps a sliding
-window of observations; subtype [`AbstractNoiseEstimator`](@ref) for another
+samples ([`noise_observation_from_samples`](@ref TrackingLoops.noise_observation_from_samples)) — with
+[`append_noise_observation!`](@ref) or [`update_noise!`](@ref TrackingLoops.update_noise!), and read with
+[`get_noise_density`](@ref TrackingLoops.get_noise_density). [`CorrelatorNoiseEstimator`](@ref) keeps a sliding
+window of observations; subtype [`AbstractNoiseEstimator`](@ref TrackingLoops.AbstractNoiseEstimator) for another
 source.
 
 ## Why per signal and not per RF band
@@ -45,8 +49,58 @@ integration time**, which is what lets one per-signal figure serve records of an
 length. It is stored as a Unitful quantity of dimension `1/Hz`, so the
 consumer's `⟨|P|²⟩/N₀ − 1/T` is dimension-checked rather than trusted.
 
-```@autodocs
-Modules = [TrackingLoops]
-Pages = ["noise_estimators/noise_estimator.jl", "noise_estimators/window.jl"]
-Private = false
+## Filling the reference
+
+A [`CorrelatorNoiseEstimator`](@ref) plans its own measurement:
+[`noise_despreads`](@ref TrackingLoops.noise_despreads) splits a slice of samples into
+code-period sub-integrations, rotates the PRN and draws each one's random code phase and
+carrier. A host only despreads each [`NoiseDespread`](@ref TrackingLoops.NoiseDespread)
+through [`noise_correlator`](@ref TrackingLoops.noise_correlator)'s taps and appends them
+with [`append_despread_noise!`](@ref TrackingLoops.append_despread_noise!). Tracking.jl
+does so on its kernels when [`update_noise!`](@ref TrackingLoops.update_noise!) calls its
+[`despread_noise!`](@ref TrackingLoops.despread_noise!); a hardware host programs a
+noise channel with the same plan:
+
+```julia
+correlator = TrackingLoops.noise_correlator(estimator)
+despreads = TrackingLoops.noise_despreads(
+    estimator,
+    signal,
+    first_sample,
+    last_sample,
+    sampling_frequency,
+    intermediate_frequency,
+)
+for despread in despreads
+    taps = despread_on_noise_channel(correlator, despread)
+    TrackingLoops.append_despread_noise!(estimator, despread, taps)
+end
+```
+
+```@docs
+TrackingLoops.AbstractNoiseEstimator
+TrackingLoops.NoiseDensity
+TrackingLoops.NoiseEstimators
+TrackingLoops.NoiseObservation
+TrackingLoops.NoiseUpdateContext
+append_noise_observation!(::AbstractNoiseEstimator, ::NoiseObservation)
+TrackingLoops.get_noise_density(::AbstractNoiseEstimator)
+TrackingLoops.noise_density_and_ready(::AbstractNoiseEstimator)
+TrackingLoops.noise_density_type(::AbstractNoiseEstimator)
+TrackingLoops.noise_observation(::Complex, ::Any, ::Any)
+noise_observation_from_correlator(::Any, ::Any, ::Any, ::Any)
+TrackingLoops.noise_observation_from_samples(::Any, ::Any, ::Any)
+TrackingLoops.noise_window_filling(::AbstractNoiseEstimator)
+TrackingLoops.noise_window_looks(::AbstractNoiseEstimator)
+TrackingLoops.update_noise!(::AbstractNoiseEstimator, ::Any, ::Any, ::Any, ::Any)
+CorrelatorNoiseEstimator
+CorrelatorNoiseEstimator()
+TrackingLoops.NoiseDespread
+TrackingLoops.append_despread_noise!(::CorrelatorNoiseEstimator, ::NoiseDespread, ::Any)
+append_noise_observation!(::CorrelatorNoiseEstimator{D, T}, ::NoiseObservation) where {D, T}
+TrackingLoops.despread_noise!
+TrackingLoops.get_noise_density(::CorrelatorNoiseEstimator)
+TrackingLoops.noise_correlator(::CorrelatorNoiseEstimator)
+TrackingLoops.noise_despreads(::CorrelatorNoiseEstimator, ::AbstractGNSSSignal, ::Integer, ::Integer, ::Any, ::Any)
+TrackingLoops.update_noise!(::CorrelatorNoiseEstimator, ::Any, ::Integer, ::Integer, ::NoiseUpdateContext)
 ```

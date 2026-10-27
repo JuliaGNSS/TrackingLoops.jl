@@ -1,13 +1,17 @@
+```@meta
+CurrentModule = TrackingLoops
+```
+
 # Bit and secondary-code synchronisation
 
 Until the navigation-bit boundary (for a data signal) or the secondary-code
 phase (for a pilot) is known, a signal can only be integrated over one primary
-code period. The [`BitBuffer`](@ref) collects the prompts of those short
+code period. The [`BitBuffer`](@ref TrackingLoops.BitBuffer) collects the prompts of those short
 integrations, and a per-signal detector
-([`detect_bit_or_secondary_code_sync`](@ref)) searches them for the boundary.
+([`detect_bit_or_secondary_code_sync`](@ref TrackingLoops.detect_bit_or_secondary_code_sync)) searches them for the boundary.
 Once [`has_bit_or_secondary_code_been_found`](@ref) returns `true`, longer
 coherent integrations become available (see
-[`calc_num_code_blocks_to_integrate`](@ref)) and the buffer accumulates the
+[`calc_num_code_blocks_to_integrate`](@ref TrackingLoops.calc_num_code_blocks_to_integrate)) and the buffer accumulates the
 decoded soft bits, which [`get_soft_bits`](@ref) returns. For a pilot, the
 secondary-code sync also gives the prompt's sign, which a record's
 `carrier_phase_polarity` hands to the four-quadrant carrier discriminators (see
@@ -15,25 +19,51 @@ secondary-code sync also gives the prompt's sign, which a record's
 
 Detectors exist for every GPS, Galileo and BeiDou signal that GNSSSignals.jl
 models. How a signal is synchronised is a method of
-[`detect_bit_or_secondary_code_sync`](@ref) and of the small trait functions
-below ([`uses_soft_bit_edge_detection`](@ref),
-[`get_bit_edge_or_secondary_code_tolerance`](@ref), …), so a new signal type
+[`detect_bit_or_secondary_code_sync`](@ref TrackingLoops.detect_bit_or_secondary_code_sync) and of the small trait functions
+below ([`uses_soft_bit_edge_detection`](@ref TrackingLoops.uses_soft_bit_edge_detection),
+[`get_bit_edge_or_secondary_code_tolerance`](@ref TrackingLoops.get_bit_edge_or_secondary_code_tolerance), …), so a new signal type
 can be supported by adding methods for it.
 
-```@autodocs
-Modules = [TrackingLoops]
-Pages = [
-    "bit_buffer.jl",
-    "gps/l1ca.jl", "gps/l1c_d.jl", "gps/l1c_p.jl", "gps/l2c.jl", "gps/l5.jl",
-    "galileo/e1b.jl", "galileo/e1c.jl", "galileo/e5a.jl", "galileo/e5a_qp.jl", "galileo/e5b.jl", "galileo/e6.jl",
-    "beidou/b1i.jl", "beidou/b3i.jl", "beidou/b2a.jl", "beidou/b2b.jl", "beidou/b1c.jl",
-]
-Private = false
+```@docs
+TrackingLoops.BitBuffer
+TrackingLoops.PhaseAccumulators
+TrackingLoops.SyncResult
+TrackingLoops.get_bit_edge_detection_confidence(::AbstractGNSSSignal)
+TrackingLoops.get_bit_edge_or_secondary_code_tolerance(::AbstractGNSSSignal)
+TrackingLoops.get_code_block_buffer_type(::AbstractGNSSSignal)
+get_soft_bits(::BitBuffer)
+has_bit_or_secondary_code_been_found(::BitBuffer)
+TrackingLoops.reset(::BitBuffer{B}) where {B<:Unsigned}
+TrackingLoops.uses_soft_bit_edge_detection(::AbstractGNSSSignal)
+TrackingLoops.uses_soft_secondary_code_detection(::AbstractGNSSSignal)
+get_default_correlator(::GPSL1CA, ::NumAnts = NumAnts(1))
+TrackingLoops.detect_bit_or_secondary_code_sync(::GPSL1C_D, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GPSL1C_P, ::Integer, ::UInt1800, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GPSL2CL, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GPSL2CM, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GPSL5I, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GPSL5Q, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::Union{GalileoE1B, GalileoE1B_BOC11}, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::Union{GalileoE1C, GalileoE1C_BOC11}, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GalileoE5aI, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GalileoE5aQ, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GalileoE5aQP, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GalileoE5bI, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GalileoE5bQ, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GalileoE6B, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::GalileoE6C, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::BeiDouB1I, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::BeiDouB3I, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::BeiDouB2aI, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::BeiDouB2aQ, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::BeiDouB2bI, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::BeiDouB1C_D, ::Integer, ::Unsigned, ::Integer)
+TrackingLoops.detect_bit_or_secondary_code_sync(::BeiDouB1C_P, ::Integer, ::UInt1800, ::Integer)
 ```
 
 ## Code-block buffer widths
 
-[`get_code_block_buffer_type`](@ref) per signal, and what the packed buffer of that
+[`get_code_block_buffer_type`](@ref TrackingLoops.get_code_block_buffer_type) per signal, and what the packed buffer of that
 width is for:
 
 | Signal        | Returns    | Detector / buffer role                              |
@@ -62,7 +92,7 @@ width is for:
 | BeiDou B1C-D  | `UInt8`    | symbol = primary period, buffer unused              |
 | BeiDou B1C-P  | `UInt1800` | **hard** rotation sweep — 1800-chip overlay horizon |
 
-The soft detectors read the incremental [`PhaseAccumulators`](@ref) instead of the
+The soft detectors read the incremental [`PhaseAccumulators`](@ref TrackingLoops.PhaseAccumulators) instead of the
 packed buffer. GPS L1 C/A still recovers the pre-sync bits it holds once sync is
 found; the secondary-coded signals do not, as their pre-sync signs carry the
 overlay, not data.

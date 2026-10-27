@@ -1,12 +1,12 @@
 # Internals
 
-The unexported functions and types of the package. They are listed for those
-extending it — e.g. adding methods of [`despread_noise!`](@ref
-TrackingLoops.despread_noise!) for a new noise source — and for those reading
-its source. They are not part of the public API: they may change in any
-release.
+The internal functions and types of the package, outside the documented API.
+They are listed for those reading its source; they are not part of the API and
+may change in any release. A package extending TrackingLoops — a host's noise
+source through [`despread_noise!`](@ref TrackingLoops.despread_noise!), a custom
+correlator or estimator — needs none of them.
 
 ```@autodocs
 Modules = [TrackingLoops]
-Public = false
+Filter = !listed
 ```

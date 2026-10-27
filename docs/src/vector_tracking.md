@@ -1,3 +1,7 @@
+```@meta
+CurrentModule = TrackingLoops
+```
+
 # Vector tracking
 
 In scalar tracking every satellite closes its own code and carrier loops from
@@ -139,15 +143,15 @@ every satellite starts on its scalar loop:
    or bit sync) stays in the loop, unmeasured, and is predicted through the
    outage. A member that misses an epoch sits that cycle out.
 4. A member is released when it is no longer eligible ([`VT_INELIGIBLE`](@ref
-   VTReleaseReason); this includes a satellite without a record for two cycles,
+   TrackingLoops.VTReleaseReason); this includes a satellite without a record for two cycles,
    whose slot is freed) or drops below the horizon
-   ([`VT_BELOW_HORIZON`](@ref VTReleaseReason)). Its scalar loop is re-seeded at
+   ([`VT_BELOW_HORIZON`](@ref TrackingLoops.VTReleaseReason)). Its scalar loop is re-seeded at
    the vector loop's estimate of the Doppler and its rate (see
    [The carrier in the vector loop](@ref vector-carrier)) and its carrier-loop
    staging restarts, so it pulls in afresh, FLL-assisted at the wide bandwidth.
 5. After `insufficient_meas_timeout` of unsolvable cycles, or with no member
    left, every satellite in the loop, members that missed the epoch included, is
-   released ([`VT_FALLBACK`](@ref VTReleaseReason)) and the scalar PVT runs again
+   released ([`VT_FALLBACK`](@ref TrackingLoops.VTReleaseReason)) and the scalar PVT runs again
    until a fresh fix seeds the filter anew.
 
 A re-acquired satellite (a fresh state on a PRN seen before) gets its old slot
@@ -210,7 +214,7 @@ the carrier on the prompts the NCO leaves, for the data.
   ([`NWPRCN0Estimator`](@ref)) reads the turning prompts as a small loss.
 - **Lock.** A member is measured while the host's C/N₀ clears
   `lock_cn0_threshold` and its decoding signal holds the bit sync, as for any
-  satellite. The residual PLL's own phase lock ([`phase_locked`](@ref)) reads
+  satellite. The residual PLL's own phase lock ([`phase_locked`](@ref TrackingLoops.phase_locked)) reads
   the indicator on the prompts it rotated, with the C/N₀ those moments read no
   more than 6 dB below `lock_cn0_threshold`. While the host's C/N₀ is below
   `lock_cn0_threshold` (no signal) it holds its residual at the filter's
@@ -221,7 +225,7 @@ the carrier on the prompts the NCO leaves, for the data.
   itself.
 - **Carrier phase.** The replica's carrier phase is the NCO's, which the
   filter sets, so it is not the incoming carrier's: a host that measures the
-  carrier phase (RINEX `L`) adds [`carrier_phase_correction`](@ref), the
+  carrier phase (RINEX `L`) adds [`carrier_phase_correction`](@ref TrackingLoops.carrier_phase_correction), the
   residual PLL's predicted residual at the sample it reads the replica at,
   whole cycles included (zero out of the vector loop and for the scalar
   loops). It steps by half a cycle where a pilot turns the discriminator
@@ -235,7 +239,7 @@ the carrier on the prompts the NCO leaves, for the data.
 
 The residual PLL's bandwidth is [`VectorPLLAndDLL`](@ref)'s
 `residual_pll_loop_filter_bandwidth`, 10 Hz by default
-([`default_residual_pll_loop_filter_bandwidth`](@ref)), capped like the scalar
+([`default_residual_pll_loop_filter_bandwidth`](@ref TrackingLoops.default_residual_pll_loop_filter_bandwidth)), capped like the scalar
 PLL's against the record's integration time. At 10 Hz its thermal jitter is
 `√(10/18) = 0.75` times the 18 Hz PLL's.
 
@@ -268,9 +272,9 @@ landing may lie up to 2.5 cycles after the epoch.
 
 Nothing is logged. [`navigation_solution`](@ref) is the latest solution (the
 scalar PVT's before the filter is seeded) and [`navigation_status`](@ref) the
-[`NavigationStatus`](@ref) of the latest cycle: its events and the filter's
-position and clock uncertainties (also [`position_uncertainty`](@ref) and
-[`clock_uncertainty`](@ref)). [`release_reason`](@ref) says whether and why the
+[`NavigationStatus`](@ref TrackingLoops.NavigationStatus) of the latest cycle: its events and the filter's
+position and clock uncertainties (also [`position_uncertainty`](@ref TrackingLoops.position_uncertainty) and
+[`clock_uncertainty`](@ref TrackingLoops.clock_uncertainty)). [`release_reason`](@ref) says whether and why the
 latest cycle released a satellite, and [`vector_loop_members`](@ref) reports every
 member, measured and coasted. [`navigation_cycle`](@ref) counts the cycles, so a
 consumer polling it after each step reads every solution exactly once, and
@@ -320,16 +324,26 @@ Once warm, records and cycles allocate nothing, and the estimator compiles with
 
 ## The estimator
 
-```@autodocs
-Modules = [TrackingLoops]
-Pages = ["vector/estimator.jl", "vector/engine.jl", "vector/residual_pll.jl"]
-Private = false
+```@docs
+TrackingLoops.SatVectorPLLAndDLL
+VectorPLLAndDLL
+init_estimator_state(::VectorPLLAndDLL, ::AbstractGNSSSignal, ::Any, ::Any)
+reset_estimator_state(::VectorPLLAndDLL, ::SatVectorPLLAndDLL, ::Any, ::Any)
+step_loop(::VectorPLLAndDLL, ::SatVectorPLLAndDLL, ::LoopRecord, ::Any, ::Int)
+TrackingLoops.default_residual_pll_loop_filter_bandwidth()
 ```
 
 ## The navigation cycle
 
-```@autodocs
-Modules = [TrackingLoops]
-Pages = ["vector/tracking.jl", "vector/model.jl"]
-Private = false
+```@docs
+TrackingLoops.NavigationStatus
+TrackingLoops.SatelliteReport
+TrackingLoops.VTReleaseReason
+TrackingLoops.clock_uncertainty(::VectorPLLAndDLL)
+navigation_solution(::VectorPLLAndDLL)
+navigation_status(::VectorPLLAndDLL)
+TrackingLoops.position_uncertainty(::VectorPLLAndDLL)
+release_reason(::VectorPLLAndDLL, ::AbstractGNSSSignal, ::Integer)
+vector_loop_members(::VectorPLLAndDLL)
+NavigationFilterConfig
 ```

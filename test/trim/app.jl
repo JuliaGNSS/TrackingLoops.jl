@@ -6,6 +6,7 @@
 # workload: `apply_record` and `step_loop` on every record of every channel, and
 # nothing else.
 using TrackingLoops, GNSSSignals, StaticArrays, Unitful, LinearAlgebra
+using TrackingLoops: default_cn0_estimator
 using Unitful: Hz, s, ms
 
 include(joinpath(@__DIR__, "..", "vector_simulation.jl"))

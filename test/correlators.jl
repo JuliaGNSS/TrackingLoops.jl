@@ -15,7 +15,7 @@ end
     @test @inferred(get_late(correlator)) == 0.0
     @test correlator.preferred_early_late_to_prompt_code_shift == 0.5
     @test get_num_ants(correlator) == 1
-    @test TrackingLoops._num_ants_val(correlator) === NumAnts(1)
+    @test NumAnts(correlator) === NumAnts(1)
 
     correlator = @inferred EarlyPromptLateCorrelator(num_ants = NumAnts(1))
     @test @inferred(get_prompt(correlator)) == 0.0
@@ -27,7 +27,7 @@ end
     @test @inferred(get_late(correlator)) == SVector(0.0 + 0.0im, 0.0 + 0.0im)
     @test correlator.preferred_early_late_to_prompt_code_shift == 0.5
     @test get_num_ants(correlator) == 2
-    @test TrackingLoops._num_ants_val(correlator) === NumAnts(2)
+    @test NumAnts(correlator) === NumAnts(2)
 
     correlator = EarlyPromptLateCorrelator(SVector(1.0 + 0.0im, 2.0 + 0.0im, 3.0 + 0.0im), 0.5)
     @test @inferred(get_early(correlator)) == 3.0

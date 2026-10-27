@@ -179,7 +179,7 @@ uniformity.
 An empty ring, a mean that has not cleared zero, and a **non-finite** mean all
 report `-Inf dB-Hz`, never `NaN` (see [`NoCN0Estimator`](@ref) for why). The
 explicit `isfinite` catches a `NaN` prompt, which passes `mean_cn0 <= 0` (a zero
-floor is already kept out of the ring by `_noise_density_and_ready`).
+floor is already kept out of the ring by [`noise_density_and_ready`](@ref)).
 """
 function estimate_cn0(estimator::NoiseRefCN0Estimator, integration_time)
     filled = length(estimator)

@@ -1,3 +1,7 @@
+```@meta
+CurrentModule = TrackingLoops
+```
+
 # TrackingLoops.jl
 
 The arithmetic of a GNSS tracking loop, one correlator record at a time.
@@ -91,11 +95,14 @@ buffer has room for 64 of them before its vector grows.
   estimator reads.
 - [Vector tracking](@ref) — the estimator a navigation filter takes over, and
   the filter that closes every satellite's loops at once.
-- [Internals](@ref) — the unexported functions and types, for those extending
+- [Internals](@ref) — the internal functions and types, for those extending
   the package.
 
-Every exported name is documented in one of these pages. Only the exported
-names are part of the public API that the version number makes promises about.
+Every name of the API is documented in one of these pages, and only those are part of
+the API that the version number makes promises about. The names a caller writes
+are exported; the rest — the building blocks of custom correlators, estimators and
+hosts, the per-satellite states and the values results carry — are written
+qualified, `TrackingLoops.name`.
 
 ## Package-wide definitions
 
@@ -103,8 +110,9 @@ names are part of the public API that the version number makes promises about.
 TrackingLoops
 ```
 
-```@autodocs
-Modules = [TrackingLoops]
-Pages = ["TrackingLoops.jl"]
-Private = false
+```@docs
+AbstractDopplerEstimator
+TrackingLoops.NumAccumulators
+NumAnts
+TrackingLoops.update
 ```
