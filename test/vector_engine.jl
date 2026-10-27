@@ -248,7 +248,7 @@ end
     @test !stale.occupied && stale.release_reason == VT_NOT_RELEASED
     @test !member.occupied && member.release_reason == VT_INELIGIBLE
     @test !member.estimator_state.in_vector_loop
-    @test release_reason(VectorPLLAndDLL(signal), signal, 3) == VT_NOT_RELEASED
+    @test satellite_report(VectorPLLAndDLL(signal), signal, 3) === nothing
 end
 
 @testset "Satellites stepped in turn: the last to reach the epoch runs its cycle" begin

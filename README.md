@@ -34,8 +34,8 @@ behaves identically on the others.
 - **Correlators** — `EarlyPromptLateCorrelator`, `VeryEarlyPromptLateCorrelator`
   for one or several antennas, with their accumulator accessors and the sample
   shifts each tap is placed at.
-- **Discriminators and loop filters** — `pll_disc`, `fll_disc`, `dll_disc`, the
-  bandwidth rules that keep a loop stable for a given integration time, and the
+- **Discriminators and loop filters** — `TrackingLoops.pll_disc`, `TrackingLoops.fll_disc`
+  and `TrackingLoops.dll_disc`, the bandwidth rules that keep a loop stable for a given integration time, and the
   code-Doppler aiding from the carrier.
 - **Doppler estimators** — `ConventionalPLLAndDLL`, the FLL-assisted
   `ConventionalAssistedPLLAndDLL`, and `NCOReferencedPLLAndDLL`, which stays
@@ -45,7 +45,7 @@ behaves identically on the others.
 - **NCO timelines** — `NCOTimeline` records which replica frequency ran over
   which samples, so a record can be attributed to the word it was really
   produced under rather than the one that was last requested.
-- **Bit and secondary-code synchronisation** — the `BitBuffer` with the
+- **Bit and secondary-code synchronisation** — the `TrackingLoops.BitBuffer` with the
   bit-edge and overlay-code detectors for every GPS, Galileo and BeiDou signal
   GNSSSignals.jl models.
 - **C/N₀ estimation** — moments, NWPR and noise-reference estimators, plus the
@@ -117,8 +117,8 @@ last satellite past an epoch runs that epoch's cycle — the scalar PVT until it
 first fix seeds the filter, a filter iteration after that — and each satellite
 takes the cycle's admission, release and corrections up on its next record,
 sized for where its command lands (at `landing_sample` with a hardware NCO).
-Nothing is logged: `navigation_status` reports the events, `release_reason` why
-a satellite was handed back. Storage is preallocated for
+Nothing is logged: `navigation_status` reports the events, a satellite's report (`satellite_report`)
+why it was handed back. Storage is preallocated for
 `max_satellites_per_signal` satellites per signal and reused as satellites come
 and go; once warm, records and cycles allocate nothing and compile with
 `juliac --trim=safe` (see `test/trim`).
