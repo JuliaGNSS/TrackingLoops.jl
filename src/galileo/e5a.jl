@@ -3,7 +3,7 @@ $(SIGNATURES)
 
 Hard-path secondary-code sync detector for Galileo E5a-I over the shared CS20
 code (Galileo OS SIS ICD Table 19) — see `_detect_secondary_code_sync`. One CS20
-period is exactly one 50 sps F/NAV symbol. The default detector is the soft one
+period is exactly one 50 bit/s F/NAV bit. The default detector is the soft one
 ([`uses_soft_secondary_code_detection`](@ref)).
 """
 @inline function detect_bit_or_secondary_code_sync(
