@@ -99,7 +99,7 @@ signal. A record of its
     snapshots the replica, Dopplers, accumulated discriminators and C/N₀ when it
     crosses a navigation epoch, and runs the loop;
   - **decoding signal** feeds its new soft bits to the decoder and notes where the bit
-    clock stands (the snapshot's symbol count); it returns the command in force and
+    clock stands (the snapshot's bit count); it returns the command in force and
     the state unchanged;
   - plain signal does both; any other passenger does nothing, as in a scalar loop.
 
@@ -293,8 +293,8 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     slot.decoding_blocks_into_bit = 0
     slot.decoding_code_phase_fraction = NaN
     slot.sync_fold_end = typemin(Int)
-    slot.symbol_accumulator = zero(ComplexF64)
-    slot.symbol_from_edge = false
+    slot.bit_accumulator = zero(ComplexF64)
+    slot.bit_from_edge = false
     _clear_prompts!(slot.prompt_history)
     if nav.pending_epoch == typemin(Int)
         nav.pending_epoch = _epoch_at_or_after(nav, slot.driver_last_end_time)
@@ -446,7 +446,7 @@ end
 
 # The decoding signal's half of the snapshot at the pending epoch if this record
 # crosses it: the decoder and bit sync at its last record end, and the code phase at
-# the epoch from the last symbol edge, in the decoding signal's own code.
+# the epoch from the last bit edge, in the decoding signal's own code.
 function _snapshot_decoding!(nav::VectorNavigation, group::VTSlotGroup, slot::VTSlot, record::LoopRecord, words)
     _crosses_pending_epoch(nav, slot, slot.decoding_epoch, slot.decoding_last_end_time, record) ||
         return nothing
@@ -458,13 +458,13 @@ function _snapshot_decoding!(nav::VectorNavigation, group::VTSlotGroup, slot::VT
     chips_to_epoch = (epoch_time - slot.decoding_last_end_time) * (code_frequency + code_word)
     slot.epoch_decoder = slot.running_decoder
     slot.epoch_bit_synced = slot.decoding_bit_synced
-    slot.epoch_code_phase = _code_phase_from_symbol_edge(signal, slot) + chips_to_epoch
+    slot.epoch_code_phase = _code_phase_from_bit_edge(signal, slot) + chips_to_epoch
     slot.decoding_epoch = nav.pending_epoch
     nothing
 end
 
 # Complete the slot's snapshot once both halves are in: the decoder and code phase
-# from its last symbol edge (see `_code_phase_on_driver`), and the lock (driver's
+# from its last bit edge (see `_code_phase_on_driver`), and the lock (driver's
 # C/N₀ at least the threshold and decoding signal's bit sync).
 function _complete_snapshot!(nav::VectorNavigation, group::VTSlotGroup, slot::VTSlot)
     epoch = nav.pending_epoch
@@ -487,10 +487,10 @@ function _complete_snapshot!(nav::VectorNavigation, group::VTSlotGroup, slot::VT
     nothing
 end
 
-# The code phase at the epoch from the last symbol edge: which symbol (and roughly
+# The code phase at the epoch from the last bit edge: which bit (and roughly
 # where) from the decoding signal's count, exactly where from the driver's replica, the
 # one the discriminators steer. The codes are aligned at the satellite, so the driver's
-# phase is the code phase modulo the shorter of its code period and a data symbol; the
+# phase is the code phase modulo the shorter of its code period and a data bit; the
 # count moves to the nearest phase that agrees. A plain signal agrees already; before
 # bit sync nothing reads it.
 function _code_phase_on_driver(group::VTSlotGroup, slot::VTSlot)
@@ -524,25 +524,25 @@ function _can_reach_epoch(acc, group::VTSlotGroup, nav::VectorNavigation, epoch_
 end
 
 # The decoding signal's code phase (chips) at its last record end from the last
-# data-symbol edge: the bit clock's whole code blocks plus the phase past the block
+# data-bit edge: the bit clock's whole code blocks plus the phase past the block
 # boundary. Meaningless (and unread) before bit sync.
-function _code_phase_from_symbol_edge(signal::AbstractGNSSSignal, slot::VTSlot)
+function _code_phase_from_bit_edge(signal::AbstractGNSSSignal, slot::VTSlot)
     blocks = slot.decoding_bit_synced ? slot.decoding_blocks_into_bit : 0
     fraction = slot.decoding_code_phase_fraction
     blocks * get_code_length(signal) + (isnan(fraction) ? 0.0 : fraction)
 end
 
-# Normalise `code_phase` into the current symbol: a phase outside it (just short of the
-# edge, or past the next one) shifts the decoder's symbol count instead, which is all
+# Normalise `code_phase` into the current bit: a phase outside it (just short of the
+# edge, or past the next one) shifts the decoder's bit count instead, which is all
 # the transmit time reads.
 function _decoder_at_code_phase(decoder::GNSSDecoderState, code_phase, code_frequency)
-    num_symbols = decoder.num_bits_since_sync
-    isnothing(num_symbols) && return decoder, code_phase
-    chips_per_symbol = code_frequency / ustrip(Hz, get_bit_rate(decoder))
-    shift = floor(Int, code_phase / chips_per_symbol)
+    num_bits = decoder.num_bits_since_sync
+    isnothing(num_bits) && return decoder, code_phase
+    chips_per_bit = code_frequency / ustrip(Hz, get_bit_rate(decoder))
+    shift = floor(Int, code_phase / chips_per_bit)
     shift == 0 && return decoder, code_phase
-    GNSSDecoderState(decoder; num_bits_since_sync = num_symbols + shift),
-    code_phase - shift * chips_per_symbol
+    GNSSDecoderState(decoder; num_bits_since_sync = num_bits + shift),
+    code_phase - shift * chips_per_bit
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -707,7 +707,7 @@ end
 # A decoding-signal record: decode exactly the soft bits it added (so the host may
 # drain its bit buffer whenever it likes) and note the bit clock at its end. Records
 # later in the fold a sync was found in still have the pre-sync replica (see
-# `fold_record`'s `overlay_wiped`): they leave the symbol count unanchored until the
+# `fold_record`'s `overlay_wiped`): they leave the bit count unanchored until the
 # next fold.
 function _advance_decoding!(
     group::VTSlotGroup,
@@ -739,10 +739,10 @@ end
 # Decode a decoding-signal record. Out of the vector loop: the host's soft bits. In it
 # the carrier NCO runs on the filter's prediction, so the prompts turn at its Doppler
 # error: each prompt is rotated onto the incoming carrier by the residual PLL's estimate
-# (`_symbol_prompt_phase`) and the decoding signal's carrier-phase offset from the
-# driver, summed over the symbol, and the sum's real part decoded (signed as the host's
-# bit clock signs its own) on the record where the host's bit clock ends the symbol. A
-# symbol not covered from its first block (the one the satellite joins in, or one after
+# (`_bit_prompt_phase`) and the decoding signal's carrier-phase offset from the
+# driver, summed over the bit, and the sum's real part decoded (signed as the host's
+# bit clock signs its own) on the record where the host's bit clock ends the bit. A
+# bit not covered from its first block (the one the satellite joins in, or one after
 # an `unwiped_after_sync` record), and a record ending more than one, take the host's
 # soft bits.
 function _decode_record!(
@@ -757,7 +757,7 @@ function _decode_record!(
     soft_bits = record.new_soft_bits
     phase =
         state.in_vector_loop && record.bit_synced && record.sync_change == SYNC_UNCHANGED && !unwiped_after_sync ?
-        _symbol_prompt_phase(
+        _bit_prompt_phase(
             state.residual_pll,
             state.ramp,
             state.previous_replica_half,
@@ -768,23 +768,23 @@ function _decode_record!(
         ) :
         NaN
     if isnan(phase)
-        slot.symbol_accumulator = zero(ComplexF64)
-        slot.symbol_from_edge = false
+        slot.bit_accumulator = zero(ComplexF64)
+        slot.bit_from_edge = false
     else
         rotation =
             2π * (get_carrier_phase_offset(group.driver_signal) - get_carrier_phase_offset(group.decoding_signal) -
             phase)
-        slot.symbol_accumulator += ComplexF64(get_prompt(record.filtered_correlator)) * cis(rotation)
+        slot.bit_accumulator += ComplexF64(get_prompt(record.filtered_correlator)) * cis(rotation)
     end
     isempty(soft_bits) && return nothing
-    if !isnan(phase) && slot.symbol_from_edge && Base.length(soft_bits) == 1
-        symbol = real(slot.symbol_accumulator)
-        slot.soft_bit[1] = Float32(record.bit_polarity < 0 ? -symbol : symbol)
+    if !isnan(phase) && slot.bit_from_edge && Base.length(soft_bits) == 1
+        bit = real(slot.bit_accumulator)
+        slot.soft_bit[1] = Float32(record.bit_polarity < 0 ? -bit : bit)
         slot.running_decoder = decode!(slot.running_decoder, slot.soft_bit, 1)
     else
         slot.running_decoder = decode!(slot.running_decoder, soft_bits, Base.length(soft_bits))
     end
-    slot.symbol_accumulator = zero(ComplexF64)
-    slot.symbol_from_edge = !isnan(phase)
+    slot.bit_accumulator = zero(ComplexF64)
+    slot.bit_from_edge = !isnan(phase)
     nothing
 end

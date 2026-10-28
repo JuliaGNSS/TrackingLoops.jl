@@ -13,7 +13,7 @@
 $(SIGNATURES)
 
 "Sync" detector for Galileo E5a-QP — reports `found = true` from the very first
-integration via `_detect_symbol_is_code_block_sync`.
+integration via `_detect_bit_is_code_block_sync`.
 
 With no data and no overlay every block boundary is equivalent; the lock only
 gates the switch from single-block pre-sync integration to the whole-cycle one
@@ -24,7 +24,7 @@ gates the switch from single-block pre-sync integration to the whole-cycle one
     prn::Integer,
     code_block_bits::Unsigned,
     num_code_blocks::Integer,
-) = _detect_symbol_is_code_block_sync(signal, prn, code_block_bits, num_code_blocks)
+) = _detect_bit_is_code_block_sync(signal, prn, code_block_bits, num_code_blocks)
 
 # BPSK: EarlyPromptLate (see `get_default_correlator`).
 function get_default_correlator(::GalileoE5aQP, num_ants::NumAnts = NumAnts(1))

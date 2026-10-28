@@ -23,9 +23,9 @@ function _sig_flip1800(x, n, rng)
     x
 end
 
-# A signal that broadcasts one symbol per primary code period reports `found`
+# A signal that broadcasts one bit per primary code period reports `found`
 # from the very first call, whatever the buffer holds.
-function _sig_test_symbol_is_code_block(signal, prn, B)
+function _sig_test_bit_is_code_block(signal, prn, B)
     for (bits, n) in ((B(0x0), 0), (B(0x1), 1), (B(0xff), 32))
         res = @inferred detect_bit_or_secondary_code_sync(signal, prn, bits, n)
         @test res.found == true
@@ -119,9 +119,9 @@ end
     @test @inferred(get_bit_edge_detection_confidence(signal)) ≈ 0.999
 end
 
-@testset "GPS L1C-D reports one symbol per code block" begin
+@testset "GPS L1C-D reports one bit per code block" begin
     signal = GPSL1C_D()
-    _sig_test_symbol_is_code_block(signal, 1, UInt8)
+    _sig_test_bit_is_code_block(signal, 1, UInt8)
     _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
     _sig_test_bandwidths(signal, 9.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
@@ -135,9 +135,9 @@ end
     @test @inferred(get_code_block_buffer_type(signal)) === UInt1800
 end
 
-@testset "GPS L2CM reports one symbol per code block" begin
+@testset "GPS L2CM reports one bit per code block" begin
     signal = GPSL2CM()
-    _sig_test_symbol_is_code_block(signal, 1, UInt8)
+    _sig_test_bit_is_code_block(signal, 1, UInt8)
     _sig_test_correlator(signal, EarlyPromptLateCorrelator)
     _sig_test_bandwidths(signal, 4.5Hz)
     # The 1 Hz DLL default is capped to 0.9 Hz at a 20 ms integration.
@@ -194,9 +194,9 @@ end
     @test uses_soft_secondary_code_detection(signal) == true
 end
 
-@testset "Galileo E1B reports one symbol per code block ($(nameof(typeof(signal))))" for signal in
+@testset "Galileo E1B reports one bit per code block ($(nameof(typeof(signal))))" for signal in
                                                                                          (GalileoE1B(), GalileoE1B_BOC11())
-    _sig_test_symbol_is_code_block(signal, 1, UInt8)
+    _sig_test_bit_is_code_block(signal, 1, UInt8)
     _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
@@ -235,7 +235,7 @@ end
 
 @testset "Galileo E5a-Q quasi-pilot locks on its first block and integrates whole code cycles" begin
     signal = GalileoE5aQP()
-    _sig_test_symbol_is_code_block(signal, 1, UInt8)
+    _sig_test_bit_is_code_block(signal, 1, UInt8)
     @test get_secondary_code_length(signal) == 1
     @test uses_soft_secondary_code_detection(signal) == false
     @test uses_soft_bit_edge_detection(signal) == false
@@ -276,10 +276,10 @@ end
     @test uses_soft_secondary_code_detection(signal) == true
 end
 
-@testset "Galileo E6-B reports one symbol per code block" begin
+@testset "Galileo E6-B reports one bit per code block" begin
     signal = GalileoE6B()
     @test get_secondary_code_length(signal) == 1
-    _sig_test_symbol_is_code_block(signal, 1, UInt8)
+    _sig_test_bit_is_code_block(signal, 1, UInt8)
     _sig_test_correlator(signal, EarlyPromptLateCorrelator)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
@@ -301,10 +301,10 @@ end
     @test get_carrier_phase_offset(signal) == 0.5
 end
 
-@testset "BeiDou B1C data reports one symbol per code block" begin
+@testset "BeiDou B1C data reports one bit per code block" begin
     signal = BeiDouB1C_D()
     @test get_secondary_code_length(signal) == 1
-    _sig_test_symbol_is_code_block(signal, 1, UInt8)
+    _sig_test_bit_is_code_block(signal, 1, UInt8)
     @test get_band_id(signal) === :L1
     _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
     _sig_test_bandwidths(signal, 9.0Hz)
@@ -325,23 +325,23 @@ end
 
 const SIG_BEIDOU_MEO_PRN = 6   # MEO/IGSO (D1) — carries NH20
 const SIG_BEIDOU_GEO_PRN = 1   # GEO (D2) — carries no overlay
-const SIG_B1I_SYMBOL_OFFSET = 7
+const SIG_B1I_BIT_OFFSET = 7
 
-# Drive the live soft path for B1I with one navigation symbol every
-# `blocks_per_symbol` blocks, the PRN's overlay chip on top and unit-variance
+# Drive the live soft path for B1I with one navigation bit every
+# `blocks_per_bit` blocks, the PRN's overlay chip on top and unit-variance
 # complex noise. Returns the block and rotation of the lock, or `nothing`.
-function _sig_b1i_soft_sync(prn, blocks_per_symbol; nblocks, amplitude = 3.0, seed = 1)
+function _sig_b1i_soft_sync(prn, blocks_per_bit; nblocks, amplitude = 3.0, seed = 1)
     signal = BeiDouB1I()
     N = get_secondary_code_length(signal)
     overlay = get_secondary_code(signal)
     rng = MersenneTwister(seed)
     accumulators = TrackingLoops.PhaseAccumulators()
     TrackingLoops._seed_phase_accumulators!(accumulators, N)
-    symbol = 1.0
+    bit = 1.0
     for i = 0:(nblocks-1)
-        (i - SIG_B1I_SYMBOL_OFFSET) % blocks_per_symbol == 0 && (symbol = rand(rng, (-1.0, 1.0)))
-        chip = GNSSSignals.secondary_value(overlay, prn, mod(i - SIG_B1I_SYMBOL_OFFSET, N))
-        prompt = amplitude * symbol * chip + randn(rng, ComplexF64)
+        (i - SIG_B1I_BIT_OFFSET) % blocks_per_bit == 0 && (bit = rand(rng, (-1.0, 1.0)))
+        chip = GNSSSignals.secondary_value(overlay, prn, mod(i - SIG_B1I_BIT_OFFSET, N))
+        prompt = amplitude * bit * chip + randn(rng, ComplexF64)
         TrackingLoops._update_secondary_accumulators!(accumulators, ComplexF64(prompt), i, N, signal, prn)
         result = TrackingLoops._detect_secondary_code_cfar(accumulators, N, 0.999, i + 1)
         result.found && return (block = i + 1, rotation = mod(i + 1, N))
@@ -367,13 +367,13 @@ end
 
     # The soft path: MEO locks at the true period boundary; the hypothetical GEO
     # at the D1 rate reduces to a bit-edge search and still finds the boundary;
-    # real GEO (D2, 2 blocks per symbol) never locks.
+    # real GEO (D2, 2 blocks per bit) never locks.
     meo = _sig_b1i_soft_sync(SIG_BEIDOU_MEO_PRN, 20; nblocks = 2000)
     @test meo !== nothing
-    @test meo.rotation == SIG_B1I_SYMBOL_OFFSET
+    @test meo.rotation == SIG_B1I_BIT_OFFSET
     geo_at_d1_rate = _sig_b1i_soft_sync(SIG_BEIDOU_GEO_PRN, 20; nblocks = 4000)
     @test geo_at_d1_rate !== nothing
-    @test geo_at_d1_rate.rotation == SIG_B1I_SYMBOL_OFFSET
+    @test geo_at_d1_rate.rotation == SIG_B1I_BIT_OFFSET
     for seed = 1:3
         @test _sig_b1i_soft_sync(SIG_BEIDOU_GEO_PRN, 2; nblocks = 20000, seed) === nothing
     end
@@ -409,11 +409,11 @@ end
     @test uses_soft_secondary_code_detection(signal) == true
 end
 
-@testset "BeiDou B2b-I reports one symbol per code block" begin
+@testset "BeiDou B2b-I reports one bit per code block" begin
     signal = BeiDouB2bI()
     prn = 6   # the ICD defines ranging codes for PRN 6-58 only
     @test get_secondary_code_length(signal) == 1
-    _sig_test_symbol_is_code_block(signal, prn, UInt8)
+    _sig_test_bit_is_code_block(signal, prn, UInt8)
     @test get_band_id(signal) === :E5b
     _sig_test_correlator(signal, EarlyPromptLateCorrelator)
     _sig_test_bandwidths(signal, 18.0Hz)

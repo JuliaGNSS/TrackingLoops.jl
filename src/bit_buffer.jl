@@ -469,12 +469,12 @@ end
 $(SIGNATURES)
 
 Detector for signals with no sub-block boundary to find: `found = true` from the
-first integration. Covers one symbol per code period (GPS L1C-D, L2CM, Galileo
+first integration. Covers one bit per code period (GPS L1C-D, L2CM, Galileo
 E1B / E6-B, BeiDou B2b-I / B1C-D; GNSSDecoder.jl resolves the ±1 polarity from
 the preamble) and Galileo E5a-QP (no data, no overlay; the lock only gates
 whole-code-cycle integration).
 """
-@inline function _detect_symbol_is_code_block_sync(
+@inline function _detect_bit_is_code_block_sync(
     ::AbstractGNSSSignal,
     ::Integer,           # PRN — ignored
     ::Unsigned,
@@ -998,8 +998,8 @@ end
 """
     reset(bit_buffer::BitBuffer) -> BitBuffer
 
-A bit buffer with no sync and no soft symbols, for a signal that is re-acquired: its
-storage is kept (the soft-symbol vector is emptied in place), everything it detected
+A bit buffer with no sync and no soft bits, for a signal that is re-acquired: its
+storage is kept (the soft-bit vector is emptied in place), everything it detected
 is cleared.
 """
 function reset(bit_buffer::BitBuffer{B}) where {B<:Unsigned}

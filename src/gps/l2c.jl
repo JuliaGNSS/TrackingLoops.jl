@@ -7,16 +7,16 @@
 """
 $(SIGNATURES)
 
-Symbol-sync detector for GPS L2CM: one CNAV symbol per 20 ms code period
-(50 sps; IS-GPS-200N §3.2.2), so it locks immediately — see
-`_detect_symbol_is_code_block_sync`.
+Bit-sync detector for GPS L2CM: one CNAV bit per 20 ms code period
+(50 bit/s; IS-GPS-200N §3.2.2), so it locks immediately — see
+`_detect_bit_is_code_block_sync`.
 """
 @inline detect_bit_or_secondary_code_sync(
     signal::GPSL2CM,
     prn::Integer,
     code_block_bits::Unsigned,
     num_code_blocks::Integer,
-) = _detect_symbol_is_code_block_sync(signal, prn, code_block_bits, num_code_blocks)
+) = _detect_bit_is_code_block_sync(signal, prn, code_block_bits, num_code_blocks)
 
 """
 $(SIGNATURES)
@@ -33,7 +33,7 @@ function get_default_correlator(::Union{GPSL2CM,GPSL2CL}, num_ants::NumAnts = Nu
     EarlyPromptLateCorrelator(; num_ants)
 end
 
-# One symbol per code period: nothing to search (see `get_code_block_buffer_type`).
+# One bit per code period: nothing to search (see `get_code_block_buffer_type`).
 @inline get_code_block_buffer_type(::GPSL2CM) = UInt8
 # L2CL: no sync feature at all.
 @inline get_code_block_buffer_type(::GPSL2CL) = UInt8

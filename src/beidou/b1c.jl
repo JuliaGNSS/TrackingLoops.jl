@@ -1,7 +1,7 @@
 # BeiDou B1C is the modern data/pilot pair on the L1 carrier (1575.42 MHz),
 # alongside GPS L1 C/A, GPS L1C and Galileo E1. Both components ride a
 # 10230-chip primary code at 1.023 Mcps (10 ms period): B1C data carries B-CNAV1
-# at 100 sym/s with no secondary code, B1C pilot is dataless under a per-PRN
+# at 100 bit/s with no secondary code, B1C pilot is dataless under a per-PRN
 # 1800-chip overlay (18 s cycle). The power split is 1:3 data:pilot
 # (BDS-SIS-ICD-B1C-1.0 §4.2.2), which is what `get_relative_power` reports.
 #
@@ -12,16 +12,16 @@
 """
 $(SIGNATURES)
 
-Symbol-sync detector for the BeiDou B1C data component: one B-CNAV1 symbol per
-10 ms primary code period (100 sym/s; BDS-SIS-ICD-B1C-1.0 Table 5-1), so it
-locks immediately — see `_detect_symbol_is_code_block_sync`.
+Bit-sync detector for the BeiDou B1C data component: one B-CNAV1 bit per
+10 ms primary code period (100 bit/s; BDS-SIS-ICD-B1C-1.0 Table 5-1), so it
+locks immediately — see `_detect_bit_is_code_block_sync`.
 """
 @inline detect_bit_or_secondary_code_sync(
     signal::BeiDouB1C_D,
     prn::Integer,
     code_block_bits::Unsigned,
     num_code_blocks::Integer,
-) = _detect_symbol_is_code_block_sync(signal, prn, code_block_bits, num_code_blocks)
+) = _detect_bit_is_code_block_sync(signal, prn, code_block_bits, num_code_blocks)
 
 """
 $(SIGNATURES)
@@ -49,7 +49,7 @@ function get_default_correlator(
     VeryEarlyPromptLateCorrelator(; num_ants)
 end
 
-# One symbol per code period: nothing to search (see `get_code_block_buffer_type`).
+# One bit per code period: nothing to search (see `get_code_block_buffer_type`).
 @inline get_code_block_buffer_type(::BeiDouB1C_D) = UInt8
 
 # Exact-width container for the 1800-chip overlay, shared with GPS L1C-P.

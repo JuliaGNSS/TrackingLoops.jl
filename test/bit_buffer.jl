@@ -250,7 +250,7 @@ _bb_secondary_chips(signal, prn) = [
 ]
 
 # Block `i` (0-based) carries secondary chip `(i + start_chip) % N` times a
-# per-period data symbol times `amp`, plus optional complex Gaussian noise.
+# per-period data bit times `amp`, plus optional complex Gaussian noise.
 function _bb_secondary_stream(signal, prn, nblocks; start_chip = 0, amp = 5.0, noise = 0.0, seed = 1)
     N = get_secondary_code_length(signal)
     chips = _bb_secondary_chips(signal, prn)
@@ -627,7 +627,7 @@ end
     @test TrackingLoops.buffer(signal, prn, bit_buffer, 5, 1.0 + 0.0im) === bit_buffer
 end
 
-@testset "A one-symbol-per-code-block signal locks on its first block" begin
+@testset "A one-bit-per-code-block signal locks on its first block" begin
     # GPS L2CM: the hard detector reports found immediately, and the single
     # buffered block is recovered as the first soft bit.
     signal = GPSL2CM()

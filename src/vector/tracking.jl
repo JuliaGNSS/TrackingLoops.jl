@@ -4,7 +4,7 @@
 # One `VectorNavigation` is shared by every satellite a `VectorPLLAndDLL` steps. Each
 # satellite's slot is filled by its records: the decoder from the soft bits of its
 # decoding signal and, at every navigation epoch, a snapshot of the driver's replica,
-# C/N₀ and accumulated discriminators, with the decoding signal's symbol count. Once
+# C/N₀ and accumulated discriminators, with the decoding signal's bit count. Once
 # every satellite has completed the epoch's snapshot the cycle runs: a scalar PVT solve
 # until its first fix seeds the filter, one filter iteration after. The cycle leaves its
 # decisions (admission, release, commands) in the slots for each satellite to take up
@@ -102,11 +102,11 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     # The fold the decoding signal's bit sync was found in: its later records were
     # correlated before the sync.
     sync_fold_end::Int
-    # The data symbol in the making while the filter steers the carrier: the decoding
+    # The data bit in the making while the filter steers the carrier: the decoding
     # signal's prompts rotated onto the incoming carrier by the residual PLL, whether
-    # they cover the symbol from its edge on, and the soft bit it ends in.
-    symbol_accumulator::ComplexF64
-    symbol_from_edge::Bool
+    # they cover the bit from its edge on, and the soft bit it ends in.
+    bit_accumulator::ComplexF64
+    bit_from_edge::Bool
     const soft_bit::Vector{Float32}
     # For a pair's decoding signal (`PromptHistory`).
     const prompt_history::PromptHistory
@@ -118,7 +118,7 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     snapshot_epoch::Int
     # The decoding signal's half of the snapshot in the making: the decoder at its last
     # record end before the epoch, whether its bit clock held the sync there, and the
-    # code phase at the epoch from the decoder's last symbol edge (chips).
+    # code phase at the epoch from the decoder's last bit edge (chips).
     epoch_decoder::D
     epoch_bit_synced::Bool
     epoch_code_phase::Float64
@@ -129,7 +129,7 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     # with the discriminators accumulated up to it, carrying the cycle's decisions.
     decoder::D
     estimator_state::E
-    code_phase::Float64 # chips since the last decoded data symbol
+    code_phase::Float64 # chips since the last decoded data bit
     carrier_doppler::typeof(1.0Hz)
     code_doppler::typeof(1.0Hz)
     cn0_dbhz::Float64 # the driver's

@@ -173,9 +173,9 @@ end
 function replica_satellite_state(sat::SimSat, u)
     rate = ustrip(Hz, get_bit_rate(sat.decoder))
     elapsed = u - sat.base_tow
-    num_symbols = floor(Int, elapsed * rate)
-    decoder = GNSSDecoderState(sat.decoder; num_bits_since_sync = num_symbols)
-    code_phase = (elapsed - num_symbols / rate) * sat.code_frequency
+    num_bits = floor(Int, elapsed * rate)
+    decoder = GNSSDecoderState(sat.decoder; num_bits_since_sync = num_bits)
+    code_phase = (elapsed - num_bits / rate) * sat.code_frequency
     SatelliteState(; decoder, signal = sat.signal, code_phase, carrier_doppler = sat.carrier_doppler * Hz)
 end
 

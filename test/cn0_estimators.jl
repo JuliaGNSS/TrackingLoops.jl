@@ -372,7 +372,7 @@ end
 end
 
 @testset "The signals NWPR cannot serve, the noise reference can (issue #217)" begin
-    # One symbol per code block, or a secondary code before sync: NWPR admits no
+    # One bit per code block, or a secondary code before sync: NWPR admits no
     # coherent window ever and reports its fallback; the noise reference has no
     # window, so these are ordinary records to it.
     bit_buffer = BitBuffer{UInt64}()
@@ -641,7 +641,7 @@ end
     @test Base.length(estimator) == 3
     @test estimator.num_records_per_ratio == 10
 
-    # One symbol per code block (GPS L1C-D, Galileo E1B): no coherent window.
+    # One bit per code block (GPS L1C-D, Galileo E1B): no coherent window.
     estimator = fresh()
     for _ = 1:40
         estimator = update(estimator, 1.0 + 0.0im, context(GPSL1C_D(), 1, 0))

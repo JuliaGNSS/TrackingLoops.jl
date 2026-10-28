@@ -34,7 +34,7 @@ satellites stepped with one estimator share its navigation engine, which
 - decodes each satellite's navigation data from the soft bits its records
   carry;
 - snapshots each satellite at every navigation epoch (every `vt_update_interval`
-  on the records' time grid): code phase from the last data-symbol edge, decoder,
+  on the records' time grid): code phase from the last data-bit edge, decoder,
   Dopplers, C/N₀ and the discriminators accumulated since the last epoch;
 - runs the epoch's navigation cycle on the record that completes the last
   satellite's snapshot: the scalar PVT until the filter is seeded, a filter
@@ -72,8 +72,8 @@ GalileoE1B()`, GPS `GPSL5Q() => GPSL5I()`, `GPSL1C_P() => GPSL1C_D()`,
   where its bit clock stands. For a plain signal these are the driver's own
   records.
 
-At an epoch the transmit time is the data symbols the decoding signal has
-counted plus the driver's code phase within the current symbol, as
+At an epoch the transmit time is the data bits the decoding signal has
+counted plus the driver's code phase within the current bit, as
 PositionVelocityTime builds it for a pair. The two codes are aligned at the
 satellite, so their lengths may differ (L2 CL is 1.5 s, L2 CM 20 ms); the chip
 rates must agree. A satellite is in lock when the driver's C/N₀ clears
@@ -101,7 +101,7 @@ state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words
 ```
 
 The record summarises that state: whether the bit clock holds the sync and
-whether this record found or lost it, the code blocks into the current symbol,
+whether this record found or lost it, the code blocks into the current bit,
 exactly the soft bits this record added (so the host may drain the bit buffer
 whenever it likes), and the host's C/N₀ estimator (noise-referenced by default,
 which reads `-Inf` dB-Hz, out of lock, until the host has a noise density).
@@ -203,7 +203,7 @@ the carrier on the prompts the NCO leaves, for the data.
   filter's Doppler error, so the engine rotates each of the decoding signal's
   prompts onto the incoming carrier by the residual PLL's phase (and a data
   component's carrier-phase offset from its pilot), sums them over each data
-  symbol the host's bit clock counts and decodes the sum's real part. A plain
+  bit the host's bit clock counts and decodes the sum's real part. A plain
   signal's prompt is rotated by the residual PLL's prediction for its record, which
   that prompt did not correct; a data component's records, which a host folds
   after its pilot's, take the phase estimated at the pilot's record of the same

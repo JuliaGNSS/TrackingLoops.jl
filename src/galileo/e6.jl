@@ -1,5 +1,5 @@
 # Galileo E6 is the civil pair on the 1278.75 MHz carrier (`E6`): E6-B carries
-# the C/NAV message — and with it the High Accuracy Service — at 1000 sym/s,
+# the C/NAV message — and with it the High Accuracy Service — at 1000 bit/s,
 # E6-C is its dataless pilot under a per-SVID 100-chip CS100 overlay. Both share
 # the 1 ms / 5115-chip primary code (5.115 Mcps) and are tracked as two
 # independent BPSK(5) signals, the same data/pilot split as Galileo E1 and E5.
@@ -11,16 +11,16 @@
 """
 $(SIGNATURES)
 
-Symbol-sync detector for Galileo E6-B: one C/NAV symbol per 1 ms primary code
-period (1000 sym/s; OS SIS ICD v2.2 Table 5), so it locks immediately — see
-`_detect_symbol_is_code_block_sync`.
+Bit-sync detector for Galileo E6-B: one C/NAV bit per 1 ms primary code
+period (1000 bit/s; OS SIS ICD v2.2 Table 5), so it locks immediately — see
+`_detect_bit_is_code_block_sync`.
 """
 @inline detect_bit_or_secondary_code_sync(
     signal::GalileoE6B,
     prn::Integer,
     code_block_bits::Unsigned,
     num_code_blocks::Integer,
-) = _detect_symbol_is_code_block_sync(signal, prn, code_block_bits, num_code_blocks)
+) = _detect_bit_is_code_block_sync(signal, prn, code_block_bits, num_code_blocks)
 
 """
 $(SIGNATURES)
@@ -48,7 +48,7 @@ function get_default_correlator(
     EarlyPromptLateCorrelator(; num_ants)
 end
 
-# One symbol per code period: nothing to search (see `get_code_block_buffer_type`).
+# One bit per code period: nothing to search (see `get_code_block_buffer_type`).
 @inline get_code_block_buffer_type(::GalileoE6B) = UInt8
 # E6-C: holds one CS100 period.
 @inline get_code_block_buffer_type(::GalileoE6C) = UInt128

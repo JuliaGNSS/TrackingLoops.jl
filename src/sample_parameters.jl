@@ -5,9 +5,9 @@ Longest coherent integration, in primary code blocks, that `signal`'s own
 structure allows — the ceiling `calc_num_code_blocks_to_integrate` clamps a
 satellite's preferred integration length against.
 
-One full symbol: the data-bit period for data-bearing signals, or the
+One full bit: the data-bit period for data-bearing signals, or the
 secondary-code period for pilots (a bit rate of `0 Hz`, e.g. GPS L1C-P).
-Integrating past it would straddle a symbol boundary and average two opposite
+Integrating past it would straddle a bit boundary and average two opposite
 signs away.
 
 The default degenerates to a single block for a signal that has neither a
@@ -36,7 +36,7 @@ single code block as long as the secondary code or bit hasn't been found. Once
 found, the coherent integration is capped by
 [`max_num_code_blocks_to_integrate`](@ref) and clamped to the largest divisor
 of that ceiling not exceeding the preferred value, so an integration never
-straddles a symbol boundary.
+straddles a bit boundary.
 """
 function calc_num_code_blocks_to_integrate(
     signal::AbstractGNSSSignal,
@@ -44,10 +44,10 @@ function calc_num_code_blocks_to_integrate(
     secondary_code_or_bit_found::Bool,
 )
     secondary_code_or_bit_found || return 1
-    num_code_blocks_that_form_a_symbol = max_num_code_blocks_to_integrate(signal)
+    num_code_blocks_that_form_a_bit = max_num_code_blocks_to_integrate(signal)
     num_code_blocks =
-        clamp(preferred_num_code_blocks, 1, num_code_blocks_that_form_a_symbol)
-    while num_code_blocks_that_form_a_symbol % num_code_blocks != 0
+        clamp(preferred_num_code_blocks, 1, num_code_blocks_that_form_a_bit)
+    while num_code_blocks_that_form_a_bit % num_code_blocks != 0
         num_code_blocks -= 1
     end
     num_code_blocks

@@ -264,7 +264,7 @@ _rotated(correlator, phasor) = update_accumulator(correlator, get_accumulators(c
 
 # A slot's ring of the residual phases (cycles) predicted at the driver's latest prompts
 # and their centres (s), newest at `newest`, `count` valid. A pair's decoding signal reads
-# its records' phase from it (`_symbol_prompt_phase`), since a host may step the data's
+# its records' phase from it (`_bit_prompt_phase`), since a host may step the data's
 # records after the pilot's of the same span. Allocated once at `_prompt_history_length`;
 # cleared while the filter does not command the satellite, so it never mixes two
 # residual PLLs' prompts.
@@ -306,7 +306,7 @@ _clear_prompts!(history::PromptHistory) = (history.count = 0; history)
 # replica advancing by `previous_replica_half` and the words from there. `NaN` before
 # the first prompt, and for a record more than a driver record older than the oldest
 # prompt held, rather than a phase moved back over records that output did not hold for.
-function _symbol_prompt_phase(
+function _bit_prompt_phase(
     residual_pll::ResidualPLL,
     ramp::CarrierRamp,
     previous_replica_half,

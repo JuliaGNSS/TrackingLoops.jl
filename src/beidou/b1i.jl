@@ -4,9 +4,9 @@
 # of 1.0, it is its own composite.
 #
 # The NH20 overlay (BDS-SIS-ICD-B1I-3.0 §5.2.1) is applied only on the MEO/IGSO
-# satellites (PRN 6-58, D1 at 50 sym/s: one NH20 period = one symbol). The GEO
+# satellites (PRN 6-58, D1 at 50 bit/s: one NH20 period = one bit). The GEO
 # satellites (PRN 1-5, 59-63) carry none (all-ones columns in GNSSSignals) and
-# broadcast D2 at 500 sym/s, so they never sync: they track and range but decode
+# broadcast D2 at 500 bit/s, so they never sync: they track and range but decode
 # no bits (`test/signals.jl`); see "BeiDou GEO satellites" in docs/src/bit_sync.md.
 
 """

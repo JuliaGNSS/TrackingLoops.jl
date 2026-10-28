@@ -63,7 +63,7 @@ navigation-bit grid in [`CN0UpdateContext`](@ref):
 | synced, pilot (no bit grid)       | `num_narrowband_code_blocks`, free-running      |
 | unsynced, data, no secondary code | `num_presync_narrowband_code_blocks`, unaligned |
 | unsynced, secondary code          | none: the unknown overlay flips every block     |
-| one symbol per block (L1C-D, E1B) | none: no coherent window beyond one record      |
+| one bit per block (L1C-D, E1B)    | none: no coherent window beyond one record      |
 | record at least as long as window | none: one record has `NBP == WBP`               |
 
 The unaligned pre-sync window exists because bit sync takes seconds and fails
@@ -238,7 +238,7 @@ end
             -1,
         )
     end
-    # One symbol per code block.
+    # One bit per code block.
     num_code_blocks_per_bit == 1 && return (0, -1)
     # Pilot: secondary code wiped off post-sync, window free-running.
     num_code_blocks_per_bit == 0 && return (estimator.num_narrowband_code_blocks, -1)
