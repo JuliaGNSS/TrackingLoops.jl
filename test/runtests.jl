@@ -21,7 +21,7 @@ using TrackingLoops:
     default_residual_pll_loop_filter_bandwidth,
     effective_fll_assist_loop_filter_bandwidth, effective_code_loop_filter_bandwidth,
     LoopBandwidths, CarrierLoopStage, phase_lock_indicator, phase_locked,
-    carrier_phase_correction, aid_dopplers, calculate_code_frequency_update,
+    carrier_phase_correction, aid_dopplers, calc_code_frequency_update,
     SatConventionalPLLAndDLL, SatNCOReferencedPLLAndDLL, SatVectorPLLAndDLL,
     NavigationStatus, VTReleaseReason, SatelliteReport, position_uncertainty,
     clock_uncertainty, SyncChange, SYNC_UNCHANGED, SYNC_FOUND, SYNC_LOST,

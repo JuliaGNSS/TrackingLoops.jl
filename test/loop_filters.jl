@@ -91,7 +91,7 @@ end
         0.5,
     )
     code_filter = SecondOrderBilinearLF()
-    update_code, filter_code = @inferred calculate_code_frequency_update(
+    update_code, filter_code = @inferred calc_code_frequency_update(
         gpsl1,
         code_filter,
         correlator,

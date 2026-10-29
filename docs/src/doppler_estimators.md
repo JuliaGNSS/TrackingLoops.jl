@@ -199,7 +199,7 @@ TrackingLoops.MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT
 TrackingLoops.MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT
 TrackingLoops.LoopBandwidths
 TrackingLoops.aid_dopplers(::AbstractGNSSSignal, ::Any, ::Any, ::Any, ::Any)
-TrackingLoops.calculate_code_frequency_update(::AbstractGNSSSignal, ::AbstractLoopFilter, ::AbstractCorrelator, ::Any, ::Any, ::Any, ::Any)
+TrackingLoops.calc_code_frequency_update(::AbstractGNSSSignal, ::AbstractLoopFilter, ::AbstractCorrelator, ::Any, ::Any, ::Any, ::Any)
 TrackingLoops.default_code_loop_filter_bandwidth(::AbstractGNSSSignal)
 TrackingLoops.default_fll_assist_loop_filter_bandwidth(::AbstractGNSSSignal)
 TrackingLoops.default_narrow_carrier_loop_filter_bandwidth(::AbstractGNSSSignal)
