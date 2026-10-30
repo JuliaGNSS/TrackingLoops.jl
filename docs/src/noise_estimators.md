@@ -43,7 +43,7 @@ PRN, configured with a code, so per signal is what an FPGA builds anyway.
 ## Why a density and not a power
 
 For a correlator normalised the way `TrackingLoops.normalize` normalises — by
-`integrated_samples * code_amplitude` — white input noise of per-sample variance
+`num_integrated_samples * code_amplitude` — white input noise of per-sample variance
 `σ²` gives `E|P|² = σ²/N = N₀/T`. So `N₀ = σ²/f_s` is **independent of the
 integration time**, which is what lets one per-signal figure serve records of any
 length. It is stored as a Unitful quantity of dimension `1/Hz`, so the
@@ -66,8 +66,7 @@ correlator = TrackingLoops.noise_correlator(estimator)
 despreads = TrackingLoops.noise_despreads(
     estimator,
     signal,
-    first_sample,
-    last_sample,
+    sample_range,
     sampling_frequency,
     intermediate_frequency,
 )
@@ -92,7 +91,7 @@ noise_observation_from_correlator(::Any, ::Any, ::Any, ::Any)
 TrackingLoops.noise_observation_from_samples(::Any, ::Any, ::Any)
 TrackingLoops.noise_window_filling(::AbstractNoiseEstimator)
 TrackingLoops.noise_window_looks(::AbstractNoiseEstimator)
-TrackingLoops.update_noise!(::AbstractNoiseEstimator, ::Any, ::Any, ::Any, ::Any)
+TrackingLoops.update_noise!(::AbstractNoiseEstimator, ::Any, ::Any, ::Any)
 CorrelatorNoiseEstimator
 CorrelatorNoiseEstimator()
 TrackingLoops.NoiseDespread
@@ -101,6 +100,6 @@ append_noise_observation!(::CorrelatorNoiseEstimator{D, T}, ::NoiseObservation) 
 TrackingLoops.despread_noise!
 TrackingLoops.get_noise_density(::CorrelatorNoiseEstimator)
 TrackingLoops.noise_correlator(::CorrelatorNoiseEstimator)
-TrackingLoops.noise_despreads(::CorrelatorNoiseEstimator, ::AbstractGNSSSignal, ::Integer, ::Integer, ::Any, ::Any)
-TrackingLoops.update_noise!(::CorrelatorNoiseEstimator, ::Any, ::Integer, ::Integer, ::NoiseUpdateContext)
+TrackingLoops.noise_despreads(::CorrelatorNoiseEstimator, ::AbstractGNSSSignal, ::AbstractUnitRange{<:Integer}, ::Any, ::Any)
+TrackingLoops.update_noise!(::CorrelatorNoiseEstimator, ::Any, ::AbstractUnitRange{<:Integer}, ::NoiseUpdateContext)
 ```

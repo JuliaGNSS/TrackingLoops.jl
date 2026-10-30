@@ -9,7 +9,7 @@ using Unitful: ms, kHz, MHz
 using TrackingLoops: get_prompt_buffer, get_current_index
 
 # Float64 throughout, matching what the tracking loop produces
-# (`integrated_samples / sampling_frequency`); `1ms` would make the density a
+# (`num_integrated_samples / sampling_frequency`); `1ms` would make the density a
 # `Rational{Int64}`, a type combination the loop never creates.
 const CN0_T = 1.0ms
 # `E|P|² = N₀/T`, so a unit-noise-power prompt stream is measured against `N₀ = T`.

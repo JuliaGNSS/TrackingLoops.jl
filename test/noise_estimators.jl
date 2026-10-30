@@ -31,11 +31,10 @@ function TrackingLoops.despread_noise!(
     ::FakeDespreadBackend,
     estimator,
     measurement,
-    first_sample,
-    last_sample,
+    sample_range,
     context,
 )
-    slice = view(measurement, first_sample:last_sample)
+    slice = view(measurement, sample_range)
     append_noise_observation!(
         estimator,
         noise_observation_from_samples(sum(abs2, slice), length(slice), 4e6Hz),
@@ -297,7 +296,7 @@ end
 
 @testset "The abstract noise estimator interface has no-op defaults" begin
     estimator = ExternalOnlyNoiseEstimator()
-    @test update_noise!(estimator, nothing, 1, 10, nothing) === estimator
+    @test update_noise!(estimator, nothing, 1:10, nothing) === estimator
     obs = noise_observation_from_samples(4000.0, 4000, 4e6Hz)
     @test append_noise_observation!(estimator, obs) === estimator
     @test isnothing(get_noise_density(estimator))
@@ -313,7 +312,7 @@ end
     samples = fill(complex(1.0, 1.0), 8000)
     context = TrackingLoops.NoiseUpdateContext(GPSL1CA(), 3, FakeDespreadBackend())
     @test context.chunk_index == 3
-    @test update_noise!(estimator, samples, 1, 4000, context) === estimator
+    @test update_noise!(estimator, samples, 1:4000, context) === estimator
     @test length(estimator) == 1
     # |x|² = 2 per sample ⇒ N₀ = 2 / f_s.
     @test ustrip(Hz^-1, get_noise_density(estimator)) ≈ 2 / 4e6
@@ -337,7 +336,7 @@ end
     # One despread of 4000 samples with three taps: the pooled power over all the taps'
     # samples, spanning the despread's duration, under the PRN it used.
     signal = GPSL1CA()
-    despread = NoiseDespread(signal, 7, 1, 4000, 0.0, 1.023e6Hz, 0.0Hz, 4e6Hz)
+    despread = NoiseDespread(signal, 7, 1:4000, 0.0, 1.023e6Hz, 0.0Hz, 4e6Hz)
     estimator = CorrelatorNoiseEstimator()
     @test append_despread_noise!(estimator, despread, taps) === estimator
     observation = only(estimator.buffered)
@@ -359,18 +358,18 @@ end
 
 # Sums what a host reads off each planned despread, so the plan's iteration can be
 # checked for allocations.
-function sum_noise_despreads(estimator, signal, first_sample, last_sample, fs, f_if)
+function sum_noise_despreads(estimator, signal, sample_range, fs, f_if)
     total = 0.0
-    for despread in noise_despreads(estimator, signal, first_sample, last_sample, fs, f_if)
-        total += despread.num_samples + despread.code_phase
+    for despread in noise_despreads(estimator, signal, sample_range, fs, f_if)
+        total += length(despread.sample_range) + despread.code_phase
         total += ustrip(Hz, despread.carrier_frequency)
     end
     total
 end
 
-function allocations_of_noise_despreads(estimator, signal, first, last, fs, f_if)
-    sum_noise_despreads(estimator, signal, first, last, fs, f_if)
-    @allocated sum_noise_despreads(estimator, signal, first, last, fs, f_if)
+function allocations_of_noise_despreads(estimator, signal, sample_range, fs, f_if)
+    sum_noise_despreads(estimator, signal, sample_range, fs, f_if)
+    @allocated sum_noise_despreads(estimator, signal, sample_range, fs, f_if)
 end
 
 @testset "noise_despreads plans the reference's sub-integrations" begin
@@ -381,10 +380,9 @@ end
     # 10 ms at 4 MHz is ten code periods: ten equal, contiguous sub-integrations of
     # one PRN, each drawing its code phase, then its carrier, from the estimator's rng.
     estimator = CorrelatorNoiseEstimator(; rng = Xoshiro(3))
-    despreads = collect(noise_despreads(estimator, signal, 101, 40100, fs, f_if))
+    despreads = collect(noise_despreads(estimator, signal, 101:40100, fs, f_if))
     @test length(despreads) == 10
-    @test [d.first_sample for d in despreads] == 101:4000:36101
-    @test all(d -> d.num_samples == 4000, despreads)
+    @test [d.sample_range for d in despreads] == [s:(s+3999) for s in 101:4000:36101]
     @test all(d -> d.prn == 1 && d.signal === signal, despreads)
     @test all(d -> d.code_frequency == get_chip_rate(signal), despreads)
     @test all(d -> d.sampling_frequency === fs, despreads)
@@ -398,19 +396,18 @@ end
 
     # Uneven slices still cover every sample once: 2.5 code periods round to three
     # sub-integrations.
-    despreads = collect(noise_despreads(estimator, signal, 1, 10001, fs, f_if))
-    @test [d.num_samples for d in despreads] == [3333, 3334, 3334]
-    @test [d.first_sample for d in despreads] == [1, 3334, 6668]
+    despreads = collect(noise_despreads(estimator, signal, 1:10001, fs, f_if))
+    @test [d.sample_range for d in despreads] == [1:3333, 3334:6667, 6668:10001]
 
     # A slice shorter than the code still yields one despread; an empty one none, and
     # at most one per sample.
-    @test length(noise_despreads(estimator, signal, 1, 400, fs, f_if)) == 1
-    @test isempty(noise_despreads(estimator, signal, 5, 4, fs, f_if))
-    @test length(noise_despreads(estimator, signal, 1, 3, 1e2Hz, f_if)) == 3
+    @test length(noise_despreads(estimator, signal, 1:400, fs, f_if)) == 1
+    @test isempty(noise_despreads(estimator, signal, 5:4, fs, f_if))
+    @test length(noise_despreads(estimator, signal, 1:3, 1e2Hz, f_if)) == 3
 
     # No dither, no carrier offset.
     undithered = CorrelatorNoiseEstimator(; carrier_dither = 0.0Hz)
-    undithered_despreads = noise_despreads(undithered, signal, 1, 8000, fs, f_if)
+    undithered_despreads = noise_despreads(undithered, signal, 1:8000, fs, f_if)
     @test all(d -> d.carrier_frequency == f_if, undithered_despreads)
 
     # The PRN rotates over the whole code family, carried in the newest observation.
@@ -421,13 +418,13 @@ end
             estimator,
             noise_observation_from_samples(4000.0, 4000, fs; prn),
         )
-        @test first(noise_despreads(estimator, signal, 1, 4000, fs, f_if)).prn == expected
+        @test first(noise_despreads(estimator, signal, 1:4000, fs, f_if)).prn == expected
     end
-    despread = first(noise_despreads(estimator, signal, 1, 4000, fs, f_if))
+    despread = first(noise_despreads(estimator, signal, 1:4000, fs, f_if))
     append_despread_noise!(estimator, despread, SVector(1.0 + 0im, 1.0 + 0im, 1.0 + 0im))
-    @test first(noise_despreads(estimator, signal, 1, 4000, fs, f_if)).prn == 2
+    @test first(noise_despreads(estimator, signal, 1:4000, fs, f_if)).prn == 2
 
-    @test allocations_of_noise_despreads(estimator, signal, 1, 40000, fs, f_if) == 0
+    @test allocations_of_noise_despreads(estimator, signal, 1:40000, fs, f_if) == 0
 end
 
 @testset "The noise builders take per-antenna input" begin

@@ -54,12 +54,12 @@ for (name, signals) in (("GPS L1 C/A", (GPSL1CA(),)), ("GPS L1 C/A and L2C", (GP
     steps = map(rx.channels) do channels
         map(channels) do sat
             num_samples = record_ms(sat.signal) * SAMPLES_PER_MS
-            record_end = sample + num_samples
+            record_end_sample_index = sample + num_samples
             words = sim_words(sat, NO_LANDING_SAMPLE)
-            correlator, = simulate_correlator(sat, rx.truth, sim_time(rx, record_end), num_samples,
-                record_end, words)
+            correlator, = simulate_correlator(sat, rx.truth, sim_time(rx, record_end_sample_index), num_samples,
+                record_end_sample_index, words)
             record = with_cn0(LoopRecord(sat.signal, correlator, sat.previous_prompt, num_samples,
-                record_end, record_end, 1, SIM_FS), 45.0)
+                record_end_sample_index, record_end_sample_index, 1, SIM_FS), 45.0)
             (sat.state, record, words)
         end
     end

@@ -24,8 +24,8 @@ $(SIGNATURES)
 One completed record as the loop-filter step sees it: the signal, the filtered
 (antenna-combined, normalised) correlator, the previous filtered prompt the FLL
 compares with, the record's span and block count, the band's sampling frequency,
-and `fold_end`, the end sample of the fold's last record, against which a landing
-sample is measured.
+and `fold_end_sample_index`, the `sample_index` of the fold's last record, against
+which a landing sample is measured.
 
 `integrated_code_blocks` must be at least 1: the carrier-loop staging sizes its
 phase-lock indicator's averages in records of that length and divides by it. A
@@ -48,7 +48,7 @@ Fields for an estimator with per-satellite state of its own
 For such an estimator `sample_index / sampling_frequency` must also be the time
 since an origin shared by every satellite of the band; a host whose correlator
 restarts its sample count passes the offset as `sample_offset` (added to
-`sample_index` and `fold_end`).
+`sample_index` and `fold_end_sample_index`).
 
 The rest summarises the signal's [`SignalLoopState`](@ref) after
 [`apply_record`](@ref) folded this record, for an estimator that decodes or weights
@@ -80,9 +80,9 @@ struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F,CN0<:AbstractCN0
     signal::S
     filtered_correlator::C
     previous_prompt::ComplexF64
-    integrated_samples::Int
+    num_integrated_samples::Int
     sample_index::Int
-    fold_end::Int
+    fold_end_sample_index::Int
     integrated_code_blocks::Int
     sampling_frequency::F
     prn::Int
@@ -100,9 +100,9 @@ LoopRecord(
     signal::AbstractGNSSSignal,
     filtered_correlator::AbstractCorrelator,
     previous_prompt,
-    integrated_samples::Integer,
+    num_integrated_samples::Integer,
     sample_index::Integer,
-    fold_end::Integer,
+    fold_end_sample_index::Integer,
     integrated_code_blocks::Integer,
     sampling_frequency;
     prn::Integer = 0,
@@ -112,9 +112,9 @@ LoopRecord(
     signal,
     filtered_correlator,
     ComplexF64(previous_prompt),
-    Int(integrated_samples),
+    Int(num_integrated_samples),
     Int(sample_index),
-    Int(fold_end),
+    Int(fold_end_sample_index),
     Int(integrated_code_blocks),
     sampling_frequency,
     Int(prn),
@@ -135,7 +135,7 @@ LoopRecord(
     output::CorrelatorOutput,
     integrated_code_blocks::Integer,
     sampling_frequency;
-    fold_end = output.sample_index,
+    fold_end_sample_index = output.sample_index,
     prn::Integer = 0,
     sample_offset::Integer = 0,
     carrier_phase_polarity::Integer = 0,
@@ -143,9 +143,9 @@ LoopRecord(
     signal,
     filtered_correlator,
     ComplexF64(previous_prompt),
-    output.integrated_samples,
+    output.num_integrated_samples,
     output.sample_index + Int(sample_offset),
-    Int(fold_end) + Int(sample_offset),
+    Int(fold_end_sample_index) + Int(sample_offset),
     Int(integrated_code_blocks),
     sampling_frequency,
     Int(prn),
@@ -162,7 +162,7 @@ LoopRecord(
 """
     LoopRecord(signal, filtered_correlator, output::CorrelatorOutput,
                state::SignalLoopState, sampling_frequency;
-               fold_end = output.sample_index, prn = 0, sample_offset = 0)
+               fold_end_sample_index = output.sample_index, prn = 0, sample_offset = 0)
 
 The record of `output` with its block count, previous prompt, bit-clock summary,
 C/N₀ estimator and carrier phase polarity taken from `state`, the
@@ -175,7 +175,7 @@ function LoopRecord(
     output::CorrelatorOutput,
     state::SignalLoopState,
     sampling_frequency;
-    fold_end = output.sample_index,
+    fold_end_sample_index = output.sample_index,
     prn::Integer = 0,
     sample_offset::Integer = 0,
 )
@@ -188,9 +188,9 @@ function LoopRecord(
         signal,
         filtered_correlator,
         state.last_previous_prompt,
-        output.integrated_samples,
+        output.num_integrated_samples,
         output.sample_index + Int(sample_offset),
-        Int(fold_end) + Int(sample_offset),
+        Int(fold_end_sample_index) + Int(sample_offset),
         state.last_num_code_blocks,
         sampling_frequency,
         Int(prn),
@@ -465,9 +465,9 @@ end
     form_fll::Bool,
 )
     signal = record.signal
-    integration_time = record.integrated_samples / record.sampling_frequency
-    record_start = record.sample_index - record.integrated_samples
-    _, applied_code = mean_nco_word(words, record_start, record.sample_index)
+    integration_time = record.num_integrated_samples / record.sampling_frequency
+    record_start_sample_index = record.sample_index - record.num_integrated_samples
+    _, applied_code = mean_nco_word(words, record_start_sample_index, record.sample_index)
     filtered_correlator = record.filtered_correlator
     frequency_error =
         form_fll ?
@@ -786,15 +786,15 @@ Passenger records are handled as by the conventional loop.
     sampling_frequency = record.sampling_frequency
     previous_center = state.previous_record_center
     # Every record of the fold maps onto the delay-free loop's record this far ahead.
-    shift = landing_sample == NO_LANDING_SAMPLE ? 0 : landing_sample - record.fold_end
-    record_end = record.sample_index
-    record_samples = record.integrated_samples
-    record_start = record_end - record_samples
-    center = record_end - record_samples / 2
+    shift = landing_sample == NO_LANDING_SAMPLE ? 0 : landing_sample - record.fold_end_sample_index
+    record_end_sample_index = record.sample_index
+    record_samples = record.num_integrated_samples
+    record_start_sample_index = record_end_sample_index - record_samples
+    center = record_end_sample_index - record_samples / 2
     integration_time = record_samples / sampling_frequency
     filtered_correlator = record.filtered_correlator
 
-    applied_carrier, applied_code = mean_nco_word(words, record_start, record_end)
+    applied_carrier, applied_code = mean_nco_word(words, record_start_sample_index, record_end_sample_index)
     # Discriminators against the applied replica; the FLL's only if `form_fll`.
     phase_error = pll_disc(signal, filtered_correlator; polarity = record.carrier_phase_polarity)
     frequency_error =
@@ -823,7 +823,8 @@ Passenger records are handled as by the conventional loop.
         fll_word =
             isnan(previous_center) ? applied_carrier :
             first(mean_nco_word(words, previous_center, center))
-        landing_word = first(mean_nco_word(words, record_start + shift, record_end + shift))
+        landing_word =
+            first(mean_nco_word(words, record_start_sample_index + shift, record_end_sample_index + shift))
         form_fll && (frequency_error += (fll_word - landing_word) * Hz)
     end
 
@@ -891,10 +892,10 @@ phase_locked(state::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndDLL}) =
     phase_lock_indicator(state) >= _PHASE_LOCK_THRESHOLD
 
 """
-    carrier_phase_correction(state, words, sample, sampling_frequency) -> Float64
+    carrier_phase_correction(state, words, sample_index, sampling_frequency) -> Float64
 
 The carrier phase (cycles) the loop estimates the incoming carrier to lead the
-replica by at `sample` (of the records' grid at `sampling_frequency`), with
+replica by at `sample_index` (of the records' grid at `sampling_frequency`), with
 `words` the words the replica ran on up to there, an [`NCOTimeline`](@ref) or
 a [`FixedNCOWord`](@ref). The replica's carrier phase plus this is the loop's
 estimate of the incoming carrier phase, the carrier-phase measurement a host
@@ -905,9 +906,9 @@ phase is its estimate and this is `0.0`; so is a [`VectorPLLAndDLL`](@ref)'s
 out of the vector loop. In it the navigation filter sets the carrier NCO and
 the residual PLL follows the carrier the NCO leaves without steering it, so
 the replica's phase alone drifts off the carrier, by whole cycles over time:
-this is the residual PLL's prediction at `sample`, from its latest prompt on,
+this is the residual PLL's prediction at `sample_index`, from its latest prompt on,
 counting every cycle, never folded (`0.0` before its first prompt). Meant for
-a sample at or after the end of the driver's latest record, as a host's
+a sample index at or after the end of the driver's latest record, as a host's
 replica phase after its last record is.
 
 Like a scalar PLL's replica phase, it is ambiguous by half a cycle under the
@@ -929,7 +930,7 @@ at zero on the phase-locked scalar loop's replica.
 carrier_phase_correction(
     ::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndDLL},
     words,
-    sample,
+    sample_index,
     sampling_frequency,
 ) = 0.0
 

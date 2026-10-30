@@ -275,8 +275,8 @@ function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_inde
     fs = ustrip(Hz, SIM_FS)
     dt = num_samples / fs
     t_mid = t_end - dt / 2
-    record_start = sample_index - num_samples
-    carrier, code = mean_nco_word(words, record_start, sample_index)
+    record_start_sample_index = sample_index - num_samples
+    carrier, code = mean_nco_word(words, record_start_sample_index, sample_index)
     t_t, = true_transmit(sat, truth, t_mid)
     f_true = true_doppler(sat, truth, t_mid)
     u_true = uncorrected_time(sat, t_t)
@@ -304,7 +304,7 @@ end
 
 # The replica moved on by a record, and the new words commanded.
 function advance_replica!(sat::SimSat, f_true, carrier, code, dt, new_carrier, new_code,
-        record_start, sample_index, landing_sample)
+        record_start_sample_index, sample_index, landing_sample)
     sat.phase_error += (f_true - carrier) * dt
     sat.replica_time += dt * (1 + code / sat.code_frequency)
     if landing_sample == NO_LANDING_SAMPLE
@@ -312,7 +312,7 @@ function advance_replica!(sat::SimSat, f_true, carrier, code, dt, new_carrier, n
         sat.code_doppler = ustrip(Hz, new_code)
     else
         schedule_word!(sat.timeline, landing_sample, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
-        promote_words!(sat.timeline, record_start)
+        promote_words!(sat.timeline, record_start_sample_index)
         sat.carrier_doppler, sat.code_doppler = nco_word_at(sat.timeline, sample_index)
     end
 end
@@ -346,9 +346,9 @@ end
 # every satellite take it up. This is the cycle the estimator runs by itself (see the
 # pipeline below), on decoders that need no bits: the fixtures of every constellation.
 
-# Fill the slot of a channel at the cycle epoch (device sample `epoch_sample`), as the
+# Fill the slot of a channel at the cycle epoch (device sample `epoch_sample_index`), as the
 # satellite's snapshot would: the replica at the epoch, from the fixture decoder.
-function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_lock = sat.in_view)
+function fill_slot!(slot, sat::SimSat, epoch_sample_index, landing_sample, nav; in_lock = sat.in_view)
     fs = ustrip(Hz, SIM_FS)
     epoch_state = replica_satellite_state(sat, sat.replica_time)
     slot.occupied = true
@@ -356,7 +356,7 @@ function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_loc
     slot.estimator_state = sat.state
     sat.state = TrackingLoops._reset_discriminator_accumulators(sat.state)
     slot.code_phase = epoch_state.code_phase
-    carrier, code = mean_nco_word(sim_words(sat, landing_sample), epoch_sample, epoch_sample)
+    carrier, code = mean_nco_word(sim_words(sat, landing_sample), epoch_sample_index, epoch_sample_index)
     slot.carrier_doppler = carrier * Hz
     slot.code_doppler = code * Hz
     slot.cn0_dbhz = 45.0
@@ -370,8 +370,8 @@ function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_loc
     slot.in_lock = in_lock
     slot.pvt_ready = in_lock
     slot.snapshot_epoch = nav.pending_epoch
-    slot.driver_last_end_sample = slot.decoding_last_end_sample = epoch_sample
-    slot.driver_last_end_time = slot.decoding_last_end_time = epoch_sample / fs
+    slot.driver_last_end_sample_index = slot.decoding_last_end_sample_index = epoch_sample_index
+    slot.driver_last_end_time = slot.decoding_last_end_time = epoch_sample_index / fs
     slot.chips_since_epoch = 0.0
     slot
 end
@@ -732,17 +732,17 @@ function step_satellite!(receiver::PipelineReceiver, i, sample)
     lag = receiver.driver_lag_ms * SAMPLES_PER_MS
     code_error = 0.0
     while sat.next_end_sample + lag <= sample
-        record_end = sat.next_end_sample
+        record_end_sample_index = sat.next_end_sample
         code_error = max(code_error, abs(pipeline_record!(receiver, sat, receiver.last_ends[i], sat, passenger)))
-        receiver.last_ends[i] = record_end
+        receiver.last_ends[i] = record_end_sample_index
     end
     isnothing(passenger) && return code_error
     lag = receiver.passenger_lag_ms * SAMPLES_PER_MS
     while passenger.next_end_sample + lag <= sample
-        record_end = passenger.next_end_sample
+        record_end_sample_index = passenger.next_end_sample
         code_error = max(code_error,
             abs(pipeline_record!(receiver, passenger, receiver.passenger_last_ends[i], sat)))
-        receiver.passenger_last_ends[i] = record_end
+        receiver.passenger_last_ends[i] = record_end_sample_index
     end
     code_error
 end

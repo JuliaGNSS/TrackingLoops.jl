@@ -474,10 +474,10 @@ function track_carrier(phase, doppler0, rate; offset = 0.5, record_samples = 160
     previous_prompt = complex(0.0)
     epochs = NamedTuple[]
     epoch = 1
-    record_end = first_end
-    record_start = 0
-    while record_end / RATE_FS <= duration
-        t0, t1 = record_start / RATE_FS, record_end / RATE_FS
+    record_end_sample_index = first_end
+    record_start_sample_index = 0
+    while record_end_sample_index / RATE_FS <= duration
+        t0, t1 = record_start_sample_index / RATE_FS, record_end_sample_index / RATE_FS
         # The engine's snapshot: the accumulators up to the epoch, emptied before the
         # record that crosses it, whose word is the replica's there.
         if t1 > epoch * cycle
@@ -491,15 +491,15 @@ function track_carrier(phase, doppler0, rate; offset = 0.5, record_samples = 160
         prompt = sum(cis(2π * (phase(t0 + (i - 0.5) / n * (t1 - t0)) -
                                 replica_phase - carrier * (i - 0.5) / n * (t1 - t0))) for i = 1:n) / n
         prompt += noise_std * complex(randn(rng), randn(rng))
-        output = CorrelatorOutput(loop_epl(0.5prompt, prompt, 0.5prompt), record_end - record_start, record_end)
+        output = CorrelatorOutput(loop_epl(0.5prompt, prompt, 0.5prompt), record_end_sample_index - record_start_sample_index, record_end_sample_index)
         record = LoopRecord(RATE_SIGNAL, output.correlator, previous_prompt, output, 1, RATE_FS * Hz)
         state, new_carrier, = TL._step_satellite(estimator, state, record,
             FixedNCOWord(carrier, 0.0), NO_LANDING_SAMPLE)
         replica_phase += carrier * (t1 - t0)
         carrier = ustrip(Hz, new_carrier)
         previous_prompt = prompt
-        record_start = record_end
-        record_end += record_samples
+        record_start_sample_index = record_end_sample_index
+        record_end_sample_index += record_samples
     end
     epochs
 end

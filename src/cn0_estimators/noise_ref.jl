@@ -145,7 +145,7 @@ end
         "`CN0UpdateContext(signal, bit_buffer, num_code_blocks; noise_density, " *
         "integration_time)` — which is what the tracking loop does; " *
         "`integration_time` is that record's own " *
-        "`integrated_samples / sampling_frequency`.",
+        "`num_integrated_samples / sampling_frequency`.",
     ),
 )
 

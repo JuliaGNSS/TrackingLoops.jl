@@ -274,28 +274,20 @@ Base.length(estimator::CorrelatorNoiseEstimator) = length(estimator.buffered)
 """
 $(SIGNATURES)
 
-Measure this signal's noise over samples `first_sample:last_sample` of
-`measurement`, append the observations and return `estimator`. Forwards to
-[`despread_noise!`](@ref) on `context.downconvert_and_correlator`; a loop process
-fills the window through [`noise_despreads`](@ref) instead.
+Measure this signal's noise over samples `sample_range` of `measurement`, append the
+observations and return `estimator`. Forwards to [`despread_noise!`](@ref) on
+`context.downconvert_and_correlator`; a loop process fills the window through
+[`noise_despreads`](@ref) instead.
 """
 update_noise!(
     estimator::CorrelatorNoiseEstimator,
     measurement,
-    first_sample::Integer,
-    last_sample::Integer,
+    sample_range::AbstractUnitRange{<:Integer},
     context::NoiseUpdateContext,
-) = despread_noise!(
-    context.downconvert_and_correlator,
-    estimator,
-    measurement,
-    first_sample,
-    last_sample,
-    context,
-)
+) = despread_noise!(context.downconvert_and_correlator, estimator, measurement, sample_range, context)
 
 """
-    despread_noise!(backend, estimator, measurement, first_sample, last_sample, context)
+    despread_noise!(backend, estimator, measurement, sample_range, context)
 
 The software fill path of a [`CorrelatorNoiseEstimator`](@ref): despread each of the
 slice's [`noise_despreads`](@ref) with [`noise_correlator`](@ref)'s taps on `backend`'s
@@ -309,9 +301,8 @@ function despread_noise! end
     NoiseDespread
 
 One sub-integration of a [`CorrelatorNoiseEstimator`](@ref)'s reference, as
-[`noise_despreads`](@ref) plans it: despread samples
-`first_sample:first_sample + num_samples - 1` with `signal`'s code for `prn`, starting
-at `code_phase` chips, at the nominal `code_frequency` and at `carrier_frequency`, the
+[`noise_despreads`](@ref) plans it: despread samples `sample_range` with `signal`'s
+code for `prn`, starting at `code_phase` chips, at the nominal `code_frequency` and at `carrier_frequency`, the
 band's intermediate frequency plus the dither, with no carrier phase. A software host
 runs it on its kernel; a hardware host programs a noise channel with it. Either hands
 the taps to [`append_despread_noise!`](@ref).
@@ -319,8 +310,7 @@ the taps to [`append_despread_noise!`](@ref).
 struct NoiseDespread{S<:AbstractGNSSSignal,K,C,F}
     signal::S
     prn::Int
-    first_sample::Int
-    num_samples::Int
+    sample_range::UnitRange{Int}
     code_phase::Float64
     code_frequency::K
     carrier_frequency::C
@@ -331,8 +321,7 @@ end
 struct NoiseDespreads{S<:AbstractGNSSSignal,R<:AbstractRNG,F,I}
     signal::S
     prn::Int
-    first_sample::Int
-    num_samples::Int
+    sample_range::UnitRange{Int}
     num_sub::Int
     sampling_frequency::F
     intermediate_frequency::I
@@ -342,10 +331,10 @@ end
 
 """
     noise_despreads(estimator::CorrelatorNoiseEstimator, signal::AbstractGNSSSignal,
-                    first_sample, last_sample, sampling_frequency, intermediate_frequency)
+                    sample_range, sampling_frequency, intermediate_frequency)
 
 The sub-integrations a host despreads to measure `signal`'s noise over samples
-`first_sample:last_sample`, sampled at `sampling_frequency` on a band at
+`sample_range`, sampled at `sampling_frequency` on a band at
 `intermediate_frequency`: an iterator of [`NoiseDespread`](@ref)s, empty for an empty
 slice. Iterate it once, in order, and append each despread with
 [`append_despread_noise!`](@ref).
@@ -375,12 +364,11 @@ calls. Allocates nothing.
 function noise_despreads(
     estimator::CorrelatorNoiseEstimator,
     signal::AbstractGNSSSignal,
-    first_sample::Integer,
-    last_sample::Integer,
+    sample_range::AbstractUnitRange{<:Integer},
     sampling_frequency,
     intermediate_frequency,
 )
-    num_samples = max(0, Int(last_sample) - Int(first_sample) + 1)
+    num_samples = length(sample_range)
     code_period = get_code_length(signal) / get_chip_rate(signal)
     slice_duration = num_samples / sampling_frequency
     num_code_periods = round(Int, uconvert(NoUnits, slice_duration / code_period))
@@ -388,8 +376,7 @@ function noise_despreads(
     NoiseDespreads(
         signal,
         _next_noise_prn(estimator, signal),
-        Int(first_sample),
-        num_samples,
+        sample_range,
         num_sub,
         sampling_frequency,
         intermediate_frequency,
@@ -402,9 +389,11 @@ Base.length(despreads::NoiseDespreads) = despreads.num_sub
 
 @inline function Base.iterate(despreads::NoiseDespreads, sub = 1)
     sub > despreads.num_sub && return nothing
-    (; signal, first_sample, num_samples, num_sub, rng) = despreads
-    slice_start = first_sample + div((sub - 1) * num_samples, num_sub)
-    slice_stop = first_sample + div(sub * num_samples, num_sub) - 1
+    (; signal, sample_range, num_sub, rng) = despreads
+    first_sample_index = first(sample_range)
+    num_samples = length(sample_range)
+    slice_start = first_sample_index + div((sub - 1) * num_samples, num_sub)
+    slice_stop = first_sample_index + div(sub * num_samples, num_sub) - 1
     # Code phase first, then the carrier: one draw each per sub-integration.
     code_phase = rand(rng) * get_code_length(signal)
     carrier_frequency =
@@ -412,8 +401,7 @@ Base.length(despreads::NoiseDespreads) = despreads.num_sub
     despread = NoiseDespread(
         signal,
         despreads.prn,
-        slice_start,
-        slice_stop - slice_start + 1,
+        slice_start:slice_stop,
         code_phase,
         get_chip_rate(signal),
         carrier_frequency,
@@ -455,9 +443,9 @@ end
 # Next PRN of the rotation, carried in the newest observation (1 when empty).
 @inline function _next_noise_prn(
     estimator::CorrelatorNoiseEstimator,
-    signal_type::AbstractGNSSSignal,
+    signal::AbstractGNSSSignal,
 )
-    num_prns = size(get_codes(signal_type), 2)
+    num_prns = size(get_codes(signal), 2)
     previous = isempty(estimator.buffered) ? 0 : Int(last(estimator.buffered).prn)
     mod(previous, num_prns) + 1
 end
@@ -479,7 +467,8 @@ nothing.
     accumulators,
 )
     num_taps = length(accumulators)
-    (; num_samples, sampling_frequency) = despread
+    num_samples = length(despread.sample_range)
+    sampling_frequency = despread.sampling_frequency
     append_noise_observation!(
         estimator,
         _noise_observation(

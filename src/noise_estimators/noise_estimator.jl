@@ -130,7 +130,7 @@ noise_density_type(::AbstractNoiseEstimator) = NoiseDensity
 $(SIGNATURES)
 
 Build a [`NoiseObservation`](@ref) from **one dump given as a raw complex
-accumulation** `Σ x·c` over `integrated_samples` samples — the most faithful
+accumulation** `Σ x·c` over `num_integrated_samples` samples — the most faithful
 form, since the estimator does the squaring, scaling and averaging.
 
 `code_amplitude` is the RMS amplitude of the sampled replica (see
@@ -143,34 +143,34 @@ each satellite's floor is `wᴴR̂w` under its own weights.
 """
 noise_observation(
     accumulation::Complex,
-    integrated_samples,
+    num_integrated_samples,
     sampling_frequency;
     code_amplitude = 1,
     prn::Integer = 0,
 ) = _noise_observation(
     abs2(accumulation),
     1,
-    integrated_samples,
+    num_integrated_samples,
     sampling_frequency,
     code_amplitude,
     prn,
-    integrated_samples / sampling_frequency,
+    num_integrated_samples / sampling_frequency,
 )
 
 noise_observation(
     accumulation::StaticVector{M,<:Complex},
-    integrated_samples,
+    num_integrated_samples,
     sampling_frequency;
     code_amplitude = 1,
     prn::Integer = 0,
 ) where {M} = _noise_observation(
     accumulation * accumulation',
     1,
-    integrated_samples,
+    num_integrated_samples,
     sampling_frequency,
     code_amplitude,
     prn,
-    integrated_samples / sampling_frequency,
+    num_integrated_samples / sampling_frequency,
 )
 
 """
@@ -312,8 +312,8 @@ Measure one signal's noise on its band's samples and append the resulting
 observations to `estimator`'s window, returning `estimator`.
 
 `measurement` is the band's `Tracking.BandMeasurement` (the samples are per band;
-only the despreading code is per signal). `first_sample:last_sample` is the slice
-this call may consume. `context` is a [`NoiseUpdateContext`](@ref).
+only the despreading code is per signal). `sample_range` is the slice this call may
+consume. `context` is a [`NoiseUpdateContext`](@ref).
 
 This is the **software** fill path, called only inside Tracking.jl's
 `downconvert_and_correlate!`. The default is a no-op, for sources fed from
@@ -323,8 +323,7 @@ since `TrackState` is immutable.
 update_noise!(
     estimator::AbstractNoiseEstimator,
     measurement,
-    first_sample,
-    last_sample,
+    sample_range,
     context,
 ) = estimator
 

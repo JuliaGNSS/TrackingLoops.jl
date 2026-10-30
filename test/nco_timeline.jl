@@ -29,12 +29,12 @@
     @test mean_nco_word(tl, 2000, 3000) == (130.0, 0.13)
     @test length(scheduled_words(tl)) == 2
     schedule_word!(tl, 1500, 140.0, 0.14)
-    @test [w.sample for w in scheduled_words(tl)] == [1000, 1500]
+    @test [w.sample_index for w in scheduled_words(tl)] == [1000, 1500]
 
     # Promotion folds landed words into the applied one and forgets them.
     promote_words!(tl, 1200)
     @test tl.applied_carrier_doppler == 110.0
-    @test [w.sample for w in scheduled_words(tl)] == [1500]
+    @test [w.sample_index for w in scheduled_words(tl)] == [1500]
     @test mean_nco_word(tl, 1000, 2000) == (125.0, 0.125)
     promote_words!(tl, 10_000)
     @test isempty(scheduled_words(tl))
@@ -52,7 +52,7 @@ end
     tl1 = NCOTimeline(; capacity = 1)
     schedule_word!(tl1, 1000, 1.0, 0.0)
     schedule_word!(tl1, 2000, 2.0, 0.0)
-    @test [w.sample for w in scheduled_words(tl1)] == [2000]
+    @test [w.sample_index for w in scheduled_words(tl1)] == [2000]
     @test tl1.applied_carrier_doppler == 1.0
     tl = NCOTimeline(; capacity = 4)
     reset_timeline!(tl, 1.0, 0.1)
@@ -60,7 +60,7 @@ end
         schedule_word!(tl, 1000k, Float64(k), 0.0)
     end
     @test length(scheduled_words(tl)) == 4
-    @test [w.sample for w in scheduled_words(tl)] == [7000, 8000, 9000, 10_000]
+    @test [w.sample_index for w in scheduled_words(tl)] == [7000, 8000, 9000, 10_000]
     # The words that fell off the front were taken as landed.
     @test tl.applied_carrier_doppler == 6.0
 end
@@ -71,15 +71,15 @@ end
     schedule_word!(tl, 1000, 110.0, 0.11)
     schedule_word!(tl, 2000, 120.0, 0.12)
     reschedule_word!(tl, 2000, 2500)
-    @test [w.sample for w in scheduled_words(tl)] == [1000, 2500]
+    @test [w.sample_index for w in scheduled_words(tl)] == [1000, 2500]
     @test nco_word_at(tl, 2200) == (110.0, 0.11)
     @test nco_word_at(tl, 2500) == (120.0, 0.12)
     # Landed before an earlier word: that word is superseded, as the device
     # keeps the newest command it was given.
     reschedule_word!(tl, 2500, 900)
-    @test [w.sample for w in scheduled_words(tl)] == [900]
+    @test [w.sample_index for w in scheduled_words(tl)] == [900]
     @test nco_word_at(tl, 950) == (120.0, 0.12)
     # Nothing scheduled there: a no-op.
     reschedule_word!(tl, 4242, 5000)
-    @test [w.sample for w in scheduled_words(tl)] == [900]
+    @test [w.sample_index for w in scheduled_words(tl)] == [900]
 end

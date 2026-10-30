@@ -83,19 +83,19 @@ end
     # simulated carrier phase error against the replica, the residual PLL having taken over
     # from the phase-locked scalar loop on it.
     rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()))
-    _, sample, diverged = run_simulation!(rx, 60)
+    _, sample_index, diverged = run_simulation!(rx, 60)
     @test !diverged
     fs = ustrip(Hz, SIM_FS)
     for channels in rx.channels, sat in channels
         @test sat.state.in_vector_loop
         words = sim_words(sat, NO_LANDING_SAMPLE)
-        @test carrier_phase_correction(sat.state, words, sample, SIM_FS) ≈ sat.phase_error atol = 1e-4
+        @test carrier_phase_correction(sat.state, words, sample_index, SIM_FS) ≈ sat.phase_error atol = 1e-4
         dt = 2e-3
-        f_true = true_doppler(sat, rx.truth, sim_time(rx, sample) + dt / 2)
-        @test carrier_phase_correction(sat.state, words, sample + round(Int, dt * fs), SIM_FS) ≈
+        f_true = true_doppler(sat, rx.truth, sim_time(rx, sample_index) + dt / 2)
+        @test carrier_phase_correction(sat.state, words, sample_index + round(Int, dt * fs), SIM_FS) ≈
             sat.phase_error + (f_true - sat.carrier_doppler) * dt atol = 1e-4
         # Out of the vector loop the replica is the loop's estimate.
-        @test carrier_phase_correction(TL._release_from_vector_loop(sat.state), words, sample, SIM_FS) == 0.0
+        @test carrier_phase_correction(TL._release_from_vector_loop(sat.state), words, sample_index, SIM_FS) == 0.0
     end
     scalar = init_estimator_state(ConventionalAssistedPLLAndDLL(), GPSL1CA(), 100.0Hz, 0.0Hz)
     @test carrier_phase_correction(scalar, FixedNCOWord(100.0, 0.0), 0, SIM_FS) == 0.0
@@ -233,11 +233,11 @@ end
     step_residual(residual, 1000:1000:3_000_000; scalar_doppler = 105.0, on_record = (state, k) -> begin
         k > 1500 || return
         @test state.in_vector_loop && phase_locked(state)
-        sample = 1000 * k
-        correction = carrier_phase_correction(state, words, sample, 1e6Hz)
+        sample_index = 1000 * k
+        correction = carrier_phase_correction(state, words, sample_index, 1e6Hz)
         push!(corrections, correction)
-        push!(offsets, correction - residual(sample / 1e6))
-        @test carrier_phase_correction(state, words, sample + 500, 1e6Hz) - residual((sample + 500) / 1e6) ≈
+        push!(offsets, correction - residual(sample_index / 1e6))
+        @test carrier_phase_correction(state, words, sample_index + 500, 1e6Hz) - residual((sample_index + 500) / 1e6) ≈
             last(offsets) atol = 1e-4
     end)
     @test last(corrections) - first(corrections) > 7
@@ -334,9 +334,9 @@ end
 # A decoding record of `signal` at `sample_index` whose prompt is `prompt`: synced, the
 # host's bit clock having appended `host_bits`, signed by `bit_polarity`.
 function decoding_record(signal, prompt, sample_index; host_bits = Float32[], bit_polarity = 1,
-        sync_change = TL.SYNC_UNCHANGED, fold_end = sample_index)
+        sync_change = TL.SYNC_UNCHANGED, fold_end_sample_index = sample_index)
     correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5prompt, prompt, 0.5prompt), 0.5)
-    LoopRecord(signal, correlator, complex(0.0), 4000, sample_index, fold_end, 1, 4e6Hz, 5, NaN,
+    LoopRecord(signal, correlator, complex(0.0), 4000, sample_index, fold_end_sample_index, 1, 4e6Hz, 5, NaN,
         true, sync_change, 0, view(host_bits, 1:length(host_bits)), NoCN0Estimator(), Int8(0),
         Int8(bit_polarity))
 end
@@ -411,7 +411,7 @@ end
     ramp = TL.CarrierRamp(1000.0, 0.0, 0.0)
     words = FixedNCOWord(1000.0, 0.0)
     half = (1000.0 * 0.0005, 0.0005s)
-    record(start, stop) = decoding_record(signal, cis(0.0), stop; fold_end = stop) |>
+    record(start, stop) = decoding_record(signal, cis(0.0), stop; fold_end_sample_index = stop) |>
         r -> LoopRecord(r.signal, r.filtered_correlator, r.previous_prompt, stop - start, stop, stop, 1,
             r.sampling_frequency, r.prn, r.code_phase, true, r.sync_change, 0, r.new_soft_bits,
             r.cn0_estimator, Int8(0), Int8(1))

@@ -86,7 +86,7 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     # Advanced by every record of the decoding signal.
     running_decoder::D
     # The driver's last record end.
-    driver_last_end_sample::Int
+    driver_last_end_sample_index::Int
     driver_last_end_time::Float64 # s
     last_code_phase::Float64 # chips, as the record reported it; `NaN` if it did not
     last_integration_time::typeof(1.0s)
@@ -94,14 +94,15 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     # Replica chips from the epoch of the latest snapshot to the driver's last record end.
     chips_since_epoch::Float64
     # The decoding signal's last record end, and its bit clock there.
-    decoding_last_end_sample::Int
+    decoding_last_end_sample_index::Int
     decoding_last_end_time::Float64 # s
     decoding_bit_synced::Bool
     decoding_blocks_into_bit::Int
     decoding_code_phase_fraction::Float64 # chips past the nearest code-block boundary
-    # The fold the decoding signal's bit sync was found in: its later records were
-    # correlated before the sync.
-    sync_fold_end::Int
+    # The `fold_end_sample_index` of the fold the decoding signal's bit sync was
+    # found in (`typemin(Int)` for none): its later records were correlated before
+    # the sync.
+    sync_fold_end_sample_index::Int
     # The data bit in the making while the filter steers the carrier: the decoding
     # signal's prompts rotated onto the incoming carrier by the residual PLL, whether
     # they cover the bit from its edge on, and the soft bit it ends in.

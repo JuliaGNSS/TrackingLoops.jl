@@ -226,7 +226,7 @@ end
 # previous prompt's centre to this one's. Returns the residual PLL and the wiped prompt.
 function _step_residual_pll(residual_pll::ResidualPLL, ramp::CarrierRamp, record::LoopRecord, replica_cycles)
     fs = _sampling_frequency_hz(record)
-    num_samples = record.integrated_samples
+    num_samples = record.num_integrated_samples
     integration_time = num_samples / fs
     center = (record.sample_index - num_samples / 2) / fs
     polarity = record.carrier_phase_polarity
@@ -318,7 +318,7 @@ function _bit_prompt_phase(
     isnan(residual_pll.prompt_center) && return NaN
     driver && return residual_pll.prompt_phase
     fs = _sampling_frequency_hz(record)
-    center = (record.sample_index - record.integrated_samples / 2) / fs
+    center = (record.sample_index - record.num_integrated_samples / 2) / fs
     center > residual_pll.prompt_center + 0.5 / fs &&
         return _residual_phase_after(residual_pll, ramp, previous_replica_half, center, fs, words)
     history.count == 0 && return NaN
@@ -330,6 +330,6 @@ function _bit_prompt_phase(
     end
     oldest = history.centers[mod1(history.newest - history.count + 1, n)]
     driver_duration = 2 * Float64(ustrip(s, last(previous_replica_half)))
-    oldest - center > max(driver_duration, record.integrated_samples / fs) && return NaN
+    oldest - center > max(driver_duration, record.num_integrated_samples / fs) && return NaN
     history.phases[nearest] + residual_pll.carrier_freq_update * (center - history.centers[nearest])
 end

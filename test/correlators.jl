@@ -251,7 +251,7 @@ end
     correlator = EarlyPromptLateCorrelator(SVector(1.0 + 0.0im, 2.0 + 0.0im, 3.0 + 0.0im), 0.5)
     output = CorrelatorOutput(correlator, 4000, 8000)
     @test output.correlator === correlator
-    @test output.integrated_samples == 4000
+    @test output.num_integrated_samples == 4000
     @test output.sample_index == 8000
     # A producer that does not report the replica's code phase leaves it `NaN`.
     @test isnan(output.code_phase)

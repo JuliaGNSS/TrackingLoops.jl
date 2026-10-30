@@ -30,10 +30,10 @@ Fields:
   - `correlator`: the raw (un-normalized) sum of products, as `normalize` expects;
     an external producer gets it by reusing `update_accumulator` on an
     [`EarlyPromptLateCorrelator`](@ref).
-  - `integrated_samples`: samples integrated (for `normalize`, the integration time
+  - `num_integrated_samples`: samples integrated (for `normalize`, the integration time
     and the bit-buffer block count).
   - `sample_index`: where the integration ended; the record covers
-    `[sample_index - integrated_samples, sample_index)` (numerically Tracking.jl's
+    `[sample_index - num_integrated_samples, sample_index)` (numerically Tracking.jl's
     1-based index of the record's last sample). Used to look up the words the
     replica ran on ([`mean_nco_word`](@ref)) and, for
     [`NCOReferencedPLLAndDLL`](@ref), to place the record against the landing
@@ -50,13 +50,13 @@ Fields:
 """
 struct CorrelatorOutput{C<:AbstractCorrelator}
     correlator::C
-    integrated_samples::Int
+    num_integrated_samples::Int
     sample_index::Int
     code_phase::Float64
 end
 
-CorrelatorOutput(correlator::AbstractCorrelator, integrated_samples::Integer, sample_index::Integer) =
-    CorrelatorOutput(correlator, Int(integrated_samples), Int(sample_index), NaN)
+CorrelatorOutput(correlator::AbstractCorrelator, num_integrated_samples::Integer, sample_index::Integer) =
+    CorrelatorOutput(correlator, Int(num_integrated_samples), Int(sample_index), NaN)
 
 type_for_num_ants(num_ants::NumAnts{1}) = ComplexF64
 type_for_num_ants(num_ants::NumAnts{N}) where {N} = SVector{N,ComplexF64}
@@ -193,12 +193,12 @@ end
 """
 $(SIGNATURES)
 
-Normalize the correlator by `integrated_samples` times `code_amplitude` (the RMS
+Normalize the correlator by `num_integrated_samples` times `code_amplitude` (the RMS
 amplitude of the sampled code replica, `get_code_amplitude`; `1` for a ±1 code), so
 the normalized prompt is independent of modulation (e.g. CBOC).
 """
-function normalize(correlator::AbstractCorrelator, integrated_samples, code_amplitude = 1)
-    apply(x -> x / (integrated_samples * code_amplitude), correlator)
+function normalize(correlator::AbstractCorrelator, num_integrated_samples, code_amplitude = 1)
+    apply(x -> x / (num_integrated_samples * code_amplitude), correlator)
 end
 
 """

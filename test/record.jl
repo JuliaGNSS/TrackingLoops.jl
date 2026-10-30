@@ -66,14 +66,14 @@ end
     @test record.prn == 0
     @test record.code_phase == 3.25
     @test record.sample_index == 8000
-    @test record.fold_end == 8000
+    @test record.fold_end_sample_index == 8000
     # The host's per-measurement origin moves onto the band's common one.
     shifted = LoopRecord(GPSL1CA(), correlator, cis(0.1), output, 1, 4e6Hz;
-        fold_end = 12_000, prn = 7, sample_offset = 40_000)
+        fold_end_sample_index = 12_000, prn = 7, sample_offset = 40_000)
     @test shifted.prn == 7
     @test shifted.sample_index == 48_000
-    @test shifted.fold_end == 52_000
-    @test shifted.integrated_samples == 4000
+    @test shifted.fold_end_sample_index == 52_000
+    @test shifted.num_integrated_samples == 4000
     # The positional form keeps its eight arguments.
     plain = LoopRecord(GPSL1CA(), correlator, cis(0.1), 4000, 8000, 8000, 1, 4e6Hz)
     @test plain.prn == 0 && isnan(plain.code_phase)

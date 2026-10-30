@@ -264,14 +264,14 @@ phase_lock_indicator(state::SatVectorPLLAndDLL) =
     phase_lock_indicator(state.inner)
 phase_locked(state::SatVectorPLLAndDLL) =
     state.in_vector_loop ? state.residual_pll.lock.locked : phase_locked(state.inner)
-function carrier_phase_correction(state::SatVectorPLLAndDLL, words, sample, sampling_frequency)
+function carrier_phase_correction(state::SatVectorPLLAndDLL, words, sample_index, sampling_frequency)
     residual_pll = state.residual_pll
     state.in_vector_loop || return 0.0
     # Both are set by the first driver record.
     isnan(residual_pll.prompt_center) && return 0.0
     isnan(first(state.previous_replica_half)) && return 0.0
     fs = Float64(ustrip(Hz, sampling_frequency))
-    _residual_phase_after(residual_pll, state.ramp, state.previous_replica_half, sample / fs, fs, words)
+    _residual_phase_after(residual_pll, state.ramp, state.previous_replica_half, sample_index / fs, fs, words)
 end
 
 
@@ -401,11 +401,11 @@ _disc_mean((count, disc_sum)) = count == 0 ? nothing : disc_sum / count
 # from the words it ran on (Hz).
 @inline function _replica_halves(record::LoopRecord, words)
     fs = record.sampling_frequency
-    record_end = record.sample_index
-    half_samples = record.integrated_samples / 2
-    center = record_end - half_samples
-    first_word, _ = mean_nco_word(words, record_end - record.integrated_samples, center)
-    second_word, _ = mean_nco_word(words, center, record_end)
+    record_end_sample_index = record.sample_index
+    half_samples = record.num_integrated_samples / 2
+    center = record_end_sample_index - half_samples
+    first_word, _ = mean_nco_word(words, record_end_sample_index - record.num_integrated_samples, center)
+    second_word, _ = mean_nco_word(words, center, record_end_sample_index)
     half_duration = convert(typeof(1.0s), half_samples / fs)
     first_cycles = Float64(uconvert(NoUnits, first_word * Hz * half_duration))
     second_cycles = Float64(uconvert(NoUnits, second_word * Hz * half_duration))
@@ -441,8 +441,8 @@ end
 # A record's DLL output (chips), normalised by the code word the replica ran on, as
 # the inner loops measure it.
 @inline function _code_discriminator(record::LoopRecord, words)
-    record_start = record.sample_index - record.integrated_samples
-    _, applied_code = mean_nco_word(words, record_start, record.sample_index)
+    record_start_sample_index = record.sample_index - record.num_integrated_samples
+    _, applied_code = mean_nco_word(words, record_start_sample_index, record.sample_index)
     dll_disc(record.signal, record.filtered_correlator, applied_code * Hz, record.sampling_frequency)
 end
 
@@ -462,7 +462,8 @@ end
     landing = landing_sample == NO_LANDING_SAMPLE ? record.sample_index : landing_sample
     residual_pll, fll_disc_sum = _measure_carrier(state, record, words, replica_halves, lock_cn0_threshold_dbhz)
     # The command lands on a record taken to be this one's length.
-    carrier = _doppler_at(state.ramp, (landing + record.integrated_samples / 2) / _sampling_frequency_hz(record))
+    carrier =
+        _doppler_at(state.ramp, (landing + record.num_integrated_samples / 2) / _sampling_frequency_hz(record))
     carrier_doppler, code_doppler = aid_dopplers(
         record.signal,
         inner.init_carrier_doppler,
@@ -493,16 +494,16 @@ end
     lock_cn0_threshold_dbhz::Float64,
 )
     fs = _sampling_frequency_hz(record)
-    integration_time = record.integrated_samples / fs
+    integration_time = record.num_integrated_samples / fs
     previous_cycles, previous_duration = state.previous_replica_half
     first_cycles, first_duration = replica_halves.first
-    record_start = record.sample_index - record.integrated_samples
+    record_start_sample_index = record.sample_index - record.num_integrated_samples
     # The previous record's end, known once the residual PLL has stepped on its prompt.
     previous_end = state.residual_pll.prompt_center + ustrip(s, previous_duration)
-    gap = isnan(previous_end) ? 0.0 : record_start / fs - previous_end
+    gap = isnan(previous_end) ? 0.0 : record_start_sample_index / fs - previous_end
     gap_cycles = 0.0
     if gap > 0.5 / fs
-        gap_word, _ = mean_nco_word(words, previous_end * fs, record_start)
+        gap_word, _ = mean_nco_word(words, previous_end * fs, record_start_sample_index)
         gap_cycles = gap_word * gap
     else
         gap = 0.0

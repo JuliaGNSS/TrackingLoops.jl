@@ -42,7 +42,7 @@ end
     # and as the only satellite it ran that epoch's cycle at once.
     @test slot.first_epoch == 0
     @test nav.cycle_epoch == 0 && nav.pending_epoch == 1
-    @test slot.driver_last_end_sample == 4000
+    @test slot.driver_last_end_sample_index == 4000
     # Later records keep the slot.
     state, = step_loop(estimator, state, engine_record(7, 8000), words, NO_LANDING_SAMPLE)
     @test nav.registrations == 1
@@ -95,7 +95,7 @@ end
 # the decoding signal's last records having ended at `end_sample` (the decoding one at
 # `decoding_end`), and take both halves and the snapshot. Returns the decoder's bit
 # count and the code phase from its last bit edge.
-function take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fraction, end_sample,
+function take_snapshot!(nav, group, slot, decoder, epoch_sample_index; blocks, fraction, end_sample,
         driver_phase = fraction, decoding_end = end_sample, code_doppler = 0.0, synced = true)
     fs = 4e6
     nav.pending_epoch = 1
@@ -107,13 +107,13 @@ function take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fractio
     slot.decoding_bit_synced = synced
     slot.decoding_blocks_into_bit = blocks
     slot.decoding_code_phase_fraction = fraction
-    slot.decoding_last_end_sample = decoding_end
+    slot.decoding_last_end_sample_index = decoding_end
     slot.decoding_last_end_time = decoding_end / fs
     slot.last_code_phase = driver_phase
-    slot.driver_last_end_sample = end_sample
+    slot.driver_last_end_sample_index = end_sample
     slot.driver_last_end_time = end_sample / fs
     words = FixedNCOWord(0.0, code_doppler)
-    record = engine_record(3, epoch_sample + 4000; signal = group.driver_signal)
+    record = engine_record(3, epoch_sample_index + 4000; signal = group.driver_signal)
     TL._snapshot_driver!(nav, group, slot, group.prototype, record, words)
     TL._snapshot_decoding!(nav, group, slot, record, words)
     TL._complete_snapshot!(nav, group, slot)
@@ -128,8 +128,8 @@ end
     decoder = GNSSDecoderState(GNSSDecoderState(signal, 3); num_bits_since_sync = 10)
     code_frequency = 1.023e6
     fs = 4e6
-    snapshot(blocks, fraction, end_sample, epoch_sample; kw...) =
-        take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fraction, end_sample, kw...)
+    snapshot(blocks, fraction, end_sample, epoch_sample_index; kw...) =
+        take_snapshot!(nav, group, slot, decoder, epoch_sample_index; blocks, fraction, end_sample, kw...)
     # The epoch (sample 400 000) lies 1000 samples past the last record end: five
     # blocks into the bit, 0.2 chips past the block boundary, and the chips the
     # replica runs on to the epoch.
@@ -162,7 +162,7 @@ end
     # A record that does not cross the pending epoch takes no snapshot.
     nav.num_snapshots = 0
     slot.driver_epoch = slot.decoding_epoch = slot.snapshot_epoch = typemin(Int)
-    slot.driver_last_end_sample = slot.decoding_last_end_sample = 300_000
+    slot.driver_last_end_sample_index = slot.decoding_last_end_sample_index = 300_000
     slot.driver_last_end_time = slot.decoding_last_end_time = 300_000 / fs
     record = engine_record(3, 304_000)
     TL._snapshot_driver!(nav, group, slot, group.prototype, record, FixedNCOWord(0.0, 0.0))
@@ -418,7 +418,7 @@ end
     @test (stepped.slot_index, stepped.registration) == (1, 1)
     @test stepped.inner === state.inner
     @test (carrier, code) == (100.0Hz, 0.1Hz)
-    @test nav.groups[1].slots[1].decoding_last_end_sample == 4000
+    @test nav.groups[1].slots[1].decoding_last_end_sample_index == 4000
     # Under a landing sample the command in force is the one there.
     timeline = NCOTimeline()
     reset_timeline!(timeline, 100.0, 0.1)
@@ -428,7 +428,7 @@ end
     # The pilot's record steps the loop on the same slot.
     driven, = step_loop(estimator, stepped, engine_record(7, 40_000; n = 40_000, signal = GPSL1C_P()), words, NO_LANDING_SAMPLE)
     @test driven.slot_index == 1 && nav.registrations == 1
-    @test nav.groups[1].slots[1].driver_last_end_sample == 40_000
+    @test nav.groups[1].slots[1].driver_last_end_sample_index == 40_000
     # A passenger the estimator does not decode is ignored; a driver it does not range
     # on is an error, as is a satellite stepped with another satellite's driver.
     plain = VectorPLLAndDLL(GPSL1CA())

@@ -7,7 +7,7 @@ const NO_LANDING_SAMPLE = typemin(Int64)
 
 # One NCO word scheduled at a device sample, in plain `Float64` Hz.
 struct ScheduledNCOWord
-    sample::Int64
+    sample_index::Int64
     carrier_doppler::Float64
     code_doppler::Float64
 end
@@ -32,7 +32,7 @@ with more in flight the oldest is taken as landed. Read them with
 mutable struct NCOTimeline
     applied_carrier_doppler::Float64
     applied_code_doppler::Float64
-    # `words[1:count]`, ascending in `sample`; every entry lands strictly after
+    # `words[1:count]`, ascending in `sample_index`; every entry lands strictly after
     # the applied word.
     const words::Vector{ScheduledNCOWord}
     count::Int
@@ -57,16 +57,16 @@ function reset_timeline!(timeline::NCOTimeline, carrier_doppler_hz, code_doppler
 end
 
 """
-    schedule_word!(timeline, sample, carrier_doppler_hz, code_doppler_hz)
+    schedule_word!(timeline, sample_index, carrier_doppler_hz, code_doppler_hz)
 
-Record a word the device has accepted for `sample`. Anything queued at or past
-`sample` is superseded (a device keeps the newest command per sample, and a later
+Record a word the device has accepted for `sample_index`. Anything queued at or past
+`sample_index` is superseded (a device keeps the newest command per sample, and a later
 command never targets an earlier sample).
 """
-function schedule_word!(timeline::NCOTimeline, sample, carrier_doppler_hz, code_doppler_hz)
+function schedule_word!(timeline::NCOTimeline, sample_index, carrier_doppler_hz, code_doppler_hz)
     words = timeline.words
     count = timeline.count
-    @inbounds while count > 0 && words[count].sample >= sample
+    @inbounds while count > 0 && words[count].sample_index >= sample_index
         count -= 1
     end
     if count >= length(words)
@@ -80,24 +80,24 @@ function schedule_word!(timeline::NCOTimeline, sample, carrier_doppler_hz, code_
         count -= 1
     end
     @inbounds words[count+1] =
-        ScheduledNCOWord(Int64(sample), Float64(carrier_doppler_hz), Float64(code_doppler_hz))
+        ScheduledNCOWord(Int64(sample_index), Float64(carrier_doppler_hz), Float64(code_doppler_hz))
     timeline.count = count + 1
     timeline
 end
 
 """
-    reschedule_word!(timeline, from_sample, to_sample)
+    reschedule_word!(timeline, from_sample_index, to_sample_index)
 
-The word scheduled at `from_sample` really landed at `to_sample`: move it.
-Anything scheduled at or past `to_sample` is superseded, as for
-[`schedule_word!`](@ref). A no-op when nothing is scheduled at `from_sample`.
+The word scheduled at `from_sample_index` really landed at `to_sample_index`: move it.
+Anything scheduled at or past `to_sample_index` is superseded, as for
+[`schedule_word!`](@ref). A no-op when nothing is scheduled at `from_sample_index`.
 """
-function reschedule_word!(timeline::NCOTimeline, from_sample, to_sample)
+function reschedule_word!(timeline::NCOTimeline, from_sample_index, to_sample_index)
     words = timeline.words
     count = timeline.count
     index = 0
     @inbounds for i = count:-1:1
-        if words[i].sample == from_sample
+        if words[i].sample_index == from_sample_index
             index = i
             break
         end
@@ -108,22 +108,22 @@ function reschedule_word!(timeline::NCOTimeline, from_sample, to_sample)
         words[i] = words[i+1]
     end
     timeline.count = count - 1
-    schedule_word!(timeline, to_sample, word.carrier_doppler, word.code_doppler)
+    schedule_word!(timeline, to_sample_index, word.carrier_doppler, word.code_doppler)
 end
 
 """
-    promote_words!(timeline, sample)
+    promote_words!(timeline, sample_index)
 
-Everything scheduled at or before `sample` has landed: fold it into the applied
-word. Only call this once no query will start before `sample` again.
+Everything scheduled at or before `sample_index` has landed: fold it into the applied
+word. Only call this once no query will start before `sample_index` again.
 """
-function promote_words!(timeline::NCOTimeline, sample)
+function promote_words!(timeline::NCOTimeline, sample_index)
     words = timeline.words
     count = timeline.count
     n = 0
     @inbounds for i = 1:count
         word = words[i]
-        word.sample <= sample || break
+        word.sample_index <= sample_index || break
         timeline.applied_carrier_doppler = word.carrier_doppler
         timeline.applied_code_doppler = word.code_doppler
         n += 1
@@ -144,22 +144,22 @@ Whether a scheduled word takes effect in `[lo, hi]`, i.e. whether a record
 ending at `lo` and one starting at `hi` ran on different words.
 
 As in [`mean_nco_word`](@ref), a record ending at `b` covers
-`[b - integrated_samples, b)` and a word landing at `s` is in effect from `s` on, so
+`[b - num_integrated_samples, b)` and a word landing at `s` is in effect from `s` on, so
 back-to-back records (`lo == hi`) differ when a word lands at their boundary.
 """
 function word_changes_within(timeline::NCOTimeline, lo, hi)
     @inbounds for i = 1:timeline.count
-        lo <= timeline.words[i].sample <= hi && return true
+        lo <= timeline.words[i].sample_index <= hi && return true
     end
     false
 end
 
-"The word in effect at device sample `sample`, as `(carrier_hz, code_hz)`."
-function nco_word_at(timeline::NCOTimeline, sample)
+"The word in effect at device sample `sample_index`, as `(carrier_hz, code_hz)`."
+function nco_word_at(timeline::NCOTimeline, sample_index)
     carrier, code = timeline.applied_carrier_doppler, timeline.applied_code_doppler
     @inbounds for i = 1:timeline.count
         word = timeline.words[i]
-        word.sample <= sample || break
+        word.sample_index <= sample_index || break
         carrier, code = word.carrier_doppler, word.code_doppler
     end
     carrier, code
@@ -184,11 +184,11 @@ function mean_nco_word(timeline::NCOTimeline, a::Real, b::Real)
     t = a
     @inbounds for i = 1:timeline.count
         word = timeline.words[i]
-        word.sample >= b && break
-        if word.sample > t
-            carrier_sum += carrier * (word.sample - t)
-            code_sum += code * (word.sample - t)
-            t = word.sample
+        word.sample_index >= b && break
+        if word.sample_index > t
+            carrier_sum += carrier * (word.sample_index - t)
+            code_sum += code * (word.sample_index - t)
+            t = word.sample_index
         end
         carrier, code = word.carrier_doppler, word.code_doppler
     end
@@ -209,4 +209,4 @@ struct FixedNCOWord
 end
 
 mean_nco_word(word::FixedNCOWord, a::Real, b::Real) = word.carrier_doppler, word.code_doppler
-nco_word_at(word::FixedNCOWord, sample) = word.carrier_doppler, word.code_doppler
+nco_word_at(word::FixedNCOWord, sample_index) = word.carrier_doppler, word.code_doppler
