@@ -22,9 +22,6 @@ CarrierRamp() = CarrierRamp(NaN, 0.0, NaN)
 
 @inline _doppler_at(ramp::CarrierRamp, t) = ramp.doppler + ramp.rate * (t - ramp.time)
 
-# The ramp's mean Doppler over `[a, b]` (s): its value at the midpoint, exactly.
-@inline _mean_doppler(ramp::CarrierRamp, a, b) = _doppler_at(ramp, (a + b) / 2)
-
 """
 $(SIGNATURES)
 
@@ -203,9 +200,9 @@ _reset_to_ramp(residual_pll::ResidualPLL, lock::ResidualPLLLock) =
 # `replica_cycles` from that prompt's centre.
 @inline function _predicted_phase(residual_pll::ResidualPLL, ramp::CarrierRamp, center, replica_cycles)
     dt = center - residual_pll.prompt_center
-    residual_pll.prompt_phase +
-    (_mean_doppler(ramp, residual_pll.prompt_center, center) + residual_pll.carrier_freq_update) * dt -
-    replica_cycles
+    # The ramp's mean Doppler since that prompt is its value halfway there.
+    mean_doppler = _doppler_at(ramp, (residual_pll.prompt_center + center) / 2)
+    residual_pll.prompt_phase + (mean_doppler + residual_pll.carrier_freq_update) * dt - replica_cycles
 end
 
 # The residual phase (cycles) predicted at `time` (s), after the latest prompt: the replica
