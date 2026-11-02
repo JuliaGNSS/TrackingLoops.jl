@@ -33,7 +33,7 @@ and `command_issue_sample_index`, where the loop issues its command: the `sample
 the last integration of its batch (the integrations a host steps before its next command
 takes effect), from which the command's delay to its application sample is measured.
 
-`integrated_code_blocks` must be at least 1: the carrier-loop staging sizes its
+`num_code_periods` must be at least 1: the carrier-loop staging sizes its
 phase-lock indicator's averages in integrations of that length and divides by it. A
 integration built from a [`PostCorrelationState`](@ref) always is ([`process_correlator_bank_output!`](@ref)
 counts at least one block); a host building integrations otherwise must ensure it.
@@ -89,7 +89,7 @@ struct CoherentIntegration{S<:AbstractGNSSSignal,C<:AbstractCorrelatorBank,F,CN0
     num_integrated_samples::Int
     sample_index::Int
     command_issue_sample_index::Int
-    integrated_code_blocks::Int
+    num_code_periods::Int
     sampling_frequency::F
     prn::Int
     code_phase::Float64
@@ -109,7 +109,7 @@ CoherentIntegration(
     num_integrated_samples::Integer,
     sample_index::Integer,
     command_issue_sample_index::Integer,
-    integrated_code_blocks::Integer,
+    num_code_periods::Integer,
     sampling_frequency;
     prn::Integer = 0,
     code_phase::Real = NaN,
@@ -121,7 +121,7 @@ CoherentIntegration(
     Int(num_integrated_samples),
     Int(sample_index),
     Int(command_issue_sample_index),
-    Int(integrated_code_blocks),
+    Int(num_code_periods),
     sampling_frequency,
     Int(prn),
     Float64(code_phase),
@@ -139,7 +139,7 @@ CoherentIntegration(
     filtered_correlator_bank,
     previous_prompt,
     output::CorrelatorBankOutput,
-    integrated_code_blocks::Integer,
+    num_code_periods::Integer,
     sampling_frequency;
     command_issue_sample_index = output.sample_index,
     prn::Integer = 0,
@@ -152,7 +152,7 @@ CoherentIntegration(
     output.num_integrated_samples,
     output.sample_index + Int(sample_index_offset),
     Int(command_issue_sample_index) + Int(sample_index_offset),
-    Int(integrated_code_blocks),
+    Int(num_code_periods),
     sampling_frequency,
     Int(prn),
     output.code_phase,
@@ -207,7 +207,7 @@ function CoherentIntegration(
         view(soft_bits, first_new:num_soft_bits),
         state.cn0_estimator,
         state.last_carrier_phase_polarity,
-        synced ? bit_synchronizer.polarity : Int8(0),
+        synced ? bit_synchronizer.bit_polarity : Int8(0),
     )
 end
 

@@ -182,12 +182,12 @@ end
 """
 $(SIGNATURES)
 
-Apply `post_corr_filter` to every correlator output of `correlator_bank`, returning a correlator bank of
+Apply `transform` to every correlator output of `correlator_bank`, returning a correlator bank of
 the same type: the post-correlation filter's step, or any other per-correlator-output map such as
 negating the correlator outputs.
 """
-function apply(post_corr_filter::F, correlator_bank::AbstractCorrelatorBank) where {F}
-    with_correlator_outputs(correlator_bank, map(post_corr_filter, get_correlator_outputs(correlator_bank)))
+function map_correlator_outputs(transform::F, correlator_bank::AbstractCorrelatorBank) where {F}
+    with_correlator_outputs(correlator_bank, map(transform, get_correlator_outputs(correlator_bank)))
 end
 
 """
@@ -198,7 +198,7 @@ amplitude of the sampled code replica, `get_code_amplitude`; `1` for a ±1 code)
 the normalized prompt is independent of modulation (e.g. CBOC).
 """
 function normalize(correlator_bank::AbstractCorrelatorBank, num_integrated_samples, code_amplitude = 1)
-    apply(x -> x / (num_integrated_samples * code_amplitude), correlator_bank)
+    map_correlator_outputs(x -> x / (num_integrated_samples * code_amplitude), correlator_bank)
 end
 
 """

@@ -526,7 +526,7 @@ end
         residual_pll,
         wiped_prompt,
         coherent_integration_time,
-        _phase_lock_time_constant(integration.signal, integration.integrated_code_blocks),
+        _phase_lock_time_constant(integration.signal, integration.num_code_periods),
         min_tracking_cn0_dbhz,
         host_cn0_dbhz >= min_tracking_cn0_dbhz,
     )

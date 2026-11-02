@@ -144,7 +144,7 @@ end
 # The staging after one driver `CoherentIntegration`: its prompt advances the indicator,
 # whose lock count moves the stage on for the next integration.
 @inline function _advance_staging(staging::CarrierLoopStaging, integration)
-    time_constant = _phase_lock_time_constant(integration.signal, integration.integrated_code_blocks)
+    time_constant = _phase_lock_time_constant(integration.signal, integration.num_code_periods)
     lock_detector = _advance_lock_detector(
         staging.lock_detector,
         get_prompt(integration.filtered_correlator_bank),

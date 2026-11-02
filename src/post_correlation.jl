@@ -119,6 +119,7 @@ end
 is_bit_or_secondary_code_synced(state::PostCorrelationState) =
     is_bit_or_secondary_code_synced(state.bit_synchronizer)
 get_soft_bits(state::PostCorrelationState) = get_soft_bits(state.bit_synchronizer)
+drain_soft_bits!(state::PostCorrelationState) = (drain_soft_bits!(state.bit_synchronizer); state)
 estimate_cn0(state::PostCorrelationState, coherent_integration_time) =
     estimate_cn0(state.cn0_estimator, coherent_integration_time)
 
@@ -188,7 +189,7 @@ is_dataless_with_secondary_code(signal::AbstractGNSSSignal) =
     bit_synchronizer::BitSynchronizer,
     secondary_code_wiped::Bool,
 ) =
-    is_dataless_with_secondary_code(signal) && secondary_code_wiped ? bit_synchronizer.polarity :
+    is_dataless_with_secondary_code(signal) && secondary_code_wiped ? bit_synchronizer.bit_polarity :
     Int8(0)
 
 """
@@ -197,7 +198,7 @@ is_dataless_with_secondary_code(signal::AbstractGNSSSignal) =
                 driver_carrier_phase_offset;
                 secondary_code_wiped = is_bit_or_secondary_code_synced(bit_synchronizer))
         -> (bit_synchronizer, cn0_estimator, post_corr_filter, prompt, filtered_correlator_bank,
-            bit_block_count, integrated_code_blocks, overshoot, carrier_phase_polarity)
+            num_bit_synchronizer_code_periods, num_code_periods, overshoot, carrier_phase_polarity)
 
 Apply one completed integration to a signal component's bare state: normalize the raw
 correlator bank by sample count and code amplitude, update and apply the
@@ -236,14 +237,14 @@ wiped), else `0`; a [`CoherentIntegration`](@ref) carries it to the carrier disc
     weights = get_weights(post_corr_filter, NumAnts(normalized_correlator_bank))
     filtered_correlator_bank = _filter_correlator_bank(normalized_correlator_bank, weights)
     prompt = get_prompt(filtered_correlator_bank)
-    bit_block_count = calc_num_bit_synchronizer_code_periods(
+    num_bit_synchronizer_code_periods = calc_num_bit_synchronizer_code_periods(
         signal,
         output.num_integrated_samples,
         sampling_frequency,
         synced_before,
     )
-    # Floor at 1 for the fractional-block integration right after a sync phase snap.
-    integrated_code_blocks = max(1, bit_block_count)
+    # Floor at 1 for the fractional-period integration right after a sync phase snap.
+    num_code_periods = max(1, num_bit_synchronizer_code_periods)
     # Onto the driver's (real) phase frame for sync search and bit accumulation.
     bit_prompt = prompt * _carrier_phase_derotation(driver_carrier_phase_offset, signal)
     drop_prompt = _drops_unwiped_prompt(signal, synced_before, secondary_code_wiped)
@@ -253,23 +254,23 @@ wiped), else `0`; a [`CoherentIntegration`](@ref) carries it to the carrier disc
         prompt,
         signal,
         bit_synchronizer,
-        bit_block_count,
+        num_bit_synchronizer_code_periods,
         !drop_prompt,
         scalar_noise_density,
         noise_density_ready,
         output.num_integrated_samples / sampling_frequency,
     )
-    bit_synchronizer = buffer(
+    bit_synchronizer = update_bit_sync!(
         signal,
         prn,
         bit_synchronizer,
-        bit_block_count,
+        num_bit_synchronizer_code_periods,
         drop_prompt ? zero(bit_prompt) : bit_prompt,
     )
     # An unwiped post-sync integration moves the secondary-code anchor: the code-phase
     # snap after this processing aligns the *upcoming* integration to `bit_synchronizer.secondary_code_phase`.
     if synced_before && !secondary_code_wiped
-        bit_synchronizer = _advance_secondary_phase(signal, bit_synchronizer, bit_block_count)
+        bit_synchronizer = _advance_secondary_phase(signal, bit_synchronizer, num_bit_synchronizer_code_periods)
     end
     overshoot = is_bit_or_secondary_code_synced(bit_synchronizer_before) &&
         !is_bit_or_secondary_code_synced(bit_synchronizer)
@@ -278,8 +279,8 @@ wiped), else `0`; a [`CoherentIntegration`](@ref) carries it to the carrier disc
     post_corr_filter,
     prompt,
     filtered_correlator_bank,
-    bit_block_count,
-    integrated_code_blocks,
+    num_bit_synchronizer_code_periods,
+    num_code_periods,
     overshoot,
     _carrier_phase_polarity(signal, bit_synchronizer_before, secondary_code_wiped)
 end
@@ -289,7 +290,7 @@ end
                  noise_density, noise_density_ready,
                  driver_carrier_phase_offset = get_carrier_phase_offset(signal);
                  secondary_code_wiped = is_bit_or_secondary_code_synced(state))
-        -> (state, prompt, filtered_correlator_bank, integrated_code_blocks, overshoot)
+        -> (state, prompt, filtered_correlator_bank, num_code_periods, overshoot)
 
 `_process_correlator_bank_output!` on a [`PostCorrelationState`](@ref). Returns the new state, the prompt,
 the filtered correlator bank the discriminators read, the blocks the integration covered and
@@ -336,7 +337,7 @@ and its polarity is `0`.
     prompt,
     filtered_correlator_bank,
     _,
-    integrated_code_blocks,
+    num_code_periods,
     overshoot,
     carrier_phase_polarity = _process_correlator_bank_output!(
         signal,
@@ -360,7 +361,7 @@ and its polarity is `0`.
         cn0_estimator,
         post_corr_filter,
         prompt,
-        integrated_code_blocks,
+        num_code_periods,
         sync_change,
         Base.length(bit_synchronizer.soft_bits) - num_soft_bits,
         # The FLL cannot compare prompts of different carrier phase polarities.
@@ -368,7 +369,7 @@ and its polarity is `0`.
         state.last_filtered_prompt,
         carrier_phase_polarity,
     )
-    new_state, prompt, filtered_correlator_bank, integrated_code_blocks, overshoot
+    new_state, prompt, filtered_correlator_bank, num_code_periods, overshoot
 end
 
 """
