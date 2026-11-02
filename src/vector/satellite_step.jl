@@ -5,7 +5,7 @@
 # satellite; the navigation epochs are the multiples of the update interval.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# The estimator's ranging signals as `(driver, decoding signal)` pairs; a plain signal
+# The loop's ranging signals as `(driver, decoding signal)` pairs; a plain signal
 # is both.
 _ranging_pair(signal::AbstractGNSSSignal) = (signal, signal)
 _ranging_pair(pair::Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}) = (pair.first, pair.second)
@@ -34,10 +34,10 @@ function _check_ranging_pair((driver, decoding))
     nothing
 end
 
-# The estimator, built here, after the navigation processor it holds.
+# The loop, built here, after the navigation processor it holds.
 function VectorTrackingLoop(
     signals::Union{AbstractGNSSSignal,Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}}...;
-    inner::AbstractTrackingLoop = ConventionalAssistedPLLAndDLL(),
+    scalar_loop::AbstractTrackingLoop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
     filter_config::Union{NavFilterConfig,Nothing} = NavFilterConfig(),
     navigation_filter_update_interval = 100.0ms,
     min_tracking_cn0 = 30.0dBHz,
@@ -47,12 +47,12 @@ function VectorTrackingLoop(
     enable_ionospheric_correction::Bool = true,
     enable_tropospheric_correction::Bool = true,
 )
-    _has_fll_path(inner) || throw(
+    _has_fll_path(scalar_loop) || throw(
         ArgumentError(
             "a satellite the vector loop releases pulls in again through the FLL " *
             "path of an FLL-assisted carrier filter; use " *
-            "`ConventionalAssistedPLLAndDLL()` or `DelayCompensatedTrackingLoop()` as " *
-            "the inner estimator",
+            "`ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)` or `DelayCompensatedTrackingLoop()` as " *
+            "the scalar loop",
         ),
     )
     isempty(signals) &&
@@ -76,7 +76,7 @@ function VectorTrackingLoop(
     navigation_processor = NavigationProcessor(
         filter_config,
         pairs,
-        inner;
+        scalar_loop;
         navigation_filter_update_interval = Δt_nav,
         min_tracking_cn0 = Float64(ustrip(min_tracking_cn0)),
         satellite_capacity_per_signal = Int(satellite_capacity_per_signal),
@@ -84,14 +84,15 @@ function VectorTrackingLoop(
         enable_ionospheric_correction,
         enable_tropospheric_correction,
     )
-    VectorTrackingLoop(inner, navigation_processor, Float64(ustrip(Hz, residual_pll_loop_bandwidth)) * Hz)
+    VectorTrackingLoop(scalar_loop, navigation_processor, Float64(ustrip(Hz, residual_pll_loop_bandwidth)) * Hz)
 end
 
 """
-    step_loop!(estimator::VectorTrackingLoop, loop_state, integration::LoopRecord, nco_history, application_sample_index)
+    step_loop!(tracking_loop::VectorTrackingLoop, loop_state, post_correlation_state::PostCorrelationState, nco_history, application_sample_index)
         -> (loop_state, carrier_doppler, code_doppler)
 
-One integration of a satellite through the vector loop (see [`VectorTrackingLoop`](@ref)).
+The latest integration of `post_correlation_state`, one signal of a satellite, through the
+vector loop (see [`VectorTrackingLoop`](@ref)).
 The satellite registers with the navigation processor on its first integration, of either
 signal. An integration of its
 
@@ -106,121 +107,121 @@ signal. An integration of its
 A satellite's snapshot of an epoch is complete once an integration of each signal has
 crossed it, in either order; the integration completing the last satellite's snapshot
 runs that epoch's update. Out of the vector loop the driver's Dopplers equal
-`step_loop!(estimator.inner, …)`'s.
+`step_loop!(tracking_loop.scalar_loop, …)`'s.
 """
 @inline step_loop!(
-    estimator::VectorTrackingLoop,
+    tracking_loop::VectorTrackingLoop,
     loop_state::VectorLoopState,
-    integration::LoopRecord,
+    post_correlation_state::PostCorrelationState,
     nco_history,
-    application_sample_index::Int64,
+    application_sample_index::Union{Nothing,Integer},
 ) = _step_vector_integration(
-    estimator,
-    estimator.navigation_processor,
-    estimator.navigation_processor.groups,
+    tracking_loop,
+    tracking_loop.navigation_processor,
+    tracking_loop.navigation_processor.groups,
     1,
     loop_state,
-    integration,
+    post_correlation_state,
     nco_history,
-    application_sample_index,
+    isnothing(application_sample_index) ? nothing : Int64(application_sample_index),
 )
 
 # Find the group the integration's signal drives or is decoded on, by type so the search
-# folds at compile time. An integration of a signal the estimator was not built for is an
+# folds at compile time. An integration of a signal the loop was not built for is an
 # ignored passenger unless it is the satellite's driver.
-@inline function _step_vector_integration(estimator, nav_processor, ::Tuple{}, group_index, loop_state, integration::LoopRecord, nco_history, application_sample_index)
-    _is_driver_integration(loop_state, integration) && _throw_unknown_driver(integration)
-    _step_passenger(loop_state, integration, nco_history, application_sample_index)
+@inline function _step_vector_integration(tracking_loop, nav_processor, ::Tuple{}, group_index, loop_state, post_correlation_state::PostCorrelationState, nco_history, application_sample_index)
+    _is_driver_integration(loop_state, post_correlation_state) && _throw_unknown_driver(post_correlation_state)
+    _step_passenger(loop_state, post_correlation_state, nco_history, application_sample_index)
 end
 @inline function _step_vector_integration(
-    estimator,
+    tracking_loop,
     nav_processor,
     groups::Tuple,
     group_index,
     loop_state,
-    integration::LoopRecord{S},
+    post_correlation_state::PostCorrelationState{S},
     nco_history,
     application_sample_index,
 ) where {S}
     group = first(groups)
     if group.driver_signal isa S
-        _is_driver_integration(loop_state, integration) || _throw_foreign_driver(loop_state, integration)
-        _step_vector_integration(estimator, nav_processor, group, group_index, loop_state, integration, nco_history, application_sample_index, true, group.decoding_signal isa S)
+        _is_driver_integration(loop_state, post_correlation_state) || _throw_foreign_driver(loop_state, post_correlation_state)
+        _step_vector_integration(tracking_loop, nav_processor, group, group_index, loop_state, post_correlation_state, nco_history, application_sample_index, true, group.decoding_signal isa S)
     elseif group.decoding_signal isa S
         # A satellite another group drives: a passenger of it this group must not take.
         _is_driven_by(loop_state, group.driver_signal) ||
-            return _step_passenger(loop_state, integration, nco_history, application_sample_index)
-        _step_vector_integration(estimator, nav_processor, group, group_index, loop_state, integration, nco_history, application_sample_index, false, true)
+            return _step_passenger(loop_state, post_correlation_state, nco_history, application_sample_index)
+        _step_vector_integration(tracking_loop, nav_processor, group, group_index, loop_state, post_correlation_state, nco_history, application_sample_index, false, true)
     else
-        _step_vector_integration(estimator, nav_processor, Base.tail(groups), group_index + 1, loop_state, integration, nco_history, application_sample_index)
+        _step_vector_integration(tracking_loop, nav_processor, Base.tail(groups), group_index + 1, loop_state, post_correlation_state, nco_history, application_sample_index)
     end
 end
 
-@noinline _throw_unknown_driver(integration) = throw(
+@noinline _throw_unknown_driver(post_correlation_state) = throw(
     ArgumentError(
-        "this vector-tracking estimator was not built for " *
-        "$(nameof(typeof(integration.signal))); list it among its signals",
+        "this vector-tracking loop was not built for " *
+        "$(nameof(typeof(post_correlation_state.signal))); list it among its signals",
     ),
 )
 
-@noinline _throw_foreign_driver(loop_state, integration) = throw(
+@noinline _throw_foreign_driver(loop_state, post_correlation_state) = throw(
     ArgumentError(
         "a satellite driven by another signal was stepped with an integration of " *
-        "$(nameof(typeof(integration.signal))), which this estimator ranges on as a driver",
+        "$(nameof(typeof(post_correlation_state.signal))), which this loop ranges on as a driver",
     ),
 )
 
 # One integration in its roles: `is_driver` (closes the loops) and `is_decoding` (feeds the
 # decoder); both for a plain signal.
 function _step_vector_integration(
-    estimator::VectorTrackingLoop,
+    tracking_loop::VectorTrackingLoop,
     nav_processor::NavigationProcessor,
     group::VectorTrackingSlotGroup,
     group_index::Int,
     loop_state::VectorLoopState,
-    integration::LoopRecord,
+    post_correlation_state::PostCorrelationState,
     nco_history,
-    application_sample_index::Int64,
+    application_sample_index::Union{Nothing,Int64},
     is_driver::Bool,
     is_decoding::Bool,
 )
-    loop_state, slot = _assign_slot!(nav_processor, group, group_index, loop_state, integration)
-    application_sample_index = application_sample_index == NO_LANDING_SAMPLE ? integration.sample_index : application_sample_index
-    is_driver && (loop_state = _apply_filter_feedback(nav_processor, group, slot, loop_state, integration, nco_history, application_sample_index))
-    if _run_overdue_update!(nav_processor, slot, integration) && is_driver
-        loop_state = _apply_filter_feedback(nav_processor, group, slot, loop_state, integration, nco_history, application_sample_index)
+    loop_state, slot = _assign_slot!(nav_processor, group, group_index, loop_state, post_correlation_state)
+    application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_sample_index : application_sample_index
+    is_driver && (loop_state = _apply_filter_feedback(nav_processor, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index))
+    if _run_overdue_update!(nav_processor, slot, post_correlation_state) && is_driver
+        loop_state = _apply_filter_feedback(nav_processor, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index)
     end
-    _move_past_gap!(nav_processor, is_driver ? slot.driver_last_end_time : slot.decoding_last_end_time, integration)
-    is_driver && (loop_state = _snapshot_driver!(nav_processor, group, slot, loop_state, integration, nco_history))
-    is_decoding && _snapshot_decoding!(nav_processor, group, slot, integration, nco_history)
+    _move_past_gap!(nav_processor, is_driver ? slot.driver_last_end_time : slot.decoding_last_end_time, post_correlation_state)
+    is_driver && (loop_state = _snapshot_driver!(nav_processor, group, slot, loop_state, post_correlation_state, nco_history))
+    is_decoding && _snapshot_decoding!(nav_processor, group, slot, post_correlation_state, nco_history)
     _complete_snapshot!(nav_processor, group, slot)
-    if _run_update_if_due!(nav_processor, integration) && is_driver
-        loop_state = _apply_filter_feedback(nav_processor, group, slot, loop_state, integration, nco_history, application_sample_index)
+    if _run_update_if_due!(nav_processor, post_correlation_state) && is_driver
+        loop_state = _apply_filter_feedback(nav_processor, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index)
     end
     if is_driver
-        loop_state, carrier_doppler, code_doppler = _step_satellite(estimator, loop_state, integration, nco_history, application_sample_index)
-        _advance_driver!(group, slot, integration, nco_history)
+        loop_state, carrier_doppler, code_doppler = _step_satellite(tracking_loop, loop_state, post_correlation_state, nco_history, application_sample_index)
+        _advance_driver!(group, slot, post_correlation_state, nco_history)
         # In the vector loop the residual PLL stepped on this prompt (`_measure_carrier`);
         # out of it, the history starts afresh when the satellite is added again.
         loop_state.vector_controlled ? _push_prompt!(slot.prompt_history, loop_state.residual_pll) :
         _clear_prompts!(slot.prompt_history)
     else
-        carrier_doppler, code_doppler = _command_in_force(integration, nco_history, application_sample_index)
+        carrier_doppler, code_doppler = _command_in_force(post_correlation_state, nco_history, application_sample_index)
     end
-    is_decoding && _advance_decoding!(group, slot, integration, loop_state, nco_history, is_driver)
+    is_decoding && _advance_decoding!(group, slot, post_correlation_state, loop_state, nco_history, is_driver)
     loop_state, carrier_doppler, code_doppler
 end
 
 _update_interval_seconds(nav_processor::NavigationProcessor) = ustrip(s, nav_processor.navigation_filter_update_interval)
-_sampling_frequency_hz(integration::LoopRecord) = Float64(ustrip(Hz, integration.sampling_frequency))
-_epoch_time(nav_processor::NavigationProcessor, epoch::Int) = epoch * _update_interval_seconds(nav_processor)
+_sampling_frequency_hz(post_correlation_state::PostCorrelationState) = Float64(ustrip(Hz, post_correlation_state.sampling_frequency))
+_epoch_time(nav_processor::NavigationProcessor, epoch_index::Int) = epoch_index * _update_interval_seconds(nav_processor)
 
 # The first epoch whose `_epoch_time` is not before `t`, compared exactly as
 # `_crosses_pending_epoch` does (`t / Δt_nav` may round to either side).
 function _epoch_at_or_after(nav_processor::NavigationProcessor, t)
     Δt_nav = _update_interval_seconds(nav_processor)
-    epoch = ceil(Int, t / Δt_nav)
-    (epoch - 1) * Δt_nav >= t ? epoch - 1 : epoch * Δt_nav < t ? epoch + 1 : epoch
+    epoch_index = ceil(Int, t / Δt_nav)
+    (epoch_index - 1) * Δt_nav >= t ? epoch_index - 1 : epoch_index * Δt_nav < t ? epoch_index + 1 : epoch_index
 end
 
 # `f(acc, group, args...)` over the slot groups, in order, statically dispatched.
@@ -234,14 +235,14 @@ end
 # The satellite's slot, registering it on the integration's PRN if it has none or lost it.
 # A re-acquired PRN gets its old slot back with its decoded data; any other takes a
 # free slot, and only when none is free does the group grow.
-function _assign_slot!(nav_processor::NavigationProcessor, group::VectorTrackingSlotGroup, group_index::Int, loop_state::VectorLoopState, integration::LoopRecord)
+function _assign_slot!(nav_processor::NavigationProcessor, group::VectorTrackingSlotGroup, group_index::Int, loop_state::VectorLoopState, post_correlation_state::PostCorrelationState)
     slots = group.slots
     index = loop_state.slot_index
     if 1 <= index <= length(slots)
         slot = slots[index]
         slot.occupied && slot.slot_generation == loop_state.slot_generation && return loop_state, slot
     end
-    prn = integration.prn
+    prn = post_correlation_state.prn
     prn > 0 || throw(
         ArgumentError("vector tracking needs to know the satellite: set the integration's `prn`"),
     )
@@ -253,7 +254,7 @@ function _assign_slot!(nav_processor::NavigationProcessor, group::VectorTracking
     slot = slots[index]
     nav_processor.next_slot_generation += 1
     loop_state = _registered(loop_state, index, nav_processor.next_slot_generation)
-    _reset_slot!(nav_processor, slot, prn, loop_state, integration)
+    _reset_slot!(nav_processor, slot, prn, loop_state, post_correlation_state)
     loop_state, slot
 end
 
@@ -280,7 +281,7 @@ end
 # Reset `slot` in place for a registering satellite. The decoder restarts its sync,
 # keeping the decoded data only for the same PRN; both signals start at the integration's
 # start.
-function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, prn::Int, loop_state, integration::LoopRecord)
+function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, prn::Int, loop_state, post_correlation_state::PostCorrelationState)
     slot.running_decoder =
         slot.prn == prn && slot.slot_generation > 0 ? reset_decoder_state!(slot.running_decoder) :
         reset_decoder_state!(slot.running_decoder, prn)
@@ -288,12 +289,12 @@ function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSl
     slot.occupied = true
     slot.slot_generation = nav_processor.next_slot_generation
     slot.in_update = false
-    fs = _sampling_frequency_hz(integration)
-    start = integration.sample_index - integration.integrated_samples
+    fs = _sampling_frequency_hz(post_correlation_state)
+    start = post_correlation_state.last_sample_index - post_correlation_state.last_num_integrated_samples
     slot.driver_last_end_sample_index = start
     slot.driver_last_end_time = start / fs
     slot.last_code_phase = NaN
-    slot.last_coherent_integration_time = uconvert(s, integration.integrated_samples / integration.sampling_frequency)
+    slot.last_coherent_integration_time = uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
     slot.chips_since_epoch = 0.0
     slot.decoding_last_end_sample_index = start
     slot.decoding_last_end_time = start / fs
@@ -340,7 +341,7 @@ function _apply_filter_feedback(
     group::VectorTrackingSlotGroup,
     slot::VectorTrackingSlot,
     loop_state::VectorLoopState,
-    integration::LoopRecord,
+    post_correlation_state::PostCorrelationState,
     nco_history,
     application_sample_index::Int64,
 )
@@ -350,12 +351,12 @@ function _apply_filter_feedback(
     if slot_in_loop && !loop_state.vector_controlled
         loop_state = _add_to_vector_loop(loop_state)
     elseif !slot_in_loop && loop_state.vector_controlled
-        loop_state = _hand_over_to_scalar_loop(loop_state, nco_history, application_sample_index, _sampling_frequency_hz(integration))
+        loop_state = _hand_over_to_scalar_loop(loop_state, nco_history, application_sample_index, _sampling_frequency_hz(post_correlation_state))
     end
     if slot_in_loop && slot.command_update_index == id
         code_update, ramp, feedback_delay =
-            _commands_at_application(nav_processor, group, slot, integration, nco_history, application_sample_index)
-        loop_state = _set_vector_commands(loop_state, code_update * Hz, ramp, feedback_delay * s, nco_history, application_sample_index, _sampling_frequency_hz(integration))
+            _commands_at_application(nav_processor, group, slot, post_correlation_state, nco_history, application_sample_index)
+        loop_state = _set_vector_commands(loop_state, code_update * Hz, ramp, feedback_delay * s, nco_history, application_sample_index, _sampling_frequency_hz(post_correlation_state))
     end
     VectorLoopState(loop_state; update_index = id)
 end
@@ -367,11 +368,11 @@ function _commands_at_application(
     nav_processor::NavigationProcessor,
     group::VectorTrackingSlotGroup,
     slot::VectorTrackingSlot,
-    integration::LoopRecord,
+    post_correlation_state::PostCorrelationState,
     nco_history,
     application_sample_index::Int64,
 )
-    fs = _sampling_frequency_hz(integration)
+    fs = _sampling_frequency_hz(post_correlation_state)
     # A command applied on the epoch itself may read a rounding error early.
     feedback_delay = application_sample_index / fs - _epoch_time(nav_processor, nav_processor.update_epoch_index)
     -1 / fs <= feedback_delay <= MAX_FEEDBACK_DELAY_UPDATES * _update_interval_seconds(nav_processor) || throw(
@@ -399,10 +400,10 @@ end
 
 # Integrations resumed after a gap: an integration starting past the pending epoch, while no
 # satellite can still snapshot it, moves the epochs on to where the integrations are.
-function _move_past_gap!(nav_processor::NavigationProcessor, start_time, integration::LoopRecord)
+function _move_past_gap!(nav_processor::NavigationProcessor, start_time, post_correlation_state::PostCorrelationState)
     epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch_index)
     nav_processor.num_snapshots == 0 && start_time > epoch_time || return nothing
-    end_time = integration.sample_index / _sampling_frequency_hz(integration)
+    end_time = post_correlation_state.last_sample_index / _sampling_frequency_hz(post_correlation_state)
     _fold_groups(_can_reach_epoch, false, nav_processor.groups, nav_processor, epoch_time, end_time) &&
         return nothing
     nav_processor.pending_epoch_index = _epoch_at_or_after(nav_processor, start_time)
@@ -410,13 +411,13 @@ function _move_past_gap!(nav_processor::NavigationProcessor, start_time, integra
 end
 
 # Whether an integration of one of the slot's signals (last integration ended at
-# `driver_last_end_time`, its snapshot half taken at `half_epoch_index`) crosses the pending
+# `driver_last_end_time`, its snapshot half taken at `half_epoch`) crosses the pending
 # epoch still to snapshot.
-function _crosses_pending_epoch(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, half_epoch_index, driver_last_end_time, integration::LoopRecord)
-    epoch = nav_processor.pending_epoch_index
-    epoch_time = _epoch_time(nav_processor, epoch)
-    end_time = integration.sample_index / _sampling_frequency_hz(integration)
-    half_epoch_index < epoch && slot.first_epoch_index <= epoch && driver_last_end_time <= epoch_time < end_time
+function _crosses_pending_epoch(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, half_epoch_index, driver_last_end_time, post_correlation_state::PostCorrelationState)
+    epoch_index = nav_processor.pending_epoch_index
+    epoch_time = _epoch_time(nav_processor, epoch_index)
+    end_time = post_correlation_state.last_sample_index / _sampling_frequency_hz(post_correlation_state)
+    half_epoch_index < epoch_index && slot.first_epoch_index <= epoch_index && driver_last_end_time <= epoch_time < end_time
 end
 
 # The driver's half of the snapshot at the pending epoch if this integration crosses it:
@@ -428,21 +429,21 @@ function _snapshot_driver!(
     group::VectorTrackingSlotGroup,
     slot::VectorTrackingSlot,
     loop_state::VectorLoopState,
-    integration::LoopRecord,
+    post_correlation_state::PostCorrelationState,
     nco_history,
 )
-    _crosses_pending_epoch(nav_processor, slot, slot.driver_epoch_index, slot.driver_last_end_time, integration) ||
+    _crosses_pending_epoch(nav_processor, slot, slot.driver_epoch_index, slot.driver_last_end_time, post_correlation_state) ||
         return loop_state
-    fs = _sampling_frequency_hz(integration)
+    fs = _sampling_frequency_hz(post_correlation_state)
     epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch_index)
     chip_rate = ustrip(Hz, get_chip_rate(group.driver_signal))
     epoch_sample_index = epoch_time * fs
     code_command = calc_mean_nco_command(nco_history, slot.driver_last_end_sample_index, epoch_sample_index).code_doppler
     chips_to_epoch = (epoch_time - slot.driver_last_end_time) * (chip_rate + code_command)
     (; carrier_doppler, code_doppler) = get_nco_command(nco_history, epoch_sample_index)
-    coherent_integration_time = uconvert(s, integration.integrated_samples / integration.sampling_frequency)
+    coherent_integration_time = uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
     slot.cn0_dbhz =
-        min(Float64(ustrip(estimate_cn0(integration.cn0_estimator, coherent_integration_time))), MAX_CN0_DBHZ)
+        min(Float64(ustrip(estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time))), MAX_CN0_DBHZ)
     slot.loop_state = loop_state
     slot.epoch_driver_code_phase = slot.last_code_phase + chips_to_epoch
     slot.carrier_doppler = carrier_doppler * Hz
@@ -457,10 +458,10 @@ end
 # The decoding signal's half of the snapshot at the pending epoch if this integration
 # crosses it: the decoder and bit sync at its last integration end, and the code phase at
 # the epoch from the last bit edge, in the decoding signal's own code.
-function _snapshot_decoding!(nav_processor::NavigationProcessor, group::VectorTrackingSlotGroup, slot::VectorTrackingSlot, integration::LoopRecord, nco_history)
-    _crosses_pending_epoch(nav_processor, slot, slot.decoding_epoch_index, slot.decoding_last_end_time, integration) ||
+function _snapshot_decoding!(nav_processor::NavigationProcessor, group::VectorTrackingSlotGroup, slot::VectorTrackingSlot, post_correlation_state::PostCorrelationState, nco_history)
+    _crosses_pending_epoch(nav_processor, slot, slot.decoding_epoch_index, slot.decoding_last_end_time, post_correlation_state) ||
         return nothing
-    fs = _sampling_frequency_hz(integration)
+    fs = _sampling_frequency_hz(post_correlation_state)
     epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch_index)
     signal = group.decoding_signal
     chip_rate = ustrip(Hz, get_chip_rate(signal))
@@ -477,8 +478,8 @@ end
 # from its last bit edge (see `_code_phase_on_driver`), and the lock (driver's
 # C/N₀ at least the threshold and decoding signal's bit sync).
 function _complete_snapshot!(nav_processor::NavigationProcessor, group::VectorTrackingSlotGroup, slot::VectorTrackingSlot)
-    epoch = nav_processor.pending_epoch_index
-    slot.snapshot_epoch_index < epoch && slot.driver_epoch_index == epoch && slot.decoding_epoch_index == epoch ||
+    epoch_index = nav_processor.pending_epoch_index
+    slot.snapshot_epoch_index < epoch_index && slot.driver_epoch_index == epoch_index && slot.decoding_epoch_index == epoch_index ||
         return nothing
     chip_rate = ustrip(Hz, get_chip_rate(group.decoding_signal))
     decoder, code_phase = _decoder_at_code_phase(
@@ -492,7 +493,7 @@ function _complete_snapshot!(nav_processor::NavigationProcessor, group::VectorTr
     slot.measurement_ready = measurement_ready
     slot.positioning_ready =
         measurement_ready && has_positioning_data(decoder) && is_sat_healthy(decoder)
-    slot.snapshot_epoch_index = epoch
+    slot.snapshot_epoch_index = epoch_index
     nav_processor.num_snapshots += 1
     nothing
 end
@@ -513,7 +514,7 @@ function _code_phase_on_driver(group::VectorTrackingSlotGroup, slot::VectorTrack
     code_phase + rem(driver_phase - code_phase, period, RoundNearest)
 end
 
-# Cap on the weighting C/N₀: the moment estimator reads a noise-free (simulated) signal
+# Cap on the weighting C/N₀: the moments estimator reads a noise-free (simulated) signal
 # as infinite, which would give the filter a noiseless measurement.
 const MAX_CN0_DBHZ = 80.0
 
@@ -522,12 +523,12 @@ const MAX_CN0_DBHZ = 80.0
 # (`_crosses_pending_epoch`).
 function _can_reach_epoch(acc, group::VectorTrackingSlotGroup, nav_processor::NavigationProcessor, epoch_time, time)
     acc && return true
-    epoch = nav_processor.pending_epoch_index
+    epoch_index = nav_processor.pending_epoch_index
     for slot in group.slots
-        slot.occupied && !_is_stale(nav_processor, slot, time) && slot.first_epoch_index <= epoch &&
-            slot.snapshot_epoch_index < epoch &&
-            (slot.driver_epoch_index == epoch || slot.driver_last_end_time <= epoch_time) &&
-            (slot.decoding_epoch_index == epoch || slot.decoding_last_end_time <= epoch_time) &&
+        slot.occupied && !_is_stale(nav_processor, slot, time) && slot.first_epoch_index <= epoch_index &&
+            slot.snapshot_epoch_index < epoch_index &&
+            (slot.driver_epoch_index == epoch_index || slot.driver_last_end_time <= epoch_time) &&
+            (slot.decoding_epoch_index == epoch_index || slot.decoding_last_end_time <= epoch_time) &&
             return true
     end
     false
@@ -569,9 +570,9 @@ end
 # chunk can cross an epoch that becomes pending only when one stepped later runs the
 # update before it: after a re-registration on an integration starting at the epoch, or after
 # an overdue update. Neither locks it out for more than that epoch.
-function _run_update_if_due!(nav_processor::NavigationProcessor, integration::LoopRecord)
+function _run_update_if_due!(nav_processor::NavigationProcessor, post_correlation_state::PostCorrelationState)
     nav_processor.num_snapshots == 0 && return false
-    time = integration.sample_index / _sampling_frequency_hz(integration)
+    time = post_correlation_state.last_sample_index / _sampling_frequency_hz(post_correlation_state)
     _fold_groups(_all_snapshotted, true, nav_processor.groups, nav_processor, time) || return false
     _navigation_update!(nav_processor, time)
     true
@@ -582,9 +583,9 @@ end
 # made it. Returns whether it ran. Only a satellite behind by more than an update interval, yet
 # not stale, holds an epoch up; the update then moves the pending epoch past
 # the satellites stepped before (`_next_pending_epoch`), so the next one runs as due.
-function _run_overdue_update!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, integration::LoopRecord)
+function _run_overdue_update!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, post_correlation_state::PostCorrelationState)
     slot.snapshot_epoch_index == nav_processor.pending_epoch_index || return false
-    time = integration.sample_index / _sampling_frequency_hz(integration)
+    time = post_correlation_state.last_sample_index / _sampling_frequency_hz(post_correlation_state)
     time > _epoch_time(nav_processor, nav_processor.pending_epoch_index + 1) || return false
     _navigation_update!(nav_processor, time)
     true
@@ -600,8 +601,8 @@ _all_snapshotted(ready, group::VectorTrackingSlotGroup, nav_processor::Navigatio
 # after skipped epochs is longer, as after a gap. The host steps every satellite through
 # each chunk, which is shorter than an update interval, so in step no satellite is past the next
 # epoch.
-function _next_pending_epoch(nav_processor::NavigationProcessor, epoch)
-    next = epoch + 1
+function _next_pending_epoch(nav_processor::NavigationProcessor, epoch_index)
+    next = epoch_index + 1
     latest = _fold_groups(_latest_integration_end, -Inf, nav_processor.groups)
     latest > _epoch_time(nav_processor, next) ? _epoch_at_or_after(nav_processor, latest) : next
 end
@@ -651,10 +652,10 @@ end
 function _navigation_update!(nav_processor::NavigationProcessor, time)
     groups = nav_processor.groups
     buffers = nav_processor.buffers
-    epoch = nav_processor.pending_epoch_index
+    epoch_index = nav_processor.pending_epoch_index
     update_interval =
         nav_processor.update_epoch_index == typemin(Int) ? nav_processor.navigation_filter_update_interval :
-        (epoch - nav_processor.update_epoch_index) * nav_processor.navigation_filter_update_interval
+        (epoch_index - nav_processor.update_epoch_index) * nav_processor.navigation_filter_update_interval
     nav_processor.update_index += 1
     dropped = _fold_groups(_prepare_slots!, false, groups, nav_processor, time)
     seeded = released = fell_back = false
@@ -692,8 +693,8 @@ function _navigation_update!(nav_processor::NavigationProcessor, time)
         fell_back,
         released || dropped,
     )
-    nav_processor.update_epoch_index = epoch
-    nav_processor.pending_epoch_index = _next_pending_epoch(nav_processor, epoch)
+    nav_processor.update_epoch_index = epoch_index
+    nav_processor.pending_epoch_index = _next_pending_epoch(nav_processor, epoch_index)
     nav_processor.num_snapshots = 0
     nothing
 end
@@ -702,22 +703,22 @@ end
 # After the integration
 
 # After the driver's loop step: move the replica to the integration's end.
-function _advance_driver!(group::VectorTrackingSlotGroup, slot::VectorTrackingSlot, integration::LoopRecord, nco_history)
+function _advance_driver!(group::VectorTrackingSlotGroup, slot::VectorTrackingSlot, post_correlation_state::PostCorrelationState, nco_history)
     signal = group.driver_signal
-    fs = _sampling_frequency_hz(integration)
+    fs = _sampling_frequency_hz(post_correlation_state)
     chip_rate = ustrip(Hz, get_chip_rate(signal))
-    code_command = calc_mean_nco_command(nco_history, slot.driver_last_end_sample_index, integration.sample_index).code_doppler
+    code_command = calc_mean_nco_command(nco_history, slot.driver_last_end_sample_index, post_correlation_state.last_sample_index).code_doppler
     slot.chips_since_epoch +=
-        (integration.sample_index - slot.driver_last_end_sample_index) / fs * (chip_rate + code_command)
-    slot.driver_last_end_sample_index = integration.sample_index
-    slot.driver_last_end_time = integration.sample_index / fs
-    slot.last_code_phase = integration.code_phase
+        (post_correlation_state.last_sample_index - slot.driver_last_end_sample_index) / fs * (chip_rate + code_command)
+    slot.driver_last_end_sample_index = post_correlation_state.last_sample_index
+    slot.driver_last_end_time = post_correlation_state.last_sample_index / fs
+    slot.last_code_phase = post_correlation_state.last_code_phase
     slot.last_coherent_integration_time =
-        uconvert(s, integration.integrated_samples / integration.sampling_frequency)
+        uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
     slot.last_early_late_spacing =
         calc_early_late_sample_spacing(
-            integration.filtered_correlator,
-            integration.sampling_frequency,
+            post_correlation_state.last_filtered_correlator_bank,
+            post_correlation_state.sampling_frequency,
             get_chip_rate(signal),
         ) * chip_rate / fs
     nothing
@@ -726,33 +727,34 @@ end
 # A decoding-signal integration: decode exactly the soft bits it added (so the host may
 # drain its bit synchronizer whenever it likes) and note the bit clock at its end. Integrations
 # later in the batch a sync was found in still have the pre-sync replica (see
-# `_process_correlator_bank_output!`'s `secondary_code_wiped`): they leave the bit count unanchored until the
+# `process_correlator_bank_output!`'s `secondary_code_wiped`): they leave the bit count unanchored until the
 # next batch.
 function _advance_decoding!(
     group::VectorTrackingSlotGroup,
     slot::VectorTrackingSlot,
-    integration::LoopRecord,
+    post_correlation_state::PostCorrelationState,
     loop_state::VectorLoopState,
     nco_history,
     is_driver::Bool,
 )
-    if integration.sync_change == SYNC_FOUND
-        slot.sync_command_issue_sample_index = integration.fold_end
-    elseif !integration.bit_synced
+    if post_correlation_state.last_sync_change == SYNC_FOUND
+        slot.sync_command_issue_sample_index = post_correlation_state.last_command_issue_sample_index
+    elseif !is_bit_or_secondary_code_synced(post_correlation_state)
         slot.sync_command_issue_sample_index = typemin(Int)
     end
     unwiped_after_sync =
-        integration.sync_change != SYNC_FOUND && integration.fold_end == slot.sync_command_issue_sample_index
-    _decode_integration!(group, slot, integration, loop_state, nco_history, is_driver, unwiped_after_sync)
+        post_correlation_state.last_sync_change != SYNC_FOUND && post_correlation_state.last_command_issue_sample_index == slot.sync_command_issue_sample_index
+    _decode_integration!(group, slot, post_correlation_state, loop_state, nco_history, is_driver, unwiped_after_sync)
     code_length = get_code_length(group.decoding_signal)
-    fs = _sampling_frequency_hz(integration)
-    slot.decoding_last_end_sample_index = integration.sample_index
-    slot.decoding_last_end_time = integration.sample_index / fs
-    slot.decoding_bit_synced = integration.bit_synced && !unwiped_after_sync
-    slot.decoding_num_code_periods_into_bit = integration.blocks_into_symbol
+    fs = _sampling_frequency_hz(post_correlation_state)
+    slot.decoding_last_end_sample_index = post_correlation_state.last_sample_index
+    slot.decoding_last_end_time = post_correlation_state.last_sample_index / fs
+    slot.decoding_bit_synced = is_bit_or_secondary_code_synced(post_correlation_state) && !unwiped_after_sync
+    slot.decoding_num_code_periods_into_bit =
+        is_bit_or_secondary_code_synced(post_correlation_state) ? post_correlation_state.bit_synchronizer.num_code_periods_into_bit : 0
     slot.decoding_code_phase_fraction =
-        isnan(integration.code_phase) ? NaN :
-        mod(integration.code_phase + code_length / 2, code_length) - code_length / 2
+        isnan(post_correlation_state.last_code_phase) ? NaN :
+        mod(post_correlation_state.last_code_phase + code_length / 2, code_length) - code_length / 2
     nothing
 end
 
@@ -768,21 +770,26 @@ end
 function _decode_integration!(
     group::VectorTrackingSlotGroup,
     slot::VectorTrackingSlot,
-    integration::LoopRecord,
+    post_correlation_state::PostCorrelationState,
     loop_state::VectorLoopState,
     nco_history,
     is_driver::Bool,
     unwiped_after_sync::Bool,
 )
-    soft_bits = integration.new_soft_bits
+    # The soft bits the integration appended, oldest first: a view of the soft-bit vector,
+    # so it allocates nothing; fewer (none) once the host drained them (`drain_soft_bits!`).
+    all_soft_bits = get_soft_bits(post_correlation_state)
+    num_soft_bits = Base.length(all_soft_bits)
+    num_new_soft_bits = min(post_correlation_state.last_num_new_soft_bits, num_soft_bits)
+    soft_bits = view(all_soft_bits, (num_soft_bits - num_new_soft_bits + 1):num_soft_bits)
     phase =
-        loop_state.vector_controlled && integration.bit_synced && integration.sync_change == SYNC_UNCHANGED && !unwiped_after_sync ?
+        loop_state.vector_controlled && is_bit_or_secondary_code_synced(post_correlation_state) && post_correlation_state.last_sync_change == SYNC_UNCHANGED && !unwiped_after_sync ?
         _bit_prompt_phase(
             loop_state.residual_pll,
             loop_state.ramp,
             loop_state.previous_replica_tail,
             slot.prompt_history,
-            integration,
+            post_correlation_state,
             nco_history,
             is_driver,
         ) :
@@ -794,12 +801,13 @@ function _decode_integration!(
         rotation =
             2π * (get_carrier_phase_offset(group.driver_signal) - get_carrier_phase_offset(group.decoding_signal) -
             phase)
-        slot.bit_accumulator += ComplexF64(get_prompt(integration.filtered_correlator)) * cis(rotation)
+        slot.bit_accumulator += ComplexF64(get_prompt(post_correlation_state.last_filtered_correlator_bank)) * cis(rotation)
     end
     isempty(soft_bits) && return nothing
     if !isnan(phase) && slot.bit_from_edge && Base.length(soft_bits) == 1
         bit = real(slot.bit_accumulator)
-        slot.soft_bit[1] = Float32(integration.bit_polarity < 0 ? -bit : bit)
+        inverted = is_bit_or_secondary_code_synced(post_correlation_state) && post_correlation_state.bit_synchronizer.bit_polarity < 0
+        slot.soft_bit[1] = Float32(inverted ? -bit : bit)
         slot.running_decoder = decode!(slot.running_decoder, slot.soft_bit, 1)
     else
         slot.running_decoder = decode!(slot.running_decoder, soft_bits, Base.length(soft_bits))

@@ -12,10 +12,9 @@ struct ReportedCN0 <: TrackingLoops.AbstractCN0Estimator
 end
 TrackingLoops.estimate_cn0(estimator::ReportedCN0, coherent_integration_time) = estimator.cn0_dbhz * dBHz
 
-# `integration` as read by a host whose C/N₀ estimator reads `cn0_dbhz`.
-with_cn0(integration::LoopRecord, cn0_dbhz) = LoopRecord(
-    (f === :cn0_estimator ? ReportedCN0(cn0_dbhz) : getfield(integration, f) for f in fieldnames(LoopRecord))...,
-)
+# `post_correlation_state` as read by a host whose C/N₀ estimator reads `cn0_dbhz`.
+with_cn0(post_correlation_state::PostCorrelationState, cn0_dbhz) =
+    PostCorrelationState(post_correlation_state; cn0_estimator = ReportedCN0(cn0_dbhz))
 
 # One integration at `sample_index` with the given raw correlator outputs, normalised the
 # way `process_correlator_bank_output!` does before the loop filters see it (the post-correlation filter
@@ -25,7 +24,7 @@ function vector_integration(signal, correlator_outputs, num_samples, fs; previou
     correlator_bank = set_correlator_outputs(get_default_correlator_bank(signal), SVector(correlator_outputs...))
     output = CorrelatorBankOutput(correlator_bank, num_samples, sample_index)
     normalized = normalize(correlator_bank, num_samples, get_code_amplitude(signal))
-    with_cn0(LoopRecord(signal, normalized, previous_prompt, output, 1, fs), cn0_dbhz)
+    with_cn0(processed_state(signal, normalized, previous_prompt, output, 1, fs), cn0_dbhz)
 end
 
 # An integration whose prompt is `prompt`, its early and late correlators half of it.
@@ -42,10 +41,10 @@ end
 
 @testset "Vector PLL and DLL state" begin
     tracking_loop = VectorTrackingLoop(GPSL1CA())
-    @test tracking_loop.inner isa ScalarTrackingLoop{ThirdOrderAssistedBilinearLF}
+    @test tracking_loop.scalar_loop isa ScalarTrackingLoop{ThirdOrderAssistedBilinearLF}
     state = init_loop_state(tracking_loop, GPSL1CA(), 500.0Hz, 100.0Hz)
     @test state isa VectorLoopState
-    @test state.inner == init_loop_state(ConventionalAssistedPLLAndDLL(), GPSL1CA(), 500.0Hz, 100.0Hz)
+    @test state.scalar_state == init_loop_state(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA(), 500.0Hz, 100.0Hz)
     @test state.vector_controlled == false
     @test state.code_disc_sum == (0, 0.0)
     @test state.fll_disc_sum == (0, 0.0Hz)
@@ -65,30 +64,30 @@ end
     # Auto bandwidths resolve from the driver signal, sized exactly like the
     # inner (scalar fallback) loop.
     state = init_loop_state(VectorTrackingLoop(GPSL1CA()), GPSL1CA(), 100.0Hz, 0.0Hz)
-    @test state.inner.bandwidths.wide_carrier == 50.0Hz
-    @test state.inner.bandwidths.narrow_carrier == 18.0Hz
-    @test state.inner.bandwidths.fll_assist == 5.0Hz
-    @test state.inner.bandwidths.code == 1.0Hz
-    @test state.inner.initial_carrier_doppler == 100.0Hz
+    @test state.scalar_state.bandwidths.wide_carrier == 50.0Hz
+    @test state.scalar_state.bandwidths.narrow_carrier == 18.0Hz
+    @test state.scalar_state.bandwidths.fll_assist == 5.0Hz
+    @test state.scalar_state.bandwidths.code == 1.0Hz
+    @test state.scalar_state.initial_carrier_doppler == 100.0Hz
     @test get_carrier_loop_stage(state) == FLL_ASSISTED_PLL
-    explicit = ConventionalAssistedPLLAndDLL(; narrow_carrier_loop_bandwidth = 12.0Hz, code_loop_bandwidth = 1.0Hz)
-    explicit_state = init_loop_state(VectorTrackingLoop(GPSL1CA(); inner = explicit), GPSL1CA(), 100.0Hz, 0.0Hz)
-    @test explicit_state.inner.bandwidths.narrow_carrier == 12.0Hz
-    @test explicit_state.inner.bandwidths.code == 1.0Hz
-    bumped = VectorTrackingLoop(GPSL1CA(); inner = ScalarTrackingLoop(explicit; narrow_carrier_loop_bandwidth = 15.0Hz))
-    @test bumped.inner.narrow_carrier_loop_bandwidth == 15.0Hz
-    @test bumped.inner.code_loop_bandwidth == 1.0Hz
-    referenced = init_loop_state(VectorTrackingLoop(GalileoE1B(); inner = DelayCompensatedTrackingLoop()), GalileoE1B(), 0.0Hz, 0.0Hz)
-    @test referenced.inner isa SatNCOReferencedPLLAndDLL
-    @test referenced.inner.bandwidths.narrow_carrier ==
+    explicit = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF; narrow_carrier_loop_bandwidth = 12.0Hz, code_loop_bandwidth = 1.0Hz)
+    explicit_state = init_loop_state(VectorTrackingLoop(GPSL1CA(); scalar_loop = explicit), GPSL1CA(), 100.0Hz, 0.0Hz)
+    @test explicit_state.scalar_state.bandwidths.narrow_carrier == 12.0Hz
+    @test explicit_state.scalar_state.bandwidths.code == 1.0Hz
+    bumped = VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop(explicit; narrow_carrier_loop_bandwidth = 15.0Hz))
+    @test bumped.scalar_loop.bandwidths.narrow_carrier_loop_bandwidth == 15.0Hz
+    @test bumped.scalar_loop.bandwidths.code_loop_bandwidth == 1.0Hz
+    referenced = init_loop_state(VectorTrackingLoop(GalileoE1B(); scalar_loop = DelayCompensatedTrackingLoop()), GalileoE1B(), 0.0Hz, 0.0Hz)
+    @test referenced.scalar_state isa ScalarLoopState
+    @test referenced.scalar_state.bandwidths.narrow_carrier ==
           default_narrow_carrier_loop_bandwidth(GalileoE1B())
     # The residual PLL's bandwidth is the tracking_loop's, for either inner loop; the
     # inner loop's own bandwidths stay.
     for inner in (explicit, DelayCompensatedTrackingLoop())
-        tracking_loop = VectorTrackingLoop(GPSL1CA(); inner, residual_pll_loop_bandwidth = 5.0Hz)
+        tracking_loop = VectorTrackingLoop(GPSL1CA(); scalar_loop = inner, residual_pll_loop_bandwidth = 5.0Hz)
         vector_state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.0Hz)
         @test vector_state.residual_pll.bandwidth == 5.0Hz
-        @test vector_state.inner == init_loop_state(inner, GPSL1CA(), 100.0Hz, 0.0Hz)
+        @test vector_state.scalar_state == init_loop_state(inner, GPSL1CA(), 100.0Hz, 0.0Hz)
         # A satellite keeps it across the hand-overs.
         @test TL._add_to_vector_loop(vector_state).residual_pll.bandwidth == 5.0Hz
         @test TL._hand_over_to_scalar_loop(TL._add_to_vector_loop(vector_state), ConstantNCOCommand(1.0, 0.0), 0, 1e6).residual_pll.bandwidth == 5.0Hz
@@ -97,7 +96,7 @@ end
 end
 
 @testset "The filter alone sets the carrier NCO, with $(nameof(typeof(inner)))" for inner in (
-    ConventionalAssistedPLLAndDLL(),
+    ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
     DelayCompensatedTrackingLoop(),
 )
     # The command is the filter's ramp at the middle of the integration it takes effect in, whatever
@@ -105,61 +104,62 @@ end
     # code correction.
     signal = GPSL1CA()
     fs = 5e6Hz
-    tracking_loop = VectorTrackingLoop(signal; inner)
+    tracking_loop = VectorTrackingLoop(signal; scalar_loop = inner)
     ramp = TL.CarrierDopplerRamp(110.0, 4.0, 0.0)
     state = commanded(init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz), ramp; code_update = -0.25Hz)
     nco_history = ConstantNCOCommand(100.0, 0.1)
     ratio = get_chip_rate_to_center_frequency_ratio(signal)
-    for application_sample_index in (NO_LANDING_SAMPLE, Int64(15000))
+    for application_sample_index in (nothing, Int64(15000))
         commands = map((cis(0.0), cis(0.2), -cis(0.1))) do prompt
             _, carrier, code = step_satellite(tracking_loop, state, prompt_integration(signal, prompt, 5000, fs), nco_history, application_sample_index)
             carrier, code
         end
         @test allequal(commands)
         carrier, code = first(commands)
-        middle = ((application_sample_index == NO_LANDING_SAMPLE ? 5000 : 15000) + 2500) / 5e6
+        middle = ((application_sample_index == nothing ? 5000 : 15000) + 2500) / 5e6
         @test carrier ≈ (110.0 + 4.0 * middle) * Hz
         @test code ≈ 0.1Hz - 0.25Hz + (carrier - 100.0Hz) * ratio
     end
     # The inner loop's filters are frozen.
-    stepped, = step_satellite(tracking_loop, state, prompt_integration(signal, cis(0.2), 5000, fs), nco_history, NO_LANDING_SAMPLE)
-    @test stepped.inner.carrier_loop_filter == state.inner.carrier_loop_filter
-    @test stepped.inner.code_loop_filter == state.inner.code_loop_filter
+    stepped, = step_satellite(tracking_loop, state, prompt_integration(signal, cis(0.2), 5000, fs), nco_history, nothing)
+    @test stepped.scalar_state.carrier_loop_filter == state.scalar_state.carrier_loop_filter
+    @test stepped.scalar_state.code_loop_filter == state.scalar_state.code_loop_filter
     @test get_carrier_loop_stage(stepped) == VECTOR_LOOP
+    @test get_carrier_loop_stage(stepped.scalar_state) == get_carrier_loop_stage(state.scalar_state)
 end
 
 @testset "A vector loop needs an FLL-assisted inner loop" begin
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); inner = ScalarTrackingLoop())
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); inner = ScalarTrackingLoop(ThirdOrderBilinearLF))
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); inner = VectorTrackingLoop(GPSL1CA()))
-    @test VectorTrackingLoop(GPSL1CA(); inner = ConventionalAssistedPLLAndDLL()) isa VectorTrackingLoop
-    @test VectorTrackingLoop(GPSL1CA(); inner = DelayCompensatedTrackingLoop()) isa VectorTrackingLoop
+    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop())
+    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop(ThirdOrderBilinearLF))
+    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); scalar_loop = VectorTrackingLoop(GPSL1CA()))
+    @test VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)) isa VectorTrackingLoop
+    @test VectorTrackingLoop(GPSL1CA(); scalar_loop = DelayCompensatedTrackingLoop()) isa VectorTrackingLoop
 end
 
 @testset "Out of the vector loop it is the inner loop, with $(nameof(typeof(inner)))" for inner in (
-    ConventionalAssistedPLLAndDLL(),
+    ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
     DelayCompensatedTrackingLoop(),
 )
     # Under an NCO delay too: the delayed simulation of `tracking_loops.jl`.
     for d in (0, 3)
-        @test simulate_delayed_loop(VectorTrackingLoop(GPSL1CA(); inner), d; steps = 300) ==
+        @test simulate_delayed_loop(VectorTrackingLoop(GPSL1CA(); scalar_loop = inner), d; steps = 300) ==
               simulate_delayed_loop(inner, d; steps = 300)
     end
     # And integration by integration on one fixed command: nothing is accumulated and the
     # commands are never applied.
     signal = GPSL1CA()
     fs = 5e6Hz
-    vector = VectorTrackingLoop(GPSL1CA(); inner)
+    vector = VectorTrackingLoop(GPSL1CA(); scalar_loop = inner)
     vector_state = TL._set_vector_commands(init_loop_state(vector, signal, 100.0Hz, 0.1Hz), 0.5Hz,
         TL.CarrierDopplerRamp(120.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(100.0, 0.0), 0, 5e6)
     inner_state = init_loop_state(inner, signal, 100.0Hz, 0.1Hz)
-    integration = vector_integration(signal, (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im), 5000, fs; previous_prompt = cis(0.1))
+    post_correlation_state = vector_integration(signal, (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im), 5000, fs; previous_prompt = cis(0.1))
     nco_history = ConstantNCOCommand(100.0, 0.1)
-    new_vector_state, vector_carrier, vector_code = step_satellite(vector, vector_state, integration, nco_history, NO_LANDING_SAMPLE)
-    new_inner_state, inner_carrier, inner_code = step_satellite(inner, inner_state, integration, nco_history, NO_LANDING_SAMPLE)
+    new_vector_state, vector_carrier, vector_code = step_satellite(vector, vector_state, post_correlation_state, nco_history, nothing)
+    new_inner_state, inner_carrier, inner_code = step_satellite(inner, inner_state, post_correlation_state, nco_history, nothing)
     @test vector_carrier == inner_carrier
     @test vector_code == inner_code
-    @test new_vector_state.inner == new_inner_state
+    @test new_vector_state.scalar_state == new_inner_state
     @test new_vector_state.code_disc_sum == (0, 0.0)
     @test new_vector_state.fll_disc_sum == (0, 0.0Hz)
     # The replica's last half integration is kept, for the span a later vector loop opens
@@ -170,7 +170,7 @@ end
 end
 
 @testset "A member's integration: the DLL accumulated, the residual PLL stepped, with $(nameof(typeof(inner)))" for inner in (
-    ConventionalAssistedPLLAndDLL(),
+    ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
     DelayCompensatedTrackingLoop(),
 )
     sampling_frequency = 5e6Hz
@@ -179,18 +179,18 @@ end
     initial_code_doppler = carrier_doppler * get_chip_rate_to_center_frequency_ratio(gpsl1)
     num_samples = 5000
     correlator_outputs = (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im)
-    tracking_loop = VectorTrackingLoop(GPSL1CA(); inner)
+    tracking_loop = VectorTrackingLoop(GPSL1CA(); scalar_loop = inner)
     state = init_loop_state(tracking_loop, gpsl1, carrier_doppler, initial_code_doppler)
     state = commanded(state, TL.CarrierDopplerRamp(100.0, 0.0, 0.0); code_update = -0.25Hz)
-    integration = vector_integration(gpsl1, correlator_outputs, num_samples, sampling_frequency)
+    post_correlation_state = vector_integration(gpsl1, correlator_outputs, num_samples, sampling_frequency)
     nco_history = ConstantNCOCommand(ustrip(Hz, carrier_doppler), ustrip(Hz, initial_code_doppler))
-    state, = step_satellite(tracking_loop, state, integration, nco_history, NO_LANDING_SAMPLE)
-    normalized_correlator_bank = set_correlator_outputs(
+    state, = step_satellite(tracking_loop, state, post_correlation_state, nco_history, nothing)
+    normalized_correlator = set_correlator_outputs(
         get_default_correlator_bank(gpsl1),
         SVector(correlator_outputs...) ./ num_samples,
     )
-    dll_discriminator = dll_disc(gpsl1, normalized_correlator_bank, initial_code_doppler, sampling_frequency)
-    @test state.inner.code_loop_filter == SecondOrderBilinearLF()
+    dll_discriminator = dll_disc(gpsl1, normalized_correlator, initial_code_doppler, sampling_frequency)
+    @test state.scalar_state.code_loop_filter == SecondOrderBilinearLF()
     # The DLL discriminator is accumulated. Without a previous prompt there is no
     # frequency measurement, so no carrier span opens: not a span of zero rotation.
     @test state.code_disc_sum == (1, dll_discriminator)
@@ -206,7 +206,7 @@ end
     # The residual PLL reads the phase lock on the prompts it rotated, carrying on from the
     # scalar loop's averages; the staging stands still.
     @test state.residual_pll.lock.lock_detector.num_integrations == 1
-    @test state.inner.staging == init_loop_state(inner, gpsl1, carrier_doppler, initial_code_doppler).staging
+    @test state.scalar_state.staging == init_loop_state(inner, gpsl1, carrier_doppler, initial_code_doppler).staging
 
     state = TL._reset_discriminator_accumulators(state)
     @test state.code_disc_sum == (0, 0.0)
@@ -227,10 +227,10 @@ end
     correlator_outputs = (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im)
     integrations = [vector_integration(signal, correlator_outputs, 5000, fs; previous_prompt = previous, sample_index = 5000k)
                for k = 1:2]
-    fll = fll_disc(signal, integrations[1].filtered_correlator, previous, 5000 / fs)
+    fll = fll_disc(signal, integrations[1].last_filtered_correlator_bank, previous, 5000 / fs)
     @test fll != 0.0Hz
-    state, = step_satellite(tracking_loop, state, integrations[1], ConstantNCOCommand(100.0, 0.1), NO_LANDING_SAMPLE)
-    state, = step_satellite(tracking_loop, state, integrations[2], ConstantNCOCommand(120.0, 0.1), NO_LANDING_SAMPLE)
+    state, = step_satellite(tracking_loop, state, integrations[1], ConstantNCOCommand(100.0, 0.1), nothing)
+    state, = step_satellite(tracking_loop, state, integrations[2], ConstantNCOCommand(120.0, 0.1), nothing)
     @test state.fll_disc_sum == (2, fll + fll)
     @test TL._disc_mean(state.fll_disc_sum) == (fll + fll) / 2
     # The replica's last half integration, which the residual PLL propagates by.
@@ -238,7 +238,7 @@ end
     # An integration without a previous prompt (a changed carrier phase polarity) has no
     # frequency measurement, so it is left out rather than taken as 0 Hz.
     no_prompt = vector_integration(signal, correlator_outputs, 5000, fs; sample_index = 15000)
-    skipped, = step_satellite(tracking_loop, state, no_prompt, ConstantNCOCommand(160.0, 0.1), NO_LANDING_SAMPLE)
+    skipped, = step_satellite(tracking_loop, state, no_prompt, ConstantNCOCommand(160.0, 0.1), nothing)
     @test skipped.fll_disc_sum == state.fll_disc_sum
     @test skipped.previous_replica_tail == (160.0 * 0.0005, 0.0005s)
 end
@@ -250,9 +250,9 @@ end
     tracking_loop = VectorTrackingLoop(GPSL1CA())
     function accumulated(fs)
         state = commanded(init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz), TL.CarrierDopplerRamp(100.0, 0.0, 0.0))
-        integration = vector_integration(signal, (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im), 5000, fs;
+        post_correlation_state = vector_integration(signal, (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im), 5000, fs;
             previous_prompt = cis(0.2))
-        state, = step_satellite(tracking_loop, state, integration, ConstantNCOCommand(100.0, 0.1), NO_LANDING_SAMPLE)
+        state, = step_satellite(tracking_loop, state, post_correlation_state, ConstantNCOCommand(100.0, 0.1), nothing)
         state.fll_disc_sum
     end
     count, carrier_sum = accumulated(5.0u"MHz")
@@ -267,7 +267,7 @@ end
     signal = GPSL1CA()
     fs = 4e6Hz
     function run(inner, application_offset)
-        tracking_loop = VectorTrackingLoop(GPSL1CA(); inner)
+        tracking_loop = VectorTrackingLoop(GPSL1CA(); scalar_loop = inner)
         state = init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz)
         state = commanded(state, TL.CarrierDopplerRamp(100.5, 1.0, 0.0); code_update = 0.1Hz, scalar_doppler = 100.0)
         timeline = NCOTimeline()
@@ -277,9 +277,9 @@ end
         for k = 1:50
             p = cis(0.3 + 0.01k)
             output = CorrelatorBankOutput(loop_epl(0.5p, p, 0.5p), 4000, 4000k)
-            integration = LoopRecord(signal, output.correlator_bank, previous, output, 1, fs)
-            application_sample_index = application_offset == 0 ? NO_LANDING_SAMPLE : Int64(4000k + application_offset)
-            state, carrier, code = step_satellite(tracking_loop, state, integration, timeline, application_sample_index)
+            post_correlation_state = processed_state(signal, output.correlator_bank, previous, output, 1, fs)
+            application_sample_index = application_offset == 0 ? nothing : Int64(4000k + application_offset)
+            state, carrier, code = step_satellite(tracking_loop, state, post_correlation_state, timeline, application_sample_index)
             schedule_command!(timeline, 4000k + application_offset, ustrip(Hz, carrier), ustrip(Hz, code))
             advance_timeline!(timeline, 4000k - 4000)
             push!(carriers, carrier)
@@ -289,7 +289,7 @@ end
     end
     for application_offset in (0, 12000)
         referenced, referenced_state = run(DelayCompensatedTrackingLoop(), application_offset)
-        conventional, conventional_state = run(ConventionalAssistedPLLAndDLL(), application_offset)
+        conventional, conventional_state = run(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), application_offset)
         @test referenced == conventional
         @test referenced_state.code_disc_sum == conventional_state.code_disc_sum
         @test referenced_state.fll_disc_sum == conventional_state.fll_disc_sum
@@ -339,7 +339,7 @@ end
     # never runs on stale values.
     released = TL._release_from_vector_loop(next)
     @test !released.vector_controlled
-    @test released.inner == next.inner
+    @test released.scalar_state == next.scalar_state
     @test released.code_disc_sum == (0, 0.0)
     @test released.fll_disc_sum == (0, 0.0Hz)
     @test released.code_frequency_correction == 0.0Hz
@@ -354,12 +354,12 @@ end
 end
 
 @testset "Resetting keeps the vector flag and stops applying the code correction" begin
-    tracking_loop = VectorTrackingLoop(GPSL1CA(); inner = ConventionalAssistedPLLAndDLL(; narrow_carrier_loop_bandwidth = 12.0Hz))
+    tracking_loop = VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF; narrow_carrier_loop_bandwidth = 12.0Hz))
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
-    integration = vector_integration(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
+    post_correlation_state = vector_integration(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
     ramp = TL.CarrierDopplerRamp(104.0, 0.0, 0.0)
     state = commanded(state, ramp; code_update = 0.5Hz)
-    state, = step_satellite(tracking_loop, state, integration, ConstantNCOCommand(100.0, 0.1), NO_LANDING_SAMPLE)
+    state, = step_satellite(tracking_loop, state, post_correlation_state, ConstantNCOCommand(100.0, 0.1), nothing)
     state = TL._set_vector_commands(state, 0.6Hz, ramp, 0.01s, ConstantNCOCommand(0.0, 0.0), 0, 5e6)
     reset = reinit_loop_state(tracking_loop, state, 150.0Hz, 0.2Hz)
     @test reset isa typeof(state)
@@ -378,28 +378,28 @@ end
     # The carrier command is the filter's Doppler itself, and the residual PLL carries on.
     @test reset.ramp == state.ramp
     @test reset.residual_pll == state.residual_pll
-    @test reset.inner.carrier_loop_filter == ThirdOrderAssistedBilinearLF()
-    @test reset.inner.bandwidths.narrow_carrier == 12.0Hz
+    @test reset.scalar_state.carrier_loop_filter == ThirdOrderAssistedBilinearLF()
+    @test reset.scalar_state.bandwidths.narrow_carrier == 12.0Hz
     @test get_carrier_loop_stage(reset) == VECTOR_LOOP
-    @test reset.inner.initial_carrier_doppler == 150.0Hz
-    @test reset.inner.initial_code_doppler == 0.2Hz
+    @test reset.scalar_state.initial_carrier_doppler == 150.0Hz
+    @test reset.scalar_state.initial_code_doppler == 0.2Hz
     # With no code correction, the code Doppler is the re-seeded one plus the carrier aiding.
     _, carrier_doppler, code_doppler =
-        step_satellite(tracking_loop, reset, integration, ConstantNCOCommand(150.0, 0.2), NO_LANDING_SAMPLE)
+        step_satellite(tracking_loop, reset, post_correlation_state, ConstantNCOCommand(150.0, 0.2), nothing)
     @test carrier_doppler == 104.0Hz
     @test code_doppler ≈ 0.2Hz + (carrier_doppler - 150.0Hz) * get_chip_rate_to_center_frequency_ratio(GPSL1CA())
 end
 
 @testset "Releasing re-seeds the inner loop, with $(nameof(typeof(inner)))" for inner in (
-    ConventionalAssistedPLLAndDLL(; narrow_carrier_loop_bandwidth = 12.0Hz),
+    ScalarTrackingLoop(ThirdOrderAssistedBilinearLF; narrow_carrier_loop_bandwidth = 12.0Hz),
     DelayCompensatedTrackingLoop(; narrow_carrier_loop_bandwidth = 12.0Hz),
 )
-    tracking_loop = VectorTrackingLoop(GPSL1CA(); inner)
+    tracking_loop = VectorTrackingLoop(GPSL1CA(); scalar_loop = inner)
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
-    integration = vector_integration(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
+    post_correlation_state = vector_integration(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
     ramp = TL.CarrierDopplerRamp(104.0, 2.0, 0.0)
     state = commanded(state, ramp; code_update = 0.5Hz, lead = 0.01s)
-    state, = step_satellite(tracking_loop, state, integration, ConstantNCOCommand(100.0, 0.1), NO_LANDING_SAMPLE)
+    state, = step_satellite(tracking_loop, state, post_correlation_state, ConstantNCOCommand(100.0, 0.1), nothing)
     # A residual PLL out of lock knows no better than the filter: the inner loop starts over
     # from the handed-over replica and the ramp's Doppler rate.
     unlocked = TL.VectorLoopState(state; residual_pll = TL.ResidualPLL(state.residual_pll; lock = TL.ResidualPLLLock()))
@@ -408,15 +408,15 @@ end
     @test !released.vector_controlled
     # The inner loop starts over with its own configuration kept: the per-satellite
     # state carries it. Unlike a reset, the release restarts the staging.
-    reset_inner = reinit_loop_state(inner, state.inner, 150.0Hz, 0.2Hz)
-    @test released.inner == Base.typename(typeof(reset_inner)).wrapper(
+    reset_inner = reinit_loop_state(inner, state.scalar_state, 150.0Hz, 0.2Hz)
+    @test released.scalar_state == Base.typename(typeof(reset_inner)).wrapper(
         reset_inner;
         carrier_loop_filter = TL._carrier_filter_at_rate(reset_inner.carrier_loop_filter, 2.0),
         staging = TL.CarrierLoopStaging(typeof(reset_inner.carrier_loop_filter)),
     )
-    @test released.inner.carrier_loop_filter.x2 == 2.0Hz^2
-    @test released.inner.initial_carrier_doppler == 150.0Hz
-    @test released.inner.initial_code_doppler == 0.2Hz
+    @test released.scalar_state.carrier_loop_filter.x2 == 2.0Hz^2
+    @test released.scalar_state.initial_carrier_doppler == 150.0Hz
+    @test released.scalar_state.initial_code_doppler == 0.2Hz
     # A residual PLL in lock hands over its estimate where the release takes effect: the ramp plus
     # its residual Doppler, moved on by its rate, and the Doppler rate of both.
     residual_pll = state.residual_pll
@@ -424,11 +424,11 @@ end
         residual_pll.carrier_phase_polarity, residual_pll.predicted_prompt_phase,
         TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
     locked = TL._hand_over_to_scalar_loop(TL.VectorLoopState(state; residual_pll), ConstantNCOCommand(150.0, 0.2), 10_000, 5e6)
-    @test locked.inner.initial_carrier_doppler ≈
+    @test locked.scalar_state.initial_carrier_doppler ≈
           (TL._doppler_at(ramp, 0.002) + 1.5 + 0.5 * (0.002 - residual_pll.last_prompt_sample_index / 5e6)) * Hz
-    @test locked.inner.carrier_loop_filter.x2 ≈ 2.5Hz^2
-    @test locked.inner.initial_code_doppler == 0.2Hz
-    @test released.inner.bandwidths.narrow_carrier == 12.0Hz
+    @test locked.scalar_state.carrier_loop_filter.x2 ≈ 2.5Hz^2
+    @test locked.scalar_state.initial_code_doppler == 0.2Hz
+    @test released.scalar_state.bandwidths.narrow_carrier == 12.0Hz
     # The carrier loop pulls in afresh, FLL-assisted.
     @test get_carrier_loop_stage(state) == VECTOR_LOOP
     @test get_carrier_loop_stage(released) == FLL_ASSISTED_PLL
@@ -440,8 +440,8 @@ end
     @test released.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test !TL._has_carrier_ramp(released)
     # Out of the vector loop it steps exactly as the re-seeded inner loop.
-    @test step_satellite(tracking_loop, released, integration, ConstantNCOCommand(150.0, 0.2), NO_LANDING_SAMPLE)[2:3] ==
-          step_satellite(inner, released.inner, integration, ConstantNCOCommand(150.0, 0.2), NO_LANDING_SAMPLE)[2:3]
+    @test step_satellite(tracking_loop, released, post_correlation_state, ConstantNCOCommand(150.0, 0.2), nothing)[2:3] ==
+          step_satellite(inner, released.scalar_state, post_correlation_state, ConstantNCOCommand(150.0, 0.2), nothing)[2:3]
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -492,9 +492,9 @@ function track_carrier(phase, doppler0, rate; offset = 0.5, integration_samples 
                                 replica_phase - carrier * (i - 0.5) / n * (t1 - t0))) for i = 1:n) / n
         prompt += noise_std * complex(randn(rng), randn(rng))
         output = CorrelatorBankOutput(loop_epl(0.5prompt, prompt, 0.5prompt), integration_end_sample_index - integration_start_sample_index, integration_end_sample_index)
-        integration = LoopRecord(RATE_SIGNAL, output.correlator_bank, previous_prompt, output, 1, RATE_FS * Hz)
-        state, new_carrier, = TL._step_satellite(tracking_loop, state, integration,
-            ConstantNCOCommand(carrier, 0.0), NO_LANDING_SAMPLE)
+        post_correlation_state = processed_state(RATE_SIGNAL, output.correlator_bank, previous_prompt, output, 1, RATE_FS * Hz)
+        state, new_carrier, = TL._step_satellite(tracking_loop, state, post_correlation_state,
+            ConstantNCOCommand(carrier, 0.0), nothing)
         replica_phase += carrier * (t1 - t0)
         carrier = ustrip(Hz, new_carrier)
         previous_prompt = prompt

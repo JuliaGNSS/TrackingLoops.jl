@@ -9,7 +9,7 @@
 # until its first fix seeds the filter, one filter iteration after. The update leaves its
 # decisions (admission, release, commands) in the slots for each satellite to apply
 # on its next integration. Nothing here knows a correlator, so software and hardware loops
-# step the same estimator.
+# step the same loop.
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
@@ -393,7 +393,7 @@ end
 function NavigationProcessor(
     filter_config::Union{NavFilterConfig,Nothing},
     pairs::Tuple,
-    inner::AbstractTrackingLoop;
+    scalar_loop::AbstractTrackingLoop;
     navigation_filter_update_interval,
     min_tracking_cn0::Float64,
     satellite_capacity_per_signal::Int,
@@ -407,7 +407,7 @@ function NavigationProcessor(
     model = NavFilterModel(config, layout, uconvert(s, navigation_filter_update_interval))
     n = num_nav_states(config, layout)
     groups = map(pairs) do (signal, decoding_signal)
-        prototype = VectorLoopState(init_loop_state(inner, signal, 0.0Hz, 0.0Hz), false)
+        prototype = VectorLoopState(init_loop_state(scalar_loop, signal, 0.0Hz, 0.0Hz), false)
         VectorTrackingSlotGroup(signal, decoding_signal, prototype, satellite_capacity_per_signal, navigation_filter_update_interval)
     end
     max_members = satellite_capacity_per_signal * length(signals)
@@ -446,19 +446,19 @@ _signal_observation_buffer(group::VectorTrackingSlotGroup{S,DS,<:VectorTrackingS
     sizehint!(SignalObservation{Float64,D,S}[], 2 * max(length(group.slots), 1))
 
 """
-    calc_position_std(estimator::VectorTrackingLoop)
+    calc_position_std(tracking_loop::VectorTrackingLoop)
 
 The navigation filter's 1σ 3-D position uncertainty (m), once seeded.
 """
-calc_position_std(estimator::VectorTrackingLoop) = calc_position_std(estimator.navigation_processor)
+calc_position_std(tracking_loop::VectorTrackingLoop) = calc_position_std(tracking_loop.navigation_processor)
 
 """
-    calc_clock_bias_std(estimator::VectorTrackingLoop)
+    calc_clock_bias_std(tracking_loop::VectorTrackingLoop)
 
 The navigation filter's 1σ uncertainty (m) of the solution's reference clock
 bias, once seeded.
 """
-calc_clock_bias_std(estimator::VectorTrackingLoop) = calc_clock_bias_std(estimator.navigation_processor)
+calc_clock_bias_std(tracking_loop::VectorTrackingLoop) = calc_clock_bias_std(tracking_loop.navigation_processor)
 
 calc_position_std(nav_processor::NavigationProcessor) = calc_position_std(nav_processor.P, nav_processor.model.idxs)
 
@@ -468,29 +468,29 @@ function calc_clock_bias_std(nav_processor::NavigationProcessor)
 end
 
 """
-    get_navigation_solution(estimator::VectorTrackingLoop) -> PVTSolution
+    get_navigation_solution(tracking_loop::VectorTrackingLoop) -> PVTSolution
 
 The latest navigation solution: the scalar PVT's until the filter is seeded, the
 filter's after. The next update reuses its containers; copy out what is needed.
 """
-get_navigation_solution(estimator::VectorTrackingLoop) = estimator.navigation_processor.pvt
+get_navigation_solution(tracking_loop::VectorTrackingLoop) = tracking_loop.navigation_processor.pvt
 
 """
-    get_navigation_status(estimator::VectorTrackingLoop) -> VectorTrackingStatus
+    get_navigation_status(tracking_loop::VectorTrackingLoop) -> VectorTrackingStatus
 
 What the latest navigation filter update did (see [`VectorTrackingStatus`](@ref)).
 """
-get_navigation_status(estimator::VectorTrackingLoop) = estimator.navigation_processor.status
+get_navigation_status(tracking_loop::VectorTrackingLoop) = tracking_loop.navigation_processor.status
 
-get_navigation_update_index(estimator::VectorTrackingLoop) = estimator.navigation_processor.update_index
+get_navigation_update_index(tracking_loop::VectorTrackingLoop) = tracking_loop.navigation_processor.update_index
 
-function get_navigation_elapsed_time(estimator::VectorTrackingLoop)
-    nav_processor = estimator.navigation_processor
+function get_navigation_elapsed_time(tracking_loop::VectorTrackingLoop)
+    nav_processor = tracking_loop.navigation_processor
     nav_processor.update_epoch_index == typemin(Int) ? nothing : nav_processor.update_epoch_index * nav_processor.navigation_filter_update_interval
 end
 
-function get_satellite_report(estimator::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
-    nav_processor = estimator.navigation_processor
+function get_satellite_report(tracking_loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
+    nav_processor = tracking_loop.navigation_processor
     _satellite_report(nav_processor, nav_processor.groups, signal, Int(prn))
 end
 
@@ -537,7 +537,7 @@ function _get_decoder(groups::Tuple, signal::S, prn) where {S}
 end
 
 """
-    get_vector_tracking_members(estimator::VectorTrackingLoop)
+    get_vector_tracking_members(tracking_loop::VectorTrackingLoop)
 
 The latest update's per-member results: every member of the vector loop, measured
 *and* coasted, keyed `(driver_signal_id, prn)`, each with the satellite position,
@@ -548,7 +548,7 @@ measured members. Empty while the scalar solve is in control.
 The returned dictionary is borrowed storage, reused by the next navigation filter update;
 copy it to retain the current results.
 """
-get_vector_tracking_members(estimator::VectorTrackingLoop) = estimator.navigation_processor.vector_tracking_members
+get_vector_tracking_members(tracking_loop::VectorTrackingLoop) = tracking_loop.navigation_processor.vector_tracking_members
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Walking the groups
@@ -1182,9 +1182,9 @@ function _write_solution!(nav_processor::NavigationProcessor, groups)
     for j in used
         set!(observations, _member_key(layout, members[j]), _member_info(buffers, j))
     end
-    get_vector_tracking_members = empty_keeping_capacity!(nav_processor.vector_tracking_members)
+    satellite_reports = empty_keeping_capacity!(nav_processor.vector_tracking_members)
     for j in eachindex(members)
-        set!(get_vector_tracking_members, _member_key(layout, members[j]), _member_info(buffers, j))
+        set!(satellite_reports, _member_key(layout, members[j]), _member_info(buffers, j))
     end
 
     # Only measured biases, as in `calc_pvt`: an unmeasured one coasts on process noise

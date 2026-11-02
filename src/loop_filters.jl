@@ -128,6 +128,53 @@ LoopBandwidths(
     code = default_code_loop_bandwidth(signal),
 ) = LoopBandwidths(wide_carrier, narrow_carrier, fll_assist, code)
 
+# Both scalar strategies keep the same optional bandwidth configuration. Resolve
+# auto values once for each satellite's driver signal, into concrete LoopBandwidths.
+@kwdef struct _LoopBandwidthConfiguration
+    wide_carrier_loop_bandwidth::Maybe{typeof(1.0Hz)} = nothing
+    narrow_carrier_loop_bandwidth::Maybe{typeof(1.0Hz)} = nothing
+    fll_assist_loop_bandwidth::Maybe{typeof(1.0Hz)} = nothing
+    code_loop_bandwidth::Maybe{typeof(1.0Hz)} = nothing
+end
+
+function _LoopBandwidthConfiguration(
+    configured::_LoopBandwidthConfiguration;
+    wide_carrier_loop_bandwidth = nothing,
+    narrow_carrier_loop_bandwidth = nothing,
+    fll_assist_loop_bandwidth = nothing,
+    code_loop_bandwidth = nothing,
+)
+    _LoopBandwidthConfiguration(
+        isnothing(wide_carrier_loop_bandwidth) ? configured.wide_carrier_loop_bandwidth : wide_carrier_loop_bandwidth,
+        isnothing(narrow_carrier_loop_bandwidth) ? configured.narrow_carrier_loop_bandwidth : narrow_carrier_loop_bandwidth,
+        isnothing(fll_assist_loop_bandwidth) ? configured.fll_assist_loop_bandwidth : fll_assist_loop_bandwidth,
+        isnothing(code_loop_bandwidth) ? configured.code_loop_bandwidth : code_loop_bandwidth,
+    )
+end
+
+@inline _resolve_bandwidths(configured::_LoopBandwidthConfiguration, defaults::LoopBandwidths) =
+    LoopBandwidths(
+        something(configured.wide_carrier_loop_bandwidth, defaults.wide_carrier),
+        something(configured.narrow_carrier_loop_bandwidth, defaults.narrow_carrier),
+        something(configured.fll_assist_loop_bandwidth, defaults.fll_assist),
+        something(configured.code_loop_bandwidth, defaults.code),
+    )
+
+# Construct through the concrete filter type: this preserves its numeric state
+# types and requires no lookup of a parametric type's wrapper in trimmed builds.
+_init_loop_filter(::Type{F}) where {F<:AbstractLoopFilter} = F()
+_init_loop_filter(::Type{<:SecondOrderBilinearLF}) = SecondOrderBilinearLF()
+_init_loop_filter(::Type{<:SecondOrderBoxcarLF}) = SecondOrderBoxcarLF()
+_init_loop_filter(::Type{<:ThirdOrderBilinearLF}) = ThirdOrderBilinearLF()
+_init_loop_filter(::Type{<:ThirdOrderAssistedBilinearLF}) = ThirdOrderAssistedBilinearLF()
+_init_loop_filter(::Type{<:ThirdOrderBoxcarLF}) = ThirdOrderBoxcarLF()
+
+_reset_loop_filter(filter::F) where {F<:AbstractLoopFilter} = F()
+_reset_loop_filter(filter::F) where {F<:Union{SecondOrderBilinearLF,SecondOrderBoxcarLF}} =
+    F(zero(filter.x))
+_reset_loop_filter(filter::F) where {F<:Union{ThirdOrderBilinearLF,ThirdOrderAssistedBilinearLF,ThirdOrderBoxcarLF}} =
+    F(zero(filter.x1), zero(filter.x2))
+
 """
 $(SIGNATURES)
 

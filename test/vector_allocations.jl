@@ -10,7 +10,7 @@ function measure_navigation(rx::SimReceiver, sample; fill! = fill_slot!)
     nav_processor = rx.vt
     nav_processor.pending_epoch_index = round(Int, sample / (rx.nominal_ms * SAMPLES_PER_MS))
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
-        fill!(group.slots[i], sat, sample, NO_LANDING_SAMPLE, nav_processor)
+        fill!(group.slots[i], sat, sample, nothing, nav_processor)
     end
     now = sample / ustrip(Hz, SIM_FS)
     @allocated TL._navigation_update!(nav_processor, now)
@@ -20,7 +20,7 @@ end
 function apply_feedback!(rx::SimReceiver, sample)
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
         sat.state = TL._apply_filter_feedback(rx.vt, group, group.slots[i], sat.state,
-            feedback_integration(sat, sample), sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(sample))
+            feedback_integration(sat, sample), sim_nco_history(sat, nothing), Int64(sample))
     end
 end
 
@@ -111,10 +111,10 @@ end
     group = rx.group
     sat = rx.sats[1]
     slot = group.slots[1]
-    integration = feedback_integration(sat, sample)
-    nco_history = sim_nco_history(sat, NO_LANDING_SAMPLE)
+    post_correlation_state = feedback_integration(sat, sample)
+    nco_history = sim_nco_history(sat, nothing)
     state = sat.state
-    apply_feedback(state) = @allocated TL._apply_filter_feedback(rx.vt, group, slot, state, integration, nco_history, Int64(sample))
+    apply_feedback(state) = @allocated TL._apply_filter_feedback(rx.vt, group, slot, state, post_correlation_state, nco_history, Int64(sample))
     apply_feedback(state)
     @test apply_feedback(state) == 0
 end

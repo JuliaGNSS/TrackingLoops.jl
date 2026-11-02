@@ -141,13 +141,13 @@ CarrierLoopStaging(::Type{F}) where {F<:AbstractLoopFilter} = CarrierLoopStaging
     )
 end
 
-# The staging after one driver `LoopRecord`: its prompt advances the indicator,
-# whose lock count moves the stage on for the next integration.
-@inline function _advance_staging(staging::CarrierLoopStaging, integration)
-    time_constant = _phase_lock_time_constant(integration.signal, integration.integrated_code_blocks)
+# The staging after one driver integration, the latest of a `PostCorrelationState`: its
+# prompt advances the indicator, whose lock count moves the stage on for the next integration.
+@inline function _advance_staging(staging::CarrierLoopStaging, post_correlation_state)
+    time_constant = _phase_lock_time_constant(post_correlation_state.signal, post_correlation_state.last_num_code_periods)
     lock_detector = _advance_lock_detector(
         staging.lock_detector,
-        get_prompt(integration.filtered_correlator),
+        get_prompt(post_correlation_state.last_filtered_correlator_bank),
         time_constant,
     )
     stage = staging.stage

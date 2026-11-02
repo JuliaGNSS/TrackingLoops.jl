@@ -13,9 +13,9 @@ Once [`is_bit_or_secondary_code_synced`](@ref) returns `true`, longer
 coherent integrations become available (see
 [`calc_num_code_periods_to_integrate`](@ref TrackingLoops.calc_num_code_periods_to_integrate)) and the bit synchronizer accumulates the
 demodulated soft bits, which [`get_soft_bits`](@ref) returns. For a pilot, the
-secondary-code sync also gives the prompt's sign, which an integration's
-`carrier_phase_polarity` hands to the four-quadrant carrier discriminators (see
-[`LoopRecord`](@ref)).
+secondary-code sync also gives the prompt's sign, which the latest integration's
+`last_carrier_phase_polarity` hands to the four-quadrant carrier discriminators (see
+[`PostCorrelationState`](@ref)).
 
 Detectors exist for every GPS, Galileo and BeiDou signal that GNSSSignals.jl
 models. How a signal is synchronised is a method of

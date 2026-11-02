@@ -747,7 +747,7 @@ producer) drops sync instead (JuliaGNSS/Tracking.jl#238): its energy belongs to 
 bits, and the equality test would never be met again. The detector then re-runs
 from clean accumulators and the caller falls back to single-period integrations; the
 decoded `soft_bits` are kept. Silent; [`process_correlator_bank_output!`](@ref) reports it as
-`overshoot`.
+the state's `last_sync_change`, `SYNC_LOST`.
 """
 function update_bit_sync!(
     signal::AbstractGNSSSignal,
@@ -968,7 +968,7 @@ Advance a just-synced `bit_synchronizer`'s `secondary_code_phase` by `num_code_p
 
 The detector reports the phase for the code period after the syncing integration, but
 Tracking.jl's code-phase snap reads it only after the whole chunk, so every later
-integration of the chunk (not `secondary_code_wiped`, see `_process_correlator_bank_output!`) must move it along, or
+integration of the chunk (not `secondary_code_wiped`, see `process_correlator_bank_output!`) must move it along, or
 the replica applies the wrong overlay chip (cf. JuliaGNSS/Tracking.jl#219).
 """
 @inline function _advance_secondary_phase(

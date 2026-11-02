@@ -23,7 +23,7 @@ using TrackingLoops:
     calc_effective_fll_assist_loop_bandwidth, calc_effective_code_loop_bandwidth,
     LoopBandwidths, CarrierLoopStage, get_phase_lock_indicator, is_phase_locked,
     calc_carrier_phase_correction, calc_carrier_aided_dopplers,
-    ScalarLoopState, SatNCOReferencedPLLAndDLL, VectorLoopState,
+    ScalarLoopState, VectorLoopState,
     VectorTrackingStatus, VectorTrackingReleaseReason, VT_NOT_RELEASED, VT_INELIGIBLE,
     VT_BELOW_HORIZON, VT_FALLBACK, SatelliteReport, calc_position_std,
     calc_clock_bias_std, SyncEvent, SYNC_UNCHANGED, SYNC_FOUND, SYNC_LOST,
@@ -38,6 +38,7 @@ using AllocCheck
 using LinearAlgebra: norm
 using TrackingLoopFilters: ThirdOrderAssistedBilinearLF, SecondOrderBilinearLF
 
+include("post_correlation_helpers.jl")
 include("api.jl")
 include("correlators.jl")
 include("sample_parameters.jl")
