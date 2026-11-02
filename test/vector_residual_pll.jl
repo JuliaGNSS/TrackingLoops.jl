@@ -60,7 +60,7 @@ residual_pll_error(sat, before) =
     for channels in rx.channels, sat in channels
         state = sat.state
         @test state.in_vector_loop && TL._has_carrier_ramp(state)
-        # The replica's word is the filter's ramp at the middle of the next record…
+        # The replica's command is the filter's ramp at the middle of the next record…
         T = record_ms(sat.signal) * 1e-3
         @test sat.carrier_doppler ≈ TL._doppler_at(state.ramp, state.residual_pll.prompt_center + T) atol = 1e-4
         # …which the residual PLL's residual brings onto the incoming carrier.
@@ -88,7 +88,7 @@ end
     fs = ustrip(Hz, SIM_FS)
     for channels in rx.channels, sat in channels
         @test sat.state.in_vector_loop
-        words = sim_words(sat, NO_LANDING_SAMPLE)
+        words = sim_nco_history(sat, NO_LANDING_SAMPLE)
         @test carrier_phase_correction(sat.state, words, sample, SIM_FS) ≈ sat.phase_error atol = 1e-4
         dt = 2e-3
         f_true = true_doppler(sat, rx.truth, sim_time(rx, sample) + dt / 2)
@@ -98,7 +98,7 @@ end
         @test carrier_phase_correction(TL._release_from_vector_loop(sat.state), words, sample, SIM_FS) == 0.0
     end
     scalar = init_estimator_state(ConventionalAssistedPLLAndDLL(), GPSL1CA(), 100.0Hz, 0.0Hz)
-    @test carrier_phase_correction(scalar, FixedNCOWord(100.0, 0.0), 0, SIM_FS) == 0.0
+    @test carrier_phase_correction(scalar, ConstantNCOCommand(100.0, 0.0), 0, SIM_FS) == 0.0
 end
 
 @testset "The residual PLL's phase jitter at 40 dB-Hz is the scalar PLL's or less, on $(nameof(typeof(signal)))" for signal in (
@@ -131,7 +131,7 @@ end
     (GPSL1CA(), 45.0, 0),
     (GalileoE1B(), 34.0, 1),
 )
-    # Each member's rate — the replica's word at the epoch plus the mean FLL, against a
+    # Each member's rate — the replica's command at the epoch plus the mean FLL, against a
     # replica the filter alone steers — against the true Doppler at the epoch: the noise
     # the filter weights it with, the −1/2 lag-1 autocorrelation of measurements that
     # share their boundary prompts, and an integrated error bounded by the boundary
@@ -197,7 +197,7 @@ end
 
 # A member of GPS L1 C/A on the ramp `ramp`, its residual PLL taking over at
 # `scalar_doppler`, stepped with 1 ms records at 1 MHz whose residual phase against the
-# replica's word, the ramp's, is `residual(t)` (cycles), at amplitude `amplitude(t)` plus
+# replica's command, the ramp's, is `residual(t)` (cycles), at amplitude `amplitude(t)` plus
 # noise of σ `noise_std`, the host reading no signal while the amplitude is zero; the
 # records end at `ends` (samples). `on_record(state, k)` after the `k`-th.
 function step_residual(residual, ends; ramp = TL.CarrierRamp(100.0, 0.0, 0.0), scalar_doppler = ramp.doppler,
@@ -206,7 +206,7 @@ function step_residual(residual, ends; ramp = TL.CarrierRamp(100.0, 0.0, 0.0), s
     estimator = VectorPLLAndDLL(GPSL1CA())
     state = commanded(init_estimator_state(estimator, GPSL1CA(), ramp.doppler * Hz, 0.0Hz), ramp; scalar_doppler)
     unlocked && (state = TL.SatVectorPLLAndDLL(state; residual_pll = TL.ResidualPLL(state.residual_pll; lock = TL.ResidualPLLLock())))
-    words = FixedNCOWord(ramp.doppler, 0.0)
+    words = ConstantNCOCommand(ramp.doppler, 0.0)
     previous_prompt = complex(0.0)
     for (k, sample_index) in enumerate(ends)
         center = (sample_index - 500) / 1e6
@@ -227,7 +227,7 @@ end
     # record's end — and halfway into the next — stays where it was: no cycle, no half
     # cycle is lost.
     residual(t) = 5.0 * t
-    words = FixedNCOWord(100.0, 0.0)
+    words = ConstantNCOCommand(100.0, 0.0)
     offsets = Float64[]
     corrections = Float64[]
     step_residual(residual, 1000:1000:3_000_000; scalar_doppler = 105.0, on_record = (state, k) -> begin
@@ -279,7 +279,7 @@ end
 
 @testset "A gap between records: the replica ran on through it" begin
     # The incoming carrier 2 Hz off the ramp; 2.5 ms of samples skipped after the tenth
-    # record, over which the replica advanced by a quarter cycle on its 100 Hz word.
+    # record, over which the replica advanced by a quarter cycle on its 100 Hz command.
     ends = vcat(1000:1000:10_000, 12_500 .+ (1000:1000:10_000))
     # Zero at the first prompt, as the scalar loop hands over phase-locked.
     residual(t) = 2.0 * (t - 0.0005)
@@ -304,7 +304,7 @@ end
     _, sample, _ = run_simulation!(rx, 30)
     sat = rx.sats[2]
     slot = rx.group.slots[2]
-    # The residual PLL took over at the scalar loop's word, so its estimate of the incoming
+    # The residual PLL took over at the scalar loop's command, so its estimate of the incoming
     # Doppler continued the scalar loop's (here both on the truth).
     residual_pll = sat.state.residual_pll
     @test TL._has_carrier_ramp(sat.state)
@@ -322,7 +322,7 @@ end
     TL._mark_release!(slot, VT_INELIGIBLE)
     rx.vt.cycle_id += 1
     sat.state = TL._take_up_cycle(rx.vt, rx.group, slot, sat.state, take_up_record(sat, sample),
-        sim_words(sat, NO_LANDING_SAMPLE), Int64(sample))
+        sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(sample))
     @test !sat.state.in_vector_loop
     @test sat.state.inner.init_carrier_doppler ≈ estimate * Hz
     @test abs(estimate - true_doppler(sat, rx.truth, sim_time(rx, sample))) < 0.5
@@ -353,7 +353,7 @@ residual_pll_at(center, prompt_phase; carrier_freq_update = 0.0) = TL.ResidualPL
     nav = estimator.navigation
     group = first(nav.groups)
     slot = first(group.slots)
-    words = FixedNCOWord(100.0, 0.0)
+    words = ConstantNCOCommand(100.0, 0.0)
     state = TL._add_to_vector_loop(init_estimator_state(estimator, signal, 100.0Hz, 0.0Hz))
     sentinel = 12345.0f0
     slot.soft_bit[1] = sentinel
@@ -401,7 +401,7 @@ end
     # The host may step the pilot's records before the data's: the data's record finds
     # the residual PLL past it, and takes the phase it estimated at the pilot's record of
     # the same span, moved on by its residual Doppler where the spans differ. A record
-    # past the residual PLL's latest prompt takes its prediction over the words the
+    # past the residual PLL's latest prompt takes its prediction over the commands the
     # replica ran on.
     signal = GalileoE1B()
     residual_pll = residual_pll_at(0.0045, 0.31; carrier_freq_update = 2.0)
@@ -409,7 +409,7 @@ end
     TL._push_prompt!(history, residual_pll_at(0.0005, 0.2))
     TL._push_prompt!(history, residual_pll)
     ramp = TL.CarrierRamp(1000.0, 0.0, 0.0)
-    words = FixedNCOWord(1000.0, 0.0)
+    words = ConstantNCOCommand(1000.0, 0.0)
     half = (1000.0 * 0.0005, 0.0005s)
     record(start, stop) = decoding_record(signal, cis(0.0), stop; fold_end = stop) |>
         r -> LoopRecord(r.signal, r.filtered_correlator, r.previous_prompt, stop - start, stop, stop, 1,

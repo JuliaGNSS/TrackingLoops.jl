@@ -62,7 +62,7 @@ loop, prompt, filtered, blocks, overshoot =
 overshoot && @warn "record crossed a navigation-bit boundary; bit sync restarted"
 record = LoopRecord(signal, filtered, output, loop, fs; prn)
 state, carrier_doppler, code_doppler =
-    step_loop(estimator, state, record, FixedNCOWord(carrier_hz, code_hz), NO_LANDING_SAMPLE)
+    step_loop(estimator, state, record, ConstantNCOCommand(carrier_hz, code_hz), NO_LANDING_SAMPLE)
 # program the next replica with carrier_doppler and code_doppler
 ```
 
