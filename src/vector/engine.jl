@@ -375,14 +375,14 @@ function _commands_at_landing(
     lead = max(lead, 0.0)
     T = _update_interval_seconds(nav)
     code_frequency = ustrip(Hz, get_chip_rate(group.driver_signal))
-    _, code_word = mean_nco_word(words, slot.driver_last_end_sample, landing)
+    code_command = calc_mean_nco_command(words, slot.driver_last_end_sample, landing).code_doppler
     chips =
-        slot.chips_since_epoch + (landing - slot.driver_last_end_sample) / fs * (code_frequency + code_word)
+        slot.chips_since_epoch + (landing - slot.driver_last_end_sample) / fs * (code_frequency + code_command)
     reference_system = _reference_system(nav)
     reference_tow = get_time_of_week(reference_system, nav.reference_epoch)
     code_update, doppler = _member_commands(nav, slot, slot.member_index, reference_system, reference_tow, lead, chips)
     _, next_doppler =
-        _member_commands(nav, slot, slot.member_index, reference_system, reference_tow, lead + T, chips + T * (code_frequency + code_word))
+        _member_commands(nav, slot, slot.member_index, reference_system, reference_tow, lead + T, chips + T * (code_frequency + code_command))
     code_update, CarrierRamp(doppler, (next_doppler - doppler) / T, landing / fs), lead
 end
 
@@ -429,9 +429,9 @@ function _snapshot_driver!(
     epoch_time = _epoch_time(nav, nav.pending_epoch)
     code_frequency = ustrip(Hz, get_chip_rate(group.driver_signal))
     epoch_sample = epoch_time * fs
-    _, code_word = mean_nco_word(words, slot.driver_last_end_sample, epoch_sample)
-    chips_to_epoch = (epoch_time - slot.driver_last_end_time) * (code_frequency + code_word)
-    carrier_doppler, code_doppler = mean_nco_word(words, epoch_sample, epoch_sample)
+    code_command = calc_mean_nco_command(words, slot.driver_last_end_sample, epoch_sample).code_doppler
+    chips_to_epoch = (epoch_time - slot.driver_last_end_time) * (code_frequency + code_command)
+    (; carrier_doppler, code_doppler) = get_nco_command(words, epoch_sample)
     integration_time = uconvert(s, record.integrated_samples / record.sampling_frequency)
     slot.cn0_dbhz =
         min(Float64(ustrip(estimate_cn0(record.cn0_estimator, integration_time))), MAX_CN0_DBHZ)
@@ -456,8 +456,8 @@ function _snapshot_decoding!(nav::VectorNavigation, group::VTSlotGroup, slot::VT
     epoch_time = _epoch_time(nav, nav.pending_epoch)
     signal = group.decoding_signal
     code_frequency = ustrip(Hz, get_chip_rate(signal))
-    _, code_word = mean_nco_word(words, slot.decoding_last_end_sample, epoch_time * fs)
-    chips_to_epoch = (epoch_time - slot.decoding_last_end_time) * (code_frequency + code_word)
+    code_command = calc_mean_nco_command(words, slot.decoding_last_end_sample, epoch_time * fs).code_doppler
+    chips_to_epoch = (epoch_time - slot.decoding_last_end_time) * (code_frequency + code_command)
     slot.epoch_decoder = slot.running_decoder
     slot.epoch_bit_synced = slot.decoding_bit_synced
     slot.epoch_code_phase = _code_phase_from_bit_edge(signal, slot) + chips_to_epoch
@@ -698,9 +698,9 @@ function _advance_driver!(group::VTSlotGroup, slot::VTSlot, record::LoopRecord, 
     signal = group.driver_signal
     fs = _sampling_frequency_hz(record)
     code_frequency = ustrip(Hz, get_chip_rate(signal))
-    _, code_word = mean_nco_word(words, slot.driver_last_end_sample, record.sample_index)
+    code_command = calc_mean_nco_command(words, slot.driver_last_end_sample, record.sample_index).code_doppler
     slot.chips_since_epoch +=
-        (record.sample_index - slot.driver_last_end_sample) / fs * (code_frequency + code_word)
+        (record.sample_index - slot.driver_last_end_sample) / fs * (code_frequency + code_command)
     slot.driver_last_end_sample = record.sample_index
     slot.driver_last_end_time = record.sample_index / fs
     slot.last_code_phase = record.code_phase

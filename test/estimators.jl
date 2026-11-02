@@ -1,6 +1,6 @@
 # The loop model of GNSSReceiver's delay-aware tests: a carrier whose phase
-# error advances by `2π (f_true − w) Δt` per record under the replica word `w`,
-# the word the estimator commands landing `d` records after the record that
+# error advances by `2π (f_true − w) Δt` per record under the replica command `w`,
+# the command the estimator issues, applied `d` records after the record that
 # produced it.
 const LOOP_SIGNAL = GPSL1CA()
 const LOOP_FS = 4e6Hz
@@ -37,7 +37,7 @@ function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, p
     for k = 0:steps-1
         a = k * LOOP_N
         b = a + LOOP_N
-        w, _ = nco_word_at(timeline, a)
+        w = get_nco_command(timeline, a).carrier_doppler
         mean_phase = phase + π * (f_true - w) * dt
         phase += 2π * (f_true - w) * dt
         # In radians, folded as the Costas discriminator reads it.
@@ -49,8 +49,8 @@ function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, p
         record = LoopRecord(LOOP_SIGNAL, output.correlator, previous_prompt, output, 1, LOOP_FS; prn = 1)
         state, carrier, code = step_loop(estimator, state, record, timeline, landing)
         previous_prompt = p
-        schedule_word!(timeline, landing, ustrip(Hz, carrier), ustrip(Hz, code))
-        promote_words!(timeline, b - LOOP_N)
+        schedule_command!(timeline, landing, ustrip(Hz, carrier), ustrip(Hz, code))
+        advance_timeline!(timeline, b - LOOP_N)
     end
     phases, words
 end
@@ -137,7 +137,7 @@ end
 end
 
 @testset "Without a landing sample the NCO-referenced loop is the conventional loop" begin
-    # The software receiver's path: one fixed word per chunk and no landing
+    # The software receiver's path: one fixed command per chunk and no application sample
     # sample, so the prediction branch is never entered.
     signal = LOOP_SIGNAL
     conventional = ConventionalAssistedPLLAndDLL(; NCO_REFERENCED_WIDE...)
@@ -150,7 +150,7 @@ end
         p = cis(0.3 + 0.002k)
         output = CorrelatorOutput(loop_epl(0.45p, p, 0.55p), LOOP_N, LOOP_N * k)
         record = LoopRecord(signal, output.correlator, previous_prompt, output, 1, LOOP_FS)
-        words = FixedNCOWord(carrier, code)
+        words = ConstantNCOCommand(carrier, code)
         conv_state, conv_carrier, conv_code = step_loop(conventional, conv_state, record, words, NO_LANDING_SAMPLE)
         ref_state, ref_carrier, ref_code = step_loop(referenced, ref_state, record, words, NO_LANDING_SAMPLE)
         @test ref_carrier == conv_carrier
@@ -172,7 +172,7 @@ end
     state = init_estimator_state(estimator, LOOP_SIGNAL, 0.0Hz, 0.0Hz)
     output = CorrelatorOutput(loop_epl(0.4, cis(0.2), 0.6), LOOP_N, LOOP_N)
     record = LoopRecord(LOOP_SIGNAL, output.correlator, cis(0.1), output, 1, LOOP_FS)
-    state, = step_loop(estimator, state, record, FixedNCOWord(0.0, 0.0), NO_LANDING_SAMPLE)
+    state, = step_loop(estimator, state, record, ConstantNCOCommand(0.0, 0.0), NO_LANDING_SAMPLE)
     @test state.carrier_loop_filter.x1 != 0.0Hz
     reset = reset_estimator_state(estimator, state, 42.0Hz, 0.02Hz)
     @test reset isa typeof(state)
@@ -199,7 +199,7 @@ end
     # The record names its satellite, which the vector loop's navigation engine needs.
     record = LoopRecord(LOOP_SIGNAL, output.correlator, complex(0.0, 0.0), output, 1, LOOP_FS; prn = 5)
     stepped, carrier_doppler, code_doppler =
-        @inferred step_loop(estimator, state, record, FixedNCOWord(100.0, 0.0), NO_LANDING_SAMPLE)
+        @inferred step_loop(estimator, state, record, ConstantNCOCommand(100.0, 0.0), NO_LANDING_SAMPLE)
     @test stepped isa typeof(state)
     @test carrier_doppler isa typeof(1.0Hz)
     @test code_doppler isa typeof(1.0Hz)
@@ -231,13 +231,13 @@ end
     output = CorrelatorOutput(loop_epl(0.5, 1.0, 0.5), n, n)
     record = LoopRecord(passenger, output.correlator, complex(0.0), output, 1, fs; prn = 5)
     # The state unchanged, and the command in force…
-    stepped, carrier, code = step_loop(estimator, state, record, FixedNCOWord(123.0, 0.12), NO_LANDING_SAMPLE)
+    stepped, carrier, code = step_loop(estimator, state, record, ConstantNCOCommand(123.0, 0.12), NO_LANDING_SAMPLE)
     @test stepped === state
     @test (carrier, code) == (123.0Hz, 0.12Hz)
     # …at the landing sample.
     timeline = NCOTimeline()
     reset_timeline!(timeline, 100.0, 0.1)
-    schedule_word!(timeline, 2n, 130.0, 0.13)
+    schedule_command!(timeline, 2n, 130.0, 0.13)
     @test step_loop(estimator, state, record, timeline, Int64(3n))[2:3] == (130.0Hz, 0.13Hz)
     @test step_loop(estimator, state, record, timeline, Int64(n))[2:3] == (100.0Hz, 0.1Hz)
     # Passenger records interleaved with the driver's leave its Doppler sequence as it
@@ -252,10 +252,10 @@ end
             output = CorrelatorOutput(loop_epl(0.45p, p, 0.55p), n, n * k)
             if with_passengers
                 passenger_record = LoopRecord(passenger, output.correlator, complex(0.0), output, 1, fs)
-                state, = step_loop(estimator, state, passenger_record, FixedNCOWord(carrier, code), NO_LANDING_SAMPLE)
+                state, = step_loop(estimator, state, passenger_record, ConstantNCOCommand(carrier, code), NO_LANDING_SAMPLE)
             end
             record = LoopRecord(driver, output.correlator, previous_prompt, output, 1, fs)
-            state, c, d = step_loop(estimator, state, record, FixedNCOWord(carrier, code), NO_LANDING_SAMPLE)
+            state, c, d = step_loop(estimator, state, record, ConstantNCOCommand(carrier, code), NO_LANDING_SAMPLE)
             push!(sequence, (c, d))
             carrier, code = ustrip(Hz, c), ustrip(Hz, d)
             previous_prompt = p
@@ -281,7 +281,7 @@ end
         estimator,
         state,
         LoopRecord(LOOP_SIGNAL, output.correlator, complex(1.0), output, 1, LOOP_FS; kwargs...),
-        FixedNCOWord(0.0, 0.0),
+        ConstantNCOCommand(0.0, 0.0),
         NO_LANDING_SAMPLE;
         form_fll = true,
     )
@@ -312,12 +312,12 @@ end
     state = init_estimator_state(estimator, LOOP_SIGNAL, 100.0Hz, 0.0Hz)
     dt = LOOP_N / ustrip(Hz, LOOP_FS)
     phase = 0.8
-    word = 100.0
+    carrier_command = 100.0
     previous_prompt = complex(0.0, 0.0)
     stages = CarrierLoopStage[]
     for k = 0:1499
-        mean_phase = phase + π * (130.0 - word) * dt
-        phase += 2π * (130.0 - word) * dt
+        mean_phase = phase + π * (130.0 - carrier_command) * dt
+        phase += 2π * (130.0 - carrier_command) * dt
         p = cis(mean_phase)
         output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, LOOP_N * (k + 1))
         record = LoopRecord(LOOP_SIGNAL, output.correlator, previous_prompt, output, 1, LOOP_FS)
@@ -327,14 +327,14 @@ end
             estimator,
             state,
             record,
-            FixedNCOWord(word, 0.0),
+            ConstantNCOCommand(carrier_command, 0.0),
             NO_LANDING_SAMPLE;
             form_fll = uses_fll,
         )
         uses_fll || @test discriminators.frequency_error == 0.0Hz
-        state, carrier, = step_loop(estimator, state, record, FixedNCOWord(word, 0.0), NO_LANDING_SAMPLE)
+        state, carrier, = step_loop(estimator, state, record, ConstantNCOCommand(carrier_command, 0.0), NO_LANDING_SAMPLE)
         push!(stages, carrier_loop_stage(state))
-        word = ustrip(Hz, carrier)
+        carrier_command = ustrip(Hz, carrier)
         previous_prompt = p
     end
     @test issorted(stages)
@@ -342,7 +342,7 @@ end
     # loop's 50 Hz.
     @test FLL_ASSISTED_PLL < stages[900] && last(stages) == NARROW_PLL
     @test phase_lock_indicator(state) > 0.99 && phase_locked(state)
-    @test abs(word - 130.0) < 0.1
+    @test abs(carrier_command - 130.0) < 0.1
     # A reset keeps the staging, a fresh state starts it over.
     reset = reset_estimator_state(estimator, state, 130.0Hz, 0.0Hz)
     @test reset.staging == state.staging

@@ -32,7 +32,7 @@ end
     estimator = VectorPLLAndDLL(GPSL1CA(); max_satellites_per_signal = 2)
     nav = estimator.navigation
     group = nav.groups[1]
-    words = FixedNCOWord(100.0, 0.1)
+    words = ConstantNCOCommand(100.0, 0.1)
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     state, = step_loop(estimator, state, engine_record(7, 4000), words, NO_LANDING_SAMPLE)
     @test (state.slot_index, state.registration) == (1, 1)
@@ -76,7 +76,7 @@ b1c_subframe1(prn, soh) = Float32[
     # B1C syncs on a PRN codeword, which must be the new satellite's.
     estimator = VectorPLLAndDLL(BeiDouB1C_P() => BeiDouB1C_D(); max_satellites_per_signal = 1)
     group = estimator.navigation.groups[1]
-    words = FixedNCOWord(100.0, 0.1)
+    words = ConstantNCOCommand(100.0, 0.1)
     state = init_estimator_state(estimator, BeiDouB1C_P(), 100.0Hz, 0.1Hz)
     state, = step_loop(estimator, state, engine_record(19, 4000; signal = BeiDouB1C_P()), words, NO_LANDING_SAMPLE)
     slot = group.slots[1]
@@ -112,7 +112,7 @@ function take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fractio
     slot.last_code_phase = driver_phase
     slot.driver_last_end_sample = end_sample
     slot.driver_last_end_time = end_sample / fs
-    words = FixedNCOWord(0.0, code_doppler)
+    words = ConstantNCOCommand(0.0, code_doppler)
     record = engine_record(3, epoch_sample + 4000; signal = group.driver_signal)
     TL._snapshot_driver!(nav, group, slot, group.prototype, record, words)
     TL._snapshot_decoding!(nav, group, slot, record, words)
@@ -165,8 +165,8 @@ end
     slot.driver_last_end_sample = slot.decoding_last_end_sample = 300_000
     slot.driver_last_end_time = slot.decoding_last_end_time = 300_000 / fs
     record = engine_record(3, 304_000)
-    TL._snapshot_driver!(nav, group, slot, group.prototype, record, FixedNCOWord(0.0, 0.0))
-    TL._snapshot_decoding!(nav, group, slot, record, FixedNCOWord(0.0, 0.0))
+    TL._snapshot_driver!(nav, group, slot, group.prototype, record, ConstantNCOCommand(0.0, 0.0))
+    TL._snapshot_decoding!(nav, group, slot, record, ConstantNCOCommand(0.0, 0.0))
     TL._complete_snapshot!(nav, group, slot)
     @test nav.num_snapshots == 0
     @test slot.driver_epoch == slot.decoding_epoch == typemin(Int)
@@ -254,7 +254,7 @@ end
 @testset "Satellites stepped in turn: the last to reach the epoch runs its cycle" begin
     estimator = VectorPLLAndDLL(GPSL1CA())
     nav = estimator.navigation
-    words = FixedNCOWord(100.0, 0.1)
+    words = ConstantNCOCommand(100.0, 0.1)
     states = [init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz) for _ = 1:3]
     prns = (3, 5, 7)
     for k = 1:99, i = 1:3
@@ -287,7 +287,7 @@ end
 @testset "A satellite joining past the pending epoch does not skip it" begin
     estimator = VectorPLLAndDLL(GPSL1CA())
     nav = estimator.navigation
-    words = FixedNCOWord(100.0, 0.1)
+    words = ConstantNCOCommand(100.0, 0.1)
     a = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     for k = 1:99
         a, = step_loop(estimator, a, engine_record(3, 4000k), words, NO_LANDING_SAMPLE)
@@ -315,7 +315,7 @@ end
     estimator = VectorPLLAndDLL(GPSL1CA())
     nav = estimator.navigation
     slots = nav.groups[1].slots
-    words = FixedNCOWord(100.0, 0.1)
+    words = ConstantNCOCommand(100.0, 0.1)
     prns = (3, 5, 7)
     states = [init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz) for _ in prns]
     cycles = []
@@ -358,7 +358,7 @@ end
     estimator = VectorPLLAndDLL(GPSL1CA())
     nav = estimator.navigation
     group = nav.groups[1]
-    words = FixedNCOWord(100.0, 0.1)
+    words = ConstantNCOCommand(100.0, 0.1)
     a = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     b = init_estimator_state(estimator, GPSL1CA(), 50.0Hz, 0.05Hz)
     for k = 1:10
@@ -379,7 +379,7 @@ end
     @test b.in_vector_loop
     # Its records resume: it registers anew, and takes up the release it missed, its
     # scalar loop re-seeded from the replica's Dopplers.
-    resumed = FixedNCOWord(120.0, 0.12)
+    resumed = ConstantNCOCommand(120.0, 0.12)
     b, = step_loop(estimator, b, engine_record(5, 4000 * 401), resumed, NO_LANDING_SAMPLE)
     @test slot.occupied
     @test !b.in_vector_loop
@@ -410,7 +410,7 @@ end
 @testset "A record of each role" begin
     estimator = VectorPLLAndDLL(GPSL1C_P() => GPSL1CA())
     nav = estimator.navigation
-    words = FixedNCOWord(100.0, 0.1)
+    words = ConstantNCOCommand(100.0, 0.1)
     state = init_estimator_state(estimator, GPSL1C_P(), 100.0Hz, 0.1Hz)
     # The data component's record comes first: it registers the satellite and leaves
     # its loop alone, returning the command in force.
@@ -422,7 +422,7 @@ end
     # Under a landing sample the command in force is the one there.
     timeline = NCOTimeline()
     reset_timeline!(timeline, 100.0, 0.1)
-    schedule_word!(timeline, 6000, 120.0, 0.12)
+    schedule_command!(timeline, 6000, 120.0, 0.12)
     _, carrier, code = step_loop(estimator, stepped, engine_record(7, 5000; signal = GPSL1CA()), timeline, Int64(7000))
     @test (carrier, code) == (120.0Hz, 0.12Hz)
     # The pilot's record steps the loop on the same slot.
@@ -446,7 +446,7 @@ end
     # satellite would re-register on the two groups by turns.
     estimator = VectorPLLAndDLL(GPSL1CA(), GPSL1C_P() => GPSL1C_D())
     nav = estimator.navigation
-    words = FixedNCOWord(100.0, 0.1)
+    words = ConstantNCOCommand(100.0, 0.1)
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     state, = step_loop(estimator, state, engine_record(7, 4000), words, NO_LANDING_SAMPLE)
     for k = 1:300
@@ -482,7 +482,7 @@ TL.estimate_cn0(estimator::FixedCN0Estimator, integration_time) = estimator.dbhz
         for k = 1:101
             output = CorrelatorOutput(engine_correlator(4000.0), 4000, 4000k, 0.0)
             record = LoopRecord(GPSL1CA(), engine_correlator(), output, loop, 4e6Hz; prn = 7)
-            state, = step_loop(estimator, state, record, FixedNCOWord(100.0, 0.1), NO_LANDING_SAMPLE)
+            state, = step_loop(estimator, state, record, ConstantNCOCommand(100.0, 0.1), NO_LANDING_SAMPLE)
         end
         slot = nav.groups[1].slots[1]
         @test slot.snapshot_epoch == 1

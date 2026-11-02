@@ -316,9 +316,10 @@ _release_from_vector_loop(state::SatVectorPLLAndDLL) =
 # starts from the replica's code word. Unlike a reset, it restarts the staging, so the
 # scalar loop pulls in again FLL-assisted at the wide bandwidth.
 function _hand_over_to_scalar_loop(state::SatVectorPLLAndDLL, words, landing, fs)
-    carrier_word, code_word = mean_nco_word(words, landing, landing)
-    carrier_doppler = carrier_word * Hz
-    code_doppler = code_word * Hz
+    nco_command = get_nco_command(words, landing)
+    carrier_command, code_command = nco_command.carrier_doppler, nco_command.code_doppler
+    carrier_doppler = carrier_command * Hz
+    code_doppler = code_command * Hz
     time = landing / fs
     ramp, residual_pll = state.ramp, state.residual_pll
     rate = ramp.rate
@@ -372,7 +373,7 @@ function _set_vector_commands(
     residual_pll = if _has_carrier_ramp(state)
         _residual_pll_on_new_ramp(state.residual_pll, state.ramp, ramp)
     else
-        scalar_doppler, _ = mean_nco_word(words, landing, landing)
+        scalar_doppler = get_nco_command(words, landing).carrier_doppler
         _initialized_residual_pll(state.residual_pll, ramp, scalar_doppler, ramp.time, state.inner.staging)
     end
     SatVectorPLLAndDLL(
@@ -404,11 +405,11 @@ _disc_mean((count, disc_sum)) = count == 0 ? nothing : disc_sum / count
     record_end = record.sample_index
     half_samples = record.integrated_samples / 2
     center = record_end - half_samples
-    first_word, _ = mean_nco_word(words, record_end - record.integrated_samples, center)
-    second_word, _ = mean_nco_word(words, center, record_end)
+    first_command = calc_mean_nco_command(words, record_end - record.integrated_samples, center).carrier_doppler
+    second_command = calc_mean_nco_command(words, center, record_end).carrier_doppler
     half_duration = convert(typeof(1.0s), half_samples / fs)
-    first_cycles = Float64(uconvert(NoUnits, first_word * Hz * half_duration))
-    second_cycles = Float64(uconvert(NoUnits, second_word * Hz * half_duration))
+    first_cycles = Float64(uconvert(NoUnits, first_command * Hz * half_duration))
+    second_cycles = Float64(uconvert(NoUnits, second_command * Hz * half_duration))
     (first = (first_cycles, half_duration), second = (second_cycles, half_duration))
 end
 
@@ -442,7 +443,7 @@ end
 # the inner loops measure it.
 @inline function _code_discriminator(record::LoopRecord, words)
     record_start = record.sample_index - record.integrated_samples
-    _, applied_code = mean_nco_word(words, record_start, record.sample_index)
+    applied_code = calc_mean_nco_command(words, record_start, record.sample_index).code_doppler
     dll_disc(record.signal, record.filtered_correlator, applied_code * Hz, record.sampling_frequency)
 end
 
@@ -502,8 +503,8 @@ end
     gap = isnan(previous_end) ? 0.0 : record_start / fs - previous_end
     gap_cycles = 0.0
     if gap > 0.5 / fs
-        gap_word, _ = mean_nco_word(words, previous_end * fs, record_start)
-        gap_cycles = gap_word * gap
+        gap_command = calc_mean_nco_command(words, previous_end * fs, record_start).carrier_doppler
+        gap_cycles = gap_command * gap
     else
         gap = 0.0
     end
