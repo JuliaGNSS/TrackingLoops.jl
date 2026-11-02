@@ -37,9 +37,9 @@ for (name, signals) in (("GPS L1 C/A", (GPSL1CA(),)), ("GPS L1 C/A and L2C", (GP
     # them. Each sample runs the update on a copy, so every one starts from the same state.
     rx = SimReceiver(; signals)
     _, sample, _ = run_simulation!(rx, 5)
-    rx.vt.running || error("the filter did not start on $name")
+    rx.vt.vector_tracking_active || error("the filter did not start on $name")
     epoch = sample + rx.update_interval_ms * SAMPLES_PER_MS
-    rx.vt.pending_epoch = round(Int, epoch / (rx.nominal_ms * SAMPLES_PER_MS))
+    rx.vt.pending_epoch_index = round(Int, epoch / (rx.nominal_ms * SAMPLES_PER_MS))
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
         fill_slot!(group.slots[i], sat, epoch, NO_LANDING_SAMPLE, rx.vt)
     end
