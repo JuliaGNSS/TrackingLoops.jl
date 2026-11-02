@@ -167,7 +167,7 @@ end
     )
     # `DefaultPostCorrFilter`'s weights select the last antenna.
     weights = @inferred get_weights(DefaultPostCorrFilter(), NumAnts(2))
-    filtered_correlator_bank = @inferred TrackingLoops.apply(
+    filtered_correlator_bank = @inferred TrackingLoops.map_correlator_outputs(
         correlator_output -> TrackingLoops._filter_correlator_output(correlator_output, weights),
         correlator_bank,
     )
@@ -176,12 +176,12 @@ end
 
     correlator_bank =
         @inferred EarlyPromptLateCorrelatorBank(SVector(1.0 + 0.0im, 1.0 + 0.0im, 1.0 + 0.0im), 0.5)
-    filtered_correlator_bank = @inferred TrackingLoops.apply(x -> 2 * x, correlator_bank)
+    filtered_correlator_bank = @inferred TrackingLoops.map_correlator_outputs(x -> 2 * x, correlator_bank)
     @test filtered_correlator_bank ==
           EarlyPromptLateCorrelatorBank(SVector(2.0 + 0.0im, 2.0 + 0.0im, 2.0 + 0.0im), 0.5)
 
     vepl = VeryEarlyPromptLateCorrelatorBank(SVector(ntuple(k -> complex(k, 0.0), 5)), 0.15, 0.6)
-    @test get_correlator_outputs(TrackingLoops.apply(x -> 2 * x, vepl)) ==
+    @test get_correlator_outputs(TrackingLoops.map_correlator_outputs(x -> 2 * x, vepl)) ==
           SVector(ntuple(k -> complex(2k, 0.0), 5))
 end
 

@@ -207,7 +207,7 @@ function LoopRecord(
         view(soft_bits, first_new:num_soft_bits),
         state.cn0_estimator,
         state.last_carrier_phase_polarity,
-        synced ? bit_synchronizer.polarity : Int8(0),
+        synced ? bit_synchronizer.bit_polarity : Int8(0),
     )
 end
 
