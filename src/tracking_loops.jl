@@ -992,3 +992,5 @@ A [`SatelliteReport`](@ref) of satellite `prn` of `signal`, or `nothing` for the
 scalar loops or a satellite never seen.
 """
 get_satellite_report(::AbstractTrackingLoop, ::AbstractGNSSSignal, ::Integer) = nothing
+
+get_decoder(::AbstractTrackingLoop, ::AbstractGNSSSignal, ::Integer) = nothing

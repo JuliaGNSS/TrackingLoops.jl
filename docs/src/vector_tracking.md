@@ -289,8 +289,10 @@ consumer polling it after each step reads each update's results, and
 update on the integrations' time grid. An unsuccessful solve retains the previous PVT
 solution, so the elapsed time may be newer than the solution's fix.
 [`get_satellite_report`](@ref) hands out what the navigation processor knows of a satellite
-(decoder, bit sync, C/N₀, lock, PVT readiness, membership), so a receiver need
-not decode or estimate the C/N₀ a second time.
+as an immutable snapshot of bit sync, C/N₀, measurement readiness and membership.
+Its values remain stable after later integrations. [`get_decoder`](@ref) separately
+borrows the navigation processor's decoder; consume or copy its contents before the next integration
+changes its shared buffers.
 
 Scalar loops answer these with `nothing`, so a host can ask whichever tracking
 loop it was given:
@@ -304,8 +306,9 @@ if !isnothing(update_index) && update_index != last_update
 end
 ```
 
-The returned objects are the estimator's own and reused by the next update or
-call: copy out what is needed later.
+The solution reuses its containers on the next update, so copy out values needed
+later. Satellite reports are immutable snapshots and remain valid after later
+integrations and calls.
 
 ## Storage
 
@@ -345,6 +348,7 @@ TrackingLoops.default_residual_pll_loop_bandwidth()
 ```@docs
 TrackingLoops.VectorTrackingStatus
 TrackingLoops.SatelliteReport
+get_decoder
 TrackingLoops.VectorTrackingReleaseReason
 TrackingLoops.calc_clock_bias_std(::VectorTrackingLoop)
 get_navigation_solution(::VectorTrackingLoop)

@@ -257,6 +257,14 @@ function _assign_slot!(nav_processor::NavigationProcessor, group::VectorTracking
     loop_state, slot
 end
 
+# The slot that holds or held `prn`, or `nothing`.
+function _held_slot(group, prn)
+    index = _find_slot(group.slots, prn)
+    index == 0 && return nothing
+    slot = group.slots[index]
+    slot.prn == prn && slot.slot_generation > 0 ? slot : nothing
+end
+
 # The slot that holds or held `prn`, else any free one; 0 when none is free.
 function _find_slot(slots, prn)
     free = 0
