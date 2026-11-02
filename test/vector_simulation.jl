@@ -370,7 +370,7 @@ function fill_slot!(slot, sat::SimSat, epoch_sample_index, application_sample_in
         ) * sat.code_frequency / fs
     slot.measurement_ready = measurement_ready
     slot.positioning_ready = measurement_ready
-    slot.snapshot_epoch = nav.pending_epoch
+    slot.snapshot_epoch_index = nav.pending_epoch_index
     slot.driver_last_end_sample_index = slot.decoding_last_end_sample_index = epoch_sample_index
     slot.driver_last_end_time = slot.decoding_last_end_time = epoch_sample_index / fs
     slot.chips_since_epoch = 0.0
@@ -381,7 +381,7 @@ end
 # cycles, so the cycle drops it.
 function drop_slot!(slot)
     slot.driver_last_end_time = slot.decoding_last_end_time = -Inf
-    slot.snapshot_epoch = typemin(Int)
+    slot.snapshot_epoch_index = typemin(Int)
     slot
 end
 
@@ -400,9 +400,9 @@ end
 
 function Base.getproperty(receiver::SimReceiver, name::Symbol)
     name === :sats && return getfield(receiver, :channels)[1]
-    name === :vt && return getfield(receiver, :tracking_loop).navigation
-    name === :groups && return getfield(receiver, :tracking_loop).navigation.groups
-    name === :group && return getfield(receiver, :tracking_loop).navigation.groups[1]
+    name === :vt && return getfield(receiver, :tracking_loop).engine
+    name === :groups && return getfield(receiver, :tracking_loop).engine.groups
+    name === :group && return getfield(receiver, :tracking_loop).engine.groups[1]
     getfield(receiver, name)
 end
 
@@ -440,7 +440,7 @@ function SimReceiver(;
         navigation_filter_update_interval = nominal_integrations * 1.0ms,
         enable_ionospheric_correction = correct_atmosphere,
         enable_tropospheric_correction = correct_atmosphere, tracking_loop_kw...)
-    nav = tracking_loop.navigation
+    nav = tracking_loop.engine
     channels = map(signals, fixtures, per_signal(num_sats, signals), range_biases) do signal, (decoders, _), n, range_bias
         n = min(n, length(decoders))
         [SimSat(signal, decoders[i], tracking_loop, truth, t0; range_bias, atmosphere = delays) for i = 1:n]
@@ -476,7 +476,7 @@ function run_cycle!(receiver::SimReceiver, sample, fill!; ignore_delay = false)
     nav = receiver.vt
     application_sample_index = receiver.delay_ms == 0 ? Int64(sample) : Int64(sample + receiver.delay_ms * SAMPLES_PER_MS)
     sized_for = ignore_delay ? Int64(sample) : application_sample_index
-    nav.pending_epoch = round(Int, sample / (receiver.nominal_ms * SAMPLES_PER_MS))
+    nav.pending_epoch_index = round(Int, sample / (receiver.nominal_ms * SAMPLES_PER_MS))
     for (channels, group) in zip(receiver.channels, receiver.groups), (i, sat) in enumerate(channels)
         fill!(group.slots[i], sat, sample, receiver.delay_ms == 0 ? NO_LANDING_SAMPLE : application_sample_index, nav)
     end
@@ -595,7 +595,7 @@ struct PipelineReceiver{E,S,P}
 end
 
 Base.getproperty(receiver::PipelineReceiver, name::Symbol) =
-    name === :vt ? getfield(receiver, :tracking_loop).navigation : getfield(receiver, name)
+    name === :vt ? getfield(receiver, :tracking_loop).engine : getfield(receiver, name)
 
 # Satellites whose receiver starts `lead` seconds before a subframe 1, so the whole
 # clock and ephemeris is decoded `lead + 18` seconds in. `pilot` sets the receiver's
@@ -793,7 +793,7 @@ function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
             nav = receiver.vt
             pvt = nav.pvt
             push!(results, (; pvt = deepcopy(pvt), status = nav.status, code_errors = copy(code_errors),
-                time = receiver.truth.t0 + TrackingLoops._epoch_time(nav, nav.cycle_epoch),
+                time = receiver.truth.t0 + TrackingLoops._epoch_time(nav, nav.cycle_epoch_index),
                 measured = collect(keys(pvt.observations)),
                 reasons = [get_release_reason(tracking_loop, sat.signal, sat.decoder.prn) for sat in receiver.sats]))
         end

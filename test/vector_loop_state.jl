@@ -53,7 +53,7 @@ end
     @test state.code_frequency_correction == 0.0Hz
     @test state.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test state.code_command_delay == 0.0s
-    @test isnan(state.ramp.time)
+    @test isnan(state.ramp.reference_time)
     @test !TL._has_carrier_ramp(state)
     @test state.residual_pll.bandwidth == 10.0Hz
     @test loop_state_type(tracking_loop, GPSL1CA()) === typeof(state)
@@ -199,7 +199,7 @@ end
     @test TL._disc_mean(state.fll_disc_sum) === nothing
     @test !TL.has_disc_sums(state)
     @test TL._has_carrier_ramp(state)
-    @test state.residual_pll.prompt_center ≈ 0.0005
+    @test state.residual_pll.prompt_time ≈ 0.0005
     # The replica's second half integration is kept for the next span.
     @test state.previous_replica_tail == (ustrip(Hz, carrier_doppler) * 0.0005, 0.0005s)
     @test state.code_frequency_correction == -0.25Hz
@@ -327,8 +327,8 @@ end
     @test TL._doppler_at(next_ramp, 0.01) + next.residual_pll.carrier_frequency_correction ≈ TL._doppler_at(ramp, 0.01) + steered.residual_pll.carrier_frequency_correction
     @test TL._doppler_at(next_ramp, 0.01) + TL._residual_doppler(next.residual_pll) ≈
           TL._doppler_at(ramp, 0.01) + TL._residual_doppler(steered.residual_pll)
-    @test next_ramp.rate + TL._residual_doppler_rate(next.residual_pll) ≈
-          ramp.rate + TL._residual_doppler_rate(steered.residual_pll)
+    @test next_ramp.doppler_rate + TL._residual_doppler_rate(next.residual_pll) ≈
+          ramp.doppler_rate + TL._residual_doppler_rate(steered.residual_pll)
     @test next.code_frequency_correction_history == (2.0Hz, 1.0Hz, 0.0Hz)
     @test TL._set_vector_commands(next, 3.0Hz, next_ramp, 0.0s, ConstantNCOCommand(0.0, 0.0), 0).code_frequency_correction_history ==
           (3.0Hz, 2.0Hz, 1.0Hz)
@@ -345,7 +345,7 @@ end
     @test released.code_frequency_correction == 0.0Hz
     @test released.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test released.code_command_delay == 0.0s
-    @test isnan(released.ramp.time)
+    @test isnan(released.ramp.reference_time)
     @test !TL._has_carrier_ramp(released)
     # The replica's last half integration is the replica's: it survives the hand-over both ways.
     @test released.previous_replica_tail == (0.1, 0.0005s)
@@ -420,12 +420,12 @@ end
     # A residual PLL in lock hands over its estimate where the release takes effect: the ramp plus
     # its residual Doppler, moved on by its rate, and the Doppler rate of both.
     residual_pll = state.residual_pll
-    residual_pll = TL.ResidualPLL(residual_pll.bandwidth, 1.5, TL._residual_pll_loop_filter(1.5, 0.5), residual_pll.prompt_center,
-        residual_pll.carrier_phase_polarity, residual_pll.prompt_phase,
+    residual_pll = TL.ResidualPLL(residual_pll.bandwidth, 1.5, TL._residual_pll_loop_filter(1.5, 0.5), residual_pll.prompt_time,
+        residual_pll.carrier_phase_polarity, residual_pll.predicted_prompt_phase,
         TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
     locked = TL._hand_over_to_scalar_loop(TL.VectorLoopState(state; residual_pll), ConstantNCOCommand(150.0, 0.2), 2000, 1e6)
     @test locked.inner.reference_carrier_doppler ≈
-          (TL._doppler_at(ramp, 0.002) + 1.5 + 0.5 * (0.002 - residual_pll.prompt_center)) * Hz
+          (TL._doppler_at(ramp, 0.002) + 1.5 + 0.5 * (0.002 - residual_pll.prompt_time)) * Hz
     @test locked.inner.carrier_loop_filter.x2 ≈ 2.5Hz^2
     @test locked.inner.reference_code_doppler == 0.2Hz
     @test released.inner.bandwidths.narrow_carrier == 12.0Hz

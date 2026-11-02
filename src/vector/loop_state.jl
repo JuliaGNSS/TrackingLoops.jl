@@ -85,7 +85,7 @@ its storage to the next one.
 """
 struct VectorTrackingLoop{E<:AbstractTrackingLoop,N} <: AbstractTrackingLoop
     inner::E
-    navigation::N
+    engine::N
     # Taken on by each satellite's state at `init_loop_state`.
     residual_pll_loop_filter_bandwidth::typeof(1.0Hz)
 end
@@ -268,7 +268,7 @@ function calc_carrier_phase_correction(state::VectorLoopState, nco_history, samp
     residual_pll = state.residual_pll
     state.vector_controlled || return 0.0
     # Both are set by the first driver integration.
-    isnan(residual_pll.prompt_center) && return 0.0
+    isnan(residual_pll.prompt_time) && return 0.0
     isnan(first(state.previous_replica_tail)) && return 0.0
     fs = Float64(ustrip(Hz, sampling_frequency))
     _residual_phase_after(residual_pll, state.ramp, state.previous_replica_tail, sample_index / fs, fs, nco_history)
@@ -322,9 +322,9 @@ function _hand_over_to_scalar_loop(state::VectorLoopState, nco_history, applicat
     code_doppler = code_command * Hz
     time = application_sample_index / fs
     ramp, residual_pll = state.ramp, state.residual_pll
-    rate = ramp.rate
-    if residual_pll.lock.locked && !isnan(residual_pll.prompt_center)
-        dt = time - residual_pll.prompt_center
+    rate = ramp.doppler_rate
+    if residual_pll.lock.locked && !isnan(residual_pll.prompt_time)
+        dt = time - residual_pll.prompt_time
         carrier_doppler =
             (_doppler_at(ramp, time) + _residual_doppler(residual_pll) + _residual_doppler_rate(residual_pll) * dt) * Hz
         rate += _residual_doppler_rate(residual_pll)
@@ -374,7 +374,7 @@ function _set_vector_commands(
         _residual_pll_on_new_ramp(state.residual_pll, state.ramp, ramp)
     else
         scalar_doppler = calc_mean_nco_command(nco_history, application_sample_index, application_sample_index).carrier_doppler
-        _initialized_residual_pll(state.residual_pll, ramp, scalar_doppler, ramp.time, state.inner.staging)
+        _initialized_residual_pll(state.residual_pll, ramp, scalar_doppler, ramp.reference_time, state.inner.staging)
     end
     VectorLoopState(
         state;
@@ -389,7 +389,7 @@ end
 # Whether the satellite has a carrier ramp: from the filter's first command until it
 # leaves the vector loop. A member always has one; `_set_vector_commands` reads this to
 # tell the first command from the later ones.
-_has_carrier_ramp(state::VectorLoopState) = !isnan(state.ramp.time)
+_has_carrier_ramp(state::VectorLoopState) = !isnan(state.ramp.reference_time)
 
 # Empty both accumulators once the filter has read them.
 _reset_discriminator_accumulators(state::VectorLoopState) =
@@ -436,7 +436,7 @@ end
         carrier_doppler,
         code_doppler
     end
-    _step_vector_loop(state, integration, nco_history, application_sample_index, replica_halves, estimator.navigation.min_tracking_cn0_dbhz)
+    _step_vector_loop(state, integration, nco_history, application_sample_index, replica_halves, estimator.engine.min_tracking_cn0_dbhz)
 end
 
 # An integration's DLL output (chips), normalised by the code command the replica ran on, as
@@ -500,7 +500,7 @@ end
     first_cycles, first_duration = replica_halves.first
     integration_start_sample_index = integration.sample_index - integration.num_integrated_samples
     # The previous integration's end, known once the residual PLL has stepped on its prompt.
-    previous_end = state.residual_pll.prompt_center + ustrip(s, previous_duration)
+    previous_end = state.residual_pll.prompt_time + ustrip(s, previous_duration)
     gap = isnan(previous_end) ? 0.0 : integration_start_sample_index / fs - previous_end
     gap_cycles = 0.0
     if gap > 0.5 / fs

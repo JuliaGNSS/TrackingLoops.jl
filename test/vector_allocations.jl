@@ -8,7 +8,7 @@
 # measure the cycle alone.
 function measure_navigation(rx::SimReceiver, sample; fill! = fill_slot!)
     nav = rx.vt
-    nav.pending_epoch = round(Int, sample / (rx.nominal_ms * SAMPLES_PER_MS))
+    nav.pending_epoch_index = round(Int, sample / (rx.nominal_ms * SAMPLES_PER_MS))
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
         fill!(group.slots[i], sat, sample, NO_LANDING_SAMPLE, nav)
     end
@@ -35,7 +35,7 @@ end
 
     rx = SimReceiver(; signals)
     _, sample, _ = run_simulation!(rx, 20)
-    @test rx.vt.running
+    @test rx.vt.vector_tracking_active
     sample += cycle
     @test measure_navigation(rx, sample) == 0
     take_up!(rx, sample)
@@ -60,7 +60,7 @@ end
     rx.vt.measurement_deficit_duration = 10.0s
     sample += cycle
     @test measure_navigation(rx, sample; fill! = unlocked!) == 0
-    @test !rx.vt.running
+    @test !rx.vt.vector_tracking_active
     take_up!(rx, sample)
     sample += cycle
     @test measure_navigation(rx, sample; fill! = unlocked!) == 0
@@ -68,7 +68,7 @@ end
 
     sample += cycle
     @test measure_navigation(rx, sample) == 0
-    @test rx.vt.running
+    @test rx.vt.vector_tracking_active
     @test get_navigation_status(rx.tracking_loop).seeded
 end
 
@@ -82,7 +82,7 @@ end
     @test measure_navigation(scalar, sample + cycle) == 0
     rx = SimReceiver(; kw...)
     _, sample, _ = run_simulation!(rx, 20)
-    @test rx.vt.running
+    @test rx.vt.vector_tracking_active
     @test measure_navigation(rx, sample + cycle) == 0
 end
 
@@ -96,7 +96,7 @@ end
         galileo = only(rx.channels[2])
         galileo.decoder = with_zero_ggto(galileo.decoder)
         _, sample, _ = run_simulation!(rx, 20)
-        @test rx.vt.running == !isnothing(filter_config)
+        @test rx.vt.vector_tracking_active == !isnothing(filter_config)
         isnothing(filter_config) ||
             @test !isempty(rx.vt.buffers.clock_constraints)
         @test measure_navigation(rx, sample + 100 * SAMPLES_PER_MS) == 0 skip = VERSION < v"1.11"

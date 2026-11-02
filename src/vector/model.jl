@@ -371,12 +371,12 @@ struct VectorTrackingObservation
     wavelength::Float64    # m
     code_frequency::Float64 # Hz
     available::Bool        # usable as a measurement this cycle (in code lock)
-    time::Float64          # corrected transmit time (own system's time of week, s)
-    # `time` on the GPS Time count (BDT reads 14 s below GPST). Used wherever times are
+    transmit_tow::Float64  # corrected transmit time (own system's time of week, s)
+    # `transmit_tow` on the GPS Time count (BDT reads 14 s below GPST). Used wherever times are
     # differenced across members (the receive epoch's time of week, pseudoranges), as in
     # `calc_pvt`;
-    # broadcast polynomials are evaluated at the own-scale `time`.
-    time_gpst_count::Float64
+    # broadcast polynomials are evaluated at the own-scale `transmit_tow`.
+    transmit_tow_gpst::Float64
     sat_pos::SVector{3,Float64}
     sat_vel::SVector{3,Float64}
     sat_clock_drift::Float64 # s/s
@@ -411,7 +411,8 @@ function mean_code_disc_at_epoch(state::VectorLoopState, T)
 end
 
 # Mean FLL discriminator (Hz), `f_incoming − f_replica`, so it enters with its own sign:
-# the rate observable at the epoch is `carrier_doppler + mean_fll`. `0.0` when nothing
+# the Doppler observable at the epoch is `carrier_doppler + mean_fll`; its pseudorange
+# rate is `−λ·(carrier_doppler + mean_fll)`. `0.0` when nothing
 # was accumulated (see `has_disc_sums`).
 #
 # Deliberately NOT moved to mid-cycle, unlike the code: the mean FLL is

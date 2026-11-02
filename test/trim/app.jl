@@ -31,7 +31,7 @@ function report(io, cycle, pvt, status)
     end
     print(io, " ", length(pvt.observations))
     print(io, " ", status.num_vector_tracking_members)
-    print(io, " ", status.running)
+    print(io, " ", status.vector_tracking_active)
     print(io, " ", status.seeded)
     t = pvt.time
     t === nothing || print(io, " ", t.second)
@@ -64,7 +64,7 @@ end
 function (@main)(args::Vector{String})::Cint
     io = Core.stdout
     rx = PipelineReceiver(Val(false))
-    nav = rx.tracking_loop.navigation
+    nav = rx.tracking_loop.engine
     last_cycle = nav.cycle_index
     sample = 0
     # 33 s: the first fix comes 26.2 s in; a two-second outage of two satellites late on.

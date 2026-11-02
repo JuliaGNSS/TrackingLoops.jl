@@ -101,11 +101,11 @@ end
     # the ns-scale BGTO constraint then fights rather than absorbs.
     gps = _test_member(; time = 100.0)
     bds = _test_member(; group = 2, signal = BeiDouB2aI(), clock_bias_index = 2, time = 86.0)
-    @test gps.time_gpst_count == 100.0
-    @test bds.time_gpst_count ≈ gps.time_gpst_count
+    @test gps.transmit_tow_gpst == 100.0
+    @test bds.transmit_tow_gpst ≈ gps.transmit_tow_gpst
     # The own-scale transmit time stays untouched — it is what the ephemeris,
     # the clock polynomial and the broadcast time offsets are evaluated at.
-    @test bds.time == 86.0
+    @test bds.transmit_tow == 86.0
 end
 
 @testset "NavigationFilterConfig configuration" begin
