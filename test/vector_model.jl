@@ -387,13 +387,13 @@ end
     @test psr[1] ≈ 2.6e7 - 6.378e6 + 100.0
     @test psr[2] ≈ norm(user_pos - [0.0, 0.0, 2.6e7]) + 200.0 rtol = 1e-5
 
-    # The prediction is Doppler-signed: a satellite closing head-on with 1000 m/s reads
-    # +1000 m/s (scaled by the light time, a receiver second spanning `1 + 1000 / c`
-    # seconds of its transmission), the negative of `calc_pseudorange_rate`.
+    # A satellite closing head-on at 1000 m/s has a negative pseudorange rate,
+    # scaled by the light time: a receiver second spans `1 + 1000 / c`
+    # seconds of its transmission.
     closing = _test_member(; sat_pos = SVector(2.6e7, 0.0, 0.0),
         sat_vel = SVector(-1000.0, 0.0, 0.0))
     @test TL.predict_pseudorange_rate(x, idxs, closing) ≈
-          1000.0 * (1 + 1000.0 / SPEED_OF_LIGHT) atol = 1e-6
+          -1000.0 * (1 + 1000.0 / SPEED_OF_LIGHT) atol = 1e-6
 
     # The rate is predicted at the epoch, from the state as it stands, whatever the
     # motion model.
@@ -410,7 +410,7 @@ end
             sat_vel = SVector(-1000.0, 0.0, 0.0), sat_clock_drift = 1e-9)
         pos, vel, drift = TL.nav_filter_states(x, idxs)
         @test TL.predict_pseudorange_rate(x, idxs, member) ==
-              -TL.calc_pseudorange_rate(pos, vel, drift, member.sat_pos,
+              TL.calc_pseudorange_rate(pos, vel, drift, member.sat_pos,
                   member.sat_vel, member.sat_clock_drift)
     end
 end
@@ -676,15 +676,41 @@ end
     @test select(PreparedObservation[], gps_clock) == gps_clock
 end
 
+@testset "Pseudorange rate differentiates range and reverses Doppler" begin
+    config = NavigationFilterConfig()
+    layout = TL.NavFilterLayout((GPSL1CA(),))
+    idxs = TL.NavFilterIndices(config, layout)
+    member = _test_member()
+    columns = TL.member_bias_columns([member], layout)
+    for velocity in (-25.0, 25.0)
+        x = zeros(TL.num_nav_states(config, layout))
+        x[idxs.pos] = [6.378e6, 0.0, 0.0]
+        x[idxs.vel] = [velocity, 0.0, 0.0]
+        x[idxs.clock_drift] = 0.7
+        range_at(t) = let
+            propagated = TL.propagate_state!(similar(x), x, idxs, t)
+            ξ = TL.position_and_bias_vector(propagated, idxs)
+            only(predict_pseudoranges!(zeros(1), [member.sat_pos], ξ, columns))
+        end
+        dt = 0.05
+        rate = TL.predict_pseudorange_rate(x, idxs, member)
+        @test rate ≈ (range_at(dt) - range_at(-dt)) / (2dt) atol = 1e-6
+        @test sign(rate) == -sign(velocity)
+        doppler = TL.predicted_carrier_doppler(rate, member.wavelength)
+        @test sign(doppler) == sign(velocity)
+        @test -member.wavelength * doppler ≈ rate
+    end
+end
+
 @testset "NCO loop-closure corrections" begin
     member = _test_member(; prn = 7, pseudorange_rate = 100.0)
     c = SPEED_OF_LIGHT
     # A predicted pseudorange 10 m beyond the measured one must speed the code
     # NCO up by f_code · 10 m / (T · c): the replica is 10 m late. A predicted
-    # rate of 105 m/s is a carrier Doppler of 105/λ Hz.
+    # rate of 105 m/s is a carrier Doppler of −105/λ Hz.
     @test TL.nco_code_correction(1000.0 + 10.0, 1000.0, member.code_frequency, 0.1) ≈
           -10.0 * member.code_frequency / (0.1 * c)
-    @test TL.predicted_carrier_doppler(105.0, member.wavelength) ≈ 105.0 / member.wavelength
+    @test TL.predicted_carrier_doppler(105.0, member.wavelength) ≈ -105.0 / member.wavelength
 
     # The prediction is evaluated at the updated state, so it *is* the whole
     # correction — the measurement update's state correction must not be added
@@ -707,12 +733,12 @@ end
 @testset "Post-fit pseudorange and range-rate residuals" begin
     # Two members: one whose replica the loop has steered onto the navigation solution
     # (the model at the updated state reproduces both its measured pseudorange and its
-    # replica's own Doppler, 800 m/s, against which its FLL reads 5 Hz), and one the
+    # replica's own closing speed, 800 m/s, against which its FLL reads 5 Hz), and one the
     # solution predicts 30 m short and 2 m/s slow of what it measures.
     steered = _test_member(; prn = 4, code_discriminator = 0.02) # chips
-    steered = @set steered.pseudorange_rate = 800.0 + 5.0 * steered.wavelength
+    steered = @set steered.pseudorange_rate = -800.0 - 5.0 * steered.wavelength
     diverged = _test_member(; prn = 9, pseudorange_rate = -600.0)
-    residual, rate_residual = TL.post_fit_residuals(steered, 2.05e7, 2.05e7, 800.0)
+    residual, rate_residual = TL.post_fit_residuals(steered, 2.05e7, 2.05e7, -800.0)
     # Both go straight into `ObservationResiduals`'s unit-typed fields, so the units are part of the
     # contract: metres and metres per second.
     @test residual isa typeof(1.0u"m")
@@ -723,13 +749,12 @@ end
     @test ustrip(u"m", residual) ≈ 0.02 * steered.chip_length
     @test ustrip(u"m/s", rate_residual) ≈ -5.0 * steered.wavelength
     # The other member keeps the full disagreement. Both are observed − computed in
-    # `calc_pvt`'s conventions, and its rate observable (the geometric range rate) runs
-    # opposite to this loop's Doppler-signed one, so a measurement beyond the prediction
-    # reads positive in the range domain and negative in the rate domain.
+    # `calc_pvt`'s conventions: a measurement beyond the prediction reads positive
+    # in both the range and rate domains.
     residual, rate_residual =
         TL.post_fit_residuals(diverged, 2.10e7, 2.10e7 - 30.0, diverged.pseudorange_rate - 2.0)
     @test ustrip(u"m", residual) ≈ 30.0
-    @test ustrip(u"m/s", rate_residual) ≈ -2.0
+    @test ustrip(u"m/s", rate_residual) ≈ 2.0
 end
 
 @testset "FLL discriminator sign into the rate measurement" begin

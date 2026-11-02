@@ -379,7 +379,7 @@ struct VTMember
     sat_vel::SVector{3,Float64}
     sat_clock_drift::Float64 # s/s
     code_discriminator::Float64 # accumulated DLL output, moved to the epoch (chips)
-    pseudorange_rate::Float64 # measured λ·(replica Doppler + mean FLL) at the epoch (m/s)
+    pseudorange_rate::Float64 # measured −λ·(replica Doppler + mean FLL) at the epoch (m/s)
     cn0_lin::Float64         # C/N₀, linear (Hz); C/N₀ without `_lin` is in dB-Hz
     early_late_spacing::Float64 # chips
     coherent_integration_time::Float64 # s, per coherent correlator dump (sets DLL/FLL noise)
@@ -468,11 +468,10 @@ member_bias_columns(members, layout::NavFilterLayout, indices = eachindex(member
 
 # The pseudorange rate (m/s) the epoch state `x` predicts for `member`: the derivative of
 # the pseudorange `predict_pseudoranges!` models, Earth rotation included (PositionVelocityTime's
-# `calc_pseudorange_rate`), negated to the sign of the measured `λ · carrier_doppler`
-# (positive while closing).
+# `calc_pseudorange_rate`), positive while receding.
 @inline function predict_pseudorange_rate(x, idxs::NavFilterIndices, member::VTMember)
     user_pos, user_vel, user_clock_drift = nav_filter_states(x, idxs)
-    -calc_pseudorange_rate(
+    calc_pseudorange_rate(
         user_pos,
         user_vel,
         user_clock_drift,
@@ -620,15 +619,12 @@ end
 nco_code_correction(predicted_pseudorange, measured_pseudorange, code_frequency, T) =
     -(predicted_pseudorange - measured_pseudorange) * code_frequency / (T * SPEED_OF_LIGHT)
 
-# The carrier Doppler (Hz) of a predicted pseudorange rate (m/s, Doppler-signed).
-predicted_carrier_doppler(predicted_pseudorange_rate, wavelength) = predicted_pseudorange_rate / wavelength
+# The carrier Doppler (Hz, positive closing) of a pseudorange rate (m/s, positive receding).
+predicted_carrier_doppler(predicted_pseudorange_rate, wavelength) = -predicted_pseudorange_rate / wavelength
 
 # Post-fit residuals of one member, from predictions at the *updated* state:
 # `(pseudorange in m, range rate in m/s)`, observed − computed as `calc_pvt` (and RTKLIB)
-# report them, sign included. Hence opposite subtraction orders: the rate residual is
-# `h(x) - z` because this loop measures `+λ · doppler` (positive while closing) while
-# `calc_pvt` residuates the geometric range rate (positive while receding). Making the
-# two read alike would silently invert the rate residual against every scalar fix.
+# report them, with pseudorange rate positive while receding.
 #
 # A well-tracked member's residuals reduce to its own discriminators; one the solution
 # predicts poorly (diverging, or out of lock) keeps a large residual, so members outside
@@ -642,7 +638,7 @@ function post_fit_residuals(
 )
     (measured_pseudorange + member.code_discriminator * member.chip_length -
      predicted_pseudorange) * m,
-    (predicted_pseudorange_rate - member.pseudorange_rate) * (m / s)
+    (member.pseudorange_rate - predicted_pseudorange_rate) * (m / s)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
