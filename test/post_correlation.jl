@@ -95,7 +95,7 @@ end
         state, _, filtered, = process_correlator_bank_output!(state, signal, 7, output, fs, 1e-6 / Hz, true)
         integration = LoopRecord(signal, filtered, output, state, fs; prn = 7)
         @test integration.previous_prompt == previous_prompt
-        @test integration.integrated_code_blocks == state.last_num_code_periods
+        @test integration.num_code_periods == state.last_num_code_periods
         @test integration.cn0_estimator === state.cn0_estimator
         @test integration.bit_or_secondary_code_synced == is_bit_or_secondary_code_synced(state)
         # Exactly the bits this integration added, however many the soft-bit vector holds.
@@ -104,7 +104,7 @@ end
         if integration.bit_or_secondary_code_synced
             @test integration.num_code_periods_into_bit == state.bit_synchronizer.num_code_periods_into_bit
             # The sign the sync found the soft bits at.
-            @test integration.bit_polarity == state.bit_synchronizer.polarity != 0
+            @test integration.bit_polarity == state.bit_synchronizer.bit_polarity != 0
             # Drained after every other integration: the next integration's bits are still its own.
             iseven(k) && empty!(get_soft_bits(state))
         else
