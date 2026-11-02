@@ -203,7 +203,7 @@ end
     # against the true Doppler at the epoch, has the noise the filter weights it with and
     # the −1/2 lag-1 autocorrelation of measurements that share their boundary prompts;
     # summed over the cycles, it stays at the carrier-phase noise. The replica runs on
-    # the filter's ramp alone: with the PLL's jitter in its word, the residuals were
+    # the filter's ramp alone: with the PLL's jitter in its command, the residuals were
     # nearly five times `√R`, their autocorrelation −0.15, and the integrated error
     # walked by decimetres.
     rx = SimReceiver(; signals = (GalileoE1B(),))

@@ -5,7 +5,7 @@
 #     step_loop(estimator, state, record, words, landing_sample)
 #         -> (state, carrier_doppler, code_doppler)
 #
-# `words` answers `mean_nco_word(words, a, b)` (a `FixedNCOWord` in software, the
+# `words` answers `calc_mean_nco_command(words, a, b)` (a `ConstantNCOCommand` in software, the
 # channel's `NCOTimeline` in hardware); `landing_sample` is the device sample the
 # fold's command takes effect at, `NO_LANDING_SAMPLE` for each record's end.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -448,7 +448,7 @@ end
 
 @inline function _command_in_force(record::LoopRecord, words, landing_sample::Int64)
     landing = landing_sample == NO_LANDING_SAMPLE ? record.sample_index : landing_sample
-    carrier_doppler, code_doppler = mean_nco_word(words, landing, landing)
+    carrier_doppler, code_doppler = calc_mean_nco_command(words, landing, landing)
     carrier_doppler * Hz, code_doppler * Hz
 end
 
@@ -467,7 +467,7 @@ end
     signal = record.signal
     integration_time = record.integrated_samples / record.sampling_frequency
     record_start = record.sample_index - record.integrated_samples
-    _, applied_code = mean_nco_word(words, record_start, record.sample_index)
+    _, applied_code = calc_mean_nco_command(words, record_start, record.sample_index)
     filtered_correlator = record.filtered_correlator
     frequency_error =
         form_fll ?
@@ -749,8 +749,8 @@ wrap_phase_error(phase_error; polarity::Real = 0) =
             integration_time / 2 * carrier_loop_filter.x2,
         ),
     )
-    ramp_word = first(mean_nco_word(words, center, center + shift))
-    wrap_phase_error(phase_error + shift * (f_hat - ramp_word) / sampling_freq_hz; polarity)
+    ramp_command = first(calc_mean_nco_command(words, center, center + shift))
+    wrap_phase_error(phase_error + shift * (f_hat - ramp_command) / sampling_freq_hz; polarity)
 end
 
 """
@@ -794,7 +794,7 @@ Passenger records are handled as by the conventional loop.
     integration_time = record_samples / sampling_frequency
     filtered_correlator = record.filtered_correlator
 
-    applied_carrier, applied_code = mean_nco_word(words, record_start, record_end)
+    applied_carrier, applied_code = calc_mean_nco_command(words, record_start, record_end)
     # Discriminators against the applied replica; the FLL's only if `form_fll`.
     phase_error = pll_disc(signal, filtered_correlator; polarity = record.carrier_phase_polarity)
     frequency_error =
@@ -820,11 +820,12 @@ Passenger records are handled as by the conventional loop.
         )
         # Re-base the FLL reading from the word between the prompts' centres onto
         # the word running `shift` samples ahead.
-        fll_word =
+        fll_command =
             isnan(previous_center) ? applied_carrier :
-            first(mean_nco_word(words, previous_center, center))
-        landing_word = first(mean_nco_word(words, record_start + shift, record_end + shift))
-        form_fll && (frequency_error += (fll_word - landing_word) * Hz)
+            first(calc_mean_nco_command(words, previous_center, center))
+        landing_command =
+            first(calc_mean_nco_command(words, record_start + shift, record_end + shift))
+        form_fll && (frequency_error += (fll_command - landing_command) * Hz)
     end
 
     (;
@@ -896,7 +897,7 @@ phase_locked(state::Union{SatConventionalPLLAndDLL,SatNCOReferencedPLLAndDLL}) =
 The carrier phase (cycles) the loop estimates the incoming carrier to lead the
 replica by at `sample` (of the records' grid at `sampling_frequency`), with
 `words` the words the replica ran on up to there, an [`NCOTimeline`](@ref) or
-a [`FixedNCOWord`](@ref). The replica's carrier phase plus this is the loop's
+a [`ConstantNCOCommand`](@ref). The replica's carrier phase plus this is the loop's
 estimate of the incoming carrier phase, the carrier-phase measurement a host
 reports (RINEX `L`).
 

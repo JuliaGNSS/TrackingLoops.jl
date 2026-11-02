@@ -129,7 +129,7 @@ mutable struct SimSat{D,E,S,L}
     const center_frequency::Float64
     state::E
     # The replica: uncorrected transmit time, carrier phase error against the signal
-    # (cycles), the words it runs on.
+    # (cycles), the commands it runs on.
     replica_time::Float64
     phase_error::Float64
     carrier_doppler::Float64
@@ -265,16 +265,16 @@ triangle(x) = max(0.0, 1.0 - abs(x))
 
 # The correlator of one record of `num_samples` samples ending at device sample
 # `sample_index` (receiver time `t_end`), from the errors at the record's centre, and the
-# words the replica ran on: the triangle autocorrelation at the true-minus-replica code
+# commands the replica ran on: the triangle autocorrelation at the true-minus-replica code
 # error, rotated by the carrier phase error, signed by the navigation bit and with the
 # noise of the channel. Returns the correlator, the prompt, the code error and the true
-# Doppler and the words.
+# Doppler and the commands.
 function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_index, words)
     fs = ustrip(Hz, SIM_FS)
     dt = num_samples / fs
     t_mid = t_end - dt / 2
     record_start = sample_index - num_samples
-    carrier, code = mean_nco_word(words, record_start, sample_index)
+    carrier, code = calc_mean_nco_command(words, record_start, sample_index)
     t_t, = true_transmit(sat, truth, t_mid)
     f_true = true_doppler(sat, truth, t_mid)
     u_true = uncorrected_time(sat, t_t)
@@ -300,7 +300,7 @@ function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_inde
     correlator, prompt, code_error, f_true, carrier, code
 end
 
-# The replica moved on by a record, and the new words commanded.
+# The replica moved on by a record, and the new commands commanded.
 function advance_replica!(sat::SimSat, f_true, carrier, code, dt, new_carrier, new_code,
         record_start, sample_index, landing_sample)
     sat.phase_error += (f_true - carrier) * dt
@@ -309,14 +309,14 @@ function advance_replica!(sat::SimSat, f_true, carrier, code, dt, new_carrier, n
         sat.carrier_doppler = ustrip(Hz, new_carrier)
         sat.code_doppler = ustrip(Hz, new_code)
     else
-        schedule_word!(sat.timeline, landing_sample, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
-        promote_words!(sat.timeline, record_start)
-        sat.carrier_doppler, sat.code_doppler = nco_word_at(sat.timeline, sample_index)
+        schedule_command!(sat.timeline, landing_sample, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
+        advance_timeline!(sat.timeline, record_start)
+        sat.carrier_doppler, sat.code_doppler = get_nco_command(sat.timeline, sample_index)
     end
 end
 
-sim_words(sat::SimSat, landing_sample) =
-    landing_sample == NO_LANDING_SAMPLE ? FixedNCOWord(sat.carrier_doppler, sat.code_doppler) : sat.timeline
+sim_nco_history(sat::SimSat, landing_sample) =
+    landing_sample == NO_LANDING_SAMPLE ? ConstantNCOCommand(sat.carrier_doppler, sat.code_doppler) : sat.timeline
 
 # One record of `num_samples` samples ending at device sample `sample_index` (receiver
 # time `t_end`), through the satellite's own loop alone — the per-record step of the
@@ -324,7 +324,7 @@ sim_words(sat::SimSat, landing_sample) =
 # (`fill_slot!`). Returns the code error.
 function simulate_record!(sat::SimSat, estimator, truth, t_end, num_samples, sample_index, landing_sample;
         polarity = 0)
-    words = sim_words(sat, landing_sample)
+    words = sim_nco_history(sat, landing_sample)
     correlator, prompt, code_error, f_true, carrier, code =
         simulate_correlator(sat, truth, t_end, num_samples, sample_index, words)
     # The host reads the C/N₀ `fill_slot!` reports, and no signal during an outage.
@@ -354,7 +354,7 @@ function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_loc
     slot.estimator_state = sat.state
     sat.state = TrackingLoops._reset_discriminator_accumulators(sat.state)
     slot.code_phase = epoch_state.code_phase
-    carrier, code = mean_nco_word(sim_words(sat, landing_sample), epoch_sample, epoch_sample)
+    carrier, code = calc_mean_nco_command(sim_nco_history(sat, landing_sample), epoch_sample, epoch_sample)
     slot.carrier_doppler = carrier * Hz
     slot.code_doppler = code * Hz
     slot.cn0_dbhz = 45.0
@@ -479,7 +479,7 @@ function run_cycle!(receiver::SimReceiver, sample, fill!; ignore_delay = false)
     end
     TrackingLoops._navigation_cycle!(nav, sample / ustrip(Hz, SIM_FS))
     for (channels, group) in zip(receiver.channels, receiver.groups), (i, sat) in enumerate(channels)
-        words = receiver.delay_ms == 0 ? sim_words(sat, NO_LANDING_SAMPLE) : sat.timeline
+        words = receiver.delay_ms == 0 ? sim_nco_history(sat, NO_LANDING_SAMPLE) : sat.timeline
         sat.state = TrackingLoops._take_up_cycle(nav, group, group.slots[i], sat.state,
             take_up_record(sat, sample), words, sized_for)
     end
@@ -663,7 +663,7 @@ function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample,
     num_samples = sample_index - start_sample
     landing = receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
         Int64(sample_index + receiver.delay_ms * SAMPLES_PER_MS)
-    words = sim_words(sat, landing)
+    words = sim_nco_history(sat, landing)
     correlator, _, code_error, f_true, carrier, code =
         simulate_correlator(sat, receiver.truth, sim_time(receiver, sample_index), num_samples, sample_index, words)
     dt = num_samples / ustrip(Hz, SIM_FS)
@@ -696,9 +696,9 @@ function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample,
         # A passenger's command is the one in force: nothing to schedule.
         sat.phase_error += (f_true - carrier) * dt
         sat.replica_time += dt * (1 + code / sat.code_frequency)
-        landing == NO_LANDING_SAMPLE || promote_words!(sat.timeline, start_sample)
+        landing == NO_LANDING_SAMPLE || advance_timeline!(sat.timeline, start_sample)
         landing == NO_LANDING_SAMPLE ||
-            ((sat.carrier_doppler, sat.code_doppler) = nco_word_at(sat.timeline, sample_index))
+            ((sat.carrier_doppler, sat.code_doppler) = get_nco_command(sat.timeline, sample_index))
     end
     sat.next_end_sample = next_block_end(sat, sample_index)
     code_error
@@ -710,7 +710,7 @@ function follow_driver!(passenger::SimSat, new_carrier, new_code, landing)
         passenger.carrier_doppler = ustrip(Hz, new_carrier)
         passenger.code_doppler = ustrip(Hz, new_code)
     else
-        schedule_word!(passenger.timeline, landing, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
+        schedule_command!(passenger.timeline, landing, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
     end
     nothing
 end
