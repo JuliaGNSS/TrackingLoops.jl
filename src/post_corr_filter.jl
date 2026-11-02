@@ -38,7 +38,7 @@ struct DefaultPostCorrFilter <: AbstractPostCorrFilter end
 $(SIGNATURES)
 
 Update the post-correlation filter with the latest prompt and return the
-new post_corr_filter (immutable update). This is the extension point for custom
+updated filter, which replaces `post_corr_filter`. This is the extension point for custom
 [`AbstractPostCorrFilter`](@ref)s — e.g. a beamformer adapting its weights.
 """
 update(post_corr_filter::DefaultPostCorrFilter, prompt) = post_corr_filter
