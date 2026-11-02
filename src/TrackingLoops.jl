@@ -135,6 +135,7 @@ export NumAnts,
     step_loop!,
     PostCorrelationState,
     process_correlator_bank_output!,
+    reset_cn0_estimator!,
     reset_sync!,
     reset_post_correlation!,
     NCOTimeline,
@@ -179,12 +180,13 @@ struct NumCorrelators{x} end
 NumCorrelators(x) = NumCorrelators{x}()
 
 """
-    update(x, prompt)
+    update!(x, prompt)
 
 Advance a per-integration state (C/N₀ estimator, post-correlation filter) by one prompt
-and return the new state.
+and return the updated state. A state may write its buffers in place, so the
+returned state replaces the argument: discarding it loses the update.
 """
-function update end
+function update! end
 
 """
 $(SIGNATURES)

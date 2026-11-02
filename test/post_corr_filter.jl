@@ -6,7 +6,7 @@ using TrackingLoops: _combine_antennas, _filter_correlator_bank, _reduce_noise_d
 @testset "Post-correlation filter" begin
     default_post_corr_filter = DefaultPostCorrFilter()
 
-    @test update(default_post_corr_filter, 1.0 + 2.0im) == default_post_corr_filter
+    @test update!(default_post_corr_filter, 1.0 + 2.0im) == default_post_corr_filter
 
     # Single antenna: unity weight, and combining is the identity on the correlator output.
     w1 = @inferred get_weights(default_post_corr_filter, NumAnts(1))

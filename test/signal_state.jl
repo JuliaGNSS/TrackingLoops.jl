@@ -47,7 +47,7 @@ end
 end
 
 @testset "Re-arming a channel forgets the previous satellite" begin
-    for cn0_estimator in (NWPRCN0Estimator(; num_integrations = 20), MomentsCN0Estimator(20), NoiseReferencedCN0Estimator(; num_integrations = 20))
+    for cn0_estimator in (NWPRCN0Estimator(; num_integrations = 20), MomentsCN0Estimator(; num_integrations = 20), NoiseReferencedCN0Estimator(; num_integrations = 20))
         state = synced_l1ca_state(; cn0_estimator)
         fresh = reset_post_correlation!(state)
         @test !is_bit_or_secondary_code_synced(fresh)
@@ -60,9 +60,9 @@ end
             @test getfield(fresh.cn0_estimator, name) == getfield(new, name)
         end
         if fresh.cn0_estimator isa NWPRCN0Estimator
-            @test state.cn0_estimator.filled_ratio_length > 0
-            @test fresh.cn0_estimator.filled_ratio_length == 0
-            @test fresh.cn0_estimator.fallback.buffer_current_index == 0
+            @test state.cn0_estimator.num_filled > 0
+            @test fresh.cn0_estimator.num_filled == 0
+            @test fresh.cn0_estimator.fallback.last_write_index == 0
         end
         # And it reuses the old state's vectors instead of allocating new ones.
         @test fresh.bit_synchronizer.soft_bits === state.bit_synchronizer.soft_bits

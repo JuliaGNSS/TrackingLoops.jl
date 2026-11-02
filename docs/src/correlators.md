@@ -70,5 +70,5 @@ TrackingLoops.pll_disc(::AbstractGNSSSignal, ::Any)
 TrackingLoops.AbstractPostCorrFilter
 DefaultPostCorrFilter
 TrackingLoops.get_weights
-TrackingLoops.update(::DefaultPostCorrFilter, ::Any)
+TrackingLoops.update!(::DefaultPostCorrFilter, ::Any)
 ```

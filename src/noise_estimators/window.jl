@@ -1,20 +1,20 @@
 # Running sums over a `CorrelatorNoiseEstimator`'s window so neither appending nor
-# reading walks it: `span` drives the trim, `weighted_density / looks` is
+# reading walks it: `span` drives the trim, `weighted_density / num_squared_magnitudes` is
 # `get_noise_density`.
 #
-# `stale` counts appends since the last exact recomputation. Incremental `Float64`
+# `num_updates_since_refresh` counts appends since the last exact recomputation. Incremental `Float64`
 # add/subtract drifts, and a producer may mix e.g. a 0.2 s pre-averaged entry with
 # 1 ms ones, so the totals are rebuilt once per window's worth of appends (O(1)
 # amortised).
 #
 # Immutable and isbits, held in the estimator's single `Ref`: an update is one write
 # to one cache line, and the estimator itself is never rebuilt. It is a cache derived
-# exactly from `buffered`, not independent state.
+# exactly from `observations`, not independent state.
 struct NoiseWindowTotals{D,T}
     span::T
     weighted_density::D
-    looks::Int
-    stale::Int
+    num_squared_magnitudes::Int
+    num_updates_since_refresh::Int
 end
 
 NoiseWindowTotals{D,T}() where {D,T} = NoiseWindowTotals{D,T}(zero(T), zero(D), 0, 0)
@@ -83,7 +83,7 @@ lobe. On an FPGA a free-running code generator gives an arbitrary phase for free
     `Random.default_rng()` for a task-local stream (e.g. across threads).
     Repeatable on one Julia version only: do not tune a tolerance to a particular
     draw; design against the `1/√(3K)` spread of `N̂₀` over `K` observations.
-  - `buffered`: the sliding window, a length-managed FIFO written in place, so the
+  - `observations`: the sliding window, a length-managed FIFO written in place, so the
     struct is never rebuilt and per-signal state can live in an immutable
     `Tracking.TrackState`.
   - `totals`: running sums of the window (see `NoiseWindowTotals`), keeping append
@@ -102,7 +102,7 @@ struct CorrelatorNoiseEstimator{D,T,R<:AbstractRNG} <: AbstractNoiseDensityEstim
     window_duration::typeof(1.0s)
     early_late_to_prompt_spacing::Float64
     carrier_dither::typeof(1.0Hz)
-    buffered::Vector{NoiseObservation{D,T}}
+    observations::Vector{NoiseObservation{D,T}}
     totals::Base.RefValue{NoiseWindowTotals{D,T}}
     rng::R
 end
@@ -136,14 +136,14 @@ function CorrelatorNoiseEstimator(;
     carrier_dither >= zero(carrier_dither) ||
         throw(ArgumentError("carrier_dither must not be negative, got $carrier_dither"))
     D = _density_type_for_num_ants(num_ants)
-    buffered = NoiseObservation{D,typeof(1.0s)}[]
+    observations = NoiseObservation{D,typeof(1.0s)}[]
     # 4× the 1 ms despread count; see the docstring.
-    sizehint!(buffered, 4 * max(1, round(Int, window_duration / 1.0ms)) + 1)
+    sizehint!(observations, 4 * max(1, round(Int, window_duration / 1.0ms)) + 1)
     CorrelatorNoiseEstimator(
         uconvert(s, float(window_duration)),
         Float64(early_late_to_prompt_spacing),
         uconvert(Hz, float(carrier_dither)),
-        buffered,
+        observations,
         Ref(NoiseWindowTotals{D,typeof(1.0s)}()),
         rng,
     )
@@ -169,12 +169,12 @@ function append_noise_observation!(
     observation::NoiseObservation,
 ) where {D,T}
     observation = convert(NoiseObservation{D,T}, observation)
-    buffered = estimator.buffered
+    observations = estimator.observations
     totals = estimator.totals
-    push!(buffered, observation)
+    push!(observations, observation)
     _add_observation!(totals, observation)
-    _trim_noise_window!(buffered, totals, estimator.window_duration)
-    _refresh_totals_if_stale!(buffered, totals)
+    _trim_noise_window!(observations, totals, estimator.window_duration)
+    _refresh_totals_if_stale!(observations, totals)
     estimator
 end
 
@@ -183,8 +183,8 @@ end
     totals[] = typeof(t)(
         t.span + observation.duration,
         t.weighted_density + observation.num_squared_magnitudes * observation.noise_density,
-        t.looks + observation.num_squared_magnitudes,
-        t.stale,
+        t.num_squared_magnitudes + observation.num_squared_magnitudes,
+        t.num_updates_since_refresh,
     )
     nothing
 end
@@ -194,8 +194,8 @@ end
     totals[] = typeof(t)(
         t.span - observation.duration,
         t.weighted_density - observation.num_squared_magnitudes * observation.noise_density,
-        t.looks - observation.num_squared_magnitudes,
-        t.stale,
+        t.num_squared_magnitudes - observation.num_squared_magnitudes,
+        t.num_updates_since_refresh,
     )
     nothing
 end
@@ -203,43 +203,43 @@ end
 # Keep the window minimal but never shorter than `window_duration`, and never empty
 # (a single observation longer than the window still counts).
 @inline function _trim_noise_window!(
-    buffered::Vector{<:NoiseObservation},
+    observations::Vector{<:NoiseObservation},
     totals::Base.RefValue{<:NoiseWindowTotals},
     window_duration,
 )
-    @inbounds while length(buffered) > 1 &&
-                    totals[].span - buffered[1].duration >= window_duration
-        _drop_observation!(totals, buffered[1])
-        popfirst!(buffered)
+    @inbounds while length(observations) > 1 &&
+                    totals[].span - observations[1].duration >= window_duration
+        _drop_observation!(totals, observations[1])
+        popfirst!(observations)
     end
     nothing
 end
 
 # Exact recomputation once per window's worth of appends; see `NoiseWindowTotals`.
 @inline function _refresh_totals_if_stale!(
-    buffered::Vector{<:NoiseObservation},
+    observations::Vector{<:NoiseObservation},
     totals::Base.RefValue{<:NoiseWindowTotals},
 )
     t = totals[]
-    totals[] = typeof(t)(t.span, t.weighted_density, t.looks, t.stale + 1)
-    t.stale + 1 < length(buffered) && return nothing
-    _refresh_totals!(buffered, totals)
+    totals[] = typeof(t)(t.span, t.weighted_density, t.num_squared_magnitudes, t.num_updates_since_refresh + 1)
+    t.num_updates_since_refresh + 1 < length(observations) && return nothing
+    _refresh_totals!(observations, totals)
 end
 
 function _refresh_totals!(
-    buffered::Vector{<:NoiseObservation},
+    observations::Vector{<:NoiseObservation},
     totals::Base.RefValue{NoiseWindowTotals{D,T}},
 ) where {D,T}
     span = zero(T)
     weighted_density = zero(D)
-    looks = 0
-    @inbounds for i in eachindex(buffered)
-        observation = buffered[i]
+    num_squared_magnitudes = 0
+    @inbounds for i in eachindex(observations)
+        observation = observations[i]
         span += observation.duration
         weighted_density += observation.num_squared_magnitudes * observation.noise_density
-        looks += observation.num_squared_magnitudes
+        num_squared_magnitudes += observation.num_squared_magnitudes
     end
-    totals[] = NoiseWindowTotals{D,T}(span, weighted_density, looks, 0)
+    totals[] = NoiseWindowTotals{D,T}(span, weighted_density, num_squared_magnitudes, 0)
     nothing
 end
 
@@ -254,14 +254,14 @@ different dump counts combine correctly only weighted by `M`.
 """
 function get_noise_density(estimator::CorrelatorNoiseEstimator)
     totals = estimator.totals[]
-    totals.looks == 0 && return nothing
-    totals.weighted_density / totals.looks
+    totals.num_squared_magnitudes == 0 && return nothing
+    totals.weighted_density / totals.num_squared_magnitudes
 end
 
 noise_density_type(::CorrelatorNoiseEstimator{D}) where {D} = D
 
-# `looks` is the running sum of the observations' `num_squared_magnitudes`.
-get_num_squared_magnitudes(estimator::CorrelatorNoiseEstimator) = estimator.totals[].looks
+# `num_squared_magnitudes` is the running sum of the observations' `num_squared_magnitudes`.
+get_num_squared_magnitudes(estimator::CorrelatorNoiseEstimator) = estimator.totals[].num_squared_magnitudes
 
 """
 $(SIGNATURES)
@@ -269,7 +269,7 @@ $(SIGNATURES)
 Number of observations in the window. Diagnostic only: it varies with the
 producer's dump cadence.
 """
-Base.length(estimator::CorrelatorNoiseEstimator) = length(estimator.buffered)
+Base.length(estimator::CorrelatorNoiseEstimator) = length(estimator.observations)
 
 """
 $(SIGNATURES)
@@ -482,8 +482,8 @@ end
 )
     supported_prns = get_supported_prns(signal)
     isempty(supported_prns) && throw(ArgumentError("noise estimation needs a supported PRN"))
-    isempty(estimator.buffered) && return Int(first(supported_prns))
-    previous = Int(last(estimator.buffered).prn)
+    isempty(estimator.observations) && return Int(first(supported_prns))
+    previous = Int(last(estimator.observations).prn)
     for prn in supported_prns
         prn > previous && return Int(prn)
     end
@@ -495,10 +495,10 @@ end
                        correlator_outputs, num_samples, sampling_frequency) -> estimator
 
 Append the observation of `probe` measured over `num_samples` samples at
-`sampling_frequency`: `correlator_outputs` are the correlator outputs of [`noise_correlator_bank`](@ref). The
+`sampling_frequency`: `correlator_outputs` are the outputs of [`noise_correlator_bank`](@ref). The
 correlator outputs are independent, so they pool into one power sum, or into the spatial covariance
 `Σ b·bᴴ` for an array, which each satellite reduces to its own floor `wᴴR̂w` at C/N₀
-time; the observation spans the samples every tap integrated, under the probe's PRN.
+time; the observation spans the samples every correlator integrated, under the probe's PRN.
 A hardware host passes each dump's own sample count. Allocates nothing.
 """
 @inline function append_noise_correlator_outputs!(

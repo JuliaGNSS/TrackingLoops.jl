@@ -233,10 +233,10 @@ end
 @testset "The noise window's running totals stay exact" begin
     # The cached sums must equal the walk they replace, including after thousands
     # of mixed-size appends and drops (the case the periodic refresh exists for).
-    exact_span(e) = sum(o.duration for o in e.buffered)
-    exact_squared_magnitudes(e) = sum(o.num_squared_magnitudes for o in e.buffered)
+    exact_span(e) = sum(o.duration for o in e.observations)
+    exact_squared_magnitudes(e) = sum(o.num_squared_magnitudes for o in e.observations)
     exact_density(e) =
-        sum(o.num_squared_magnitudes * o.noise_density for o in e.buffered) / exact_squared_magnitudes(e)
+        sum(o.num_squared_magnitudes * o.noise_density for o in e.observations) / exact_squared_magnitudes(e)
 
     rng = Xoshiro(17)
     window = 50.0ms
@@ -254,13 +254,13 @@ end
         )
         i % 500 == 0 || continue
         @test estimator.totals[].span ≈ exact_span(estimator) rtol = 1e-10
-        @test estimator.totals[].looks == exact_squared_magnitudes(estimator)
+        @test estimator.totals[].num_squared_magnitudes == exact_squared_magnitudes(estimator)
         @test get_num_squared_magnitudes(estimator) == exact_squared_magnitudes(estimator)
         @test get_noise_density(estimator) ≈ exact_density(estimator) rtol = 1e-10
     end
     # Minimal, but never short of the configured span.
     @test estimator.totals[].span >= window
-    @test estimator.totals[].span - first(estimator.buffered).duration < window
+    @test estimator.totals[].span - first(estimator.observations).duration < window
 end
 
 @testset "Appending to and reading the noise window is allocation-free" begin
@@ -339,14 +339,14 @@ end
     despread = NoiseDespread(NoiseProbe(signal, 7, 0.0, 1.023e6Hz, 0.0Hz), 1:4000, 4e6Hz)
     estimator = CorrelatorNoiseEstimator()
     @test append_despread_noise!(estimator, despread, correlator_outputs) === estimator
-    observation = only(estimator.buffered)
+    observation = only(estimator.observations)
     @test observation.noise_density ≈ (2.0 + 4.0 + 9.0) / (3 * 4000 * 4e6Hz)
     @test observation.num_squared_magnitudes == 3
     @test observation.duration ≈ 1.0e-3s
     @test observation.prn == 7
     array = CorrelatorNoiseEstimator(; num_ants = NumAnts(2))
     append_despread_noise!(array, despread, array_correlator_outputs)
-    @test only(array.buffered).noise_density ≈ pooled / (3 * 4000 * 4e6Hz)
+    @test only(array.observations).noise_density ≈ pooled / (3 * 4000 * 4e6Hz)
 
     # Three correlators `early_late_to_prompt_spacing` apart, one column per antenna.
     correlator_bank = noise_correlator_bank(CorrelatorNoiseEstimator(; early_late_to_prompt_spacing = 2.0))
@@ -437,7 +437,7 @@ end
     @test probe.code_frequency == get_chip_rate(signal)
     correlator_outputs = SVector(1.0 + 0im, 2.0 + 0im, 3.0 + 0im)
     @test append_noise_correlator_outputs!(estimator, probe, correlator_outputs, 3999, fs) === estimator
-    observation = last(estimator.buffered)
+    observation = last(estimator.observations)
     @test observation.prn == 1
     @test observation.duration ≈ 3999 / fs
     @test observation.noise_density ≈ (1.0 + 4.0 + 9.0) / (3 * 3999 * fs)

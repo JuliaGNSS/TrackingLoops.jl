@@ -470,7 +470,7 @@ end
 struct FixedCN0Estimator <: AbstractCN0Estimator
     dbhz::Float64
 end
-TL.update(estimator::FixedCN0Estimator, prompt, context::CN0UpdateContext) = estimator
+TL.update!(estimator::FixedCN0Estimator, prompt, context::CN0UpdateContext) = estimator
 TL.estimate_cn0(estimator::FixedCN0Estimator, coherent_integration_time) = estimator.dbhz * dBHz
 
 @testset "The C/N₀ is the driver's, from the tracking_loop the host configured" begin
