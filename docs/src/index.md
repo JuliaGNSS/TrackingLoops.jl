@@ -116,5 +116,6 @@ TrackingLoops
 AbstractTrackingLoop
 TrackingLoops.NumCorrelators
 NumAnts
+TrackingLoops.update!
 TrackingLoops.update
 ```

@@ -140,7 +140,7 @@ estimate_cn0(state::PostCorrelationState, coherent_integration_time) =
         return estimator
     end
     # Positional, not keyword: this is the per-integration site.
-    update(
+    update!(
         estimator,
         prompt,
         CN0UpdateContext(
