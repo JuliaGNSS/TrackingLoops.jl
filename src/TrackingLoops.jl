@@ -111,6 +111,7 @@ export NumAnts,
     WIDE_PLL,
     NARROW_PLL,
     VECTOR_LOOP,
+    get_decoder,
     get_carrier_loop_stage,
     AbstractTrackingLoop,
     ScalarTrackingLoop,
@@ -201,6 +202,10 @@ lives with the satellite. Hosts drive every tracking loop through one interface:
   - [`reinit_loop_state`](@ref)`(tracking_loop, state, carrier_doppler,
     code_doppler)` re-seeds it from converged Dopplers, keeping what the
     tracking loop chooses to keep.
+
+A host may also ask a tracking loop [`get_decoder`](@ref); its fallback, `nothing`,
+fits any loop without decoders, so a custom tracking loop implements only the three
+methods above.
 
 Implemented by [`ScalarTrackingLoop`](@ref), [`DelayCompensatedTrackingLoop`](@ref)
 and [`VectorTrackingLoop`](@ref), whose navigation processor also runs inside `step_loop!`.
