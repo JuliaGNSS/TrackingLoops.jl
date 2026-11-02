@@ -172,10 +172,20 @@ struct NumCorrelators{K} end
 NumCorrelators(K) = NumCorrelators{K}()
 
 """
-    update(x, prompt)
+    update!(estimator, prompt)
 
-Advance a per-integration state (C/N₀ estimator, post-correlation filter) by one prompt
-and return the new state.
+Advance a C/N₀ estimator by one prompt and return the updated estimator. An estimator
+may write its buffers in place, so the returned estimator replaces the argument:
+discarding it loses the update.
+"""
+function update! end
+
+"""
+    update(post_corr_filter, prompt)
+
+Return the post-correlation filter to use for the next integration, updated with the
+latest prompt. A post-correlation filter is not changed in place: the returned filter
+replaces the argument.
 """
 function update end
 
