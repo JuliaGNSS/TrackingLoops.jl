@@ -20,7 +20,7 @@ end
 function take_up!(rx::SimReceiver, sample)
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
         sat.state = TL._take_up_cycle(rx.vt, group, group.slots[i], sat.state,
-            take_up_record(sat, sample), sim_words(sat, NO_LANDING_SAMPLE), Int64(sample))
+            take_up_record(sat, sample), sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(sample))
     end
 end
 
@@ -112,7 +112,7 @@ end
     sat = rx.sats[1]
     slot = group.slots[1]
     record = take_up_record(sat, sample)
-    words = sim_words(sat, NO_LANDING_SAMPLE)
+    words = sim_nco_history(sat, NO_LANDING_SAMPLE)
     state = sat.state
     take_up(state) = @allocated TL._take_up_cycle(rx.vt, group, slot, state, record, words, Int64(sample))
     take_up(state)

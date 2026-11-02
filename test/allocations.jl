@@ -29,8 +29,8 @@
             st, prompt, filtered, blocks = apply_record(st, signal, 7, output, fs, density, true)
             record = LoopRecord(signal, filtered, output, st, fs)
             es, carrier, code = step_loop(estimator, es, record, timeline, Int64(4000k + 8000))
-            schedule_word!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
-            promote_words!(timeline, 4000k - 4000)
+            schedule_command!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
+            advance_timeline!(timeline, 4000k - 4000)
         end
         state_ref[] = st
         est_ref[] = es
@@ -53,10 +53,12 @@
     @test isempty(AllocCheck.check_allocs(step_loop, step_sig; ignore_throw = true))
     conv = ConventionalAssistedPLLAndDLL()
     conv_state = init_estimator_state(conv, signal, 100.0Hz, 0.1Hz)
-    @test isempty(AllocCheck.check_allocs(step_loop, Tuple{typeof(conv),typeof(conv_state),typeof(record),FixedNCOWord,Int64}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(mean_nco_word, Tuple{NCOTimeline,Int64,Int64}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(schedule_word!, Tuple{NCOTimeline,Int64,Float64,Float64}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(promote_words!, Tuple{NCOTimeline,Int64}; ignore_throw = true))
+    @test isempty(AllocCheck.check_allocs(step_loop, Tuple{typeof(conv),typeof(conv_state),typeof(record),ConstantNCOCommand,Int64}; ignore_throw = true))
+    @test isempty(AllocCheck.check_allocs(calc_mean_nco_command, Tuple{NCOTimeline,Int64,Int64}; ignore_throw = true))
+    @test isempty(AllocCheck.check_allocs(schedule_command!, Tuple{NCOTimeline,Int64,Float64,Float64}; ignore_throw = true))
+    @test isempty(AllocCheck.check_allocs(advance_timeline!, Tuple{NCOTimeline,Int64}; ignore_throw = true))
+    @test isempty(AllocCheck.check_allocs(confirm_command!, Tuple{NCOTimeline,Int64,Int64}; ignore_throw = true))
+    @test isempty(AllocCheck.check_allocs(cancel_command!, Tuple{NCOTimeline,Int64}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(pll_disc, Tuple{typeof(signal),typeof(output.correlator)}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(dll_disc, Tuple{typeof(signal),typeof(output.correlator),typeof(0.1Hz),typeof(fs)}; ignore_throw = true))
 end
@@ -76,7 +78,7 @@ end
         # registration, which may grow a group past its preallocated slots by design, nor
         # the decoding, whose bounded vote tally and logging it cannot see through. The
         # run below measures the whole record.
-        for words_type in (FixedNCOWord, NCOTimeline)
+        for words_type in (ConstantNCOCommand, NCOTimeline)
             sig = Tuple{typeof(estimator),typeof(state),typeof(record),words_type,Int64}
             @test isempty(AllocCheck.check_allocs(TrackingLoops._step_satellite, sig; ignore_throw = true))
             @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_driver!,
@@ -104,8 +106,8 @@ end
                 out = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k, 0.0)
                 rec = LoopRecord(signal, out.correlator, previous, out, 1, fs; prn = 3)
                 st, carrier, code = step_loop(estimator, st, rec, timeline, Int64(4000k + 8000))
-                schedule_word!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
-                promote_words!(timeline, 4000k - 4000)
+                schedule_command!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
+                advance_timeline!(timeline, 4000k - 4000)
                 previous = p
             end
             state_ref[] = st

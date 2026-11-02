@@ -35,11 +35,11 @@ Fields:
   - `sample_index`: where the integration ended; the record covers
     `[sample_index - integrated_samples, sample_index)` (numerically Tracking.jl's
     1-based index of the record's last sample). Used to look up the words the
-    replica ran on ([`mean_nco_word`](@ref)) and, for
+    replica ran on ([`calc_mean_nco_command`](@ref)) and, for
     [`NCOReferencedPLLAndDLL`](@ref), to place the record against the landing
     sample, so it must share the time grid of the `words` passed to
     [`step_loop`](@ref): device samples for an [`NCOTimeline`](@ref). With a
-    [`FixedNCOWord`](@ref) any origin works as long as all satellites share it
+    [`ConstantNCOCommand`](@ref) any origin works as long as all satellites share it
     (vector tracking); Tracking.jl uses the current `track!` measurement, so an
     external producer feeding it must map its counter onto that origin.
   - `code_phase`: the replica's code phase (chips) at `sample_index`, read by
