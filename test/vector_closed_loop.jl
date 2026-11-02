@@ -230,7 +230,7 @@ end
         for member in rx.vt.buffers.members
             all_measured &= member.available
             sat = rx.sats[member.slot_index]
-            push!(residuals[member.slot_index], member.pseudorange_rate -
+            push!(residuals[member.slot_index], member.pseudorange_rate +
                 member.wavelength * true_doppler(sat, rx.truth, sim_time(rx, sample)))
             push!(variances, TL.pseudorange_rate_noise_variance(member, T))
         end
