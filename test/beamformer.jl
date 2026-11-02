@@ -6,7 +6,7 @@ using TrackingLoops: _combine_antennas, _beamform_correlator_bank, _reduce_noise
 @testset "Beamformer" begin
     default_beamformer = DefaultBeamformer()
 
-    @test update(default_beamformer, 1.0 + 2.0im) == default_beamformer
+    @test update!(default_beamformer, 1.0 + 2.0im) == default_beamformer
 
     # Single antenna: unity weight, and combining is the identity on the correlator output.
     w1 = @inferred get_beamforming_weights(default_beamformer, NumAntennas(1))

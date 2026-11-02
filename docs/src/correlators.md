@@ -70,5 +70,5 @@ TrackingLoops.pll_disc(::AbstractGNSSSignal, ::Any)
 TrackingLoops.AbstractBeamformer
 DefaultBeamformer
 TrackingLoops.get_beamforming_weights
-TrackingLoops.update(::DefaultBeamformer, ::Any)
+TrackingLoops.update!(::DefaultBeamformer, ::Any)
 ```

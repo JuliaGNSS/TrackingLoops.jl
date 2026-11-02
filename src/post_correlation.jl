@@ -140,7 +140,7 @@ estimate_cn0(state::PostCorrelationState, coherent_integration_time) =
         return estimator
     end
     # Positional, not keyword: this is the per-integration site.
-    update(
+    update!(
         estimator,
         prompt,
         CN0UpdateContext(
@@ -230,7 +230,7 @@ wiped), else `0`; a [`PredetectionIntegration`](@ref) carries it to the carrier 
     synced_before = is_bit_or_secondary_code_synced(bit_synchronizer)
     normalized_correlator_bank =
         normalize(output.correlator_bank, output.num_integrated_samples, get_code_amplitude(signal))
-    beamformer = update(beamformer, get_prompt(normalized_correlator_bank))
+    beamformer = update!(beamformer, get_prompt(normalized_correlator_bank))
     # Used twice: to combine the antennas and to reduce the shared noise covariance
     # to this satellite's density.
     weights = get_beamforming_weights(beamformer, NumAntennas(normalized_correlator_bank))
@@ -434,13 +434,14 @@ function reset_cn0_estimator!(e::NWPRCN0Estimator)
     _with_window_state(
         e,
         reset_cn0_estimator!(e.fallback);
-        ratio_current_index = 0,
-        filled_ratio_length = 0,
+        write_index = 0,
+        num_filled = 0,
         num_integrations_per_ratio = 0,
         ratios_are_bit_aligned = false,
     )
 end
 reset_cn0_estimator!(e::NoCN0Estimator) = e
+"""Clear estimator history in existing storage and return the reset estimator. Required for custom C/N₀ estimators with history."""
 reset_cn0_estimator!(e::AbstractCN0Estimator) = throw(
     ArgumentError(
         "this C/N₀ estimator has no `TrackingLoops.reset_cn0_estimator!` " *

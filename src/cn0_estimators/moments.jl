@@ -1,38 +1,42 @@
 """
 $(SIGNATURES)
 
-MomentsCN0Estimator to estimate the CN0
+    MomentsCN0Estimator(; num_integrations = 100)
+
+Estimate C/N₀ from the second and fourth moments of the latest `num_integrations` prompts.
 """
 struct MomentsCN0Estimator <: AbstractCN0Estimator
     prompt_buffer::Vector{ComplexF64}
-    buffer_current_index::Int
-    filled_buffer_length::Int
+    write_index::Int
+    num_filled::Int
 end
 
-function MomentsCN0Estimator(N)
-    MomentsCN0Estimator(zeros(ComplexF64, N), 0, 0)
+function MomentsCN0Estimator(; num_integrations::Integer = 100)
+    num_integrations > 0 || throw(ArgumentError("`num_integrations` must be positive"))
+    MomentsCN0Estimator(zeros(ComplexF64, num_integrations), 0, 0)
 end
 
-length(estimator::MomentsCN0Estimator) = estimator.filled_buffer_length
+length(estimator::MomentsCN0Estimator) = estimator.num_filled
 get_prompt_buffer(estimator::MomentsCN0Estimator) = estimator.prompt_buffer
-get_current_index(estimator::MomentsCN0Estimator) = estimator.buffer_current_index
+get_write_index(estimator::MomentsCN0Estimator) = estimator.write_index
 
 """
 $(SIGNATURES)
 
 Buffers the prompts such that they can be used to estimate the CN0.
-Returns a new estimator with the latest prompt added (immutable update).
+Writes the prompt into the estimator's buffer and returns the updated estimator,
+which replaces `estimator`.
 The moment ratio needs no side information, so this estimator implements only
-the prompt-only form of `TrackingLoops.update`; see
-[`update(::AbstractCN0Estimator, ::Any, ::CN0UpdateContext)`](@ref) for the
+the prompt-only form of `TrackingLoops.update!`; see
+[`update!(::AbstractCN0Estimator, ::Any, ::CN0UpdateContext)`](@ref) for the
 extension point that also receives the navigation-bit context.
 """
-function update(estimator::MomentsCN0Estimator, prompt)
+function update!(estimator::MomentsCN0Estimator, prompt)
     buffer_length = length(estimator.prompt_buffer)
-    next_index = mod(get_current_index(estimator), buffer_length) + 1
+    next_index = mod(get_write_index(estimator), buffer_length) + 1
     estimator.prompt_buffer[next_index] = prompt
-    filled_buffer_length = min(length(estimator) + 1, buffer_length)
-    MomentsCN0Estimator(estimator.prompt_buffer, next_index, filled_buffer_length)
+    num_filled = min(length(estimator) + 1, buffer_length)
+    MomentsCN0Estimator(estimator.prompt_buffer, next_index, num_filled)
 end
 
 """

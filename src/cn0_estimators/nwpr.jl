@@ -101,11 +101,11 @@ a whole navigation bit.
     memory is independent of `M`.
   - `num_narrowband_code_periods`: window length in primary-code periods, the cap on
     the coherent sum (the length itself without a bit grid: a pilot, or the
-    two-argument `TrackingLoops.update`).
+    two-argument `TrackingLoops.update!`).
   - `num_presync_narrowband_code_periods`: window length before the bit grid is
     known; `0` reports the `fallback` until sync.
   - `buffered_narrowband_powers`, `buffered_wideband_powers`,
-    `ratio_current_index`, `filled_ratio_length`, `num_integrations_per_ratio`,
+    `write_index`, `num_filled`, `num_integrations_per_ratio`,
     `ratios_are_bit_aligned`: rings of completed windows' `NBP` and `WBP`, the `M`
     they were formed with and whether they followed the bit grid; a change of
     either restarts the rings.
@@ -120,8 +120,8 @@ struct NWPRCN0Estimator{F<:AbstractCN0Estimator} <: AbstractCN0Estimator
     num_presync_narrowband_code_periods::Int
     buffered_narrowband_powers::Vector{Float64}
     buffered_wideband_powers::Vector{Float64}
-    ratio_current_index::Int
-    filled_ratio_length::Int
+    write_index::Int
+    num_filled::Int
     num_integrations_per_ratio::Int
     ratios_are_bit_aligned::Bool
     narrowband_sum::ComplexF64
@@ -141,7 +141,7 @@ function NWPRCN0Estimator(;
     num_integrations::Int = 100,
     num_narrowband_code_periods::Int = 5,
     num_presync_narrowband_code_periods::Int = 5,
-    fallback::AbstractCN0Estimator = MomentsCN0Estimator(num_integrations),
+    fallback::AbstractCN0Estimator = MomentsCN0Estimator(; num_integrations = num_integrations),
 )
     num_integrations >= 2 ||
         throw(ArgumentError("num_integrations must be at least 2, got $num_integrations"))
@@ -211,12 +211,12 @@ end
     max(2, round(Int, 5ms / code_period))
 end
 
-length(estimator::NWPRCN0Estimator) = estimator.filled_ratio_length
+length(estimator::NWPRCN0Estimator) = estimator.num_filled
 get_buffered_narrowband_powers(estimator::NWPRCN0Estimator) =
     estimator.buffered_narrowband_powers
 get_buffered_wideband_powers(estimator::NWPRCN0Estimator) =
     estimator.buffered_wideband_powers
-get_current_index(estimator::NWPRCN0Estimator) = estimator.ratio_current_index
+get_write_index(estimator::NWPRCN0Estimator) = estimator.write_index
 
 # Ring slots in use at the current `M`, capped by the buffer.
 @inline function _num_ratios(estimator::NWPRCN0Estimator)
@@ -261,12 +261,12 @@ dropped once no longer admissible (e.g. the grid moved under it at sync); a wind
 closing on one integration (`NBP == WBP`) empties the rings, handing over to the
 `fallback`.
 """
-function update(estimator::NWPRCN0Estimator, prompt, context::CN0UpdateContext)
+function update!(estimator::NWPRCN0Estimator, prompt, context::CN0UpdateContext)
     window_code_periods, window_code_period_index = _narrowband_window(estimator, context)
     _update_nwpr(
         estimator,
         prompt,
-        update(estimator.fallback, prompt, context),
+        update!(estimator.fallback, prompt, context),
         context.num_code_periods,
         window_code_periods,
         window_code_period_index,
@@ -279,10 +279,10 @@ $(SIGNATURES)
 Advance the estimator on a bare prompt stream without bit context: each prompt is a
 one-period integration and windows run back to back at `num_narrowband_code_periods`.
 """
-update(estimator::NWPRCN0Estimator, prompt) = _update_nwpr(
+update!(estimator::NWPRCN0Estimator, prompt) = _update_nwpr(
     estimator,
     prompt,
-    update(estimator.fallback, prompt),
+    update!(estimator.fallback, prompt),
     1,
     estimator.num_narrowband_code_periods,
     -1,
@@ -328,8 +328,8 @@ update(estimator::NWPRCN0Estimator, prompt) = _update_nwpr(
     num_integrations < 2 && return _with_window_state(
         estimator,
         fallback;
-        ratio_current_index = 0,
-        filled_ratio_length = 0,
+        write_index = 0,
+        num_filled = 0,
         num_integrations_per_ratio = 0,
     )
     # All-zero window: division guard.
@@ -341,14 +341,14 @@ update(estimator::NWPRCN0Estimator, prompt) = _update_nwpr(
     if num_integrations == estimator.num_integrations_per_ratio &&
        bit_aligned == estimator.ratios_are_bit_aligned
         num_ratios = _num_ratios(estimator)
-        ratio_current_index = mod(estimator.ratio_current_index, num_ratios) + 1
-        narrowband_powers[ratio_current_index] = narrowband_power
-        wideband_powers[ratio_current_index] = wideband_power
+        write_index = mod(estimator.write_index, num_ratios) + 1
+        narrowband_powers[write_index] = narrowband_power
+        wideband_powers[write_index] = wideband_power
         return _with_window_state(
             estimator,
             fallback;
-            ratio_current_index,
-            filled_ratio_length = min(estimator.filled_ratio_length + 1, num_ratios),
+            write_index,
+            num_filled = min(estimator.num_filled + 1, num_ratios),
             num_integrations_per_ratio = num_integrations,
             ratios_are_bit_aligned = bit_aligned,
         )
@@ -363,8 +363,8 @@ update(estimator::NWPRCN0Estimator, prompt) = _update_nwpr(
     _with_window_state(
         estimator,
         fallback;
-        ratio_current_index = 1,
-        filled_ratio_length = 1,
+        write_index = 1,
+        num_filled = 1,
         num_integrations_per_ratio = num_integrations,
         ratios_are_bit_aligned = bit_aligned,
     )
@@ -375,8 +375,8 @@ end
 @inline _with_window_state(
     estimator::NWPRCN0Estimator,
     fallback::AbstractCN0Estimator;
-    ratio_current_index::Int = estimator.ratio_current_index,
-    filled_ratio_length::Int = estimator.filled_ratio_length,
+    write_index::Int = estimator.write_index,
+    num_filled::Int = estimator.num_filled,
     num_integrations_per_ratio::Int = estimator.num_integrations_per_ratio,
     ratios_are_bit_aligned::Bool = estimator.ratios_are_bit_aligned,
     narrowband_sum::ComplexF64 = complex(0.0, 0.0),
@@ -389,8 +389,8 @@ end
     estimator.num_presync_narrowband_code_periods,
     estimator.buffered_narrowband_powers,
     estimator.buffered_wideband_powers,
-    ratio_current_index,
-    filled_ratio_length,
+    write_index,
+    num_filled,
     num_integrations_per_ratio,
     ratios_are_bit_aligned,
     narrowband_sum,

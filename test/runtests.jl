@@ -5,7 +5,7 @@ using TrackingLoops:
     get_very_early, get_very_late, get_num_correlators, get_prompt_index,
     calc_early_late_sample_spacing, calc_correlator_sample_offsets, with_correlator_outputs,
     normalize, pll_disc, fll_disc, dll_disc, AbstractBeamformer, get_beamforming_weights,
-    update, BitSynchronizer, SyncHypothesisAccumulators, SyncResult, prompt_sign_history_type,
+    update!, BitSynchronizer, SyncHypothesisAccumulators, SyncResult, prompt_sign_history_type,
     detect_sync, uses_soft_bit_edge_detection,
     uses_soft_secondary_code_detection, get_sync_detection_confidence,
     get_secondary_code_error_tolerance, AbstractCN0Estimator, CN0UpdateContext,

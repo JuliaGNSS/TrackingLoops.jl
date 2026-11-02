@@ -1,4 +1,4 @@
-# C/N₀ estimators, driven directly through `update` / `estimate_cn0`. Ported
+# C/N₀ estimators, driven directly through `update!` / `estimate_cn0`. Ported
 # from Tracking.jl's `test/cn0_estimators/*.jl` and the estimator-only parts of
 # `test/cn0_estimator_comparison.jl`; the parts that ran a `TrackState` through
 # `track` / `track!` belong to Tracking and are not repeated here.
@@ -6,7 +6,7 @@
 using Random: Xoshiro, randn
 using Statistics: mean, std
 using Unitful: ms, kHz, MHz
-using TrackingLoops: get_prompt_buffer, get_current_index
+using TrackingLoops: get_prompt_buffer, get_write_index
 
 # Float64 throughout, matching what the tracking loop produces
 # (`num_integrated_samples / sampling_frequency`); `1ms` would make the density a
@@ -26,30 +26,30 @@ cn0_median(xs) = (v = sort(collect(xs)); v[div(length(v) + 1, 2)])
 cn0_context(; noise_density = CN0_N₀, coherent_integration_time = CN0_T) =
     CN0UpdateContext(GPSL1CA(), BitSynchronizer{UInt64}(), 1; noise_density, coherent_integration_time)
 
-cn0_update(estimator, prompts) = foldl(update, prompts; init = estimator)
+cn0_update(estimator, prompts) = foldl(update!, prompts; init = estimator)
 cn0_update(estimator, prompts, context) =
-    foldl((e, p) -> update(e, p, context), prompts; init = estimator)
+    foldl((e, p) -> update!(e, p, context), prompts; init = estimator)
 
 function cn0_update_many(estimator, prompt, n)
     for _ = 1:n
-        estimator = update(estimator, prompt)
+        estimator = update!(estimator, prompt)
     end
     estimator
 end
 
 function cn0_update_many(estimator, prompt, context, n)
     for _ = 1:n
-        estimator = update(estimator, prompt, context)
+        estimator = update!(estimator, prompt, context)
     end
     estimator
 end
 
 # A minimal custom estimator: proves the abstract interface's defaults route to
-# its two-argument `update` and to its own `estimate_cn0`.
+# its two-argument `update!` and to its own `estimate_cn0`.
 struct CountingCN0Estimator <: AbstractCN0Estimator
     num_prompts::Int
 end
-TrackingLoops.update(estimator::CountingCN0Estimator, prompt) =
+TrackingLoops.update!(estimator::CountingCN0Estimator, prompt) =
     CountingCN0Estimator(estimator.num_prompts + 1)
 TrackingLoops.estimate_cn0(estimator::CountingCN0Estimator, coherent_integration_time) =
     estimator.num_prompts * dBHz
@@ -57,8 +57,8 @@ TrackingLoops.estimate_cn0(estimator::CountingCN0Estimator, coherent_integration
 @testset "A custom CN0 estimator plugs into the interface" begin
     estimator = CountingCN0Estimator(0)
     # The three-argument form the loop calls drops the context and forwards.
-    estimator = @inferred update(estimator, 1.0 + 0.0im, cn0_context())
-    estimator = update(estimator, 1.0 + 0.0im)
+    estimator = @inferred update!(estimator, 1.0 + 0.0im, cn0_context())
+    estimator = update!(estimator, 1.0 + 0.0im)
     @test estimator.num_prompts == 2
     @test estimate_cn0(estimator, CN0_T) == 2dBHz
     # Reads no density unless it says so, on the instance and on the type.
@@ -119,28 +119,30 @@ end
 end
 
 @testset "Moments CN0 estimator" begin
-    cn0_estimator = MomentsCN0Estimator(20)
+    @test_throws ArgumentError MomentsCN0Estimator(; num_integrations = 0)
+    @test_throws ArgumentError MomentsCN0Estimator(; num_integrations = -1)
+    cn0_estimator = MomentsCN0Estimator(; num_integrations = 20)
     @test @inferred(get_prompt_buffer(cn0_estimator)) == zeros(ComplexF64, 20)
-    @test @inferred(get_current_index(cn0_estimator)) == 0
+    @test @inferred(get_write_index(cn0_estimator)) == 0
     @test @inferred(Base.length(cn0_estimator)) == 0
     # An empty buffer reports 0 dB-Hz rather than dividing by zero.
     @test @inferred(estimate_cn0(cn0_estimator, CN0_T)) == 0.0dBHz
     @test !requires_noise_density(cn0_estimator)
 
-    next_cn0_estimator = @inferred update(cn0_estimator, 1 + 2im)
+    next_cn0_estimator = @inferred update!(cn0_estimator, 1 + 2im)
     @test @inferred(get_prompt_buffer(next_cn0_estimator))[1] == 1 + 2im
-    @test @inferred(get_current_index(next_cn0_estimator)) == 1
+    @test @inferred(get_write_index(next_cn0_estimator)) == 1
     @test @inferred(Base.length(next_cn0_estimator)) == 1
 
     # The ring wraps from the last slot back to the first.
     cn0_estimator = MomentsCN0Estimator(ones(ComplexF64, 20), 20, 20)
-    next_cn0_estimator = @inferred update(cn0_estimator, 1 + 2im)
+    next_cn0_estimator = @inferred update!(cn0_estimator, 1 + 2im)
     @test @inferred(get_prompt_buffer(next_cn0_estimator))[1] == 1 + 2im
-    @test @inferred(get_current_index(next_cn0_estimator)) == 1
+    @test @inferred(get_write_index(next_cn0_estimator)) == 1
     @test @inferred(Base.length(next_cn0_estimator)) == 20
 
     cn0_estimator = MomentsCN0Estimator(ones(ComplexF64, 20), 19, 20)
-    @test @inferred(get_current_index(cn0_estimator)) == 19
+    @test @inferred(get_write_index(cn0_estimator)) == 19
     @test @inferred(Base.length(cn0_estimator)) == 20
 end
 
@@ -149,8 +151,8 @@ end
     # the post-correlation model directly: a true 45 dB-Hz over 1 ms integrations.
     rng = Xoshiro(1234)
     λ = 10^(45 / 10) * 1e-3
-    estimator = cn0_update(MomentsCN0Estimator(100), cn0_prompts(λ, 100, rng))
-    @test @inferred(get_current_index(estimator)) == 100
+    estimator = cn0_update(MomentsCN0Estimator(; num_integrations = 100), cn0_prompts(λ, 100, rng))
+    @test @inferred(get_write_index(estimator)) == 100
     @test @inferred(Base.length(estimator)) == 100
     cn0_estimate = @inferred estimate_cn0(estimator, 1ms)
     @test cn0_estimate ≈ 45dBHz atol = 1.0dBHz
@@ -163,11 +165,11 @@ end
     rng = Xoshiro(4321)
     one_block = [1.0 + 0.2 * randn(rng, ComplexF64) for _ = 1:100]
     twenty_blocks = [1.0 + 0.2 / sqrt(20) * randn(rng, ComplexF64) for _ = 1:100]
-    cn0_1 = estimate_cn0(cn0_update(MomentsCN0Estimator(100), one_block), 1ms)
-    cn0_20 = estimate_cn0(cn0_update(MomentsCN0Estimator(100), twenty_blocks), 20ms)
+    cn0_1 = estimate_cn0(cn0_update(MomentsCN0Estimator(; num_integrations = 100), one_block), 1ms)
+    cn0_20 = estimate_cn0(cn0_update(MomentsCN0Estimator(; num_integrations = 100), twenty_blocks), 20ms)
     @test cn0_20 ≈ cn0_1 atol = 1.5dBHz
     # And the divisor is actually used: the same prompts at 20 ms read 13 dB lower.
-    same = cn0_update(MomentsCN0Estimator(100), one_block)
+    same = cn0_update(MomentsCN0Estimator(; num_integrations = 100), one_block)
     linear(x) = ustrip(Hz, Unitful.linear(x))
     @test 10 * log10(linear(estimate_cn0(same, 1ms)) / linear(estimate_cn0(same, 20ms))) ≈
           10 * log10(20) atol = 0.01
@@ -175,10 +177,10 @@ end
 
 @testset "NoCN0Estimator measures nothing and says so" begin
     estimator = NoCN0Estimator()
-    # Stateless: the same instance comes back, whichever `update` form is used.
-    @test @inferred(update(estimator, 1.0 + 0.0im)) === estimator
+    # Stateless: the same instance comes back, whichever `update!` form is used.
+    @test @inferred(update!(estimator, 1.0 + 0.0im)) === estimator
     context = CN0UpdateContext(GPSL1CA(), BitSynchronizer{UInt64}(), 1)
-    @test @inferred(update(estimator, 1.0 + 0.0im, context)) === estimator
+    @test @inferred(update!(estimator, 1.0 + 0.0im, context)) === estimator
     cn0_update_many(estimator, 1.0 + 0.0im, 10)
     @test @allocated(cn0_update_many(estimator, 1.0 + 0.0im, 1000)) == 0
     @test !requires_noise_density(estimator)
@@ -195,10 +197,10 @@ end
     honest = NWPRCN0Estimator(; num_narrowband_code_periods = 20, fallback = estimator)
     @test @inferred(estimate_cn0(honest, 1ms)) == -Inf * dBHz
     for _ = 1:19
-        honest = update(honest, 1.0 + 0.0im)
+        honest = update!(honest, 1.0 + 0.0im)
     end
     @test estimate_cn0(honest, 1ms) == -Inf * dBHz     # window still open
-    honest = update(honest, 1.0 + 0.0im)
+    honest = update!(honest, 1.0 + 0.0im)
     @test estimate_cn0(honest, 1ms) == Inf * dBHz      # first window closed
 end
 
@@ -206,15 +208,15 @@ end
     @test_throws ArgumentError NoiseReferencedCN0Estimator(; num_integrations = 0)
     estimator = NoiseReferencedCN0Estimator(; num_integrations = 4)
     @test @inferred(Base.length(estimator)) == 0
-    @test get_current_index(estimator) == 0
+    @test get_write_index(estimator) == 0
     # Empty ring: `-Inf dB-Hz`, the house convention for "not measured".
     @test @inferred(estimate_cn0(estimator, CN0_T)) == -Inf * dBHz
 
     # No warm-up, no window, no `M`: the very first integration reports. A noiseless
     # prompt of power `p` against `N₀ = T` reads `(p − 1)/T`.
-    one = @inferred update(estimator, complex(2.0, 0.0), cn0_context())
+    one = @inferred update!(estimator, complex(2.0, 0.0), cn0_context())
     @test Base.length(one) == 1
-    @test get_current_index(one) == 1
+    @test get_write_index(one) == 1
     @test cn0_db(estimate_cn0(one, CN0_T)) ≈ 10log10((4.0 - 1.0) / 1e-3)
 
     # `estimate_cn0`'s `coherent_integration_time` argument is ignored — `T` was applied
@@ -228,12 +230,12 @@ end
         cn0_context(),
     )
     @test Base.length(filled) == 4
-    @test get_current_index(filled) == 2
+    @test get_write_index(filled) == 2
     @test cn0_db(estimate_cn0(filled, CN0_T)) ≈ 10log10((4.0 - 1.0) / 1e-3)
 
     @test requires_noise_density(estimator)
     @test !requires_noise_density(NWPRCN0Estimator())
-    @test !requires_noise_density(MomentsCN0Estimator(10))
+    @test !requires_noise_density(MomentsCN0Estimator(; num_integrations = 10))
     @test !requires_noise_density(NoCN0Estimator())
 end
 
@@ -243,8 +245,8 @@ end
     # visibly different power.
     γ = 3000.0                                   # ≈34.8 dB-Hz
     power(t_ms) = 1e-3 * (γ + 1 / (t_ms * 1e-3))
-    short = update(NoiseReferencedCN0Estimator(), complex(sqrt(power(1)), 0.0), cn0_context())
-    long = update(
+    short = update!(NoiseReferencedCN0Estimator(), complex(sqrt(power(1)), 0.0), cn0_context())
+    long = update!(
         NoiseReferencedCN0Estimator(),
         complex(sqrt(power(20)), 0.0),
         cn0_context(; coherent_integration_time = 20.0ms),
@@ -253,7 +255,7 @@ end
     @test cn0_db(estimate_cn0(long, 20ms)) ≈ 10log10(γ) atol = 1e-9
 
     # ... and a ring holding both together still averages to the same γ.
-    both = update(
+    both = update!(
         short,
         complex(sqrt(power(20)), 0.0),
         cn0_context(; coherent_integration_time = 20.0ms),
@@ -301,7 +303,7 @@ end
     estimator = NoiseReferencedCN0Estimator()
     # No density and no T: named as the missing *source*, the root cause.
     err_both = try
-        update(estimator, complex(1.0, 0.0), CN0UpdateContext(GPSL1CA(), BitSynchronizer{UInt64}(), 1))
+        update!(estimator, complex(1.0, 0.0), CN0UpdateContext(GPSL1CA(), BitSynchronizer{UInt64}(), 1))
         nothing
     catch e
         e
@@ -311,7 +313,7 @@ end
 
     # No density, but a T.
     err_density = try
-        update(estimator, complex(1.0, 0.0), cn0_context(; noise_density = nothing))
+        update!(estimator, complex(1.0, 0.0), cn0_context(; noise_density = nothing))
         nothing
     catch e
         e
@@ -321,7 +323,7 @@ end
 
     # A density without a T is the same kind of error, not a MethodError.
     err_time = try
-        update(estimator, complex(1.0, 0.0), cn0_context(; coherent_integration_time = nothing))
+        update!(estimator, complex(1.0, 0.0), cn0_context(; coherent_integration_time = nothing))
         nothing
     catch e
         e
@@ -330,12 +332,12 @@ end
     @test occursin("integration time", err_time.msg)
 
     # And there is no bare-prompt form at all.
-    @test_throws ArgumentError update(estimator, complex(1.0, 0.0))
+    @test_throws ArgumentError update!(estimator, complex(1.0, 0.0))
 end
 
 @testset "NoiseRef: a NaN never leaves estimate_cn0" begin
     # A zero measured floor with a zero prompt — a front-end dropout.
-    poisoned = update(
+    poisoned = update!(
         NoiseReferencedCN0Estimator(; num_integrations = 4),
         complex(0.0, 0.0),
         cn0_context(; noise_density = 0.0 * CN0_N₀),
@@ -344,11 +346,11 @@ end
     @test estimate_cn0(poisoned, CN0_T) == -Inf * dBHz   # ... and the estimate is not
     @test !(estimate_cn0(poisoned, CN0_T) >= 30dBHz)
 
-    nan_prompt = update(NoiseReferencedCN0Estimator(), complex(NaN, 0.0), cn0_context())
+    nan_prompt = update!(NoiseReferencedCN0Estimator(), complex(NaN, 0.0), cn0_context())
     @test estimate_cn0(nan_prompt, CN0_T) == -Inf * dBHz
 
     # An `Inf` term (a zero floor under a non-zero prompt) is not a C/N₀ either.
-    inf_term = update(
+    inf_term = update!(
         NoiseReferencedCN0Estimator(),
         complex(1.0, 0.0),
         cn0_context(; noise_density = 0.0 * CN0_N₀),
@@ -367,7 +369,7 @@ end
     many = @allocated cn0_update_many(estimator, prompt, context, 1_000_000)
     @test many == few
     @test few <= 128
-    @test @inferred(update(estimator, prompt, context)) isa NoiseReferencedCN0Estimator
+    @test @inferred(update!(estimator, prompt, context)) isa NoiseReferencedCN0Estimator
     @test @inferred(estimate_cn0(estimator, CN0_T)) isa typeof(0.0dBHz)
 end
 
@@ -434,29 +436,29 @@ end
     # Before the first window closes the fallback's empty-buffer value shows.
     estimator = NWPRCN0Estimator(; num_integrations = 100, num_narrowband_code_periods = 20)
     @test @inferred(Base.length(estimator)) == 0
-    @test get_current_index(estimator) == 0
+    @test get_write_index(estimator) == 0
     @test @inferred(estimate_cn0(estimator, 1ms)) == 0.0dBHz
     for _ = 1:19
-        estimator = @inferred update(estimator, 1.0 + 0.0im)
+        estimator = @inferred update!(estimator, 1.0 + 0.0im)
     end
     @test Base.length(estimator) == 0            # window still open
-    estimator = update(estimator, 1.0 + 0.0im)   # 20th integration closes it
+    estimator = update!(estimator, 1.0 + 0.0im)   # 20th integration closes it
     @test Base.length(estimator) == 1
-    @test get_current_index(estimator) == 1
+    @test get_write_index(estimator) == 1
     @test estimator.num_integrations_per_ratio == 20
     # 20 identical prompts: the coherent sum holds all the power, µ̂ = M, the
     # noise-free limit of the expression.
     @test @inferred(estimate_cn0(estimator, 1ms)) == Inf * dBHz
     # The ring holds `num_integrations ÷ M` ratios, so the memory stays ~100 integrations.
     for _ = 1:(20*10)
-        estimator = update(estimator, 1.0 + 0.0im)
+        estimator = update!(estimator, 1.0 + 0.0im)
     end
     @test Base.length(estimator) == 5
 
     # Alternating signs cancel in the coherent sum: µ̂ ≤ 1 is "no signal".
     alternating = NWPRCN0Estimator(; num_integrations = 100, num_narrowband_code_periods = 2)
     for k = 1:10
-        alternating = update(alternating, complex(isodd(k) ? 1.0 : -1.0, 0.0))
+        alternating = update!(alternating, complex(isodd(k) ? 1.0 : -1.0, 0.0))
     end
     @test Base.length(alternating) == 5
     @test estimate_cn0(alternating, 1ms) == -Inf * dBHz
@@ -470,7 +472,7 @@ end
         fallback = NoCN0Estimator(),
     )
     for _ = 1:10
-        zeros_only = update(zeros_only, complex(0.0, 0.0))
+        zeros_only = update!(zeros_only, complex(0.0, 0.0))
     end
     @test Base.length(zeros_only) == 0
     @test estimate_cn0(zeros_only, 1ms) == -Inf * dBHz
@@ -479,7 +481,7 @@ end
     # so nothing is ever buffered and the fallback keeps reporting.
     single = NWPRCN0Estimator(; num_integrations = 100, num_narrowband_code_periods = 1)
     for _ = 1:50
-        single = update(single, 1.0 + 0.0im)
+        single = update!(single, 1.0 + 0.0im)
     end
     @test Base.length(single) == 0
     @test estimate_cn0(single, 1ms) == estimate_cn0(single.fallback, 1ms)
@@ -492,7 +494,7 @@ end
         (isnothing(cn0) ? 0.0 : sqrt(10^(cn0 / 10) * 1e-3)) .+
         randn(Xoshiro(seed), ComplexF64, n)
     moments(cn0, seed) =
-        cn0_db(estimate_cn0(cn0_update(MomentsCN0Estimator(100), prompts(cn0, 100, seed)), 1ms))
+        cn0_db(estimate_cn0(cn0_update(MomentsCN0Estimator(; num_integrations = 100), prompts(cn0, 100, seed)), 1ms))
     nwpr(cn0, seed) = cn0_db(
         estimate_cn0(
             cn0_update(
@@ -529,7 +531,7 @@ end
     # starts on a bit boundary.
     estimator = fresh()
     for bit_block_index in [10:19; repeat(0:19, 2)]
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        estimator = update!(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
     end
     @test Base.length(estimator) == 2
     @test estimator.num_integrations_per_ratio == 20
@@ -538,21 +540,21 @@ end
     # the bit from its start.
     capped = NWPRCN0Estimator(; num_integrations = 100, num_narrowband_code_periods = 5)
     for bit_block_index in repeat(0:19, 2)
-        capped = update(capped, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        capped = update!(capped, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
     end
     @test Base.length(capped) == 8
     @test capped.num_integrations_per_ratio == 5
     # A window that would run past the end of the bit is not opened at all.
     ragged = NWPRCN0Estimator(; num_integrations = 100, num_narrowband_code_periods = 6)
     for bit_block_index in repeat(0:19, 2)
-        ragged = update(ragged, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        ragged = update!(ragged, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
     end
     @test Base.length(ragged) == 6
     @test ragged.num_integrations_per_ratio == 6
     # A cap above the bit period cannot lengthen the window past the bit.
     wide = NWPRCN0Estimator(; num_integrations = 100, num_narrowband_code_periods = 50)
     for bit_block_index in repeat(0:19, 2)
-        wide = update(wide, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        wide = update!(wide, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
     end
     @test Base.length(wide) == 2
     @test wide.num_integrations_per_ratio == 20
@@ -560,7 +562,7 @@ end
     # Not synced yet: a short unaligned window, five code periods by default.
     estimator = fresh()
     for _ = 1:20
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
+        estimator = update!(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
     end
     @test Base.length(estimator) == 4
     @test estimator.num_integrations_per_ratio == 5
@@ -571,13 +573,13 @@ end
         num_presync_narrowband_code_periods = 2,
     )
     for _ = 1:8
-        two_block = update(two_block, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
+        two_block = update!(two_block, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
     end
     @test Base.length(two_block) == 4
     @test two_block.num_integrations_per_ratio == 2
     # Switching to the post-sync window restarts the ring.
     for bit_block_index = 0:19
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        estimator = update!(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
     end
     @test Base.length(estimator) == 1
     @test estimator.num_integrations_per_ratio == 20
@@ -586,14 +588,14 @@ end
     # dropped when the first bit-aligned one completes.
     same_length = NWPRCN0Estimator(; num_integrations = 100, num_narrowband_code_periods = 5)
     for _ = 1:20
-        same_length = update(same_length, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
+        same_length = update!(same_length, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
     end
     @test Base.length(same_length) == 4
     @test same_length.num_integrations_per_ratio == 5
     @test !same_length.ratios_are_bit_aligned
     for bit_block_index = 0:4
         same_length =
-            update(same_length, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+            update!(same_length, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
     end
     @test same_length.num_integrations_per_ratio == 5     # window length unchanged ...
     @test same_length.ratios_are_bit_aligned
@@ -603,13 +605,13 @@ end
     # into the bit-aligned window.
     estimator = fresh()
     for _ = 1:9
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
+        estimator = update!(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
     end
     @test estimator.num_accumulated_integrations == 4
-    estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, 5))
+    estimator = update!(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, 5))
     @test estimator.num_accumulated_integrations == 0     # dropped, not continued
     for bit_block_index in [6:19; 0:19]
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        estimator = update!(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
     end
     @test estimator.num_integrations_per_ratio == 20
     @test Base.length(estimator) == 1
@@ -618,10 +620,10 @@ end
     # there rather than dropping the integration.
     restarted = NWPRCN0Estimator(; num_integrations = 100, num_narrowband_code_periods = 5)
     for bit_block_index = 0:2
-        restarted = update(restarted, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
+        restarted = update!(restarted, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
     end
     @test restarted.num_accumulated_integrations == 3
-    restarted = update(restarted, 1.0 + 0.0im, context(GPSL1CA(), 20, 5))
+    restarted = update!(restarted, 1.0 + 0.0im, context(GPSL1CA(), 20, 5))
     @test restarted.num_accumulated_integrations == 1
     @test restarted.num_accumulated_code_periods == 1
 
@@ -629,14 +631,14 @@ end
     # window is opened and the fallback is reported.
     estimator = fresh()
     for _ = 1:40
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL5I(), 10, -1))
+        estimator = update!(estimator, 1.0 + 0.0im, context(GPSL5I(), 10, -1))
     end
     @test Base.length(estimator) == 0
     @test estimate_cn0(estimator, 1ms) ==
           estimate_cn0(estimator.fallback, 1ms)
     # Once synced its bit is 10 code periods long, and the replica wipes the overlay.
     for bit_block_index in repeat(0:9, 3)
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL5I(), 10, bit_block_index))
+        estimator = update!(estimator, 1.0 + 0.0im, context(GPSL5I(), 10, bit_block_index))
     end
     @test Base.length(estimator) == 3
     @test estimator.num_integrations_per_ratio == 10
@@ -644,14 +646,14 @@ end
     # One bit per code period (GPS L1C-D, Galileo E1B): no coherent window.
     estimator = fresh()
     for _ = 1:40
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1C_D(), 1, 0))
+        estimator = update!(estimator, 1.0 + 0.0im, context(GPSL1C_D(), 1, 0))
     end
     @test Base.length(estimator) == 0
 
     # A pilot has no bit grid to respect post-sync: windows run back to back.
     estimator = NWPRCN0Estimator(; num_integrations = 100, num_narrowband_code_periods = 5)
     for _ = 1:20
-        estimator = update(estimator, 1.0 + 0.0im, context(GPSL1C_P(), 0, 0))
+        estimator = update!(estimator, 1.0 + 0.0im, context(GPSL1C_P(), 0, 0))
     end
     @test Base.length(estimator) == 4
     @test estimator.num_integrations_per_ratio == 5
@@ -668,13 +670,13 @@ end
     noisy() = sqrt(10^3.5 * 1e-3) + randn(rng, ComplexF64)   # a true ~35 dB-Hz
     estimator = NWPRCN0Estimator(; num_integrations = 100, num_narrowband_code_periods = 5)
     for _ = 1:5, bit_block_index = 0:19
-        estimator = update(estimator, noisy(), context(1, bit_block_index))
+        estimator = update!(estimator, noisy(), context(1, bit_block_index))
     end
     @test Base.length(estimator) == 20
     @test estimator.num_integrations_per_ratio == 5
     @test isfinite(cn0_db(estimate_cn0(estimator, 1ms)))
     for _ = 1:20
-        estimator = update(estimator, noisy(), context(20, 0))
+        estimator = update!(estimator, noisy(), context(20, 0))
     end
     @test Base.length(estimator) == 0
     @test estimate_cn0(estimator, 20ms) ==
@@ -690,14 +692,14 @@ end
 
     estimator = NWPRCN0Estimator(; num_integrations = 100, num_narrowband_code_periods = 5)
     for bit_block_index = 0:2
-        estimator = update(estimator, 1.0 + 0.0im, context(1, bit_block_index))
+        estimator = update!(estimator, 1.0 + 0.0im, context(1, bit_block_index))
     end
     @test estimator.num_accumulated_integrations == 3
-    estimator = update(estimator, 1.0 + 0.0im, context(0, 3))
+    estimator = update!(estimator, 1.0 + 0.0im, context(0, 3))
     @test estimator.num_accumulated_integrations == 3
     @test estimator.num_accumulated_code_periods == 3
     for bit_block_index = 3:4
-        estimator = update(estimator, 1.0 + 0.0im, context(1, bit_block_index))
+        estimator = update!(estimator, 1.0 + 0.0im, context(1, bit_block_index))
     end
     @test Base.length(estimator) == 1
     @test estimator.num_integrations_per_ratio == 5
@@ -707,7 +709,7 @@ end
 # Reduced form of Tracking.jl's `test/cn0_estimator_comparison.jl`: the same
 # post-correlation prompt model, but one seed and fewer trials, so only the
 # structural claims with a wide statistical margin are pinned. NWPR is driven
-# through its bare-prompt-stream `update`, the noise reference is the shipped
+# through its bare-prompt-stream `update!`, the noise reference is the shipped
 # `NoiseReferencedCN0Estimator` against the exactly known floor.
 function cn0_comparison_sweep(cn0, trials)
     λ = 10^(cn0 / 10) * 1e-3

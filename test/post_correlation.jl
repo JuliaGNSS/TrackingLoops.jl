@@ -31,7 +31,7 @@ end
 
 @testset "A signal's state is updated by keyword, the other fields kept" begin
     state = PostCorrelationState(GPSL1CA())
-    cn0_estimator = MomentsCN0Estimator(50)
+    cn0_estimator = MomentsCN0Estimator(; num_integrations = 50)
     updated = @inferred PostCorrelationState(state; cn0_estimator, last_num_code_periods = 2)
     @test updated.cn0_estimator === cn0_estimator
     @test updated.last_num_code_periods == 2

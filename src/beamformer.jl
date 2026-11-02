@@ -10,7 +10,7 @@ An implementation must provide two methods:
   - [`get_beamforming_weights`](@ref)`(beamformer, ::NumAntennas{M})` — the combining weights `w` this
     beamformer currently applies. A plain `ComplexF64` at `M == 1`, an
     `SVector{M,ComplexF64}` above.
-  - [`update`](@ref)`(beamformer, prompt)` — return the beamformer to use for the next
+  - [`update!`](@ref)`(beamformer, prompt)` — return the beamformer to use for the next
     integration, which is where an adaptive beamformer recomputes its weights.
 
 The contract is deliberately **linear in the antennas**: the combined correlator output is
@@ -38,10 +38,10 @@ struct DefaultBeamformer <: AbstractBeamformer end
 $(SIGNATURES)
 
 Update the beamformer with the latest prompt and return the
-new beamformer (immutable update). This is the extension point for custom
+updated beamformer, which replaces `beamformer`. This is the extension point for custom
 [`AbstractBeamformer`](@ref)s — e.g. a beamformer adapting its weights.
 """
-update(beamformer::DefaultBeamformer, prompt) = beamformer
+update!(beamformer::DefaultBeamformer, prompt) = beamformer
 
 """
 $(SIGNATURES)
@@ -60,7 +60,7 @@ A beamformer that averages the antenna elements:
 
 ```julia
 struct MyBeamformer <: AbstractBeamformer end
-TrackingLoops.update(f::MyBeamformer, prompt) = f
+TrackingLoops.update!(f::MyBeamformer, prompt) = f
 TrackingLoops.get_beamforming_weights(::MyBeamformer, ::NumAntennas{1}) = 1.0 + 0.0im
 TrackingLoops.get_beamforming_weights(::MyBeamformer, ::NumAntennas{M}) where {M} =
     SVector{M,ComplexF64}(ntuple(_ -> 1 / M + 0.0im, M))

@@ -5,7 +5,7 @@ CurrentModule = TrackingLoops
 # C/N₀ estimation
 
 A C/N₀ estimator is advanced once per integration with the integration's prompt
-(`TrackingLoops.update`, called by [`process_correlator_bank_output!`](@ref)) and read with
+(`TrackingLoops.update!`, called by [`process_correlator_bank_output!`](@ref)) and read with
 [`estimate_cn0`](@ref). The package provides:
 
 - [`MomentsCN0Estimator`](@ref) — the moments method on a window of prompts;
@@ -18,27 +18,28 @@ A C/N₀ estimator is advanced once per integration with the integration's promp
 [`default_cn0_estimator`](@ref TrackingLoops.default_cn0_estimator) says which one a signal gets by default.
 
 ```@docs
+reset_cn0_estimator!
 TrackingLoops.AbstractCN0Estimator
 TrackingLoops.CN0UpdateContext
 TrackingLoops.default_cn0_estimator(::AbstractGNSSSignal, ::Int)
 TrackingLoops.requires_noise_density(::Type{<:AbstractCN0Estimator})
-TrackingLoops.update(::AbstractCN0Estimator, ::Any, ::CN0UpdateContext)
+TrackingLoops.update!(::AbstractCN0Estimator, ::Any, ::CN0UpdateContext)
 MomentsCN0Estimator
 estimate_cn0(::MomentsCN0Estimator, ::Any)
-TrackingLoops.update(::MomentsCN0Estimator, ::Any)
+TrackingLoops.update!(::MomentsCN0Estimator, ::Any)
 NWPRCN0Estimator
 NWPRCN0Estimator(::AbstractGNSSSignal)
 NWPRCN0Estimator()
 estimate_cn0(::NWPRCN0Estimator, ::Any)
-TrackingLoops.update(::NWPRCN0Estimator, ::Any, ::CN0UpdateContext)
-TrackingLoops.update(::NWPRCN0Estimator, ::Any)
+TrackingLoops.update!(::NWPRCN0Estimator, ::Any, ::CN0UpdateContext)
+TrackingLoops.update!(::NWPRCN0Estimator, ::Any)
 NoiseReferencedCN0Estimator
 NoiseReferencedCN0Estimator()
 estimate_cn0(::NoiseReferencedCN0Estimator, ::Any)
 TrackingLoops.requires_noise_density(::Type{NoiseReferencedCN0Estimator})
-TrackingLoops.update(::NoiseReferencedCN0Estimator, ::Any, ::CN0UpdateContext)
-TrackingLoops.update(::NoiseReferencedCN0Estimator, ::Any)
+TrackingLoops.update!(::NoiseReferencedCN0Estimator, ::Any, ::CN0UpdateContext)
+TrackingLoops.update!(::NoiseReferencedCN0Estimator, ::Any)
 NoCN0Estimator
 estimate_cn0(::NoCN0Estimator, ::Any)
-TrackingLoops.update(::NoCN0Estimator, ::Any)
+TrackingLoops.update!(::NoCN0Estimator, ::Any)
 ```
