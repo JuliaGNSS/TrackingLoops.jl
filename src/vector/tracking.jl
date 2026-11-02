@@ -9,7 +9,7 @@
 # until its first fix seeds the filter, one filter iteration after. The cycle leaves its
 # decisions (admission, release, commands) in the slots for each satellite to take up
 # on its next integration. Nothing here knows a correlator, so software and hardware loops
-# step the same estimator.
+# step the same loop.
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
@@ -393,7 +393,7 @@ end
 function NavFilterState(
     filter_config::Union{NavigationFilterConfig,Nothing},
     pairs::Tuple,
-    inner::AbstractTrackingLoop;
+    scalar_loop::AbstractTrackingLoop;
     navigation_filter_update_interval,
     min_tracking_cn0_dbhz::Float64,
     satellite_capacity_per_signal::Int,
@@ -407,7 +407,7 @@ function NavFilterState(
     model = NavFilterModel(config, layout, uconvert(s, navigation_filter_update_interval))
     n = num_nav_states(config, layout)
     groups = map(pairs) do (signal, decoding_signal)
-        prototype = VectorLoopState(init_loop_state(inner, signal, 0.0Hz, 0.0Hz), false)
+        prototype = VectorLoopState(init_loop_state(scalar_loop, signal, 0.0Hz, 0.0Hz), false)
         VectorTrackingSlotGroup(signal, decoding_signal, prototype, satellite_capacity_per_signal, navigation_filter_update_interval)
     end
     max_members = satellite_capacity_per_signal * length(signals)
@@ -446,19 +446,19 @@ _signal_observation_buffer(group::VectorTrackingSlotGroup{S,DS,<:VectorTrackingS
     sizehint!(SignalObservation{Float64,D,S}[], 2 * max(length(group.slots), 1))
 
 """
-    calc_position_std(estimator::VectorTrackingLoop)
+    calc_position_std(loop::VectorTrackingLoop)
 
 The navigation filter's 1σ 3-D position uncertainty (m), once seeded.
 """
-calc_position_std(estimator::VectorTrackingLoop) = calc_position_std(estimator.engine)
+calc_position_std(loop::VectorTrackingLoop) = calc_position_std(loop.engine)
 
 """
-    calc_clock_bias_std(estimator::VectorTrackingLoop)
+    calc_clock_bias_std(loop::VectorTrackingLoop)
 
 The navigation filter's 1σ uncertainty (m) of the solution's reference clock
 bias, once seeded.
 """
-calc_clock_bias_std(estimator::VectorTrackingLoop) = calc_clock_bias_std(estimator.engine)
+calc_clock_bias_std(loop::VectorTrackingLoop) = calc_clock_bias_std(loop.engine)
 
 calc_position_std(nav::NavFilterState) = calc_position_std(nav.P, nav.model.idxs)
 
@@ -468,29 +468,29 @@ function calc_clock_bias_std(nav::NavFilterState)
 end
 
 """
-    get_navigation_solution(estimator::VectorTrackingLoop) -> PVTSolution
+    get_navigation_solution(loop::VectorTrackingLoop) -> PVTSolution
 
 The latest navigation solution: the scalar PVT's until the filter is seeded, the
 filter's after. The next cycle reuses its containers; copy out what is needed.
 """
-get_navigation_solution(estimator::VectorTrackingLoop) = estimator.engine.pvt
+get_navigation_solution(loop::VectorTrackingLoop) = loop.engine.pvt
 
 """
-    get_navigation_status(estimator::VectorTrackingLoop) -> VectorTrackingStatus
+    get_navigation_status(loop::VectorTrackingLoop) -> VectorTrackingStatus
 
 What the latest navigation cycle did (see [`VectorTrackingStatus`](@ref)).
 """
-get_navigation_status(estimator::VectorTrackingLoop) = estimator.engine.status
+get_navigation_status(loop::VectorTrackingLoop) = loop.engine.status
 
-get_navigation_cycle_index(estimator::VectorTrackingLoop) = estimator.engine.cycle_index
+get_navigation_cycle_index(loop::VectorTrackingLoop) = loop.engine.cycle_index
 
-function get_navigation_elapsed_time(estimator::VectorTrackingLoop)
-    nav = estimator.engine
+function get_navigation_elapsed_time(loop::VectorTrackingLoop)
+    nav = loop.engine
     nav.cycle_epoch_index == typemin(Int) ? nothing : nav.cycle_epoch_index * nav.navigation_filter_update_interval
 end
 
-function get_satellite_report(estimator::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
-    nav = estimator.engine
+function get_satellite_report(loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
+    nav = loop.engine
     _satellite_report(nav, nav.groups, signal, Int(prn))
 end
 
@@ -541,7 +541,7 @@ function _get_decoder(groups::Tuple, signal::S, prn) where {S}
 end
 
 """
-    get_vector_tracking_members(estimator::VectorTrackingLoop)
+    get_vector_tracking_members(loop::VectorTrackingLoop)
 
 The latest cycle's per-member results: every member of the vector loop, measured
 *and* coasted, keyed `(driver_signal_id, prn)`, each with the satellite position,
@@ -552,16 +552,16 @@ measured members. Empty while the scalar solve is in control.
 The returned dictionary is borrowed storage, reused by the next navigation cycle;
 copy it to retain the current results.
 """
-get_vector_tracking_members(estimator::VectorTrackingLoop) = estimator.engine.vector_tracking_members
+get_vector_tracking_members(loop::VectorTrackingLoop) = loop.engine.vector_tracking_members
 
 """
-    get_release_reason(estimator::VectorTrackingLoop, signal, prn) -> VectorTrackingReleaseReason
+    get_release_reason(loop::VectorTrackingLoop, signal, prn) -> VectorTrackingReleaseReason
 
 Whether and why the latest navigation cycle released the member `prn` of
 `signal` from the vector loop.
 """
-function get_release_reason(estimator::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
-    _release_reason(estimator.engine.groups, signal, Int(prn))
+function get_release_reason(loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
+    _release_reason(loop.engine.groups, signal, Int(prn))
 end
 
 _release_reason(::Tuple{}, signal, prn) = VT_NOT_RELEASED
@@ -1189,9 +1189,9 @@ function _write_solution!(nav::NavFilterState, groups)
     for j in candidates
         set!(observations, _member_key(layout, members[j]), _member_info(buffers, j))
     end
-    get_vector_tracking_members = empty_keeping_capacity!(nav.vector_tracking_members)
+    satellite_reports = empty_keeping_capacity!(nav.vector_tracking_members)
     for j in eachindex(members)
-        set!(get_vector_tracking_members, _member_key(layout, members[j]), _member_info(buffers, j))
+        set!(satellite_reports, _member_key(layout, members[j]), _member_info(buffers, j))
     end
 
     # Only measured biases, as in `calc_pvt`: an unmeasured one coasts on process noise

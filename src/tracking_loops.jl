@@ -7,7 +7,7 @@
 #
 # `nco_history` answers `calc_mean_nco_command(nco_history, a, b)` (a `ConstantNCOCommand` in software, the
 # channel's `NCOTimeline` in hardware); `application_sample_index` is the device sample the
-# batch's command takes effect at, `NO_LANDING_SAMPLE` for each integration's end.
+# batch's command takes effect at, `nothing` for each integration's end.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # The soft bits an integration appended: a contiguous view of the bit synchronizer's vector.
@@ -34,15 +34,13 @@ the last integration of its batch (the integrations a host steps before its next
 takes effect), from which the command's delay to its application sample is measured.
 
 `num_code_periods` must be at least 1: the carrier-loop staging sizes its
-phase-lock indicator's averages in integrations of that length and divides by it. A
+phase-lock indicator's averages in integrations of that length and divides by it. An
 integration built from a [`PostCorrelationState`](@ref) always is ([`process_correlator_bank_output!`](@ref)
-counts at least one block); a host building integrations otherwise must ensure it.
+counts at least one code period); a host building integrations otherwise must ensure it.
 
-The four-quadrant FLL reads a prompt sign flip as half a cycle of rotation, so a
+The four-quadrant FLL reads a prompt sign flip as half a cycle of rotation, so an
 integration whose `carrier_phase_polarity` differs from the previous integration's comes with
-`previous_prompt = 0`, giving no FLL reading, as for the first integration. The
-constructor that takes a `PostCorrelationState` applies this; a host building integrations
-otherwise passes `0` itself.
+`previous_prompt = 0`, giving no FLL reading, as for the first integration. [`process_correlator_bank_output!`](@ref) applies this; a host building integrations otherwise passes `0` itself.
 
 Fields used by a tracking loop with shared navigation state
 ([`VectorTrackingLoop`](@ref)):
@@ -65,8 +63,7 @@ by C/N₀ (the vector loop; the scalar loops ignore it):
   - `num_code_periods_into_bit`: code periods integrated into the current navigation bit
     (`0` before sync);
   - `new_soft_bits`: exactly the soft bits *this integration* appended, a view of the
-    bit synchronizer's vector valid for the call, so it does not matter when the host
-    drains the buffer;
+    bit synchronizer's vector valid until the host drains, resets, or grows that vector;
   - `cn0_estimator`: the signal's C/N₀ estimator, for [`estimate_cn0`](@ref);
   - `bit_polarity`: the sign the bit clock's sync found its soft bits at (`-1` if
     it negates the accumulated prompts' real part, `+1` if it keeps it, `0` before
@@ -77,7 +74,7 @@ modulation off it (a dataless signal synced to its secondary code), else `0`.
 Nonzero, the PLL and the FLL read the integration four-quadrant (`pll_disc(...;
 polarity)`, `fll_disc(...; polarity)`); `0`, two-quadrant.
 
-The constructor taking a `PostCorrelationState` fills all of this in. The others leave
+[`process_correlator_bank_output!`](@ref) fills all of this in. The constructors below leave
 the bit clock unsynchronised, add no soft bits, carry a [`NoCN0Estimator`](@ref)
 and take `carrier_phase_polarity` as a keyword (`0` by default): a host with its
 own per-signal state passes the one `_process_correlator_bank_output!` returned for the integration.
@@ -165,59 +162,16 @@ CoherentIntegration(
     Int8(0),
 )
 
-"""
-    CoherentIntegration(signal, filtered_correlator_bank, output::CorrelatorBankOutput,
-               state::PostCorrelationState, sampling_frequency;
-               command_issue_sample_index = output.sample_index, prn = 0, sample_index_offset = 0)
-
-The integration of `output` with its block count, previous prompt, bit-clock summary,
-C/N₀ estimator and carrier phase polarity taken from `state`, the
-[`PostCorrelationState`](@ref) that [`process_correlator_bank_output!`](@ref) just folded `output` into
-(see `CoherentIntegration` for the fields).
-"""
-function CoherentIntegration(
-    signal,
-    filtered_correlator_bank,
-    output::CorrelatorBankOutput,
-    state::PostCorrelationState,
-    sampling_frequency;
-    command_issue_sample_index = output.sample_index,
-    prn::Integer = 0,
-    sample_index_offset::Integer = 0,
-)
-    bit_synchronizer = state.bit_synchronizer
-    synced = is_bit_or_secondary_code_synced(bit_synchronizer)
-    soft_bits = bit_synchronizer.soft_bits
-    num_soft_bits = Base.length(soft_bits)
-    first_new = max(1, num_soft_bits - state.last_num_new_soft_bits + 1)
-    CoherentIntegration(
-        signal,
-        filtered_correlator_bank,
-        state.last_previous_prompt,
-        output.num_integrated_samples,
-        output.sample_index + Int(sample_index_offset),
-        Int(command_issue_sample_index) + Int(sample_index_offset),
-        state.last_num_code_periods,
-        sampling_frequency,
-        Int(prn),
-        output.code_phase,
-        synced,
-        state.last_sync_change,
-        synced ? bit_synchronizer.num_code_periods_into_bit : 0,
-        view(soft_bits, first_new:num_soft_bits),
-        state.cn0_estimator,
-        state.last_carrier_phase_polarity,
-        synced ? bit_synchronizer.bit_polarity : Int8(0),
-    )
-end
-
 # ── The conventional PLL/DLL ─────────────────────────────────────────────────
 
 """
-Per-satellite state of a [`ScalarTrackingLoop`](@ref): initial Dopplers, loop
+Shared per-satellite state of [`ScalarTrackingLoop`](@ref) and
+[`DelayCompensatedTrackingLoop`](@ref): reference Dopplers, loop
 filters, their [`LoopBandwidths`](@ref), the key of the driver signal whose integrations
 close the loops (`0`: every integration's; see [`step_loop!`](@ref)), and the
-[`CarrierLoopStaging`](@ref).
+[`CarrierLoopStaging`](@ref). `previous_prompt_sample_index` is the last driver
+prompt's center sample (`NaN` initially), used to attribute FLL measurements
+between successive prompts.
 """
 @kwdef struct ScalarLoopState{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     reference_carrier_doppler::typeof(1.0Hz)
@@ -225,27 +179,30 @@ close the loops (`0`: every integration's; see [`step_loop!`](@ref)), and the
     carrier_loop_filter::CA = ThirdOrderBilinearLF()
     code_loop_filter::CO = SecondOrderBilinearLF()
     bandwidths::LoopBandwidths = LoopBandwidths()
-    driver::UInt64 = UInt64(0)
+    previous_prompt_sample_index::Float64 = NaN
+    driver_key::UInt64 = UInt64(0)
     staging::CarrierLoopStaging = CarrierLoopStaging(typeof(carrier_loop_filter))
 end
 
 function ScalarLoopState(
-    sat_conventional_pll_and_dll::ScalarLoopState{CA,CO};
+    state::ScalarLoopState{CA,CO};
     carrier_loop_filter::Maybe{CA} = nothing,
     code_loop_filter::Maybe{CO} = nothing,
     bandwidths::Maybe{LoopBandwidths} = nothing,
     staging::Maybe{CarrierLoopStaging} = nothing,
+    previous_prompt_sample_index::Maybe{Float64} = nothing,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     ScalarLoopState{CA,CO}(
-        sat_conventional_pll_and_dll.reference_carrier_doppler,
-        sat_conventional_pll_and_dll.reference_code_doppler,
-        isnothing(carrier_loop_filter) ? sat_conventional_pll_and_dll.carrier_loop_filter :
+        state.reference_carrier_doppler,
+        state.reference_code_doppler,
+        isnothing(carrier_loop_filter) ? state.carrier_loop_filter :
         carrier_loop_filter,
-        isnothing(code_loop_filter) ? sat_conventional_pll_and_dll.code_loop_filter :
+        isnothing(code_loop_filter) ? state.code_loop_filter :
         code_loop_filter,
-        isnothing(bandwidths) ? sat_conventional_pll_and_dll.bandwidths : bandwidths,
-        sat_conventional_pll_and_dll.driver,
-        isnothing(staging) ? sat_conventional_pll_and_dll.staging : staging,
+        isnothing(bandwidths) ? state.bandwidths : bandwidths,
+        something(previous_prompt_sample_index, state.previous_prompt_sample_index),
+        state.driver_key,
+        isnothing(staging) ? state.staging : staging,
     )
 end
 
@@ -258,7 +215,7 @@ end
 """
 $(SIGNATURES)
 
-Conventional PLL and DLL Doppler estimator. Configuration only; per-satellite
+Conventional PLL and DLL Doppler loop. Configuration only; per-satellite
 state is a [`ScalarLoopState`](@ref) from [`init_loop_state`](@ref).
 
 `CA` and `CO` are the carrier and code loop filter types. The bandwidths (the PLL's
@@ -270,122 +227,48 @@ default to `nothing`, **auto**: sized per satellite from its driver signal via
 [`default_code_loop_filter_bandwidth`](@ref). Each is capped against the integration's
 integration time at filter time (see [`LoopBandwidths`](@ref)), so longer
 integration needs no re-tuning.
+
+Use `ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)` for FLL assistance during
+pull-in, followed by the same carrier staging and PLL tracking.
 """
 struct ScalarTrackingLoop{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter} <:
        AbstractTrackingLoop
-    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
-    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
-    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
-    code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
+    bandwidths::_LoopBandwidthConfiguration
 end
 
 function ScalarTrackingLoop(
     ::Type{CA} = ThirdOrderBilinearLF,
     ::Type{CO} = SecondOrderBilinearLF;
-    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
+    kwargs...,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
-    ScalarTrackingLoop{CA,CO}(
-        wide_carrier_loop_filter_bandwidth,
-        narrow_carrier_loop_filter_bandwidth,
-        fll_assist_loop_filter_bandwidth,
-        code_loop_filter_bandwidth,
-    )
+    ScalarTrackingLoop{CA,CO}(_LoopBandwidthConfiguration(; kwargs...))
 end
 
-"""
-$(SIGNATURES)
-
-A [`ScalarTrackingLoop`](@ref) with the FLL-assisted carrier filter
-`ThirdOrderAssistedBilinearLF` (see [`CarrierLoopStage`](@ref)). Keywords as
-there.
-"""
-function ConventionalAssistedPLLAndDLL(
-    ::Type{CO} = SecondOrderBilinearLF;
-    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-) where {CO<:AbstractLoopFilter}
-    ScalarTrackingLoop(
-        ThirdOrderAssistedBilinearLF,
-        CO;
-        wide_carrier_loop_filter_bandwidth,
-        narrow_carrier_loop_filter_bandwidth,
-        fll_assist_loop_filter_bandwidth,
-        code_loop_filter_bandwidth,
-    )
-end
-
-# Copy with the given (non-`nothing`) fields replaced.
-function ScalarTrackingLoop(
-    pll_and_dll::ScalarTrackingLoop{CA,CO};
-    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
-    ScalarTrackingLoop{CA,CO}(
-        isnothing(wide_carrier_loop_filter_bandwidth) ?
-        pll_and_dll.wide_carrier_loop_filter_bandwidth : wide_carrier_loop_filter_bandwidth,
-        isnothing(narrow_carrier_loop_filter_bandwidth) ?
-        pll_and_dll.narrow_carrier_loop_filter_bandwidth :
-        narrow_carrier_loop_filter_bandwidth,
-        isnothing(fll_assist_loop_filter_bandwidth) ?
-        pll_and_dll.fll_assist_loop_filter_bandwidth : fll_assist_loop_filter_bandwidth,
-        isnothing(code_loop_filter_bandwidth) ? pll_and_dll.code_loop_filter_bandwidth :
-        code_loop_filter_bandwidth,
-    )
-end
-
-# The estimator's bandwidths, each `nothing` taken from `defaults` (the driver
-# signal's).
-@inline _resolve_bandwidths(estimator, defaults::LoopBandwidths) = LoopBandwidths(
-    isnothing(estimator.wide_carrier_loop_filter_bandwidth) ? defaults.wide_carrier :
-    estimator.wide_carrier_loop_filter_bandwidth,
-    isnothing(estimator.narrow_carrier_loop_filter_bandwidth) ? defaults.narrow_carrier :
-    estimator.narrow_carrier_loop_filter_bandwidth,
-    isnothing(estimator.fll_assist_loop_filter_bandwidth) ? defaults.fll_assist :
-    estimator.fll_assist_loop_filter_bandwidth,
-    isnothing(estimator.code_loop_filter_bandwidth) ? defaults.code :
-    estimator.code_loop_filter_bandwidth,
-)
+# Copy with the given (non-`nothing`) bandwidths replaced.
+ScalarTrackingLoop(loop::ScalarTrackingLoop{CA,CO}; kwargs...) where {CA,CO} =
+    ScalarTrackingLoop{CA,CO}(_LoopBandwidthConfiguration(loop.bandwidths; kwargs...))
 
 """
-    init_loop_state(estimator, driver_signal, carrier_doppler, code_doppler)
+    init_loop_state(loop, driver_signal, carrier_doppler, code_doppler)
 
-Per-satellite estimator state for a satellite driven by `driver_signal`, starting
+Per-satellite loop state for a satellite driven by `driver_signal`, starting
 at the given Dopplers; auto bandwidths are resolved here from `driver_signal`. The
 state records the driver, so [`step_loop!`](@ref) tells its integrations from the
 satellite's other signals', and starts the [`CarrierLoopStage`](@ref) staging.
 Must be **pure**: Tracking.jl also calls it for template states and re-seeding.
 """
 function init_loop_state(
-    estimator::ScalarTrackingLoop{CA,CO},
+    loop::ScalarTrackingLoop{CA,CO},
     driver_signal::AbstractGNSSSignal,
     carrier_doppler,
     code_doppler,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
-    carrier_loop_filter = _constructorof(CA)()
-    ScalarLoopState(
-        carrier_doppler,
-        code_doppler,
-        carrier_loop_filter,
-        _constructorof(CO)(),
-        _resolve_bandwidths(estimator, LoopBandwidths(driver_signal)),
-        _signal_key(driver_signal),
-        CarrierLoopStaging(typeof(carrier_loop_filter)),
-    )
+    _init_scalar_loop_state(loop, driver_signal, carrier_doppler, code_doppler,
+        _init_loop_filter(CA), _init_loop_filter(CO), LoopBandwidths(driver_signal))
 end
 
-# `Accessors.constructorof` without the dependency: the loop filters are plain
-# parametric structs, constructed by their type name.
-_constructorof(::Type{T}) where {T} = Base.typename(T).wrapper
-
 """
-    reinit_loop_state(estimator, state, carrier_doppler, code_doppler)
+    reinit_loop_state(loop, state, carrier_doppler, code_doppler)
 
 Re-seed `state` at the given Dopplers with zeroed loop filters, keeping the
 bandwidths and the carrier loop's staging (see [`CarrierLoopStage`](@ref)): a reset
@@ -394,7 +277,7 @@ the loop holds its stage, the phase-lock indicator reads on, and the bandwidths 
 capped for the new length.
 """
 function reinit_loop_state(
-    ::ScalarTrackingLoop,
+    ::AbstractTrackingLoop,
     state::ScalarLoopState,
     carrier_doppler,
     code_doppler,
@@ -402,16 +285,17 @@ function reinit_loop_state(
     ScalarLoopState(
         carrier_doppler,
         code_doppler,
-        _constructorof(typeof(state.carrier_loop_filter))(),
-        _constructorof(typeof(state.code_loop_filter))(),
+        _reset_loop_filter(state.carrier_loop_filter),
+        _reset_loop_filter(state.code_loop_filter),
         state.bandwidths,
-        state.driver,
+        NaN,
+        state.driver_key,
         state.staging,
     )
 end
 
 """
-    step_loop!(estimator::ScalarTrackingLoop, state, integration::CoherentIntegration, nco_history,
+    step_loop!(loop::ScalarTrackingLoop, state, integration::CoherentIntegration, nco_history,
               application_sample_index)
         -> (state, carrier_doppler, code_doppler)
 
@@ -424,17 +308,17 @@ the command is assumed to act before the next integration.
 A host hands every integration of a satellite to `step_loop!`, the driver's and its
 passengers' alike; only the driver's step the loop. A passenger integration leaves the
 state as it is and returns the command in force at the application sample (the
-integration's end under `NO_LANDING_SAMPLE`), so applying it changes nothing.
+integration's end under `nothing`), so applying it changes nothing.
 """
 @inline step_loop!(
-    estimator::ScalarTrackingLoop,
+    loop::ScalarTrackingLoop,
     state::ScalarLoopState,
     integration::CoherentIntegration,
     nco_history,
-    application_sample_index::Int64,
+    application_sample_index::Union{Nothing,Integer},
 ) =
     _is_driver_integration(state, integration) ?
-    _step_scalar_loop(estimator, state, integration, nco_history, application_sample_index) :
+    _step_scalar_loop(loop, state, integration, nco_history, application_sample_index) :
     _step_passenger(state, integration, nco_history, application_sample_index)
 
 # Whether `integration` belongs to the signal the scalar state was initialised with.
@@ -443,17 +327,17 @@ integration's end under `NO_LANDING_SAMPLE`), so applying it changes nothing.
 # Whether the scalar state's satellite is driven by `signal` (any signal for a state
 # without a recorded driver).
 @inline _is_driven_by(state, signal::AbstractGNSSSignal) =
-    state.driver == 0 || _signal_key(signal) == state.driver
+    state.driver_key == 0 || _signal_key(signal) == state.driver_key
 
 # A passenger integration through a loop it does not close: the state unchanged and the
 # command in force where this integration's command would take effect.
-@inline function _step_passenger(state, integration::CoherentIntegration, nco_history, application_sample_index::Int64)
+@inline function _step_passenger(state, integration::CoherentIntegration, nco_history, application_sample_index::Union{Nothing,Integer})
     carrier_doppler, code_doppler = _command_in_force(integration, nco_history, application_sample_index)
     state, carrier_doppler, code_doppler
 end
 
-@inline function _command_in_force(integration::CoherentIntegration, nco_history, application_sample_index::Int64)
-    application_sample_index = application_sample_index == NO_LANDING_SAMPLE ? integration.sample_index : application_sample_index
+@inline function _command_in_force(integration::CoherentIntegration, nco_history, application_sample_index::Union{Nothing,Integer})
+    application_sample_index = isnothing(application_sample_index) ? integration.sample_index : application_sample_index
     (; carrier_doppler, code_doppler) = calc_mean_nco_command(nco_history, application_sample_index, application_sample_index)
     carrier_doppler * Hz, code_doppler * Hz
 end
@@ -467,13 +351,18 @@ end
     state::ScalarLoopState,
     integration::CoherentIntegration,
     nco_history,
-    application_sample_index::Int64;
+    application_sample_index::Union{Nothing,Integer};
     form_fll::Bool,
 )
+    _measure_scalar_integration(integration, nco_history; form_fll)
+end
+
+@inline function _measure_scalar_integration(integration::CoherentIntegration, nco_history; form_fll::Bool)
     signal = integration.signal
     coherent_integration_time = integration.num_integrated_samples / integration.sampling_frequency
     integration_start_sample_index = integration.sample_index - integration.num_integrated_samples
-    applied_code = calc_mean_nco_command(nco_history, integration_start_sample_index, integration.sample_index).code_doppler
+    nco_command = calc_mean_nco_command(nco_history, integration_start_sample_index, integration.sample_index)
+    applied_carrier, applied_code = nco_command.carrier_doppler, nco_command.code_doppler
     filtered_correlator_bank = integration.filtered_correlator_bank
     frequency_error =
         form_fll ?
@@ -486,6 +375,7 @@ end
         ) : 0.0Hz
     (;
         coherent_integration_time,
+        applied_carrier,
         phase_error = pll_disc(signal, filtered_correlator_bank; polarity = integration.carrier_phase_polarity),
         frequency_error,
         code_error = dll_disc(
@@ -494,7 +384,7 @@ end
             applied_code * Hz,
             integration.sampling_frequency,
         ),
-        center = NaN,
+        center = integration.sample_index - integration.num_integrated_samples / 2,
     )
 end
 
@@ -528,12 +418,12 @@ end
     code_loop_filter,
     center,
     staging,
-) = ScalarLoopState(state; carrier_loop_filter, code_loop_filter, staging)
+) = ScalarLoopState(state; carrier_loop_filter, code_loop_filter, staging, previous_prompt_sample_index = center)
 
 # One integration through a scalar loop (see `step_loop!`).
-@inline function _step_scalar_loop(estimator, state, integration::CoherentIntegration, nco_history, application_sample_index::Int64)
+@inline function _step_scalar_loop(loop, state, integration::CoherentIntegration, nco_history, application_sample_index::Union{Nothing,Integer})
     discriminators = _discriminators(
-        estimator,
+        loop,
         state,
         integration,
         nco_history,
@@ -586,10 +476,10 @@ end
                              code_loop_filter_bandwidth = nothing,
                              compensate_delay = true)
 
-FLL-assisted PLL and DLL Doppler estimator for a replica whose NCO commands are
+FLL-assisted PLL and DLL Doppler loop for a replica whose NCO commands are
 applied with a known delay; the hardware-correlator receiver's default.
 
-It is the [`ConventionalAssistedPLLAndDLL`](@ref) (same filters, gains,
+It is the `ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)` (same filters, gains,
 [`CarrierLoopStage`](@ref) staging and bandwidth defaults) with its internals
 referenced to the device NCO. The one different default is the wide PLL bandwidth:
 the narrow one ([`default_narrow_carrier_loop_filter_bandwidth`](@ref)), as a wider
@@ -605,120 +495,51 @@ loop tolerates less command delay.
     scheduled, and the frequency measurement re-based onto the command running
     there.
 
-With zero delay step 2 is the identity and the estimator *is* the conventional
+With zero delay step 2 is the identity and the loop *is* the conventional
 loop at the same bandwidths, inheriting its noise performance.
 `compensate_delay = false` drops step 2, making it arithmetically the
-[`ConventionalAssistedPLLAndDLL`](@ref): the documented **negative control**,
+`ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)`: the documented **negative control**,
 which fails like it at a few epochs of delay.
 """
 struct DelayCompensatedTrackingLoop{CO<:AbstractLoopFilter} <: AbstractTrackingLoop
-    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
-    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
-    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
-    code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)}
+    bandwidths::_LoopBandwidthConfiguration
     compensate_delay::Bool
 end
 
 function DelayCompensatedTrackingLoop(
     ::Type{CO} = SecondOrderBilinearLF;
-    wide_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    narrow_carrier_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    fll_assist_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
-    code_loop_filter_bandwidth::Maybe{typeof(1.0Hz)} = nothing,
     compensate_delay::Bool = true,
+    kwargs...,
 ) where {CO<:AbstractLoopFilter}
-    DelayCompensatedTrackingLoop{CO}(
-        wide_carrier_loop_filter_bandwidth,
-        narrow_carrier_loop_filter_bandwidth,
-        fll_assist_loop_filter_bandwidth,
-        code_loop_filter_bandwidth,
-        compensate_delay,
-    )
+    DelayCompensatedTrackingLoop{CO}(_LoopBandwidthConfiguration(; kwargs...), compensate_delay)
 end
 
-"""
-    SatNCOReferencedPLLAndDLL
-
-Per-satellite state of an [`DelayCompensatedTrackingLoop`](@ref): handover Dopplers
-(the filters output offsets from them), both filters, their bandwidths, the centre
-sample of the last integration (`NaN` before the first; the FLL measures between two
-prompts' centres, so its replica command is averaged over that span), and the driver key
-and staging as in [`ScalarLoopState`](@ref).
-"""
-struct SatNCOReferencedPLLAndDLL{CA<:ThirdOrderAssistedBilinearLF,CO<:AbstractLoopFilter}
-    reference_carrier_doppler::typeof(1.0Hz)
-    reference_code_doppler::typeof(1.0Hz)
-    carrier_loop_filter::CA
-    code_loop_filter::CO
-    bandwidths::LoopBandwidths
-    previous_record_center::Float64
-    driver::UInt64
-    staging::CarrierLoopStaging
-end
-
-function SatNCOReferencedPLLAndDLL(
-    state::SatNCOReferencedPLLAndDLL{CA,CO};
-    carrier_loop_filter::Maybe{CA} = nothing,
-    code_loop_filter::Maybe{CO} = nothing,
-    previous_record_center::Maybe{Float64} = nothing,
-    staging::Maybe{CarrierLoopStaging} = nothing,
-    bandwidths::Maybe{LoopBandwidths} = nothing,
-) where {CA,CO}
-    SatNCOReferencedPLLAndDLL{CA,CO}(
-        state.reference_carrier_doppler,
-        state.reference_code_doppler,
-        something(carrier_loop_filter, state.carrier_loop_filter),
-        something(code_loop_filter, state.code_loop_filter),
-        something(bandwidths, state.bandwidths),
-        something(previous_record_center, state.previous_record_center),
-        state.driver,
-        something(staging, state.staging),
-    )
-end
-
-# The NCO-referenced loop pulls in at the narrow bandwidth by default: a wide
-# loop tolerates less command delay.
-function init_loop_state(
-    estimator::DelayCompensatedTrackingLoop{CO},
-    driver_signal::AbstractGNSSSignal,
-    carrier_doppler,
-    code_doppler,
-) where {CO}
-    carrier_loop_filter = ThirdOrderAssistedBilinearLF()
-    SatNCOReferencedPLLAndDLL(
+function _init_scalar_loop_state(loop, driver_signal, carrier_doppler, code_doppler,
+    carrier_loop_filter, code_loop_filter, defaults::LoopBandwidths)
+    ScalarLoopState(
         carrier_doppler,
         code_doppler,
         carrier_loop_filter,
-        _constructorof(CO)(),
-        _resolve_bandwidths(
-            estimator,
-            LoopBandwidths(
-                driver_signal;
-                wide_carrier = default_narrow_carrier_loop_filter_bandwidth(driver_signal),
-            ),
-        ),
+        code_loop_filter,
+        _resolve_bandwidths(loop.bandwidths, defaults),
         NaN,
         _signal_key(driver_signal),
         CarrierLoopStaging(typeof(carrier_loop_filter)),
     )
 end
 
-function reinit_loop_state(
-    ::DelayCompensatedTrackingLoop,
-    state::SatNCOReferencedPLLAndDLL,
+# Delay compensation pulls in at the narrow bandwidth: a wider loop tolerates
+# less command delay. All other initialization is shared with the scalar loop.
+function init_loop_state(
+    loop::DelayCompensatedTrackingLoop{CO},
+    driver_signal::AbstractGNSSSignal,
     carrier_doppler,
     code_doppler,
-)
-    SatNCOReferencedPLLAndDLL(
-        carrier_doppler,
-        code_doppler,
-        _constructorof(typeof(state.carrier_loop_filter))(),
-        _constructorof(typeof(state.code_loop_filter))(),
-        state.bandwidths,
-        NaN,
-        state.driver,
-        state.staging,
-    )
+) where {CO}
+    defaults = LoopBandwidths(driver_signal;
+        wide_carrier = default_narrow_carrier_loop_filter_bandwidth(driver_signal))
+    _init_scalar_loop_state(loop, driver_signal, carrier_doppler, code_doppler,
+        ThirdOrderAssistedBilinearLF(), _init_loop_filter(CO), defaults)
 end
 
 """
@@ -737,7 +558,7 @@ wrap_phase_error(phase_error; polarity::Real = 0) =
 @inline function _predict_application_phase_error(
     phase_error,
     polarity,
-    state::SatNCOReferencedPLLAndDLL,
+    state::ScalarLoopState,
     nco_history,
     center,
     shift,
@@ -760,61 +581,48 @@ wrap_phase_error(phase_error; polarity::Real = 0) =
 end
 
 """
-    step_loop!(estimator::DelayCompensatedTrackingLoop, state, integration::CoherentIntegration, nco_history,
+    step_loop!(loop::DelayCompensatedTrackingLoop, state, integration::CoherentIntegration, nco_history,
               application_sample_index)
         -> (state, carrier_doppler, code_doppler)
 
 One integration through the delay-compensated loop. `nco_history` describes the replica commands the
 integration ran on; `application_sample_index` is where this batch's command takes effect
-(`NO_LANDING_SAMPLE`: at the integration's end). See [`DelayCompensatedTrackingLoop`](@ref).
+(`nothing`: at the integration's end). See [`DelayCompensatedTrackingLoop`](@ref).
 Passenger integrations are handled as by the conventional loop.
 """
 @inline step_loop!(
-    estimator::DelayCompensatedTrackingLoop,
-    state::SatNCOReferencedPLLAndDLL,
+    loop::DelayCompensatedTrackingLoop,
+    state::ScalarLoopState,
     integration::CoherentIntegration,
     nco_history,
-    application_sample_index::Int64,
+    application_sample_index::Union{Nothing,Integer},
 ) =
     _is_driver_integration(state, integration) ?
-    _step_scalar_loop(estimator, state, integration, nco_history, application_sample_index) :
+    _step_scalar_loop(loop, state, integration, nco_history, application_sample_index) :
     _step_passenger(state, integration, nco_history, application_sample_index)
 
 @inline function _discriminators(
-    estimator::DelayCompensatedTrackingLoop,
-    state::SatNCOReferencedPLLAndDLL,
+    loop::DelayCompensatedTrackingLoop,
+    state::ScalarLoopState,
     integration::CoherentIntegration,
     nco_history,
-    application_sample_index::Int64;
+    application_sample_index::Union{Nothing,Integer};
     form_fll::Bool,
 )
-    signal = integration.signal
     sampling_frequency = integration.sampling_frequency
-    previous_center = state.previous_record_center
+    previous_center = state.previous_prompt_sample_index
     # Every integration of the batch maps onto the delay-free loop's integration this far ahead.
-    shift = application_sample_index == NO_LANDING_SAMPLE ? 0 : application_sample_index - integration.command_issue_sample_index
+    shift = isnothing(application_sample_index) ? 0 : application_sample_index - integration.command_issue_sample_index
     integration_end_sample_index = integration.sample_index
     integration_samples = integration.num_integrated_samples
     integration_start_sample_index = integration_end_sample_index - integration_samples
     center = integration_end_sample_index - integration_samples / 2
     coherent_integration_time = integration_samples / sampling_frequency
-    filtered_correlator_bank = integration.filtered_correlator_bank
+    measured = _measure_scalar_integration(integration, nco_history; form_fll)
+    phase_error = measured.phase_error
+    frequency_error = measured.frequency_error
 
-    nco_command = calc_mean_nco_command(nco_history, integration_start_sample_index, integration_end_sample_index)
-    applied_carrier, applied_code = nco_command.carrier_doppler, nco_command.code_doppler
-    # Discriminators against the applied replica; the FLL's only if `form_fll`.
-    phase_error = pll_disc(signal, filtered_correlator_bank; polarity = integration.carrier_phase_polarity)
-    frequency_error =
-        form_fll ?
-        fll_disc(
-            signal,
-            filtered_correlator_bank,
-            integration.previous_prompt,
-            coherent_integration_time;
-            polarity = integration.carrier_phase_polarity,
-        ) : 0.0Hz
-
-    if estimator.compensate_delay && shift > 0
+    if loop.compensate_delay && shift > 0
         phase_error = _predict_application_phase_error(
             phase_error,
             integration.carrier_phase_polarity,
@@ -828,7 +636,7 @@ Passenger integrations are handled as by the conventional loop.
         # Re-base the FLL reading from the command between the prompts' centres onto
         # the command running `shift` samples ahead.
         fll_command =
-            isnan(previous_center) ? applied_carrier :
+            isnan(previous_center) ? measured.applied_carrier :
             calc_mean_nco_command(nco_history, previous_center, center).carrier_doppler
         application_command =
             calc_mean_nco_command(nco_history, integration_start_sample_index + shift, integration_end_sample_index + shift).carrier_doppler
@@ -839,39 +647,25 @@ Passenger integrations are handled as by the conventional loop.
         coherent_integration_time,
         phase_error,
         frequency_error,
-        code_error = dll_disc(signal, filtered_correlator_bank, applied_code * Hz, sampling_frequency),
+        code_error = measured.code_error,
         center,
     )
 end
 
-@inline _stepped_state(
-    state::SatNCOReferencedPLLAndDLL,
-    carrier_loop_filter,
-    code_loop_filter,
-    center,
-    staging,
-) = SatNCOReferencedPLLAndDLL(
-    state;
-    carrier_loop_filter,
-    code_loop_filter,
-    previous_record_center = center,
-    staging,
-)
-
 """
     get_carrier_loop_stage(state) -> CarrierLoopStage
 
-The [`CarrierLoopStage`](@ref) of a scalar estimator's per-satellite state, or
+The [`CarrierLoopStage`](@ref) of a scalar loop's per-satellite state, or
 of a [`VectorTrackingLoop`](@ref)'s: `VECTOR_LOOP` while the satellite is in
-the vector loop, the inner loop's stage out of it.
+the vector loop, the scalar loop's stage out of it.
 """
-get_carrier_loop_stage(state::Union{ScalarLoopState,SatNCOReferencedPLLAndDLL}) =
+get_carrier_loop_stage(state::ScalarLoopState) =
     state.staging.stage
 
 """
     get_phase_lock_indicator(state) -> Float64
 
-The latest phase-lock indicator of a scalar estimator's per-satellite state, or of
+The latest phase-lock indicator of a scalar loop's per-satellite state, or of
 a [`VectorTrackingLoop`](@ref)'s (in the vector loop its residual PLL's, on the prompts
 it rotated; out of it the inner loop's), which the carrier-loop staging reads (see
 [`CarrierLoopStage`](@ref)): `⟨I² − Q²⟩ / A²` of the driver's prompts, an estimate
@@ -881,21 +675,21 @@ averaged over 0.1 s or 25 integrations, whichever is longer. The signal power
 unlike `⟨I² − Q²⟩ / ⟨I² + Q²⟩` a locked loop's reading gets noisier at low C/N₀,
 not lower. `NaN` until the averages span that time.
 """
-get_phase_lock_indicator(state::Union{ScalarLoopState,SatNCOReferencedPLLAndDLL}) =
+get_phase_lock_indicator(state::ScalarLoopState) =
     state.staging.lock_detector.indicator
 
 """
     is_phase_locked(state) -> Bool
 
-Whether the carrier loop of a scalar estimator's per-satellite state, or of a
+Whether the carrier loop of a scalar loop's per-satellite state, or of a
 [`VectorTrackingLoop`](@ref)'s, is phase-locked, as the loop itself decides it: a
 scalar loop while its [`get_phase_lock_indicator`](@ref) reads at least 0.5, the
 staging's threshold (`false` while `NaN`). In the vector loop it is the residual
 PLL's lock, which also asks that the C/N₀ the rotated prompts' moments read be at
-most 6 dB below the estimator's `min_tracking_cn0`, as on bare noise the indicator
+most 6 dB below the loop's `min_tracking_cn0`, as on bare noise the indicator
 alone reads lock now and then. Out of the vector loop, the inner loop's.
 """
-is_phase_locked(state::Union{ScalarLoopState,SatNCOReferencedPLLAndDLL}) =
+is_phase_locked(state::ScalarLoopState) =
     get_phase_lock_indicator(state) >= _PHASE_LOCK_THRESHOLD
 
 """
@@ -935,20 +729,20 @@ A satellite added to the vector loop keeps its phase: the residual PLL starts
 at zero on the phase-locked scalar loop's replica.
 """
 calc_carrier_phase_correction(
-    ::Union{ScalarLoopState,SatNCOReferencedPLLAndDLL},
+    ::ScalarLoopState,
     nco_history,
     sample_index,
     sampling_frequency,
 ) = 0.0
 
-"The estimator-state type a Doppler estimator produces (for slot typing)."
-loop_state_type(estimator::AbstractTrackingLoop, driver_signal::AbstractGNSSSignal) =
-    typeof(init_loop_state(estimator, driver_signal, 0.0Hz, 0.0Hz))
+"The loop-state type a Doppler loop produces (for slot typing)."
+loop_state_type(loop::AbstractTrackingLoop, driver_signal::AbstractGNSSSignal) =
+    typeof(init_loop_state(loop, driver_signal, 0.0Hz, 0.0Hz))
 
-# ── What an estimator knows of the navigation solution ───────────────────────
+# ── What a loop knows of the navigation solution ───────────────────────
 
 """
-    get_navigation_solution(estimator) -> Union{PVTSolution,Nothing}
+    get_navigation_solution(loop) -> Union{PVTSolution,Nothing}
 
 The latest navigation solution (position, velocity, time, clock bias and drift, DOP,
 the satellites used with their residuals, inter-system and inter-frequency biases),
@@ -957,15 +751,15 @@ or `nothing` for the scalar loops. For [`VectorTrackingLoop`](@ref) see its meth
 get_navigation_solution(::AbstractTrackingLoop) = nothing
 
 """
-    get_navigation_status(estimator) -> Union{VectorTrackingStatus,Nothing}
+    get_navigation_status(loop) -> Union{VectorTrackingStatus,Nothing}
 
-What the latest navigation cycle did ([`VectorTrackingStatus`](@ref)), or `nothing` for an
-estimator without one.
+What the latest navigation cycle did ([`VectorTrackingStatus`](@ref)), or `nothing` for a
+loop without one.
 """
 get_navigation_status(::AbstractTrackingLoop) = nothing
 
 """
-    get_navigation_cycle_index(estimator) -> Union{Int,Nothing}
+    get_navigation_cycle_index(loop) -> Union{Int,Nothing}
 
 Number of navigation cycles run, or `nothing` without them. Advances with each
 attempted cycle and its [`get_navigation_status`](@ref).
@@ -975,7 +769,7 @@ so a new cycle index does not by itself indicate a new fix.
 get_navigation_cycle_index(::AbstractTrackingLoop) = nothing
 
 """
-    get_navigation_elapsed_time(estimator) -> Union{typeof(1.0s),Nothing}
+    get_navigation_elapsed_time(loop) -> Union{typeof(1.0s),Nothing}
 
 Elapsed time of the latest navigation cycle, in seconds since the shared origin
 of the integrations' sample grid. Returns `nothing` before the first cycle or for a loop
@@ -986,7 +780,7 @@ the solution's absolute timestamp.
 get_navigation_elapsed_time(::AbstractTrackingLoop) = nothing
 
 """
-    get_satellite_report(estimator, signal, prn) -> Union{SatelliteReport,Nothing}
+    get_satellite_report(loop, signal, prn) -> Union{SatelliteReport,Nothing}
 
 A [`SatelliteReport`](@ref) of satellite `prn` of `signal`, or `nothing` for the
 scalar loops or a satellite never seen.

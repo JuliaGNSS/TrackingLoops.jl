@@ -48,7 +48,6 @@ command that does not fit, and the host does not write that command to the devic
 Size the queue for outstanding commands and retire consumed history regularly.
 
 ```@docs
-NO_LANDING_SAMPLE
 NCOCommand
 ConstantNCOCommand
 TrackingLoops.ScheduledNCOCommand

@@ -58,7 +58,7 @@ get_navigation_solution(tracking_loop)  # PVTSolution; get_navigation_status(tra
 ```
 
 Several constellations or bands share one filter: list every ranging signal at
-construction. Each satellite runs the scalar loop `inner` until the filter takes
+construction. Each satellite runs the scalar loop `scalar_loop` until the filter takes
 it over, and again once the filter lets it go. In the vector loop the code filter
 is frozen, the filter sets the replica, and the measurements are accumulated for
 the filter (see [The carrier in the vector loop](@ref vector-carrier)).
@@ -100,16 +100,15 @@ estimator, post-correlation filter), advances it with [`process_correlator_bank_
 integration, and builds the integration from it:
 
 ```julia
-signal_state, prompt, filtered, blocks, overshoot =
+signal_state, integration =
     process_correlator_bank_output!(signal_state, signal, prn, output, fs, noise_density, noise_density_ready, driver_phase_offset)
-integration = CoherentIntegration(signal, filtered, output, signal_state, fs; prn)
 loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, nco_history, application_sample_index)
 ```
 
 The integration summarises that state: whether the bit clock holds the sync and
 whether this integration found or lost it, the code periods into the current bit,
-exactly the demodulated soft bits this integration added (so the host may drain the bit synchronizer
-whenever it likes), and the host's C/N₀ estimator (noise-referenced by default,
+exactly the demodulated soft bits this integration added (borrowed until the host drains, resets,
+or grows the bit vector), and the host's C/N₀ estimator (noise-referenced by default,
 which reads `-Inf` dB-Hz, out of lock, until the host has a noise density).
 Beyond that, every [`CoherentIntegration`](@ref) handed to the tracking loop must carry what
 only the correlator knows:
@@ -124,7 +123,7 @@ only the correlator knows:
   one origin shared by all satellites. A host whose correlator restarts its
   sample count passes the offset as `sample_index_offset` when it builds the integration.
 
-`NO_LANDING_SAMPLE` still means the command computed from an integration acts from the
+`nothing` still means the command computed from an integration acts from the
 integration's end; a hardware host passes the application sample (see
 [Under a hardware NCO delay](@ref)).
 
@@ -174,7 +173,7 @@ least once per half cycle (Tracking.jl's `track!` does, for any chunk shorter
 than that). A satellite that falls behind holds a cycle up only until the others
 reach the next epoch; then the cycle runs without it. A satellite already past
 an epoch when it becomes pending (stepped earlier in the chunk than the integration
-that ran the previous cycle, as after a re-slot_generation) sits that epoch's cycle
+that ran the previous cycle, as after reacquisition) sits that epoch's cycle
 out; the next pending epoch is the first no satellite is past. A host never has
 to hold an integration back or order its channels: each integration is stepped as it
 arrives.
@@ -185,6 +184,9 @@ The navigation filter sets a member's carrier NCO directly: no loop filter and
 no phase discriminator sit between them. So the FLL measures the incoming carrier
 against a replica nothing else moves, and a residual PLL per satellite follows
 the carrier on the prompts the NCO leaves, for the data.
+
+`get_carrier_loop_stage(state)` reports `VECTOR_LOOP` while the navigation filter
+commands the satellite, and the scalar loop's stage otherwise.
 
 - **The filter sets the carrier NCO.** Each integration is commanded the filter's
   predicted Doppler at the middle of the integration its command takes effect on: a ramp
@@ -339,7 +341,7 @@ TrackingLoops.VectorLoopState
 VectorTrackingLoop
 init_loop_state(::VectorTrackingLoop, ::AbstractGNSSSignal, ::Any, ::Any)
 reinit_loop_state(::VectorTrackingLoop, ::VectorLoopState, ::Any, ::Any)
-step_loop!(::VectorTrackingLoop, ::VectorLoopState, ::CoherentIntegration, ::Any, ::Int)
+step_loop!(::VectorTrackingLoop, ::VectorLoopState, ::CoherentIntegration, ::Any, ::Union{Nothing,Integer})
 TrackingLoops.default_residual_pll_loop_filter_bandwidth()
 ```
 

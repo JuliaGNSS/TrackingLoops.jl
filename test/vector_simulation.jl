@@ -15,6 +15,7 @@
 # every epoch from the fixture decoders, for the cycle itself on every constellation;
 # the second (the pipeline, at the end) hands it nothing but integrations, and GPS L1 C/A
 # satellites broadcasting real navigation bits.
+using TrackingLoopFilters: ThirdOrderAssistedBilinearLF
 using PositionVelocityTime:
     _precompile_states,
     _PRECOMPILE_GPS_L1CA_STATES,
@@ -306,7 +307,7 @@ function advance_replica!(sat::SimSat, f_true, carrier, code, dt, new_carrier, n
         integration_start_sample_index, sample_index, application_sample_index)
     sat.phase_error += (f_true - carrier) * dt
     sat.replica_time += dt * (1 + code / sat.code_frequency)
-    if application_sample_index == NO_LANDING_SAMPLE
+    if application_sample_index == nothing
         sat.carrier_doppler = ustrip(Hz, new_carrier)
         sat.code_doppler = ustrip(Hz, new_code)
     else
@@ -318,7 +319,7 @@ function advance_replica!(sat::SimSat, f_true, carrier, code, dt, new_carrier, n
 end
 
 sim_nco_history(sat::SimSat, application_sample_index) =
-    application_sample_index == NO_LANDING_SAMPLE ? ConstantNCOCommand(sat.carrier_doppler, sat.code_doppler) : sat.timeline
+    application_sample_index == nothing ? ConstantNCOCommand(sat.carrier_doppler, sat.code_doppler) : sat.timeline
 
 # One integration of `num_samples` samples ending at device sample `sample_index` (receiver
 # time `t_end`), through the satellite's own loop alone — the per-integration step of the
@@ -417,7 +418,7 @@ integration_ms(signal) = round(Int, 1000 * get_code_length(signal) / ustrip(Hz, 
 
 function SimReceiver(;
     signals = (GPSL1CA(),),
-    inner = ConventionalAssistedPLLAndDLL(),
+    inner = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
     filter_config = NavigationFilterConfig(),
     num_sats = typemax(Int), # or one count per signal
     range_biases = map(_ -> 0.0, signals), # per signal (m)
@@ -436,7 +437,7 @@ function SimReceiver(;
     t0 = maximum(maximum(calc_transmit_time, last(f)) for f in fixtures) + 0.075
     truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0, truth_kw...)
     delays = atmosphere ? sim_atmosphere(signals, fixtures, first(gps_states), t0) : NO_ATMOSPHERE
-    tracking_loop = VectorTrackingLoop(signals...; inner, filter_config, approximate_year = 2021,
+    tracking_loop = VectorTrackingLoop(signals...; scalar_loop = inner, filter_config, approximate_year = 2021,
         navigation_filter_update_interval = nominal_integrations * 1.0ms,
         enable_ionospheric_correction = correct_atmosphere,
         enable_tropospheric_correction = correct_atmosphere, tracking_loop_kw...)
@@ -478,11 +479,11 @@ function run_cycle!(receiver::SimReceiver, sample, fill!; ignore_delay = false)
     sized_for = ignore_delay ? Int64(sample) : application_sample_index
     nav.pending_epoch_index = round(Int, sample / (receiver.nominal_ms * SAMPLES_PER_MS))
     for (channels, group) in zip(receiver.channels, receiver.groups), (i, sat) in enumerate(channels)
-        fill!(group.slots[i], sat, sample, receiver.delay_ms == 0 ? NO_LANDING_SAMPLE : application_sample_index, nav)
+        fill!(group.slots[i], sat, sample, receiver.delay_ms == 0 ? nothing : application_sample_index, nav)
     end
     TrackingLoops._navigation_cycle!(nav, sample / ustrip(Hz, SIM_FS))
     for (channels, group) in zip(receiver.channels, receiver.groups), (i, sat) in enumerate(channels)
-        nco_history = receiver.delay_ms == 0 ? sim_nco_history(sat, NO_LANDING_SAMPLE) : sat.timeline
+        nco_history = receiver.delay_ms == 0 ? sim_nco_history(sat, nothing) : sat.timeline
         sat.state = TrackingLoops._take_up_cycle(nav, group, group.slots[i], sat.state,
             take_up_integration(sat, sample), nco_history, sized_for)
     end
@@ -515,7 +516,7 @@ function run_simulation!(
         end
         for k = 1:receiver.cycle_ms
             sample_index = sample + k * SAMPLES_PER_MS
-            application_sample_index = receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
+            application_sample_index = receiver.delay_ms == 0 ? nothing :
                 Int64(sample_index + receiver.delay_ms * SAMPLES_PER_MS)
             c = 0
             for channels in receiver.channels, sat in channels
@@ -605,7 +606,7 @@ PipelineReceiver(; pilot = false, kw...) = PipelineReceiver(Val(pilot); kw...)
 function PipelineReceiver(
     ::Val{pilot};
     num_sats = typemax(Int),
-    inner = ConventionalAssistedPLLAndDLL(),
+    inner = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
     filter_config = NavigationFilterConfig(),
     delay_integrations = 0,
     cn0_dbhz = 45.0,
@@ -623,7 +624,7 @@ function PipelineReceiver(
     t0 = next_subframe1_start(maximum(calc_transmit_time, states)) - lead
     truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0)
     ranging = pilot ? (GPSL1C_P() => GPSL1CA(),) : (GPSL1CA(),)
-    tracking_loop = something(tracking_loop, VectorTrackingLoop(ranging...; inner, filter_config, approximate_year = 2021,
+    tracking_loop = something(tracking_loop, VectorTrackingLoop(ranging...; scalar_loop = inner, filter_config, approximate_year = 2021,
         enable_ionospheric_correction = false, enable_tropospheric_correction = false,
         tracking_loop_kw...))
     decoders = decoders[1:min(num_sats, end)]
@@ -664,7 +665,7 @@ function pipeline_integration!(receiver::PipelineReceiver, sat::SimSat, start_sa
         passenger::Union{Nothing,SimSat} = nothing)
     sample_index = sat.next_end_sample
     num_samples = sample_index - start_sample
-    application_sample_index = receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
+    application_sample_index = receiver.delay_ms == 0 ? nothing :
         Int64(sample_index + receiver.delay_ms * SAMPLES_PER_MS)
     nco_history = sim_nco_history(sat, application_sample_index)
     correlator_bank, _, code_error, f_true, carrier, code =
@@ -681,10 +682,8 @@ function pipeline_integration!(receiver::PipelineReceiver, sat::SimSat, start_sa
         get_correlator_outputs(correlator_bank) .* (rotation * num_samples * get_code_amplitude(sat.signal)), 0.5)
     output = CorrelatorBankOutput(raw, num_samples, sample_index, code_phase)
     noise_ready = sim_time(receiver, sample_index) - receiver.truth.t0 >= receiver.noise_ready_after
-    sat.loop, _, filtered, _, _ = process_correlator_bank_output!(sat.loop, sat.signal, sat.decoder.prn, output, SIM_FS,
+    sat.loop, integration = process_correlator_bank_output!(sat.loop, sat.signal, sat.decoder.prn, output, SIM_FS,
         sat.noise_density / Hz, noise_ready, driver_phase_offset)
-    integration = CoherentIntegration(sat.signal, filtered, output, sat.loop, SIM_FS;
-        prn = sat.decoder.prn)
     owner.state, new_carrier, new_code = if receiver.measuring[]
         step_measured!(receiver.allocated, receiver.tracking_loop, owner.state, integration, nco_history, application_sample_index)
     else
@@ -699,8 +698,8 @@ function pipeline_integration!(receiver::PipelineReceiver, sat::SimSat, start_sa
         # A passenger's command is the one in force: nothing to schedule.
         sat.phase_error += (f_true - carrier) * dt
         sat.replica_time += dt * (1 + code / sat.code_frequency)
-        application_sample_index == NO_LANDING_SAMPLE || advance_timeline!(sat.timeline, start_sample)
-        if application_sample_index != NO_LANDING_SAMPLE
+        application_sample_index == nothing || advance_timeline!(sat.timeline, start_sample)
+        if application_sample_index != nothing
             (; carrier_doppler, code_doppler) = get_nco_command(sat.timeline, sample_index)
             sat.carrier_doppler, sat.code_doppler = carrier_doppler, code_doppler
         end
@@ -711,7 +710,7 @@ end
 
 # A passenger's replica takes the driver's command.
 function follow_driver!(passenger::SimSat, new_carrier, new_code, application_sample_index)
-    if application_sample_index == NO_LANDING_SAMPLE
+    if application_sample_index == nothing
         passenger.carrier_doppler = ustrip(Hz, new_carrier)
         passenger.code_doppler = ustrip(Hz, new_code)
     else

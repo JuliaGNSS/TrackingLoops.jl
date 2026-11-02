@@ -43,14 +43,14 @@ end
     output = CorrelatorBankOutput(correlator_bank, 4000, 4000, 0.0)
     nco_history = ConstantNCOCommand(100.0, 0.1)
     @test_throws ArgumentError step_loop!(tracking_loop, state,
-        CoherentIntegration(GPSL1CA(), correlator_bank, complex(0.0), output, 1, 4e6Hz), nco_history, NO_LANDING_SAMPLE)
+        CoherentIntegration(GPSL1CA(), correlator_bank, complex(0.0), output, 1, 4e6Hz), nco_history, nothing)
     galileo = init_loop_state(tracking_loop, GalileoE1B(), 100.0Hz, 0.1Hz)
     @test_throws ArgumentError step_loop!(tracking_loop, galileo,
-        CoherentIntegration(GalileoE1B(), correlator_bank, complex(0.0), output, 1, 4e6Hz; prn = 3), nco_history, NO_LANDING_SAMPLE)
+        CoherentIntegration(GalileoE1B(), correlator_bank, complex(0.0), output, 1, 4e6Hz; prn = 3), nco_history, nothing)
     # A passenger it does not decode is the host's business: it is ignored.
     @test step_loop!(tracking_loop, state,
         CoherentIntegration(GalileoE1B(), correlator_bank, complex(0.0), output, 1, 4e6Hz; prn = 3), nco_history,
-        NO_LANDING_SAMPLE) == (state, 100.0Hz, 0.1Hz)
+        nothing) == (state, 100.0Hz, 0.1Hz)
 end
 
 @testset "Without a configuration only the scalar PVT is solved" begin
@@ -168,7 +168,7 @@ end
         @test sat.state.code_disc_sum == (0, 0.0)
         # Taken up once: a second take-up changes nothing.
         @test TL._take_up_cycle(vt, rx.group, slot, sat.state, take_up_integration(sat, 0),
-            sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(0)) === sat.state
+            sim_nco_history(sat, nothing), Int64(0)) === sat.state
     end
 end
 
@@ -180,7 +180,7 @@ end
     sat = rx.sats[1]
     j = slot.member_index
     member = vt.buffers.members[j]
-    nco_history = sim_nco_history(sat, NO_LANDING_SAMPLE)
+    nco_history = sim_nco_history(sat, nothing)
     integration = take_up_integration(sat, sample)
     at_epoch = TL._commands_at_application(vt, rx.group, slot, integration, nco_history, Int64(sample))
     @test at_epoch[3] == 0.0
@@ -262,8 +262,8 @@ end
     @test sat.state.code_frequency_correction == 0.0Hz
     # Re-seeded at its residual PLL's estimate, a hair off the replica's command, which
     # the filter's ramp keeps on the carrier.
-    @test sat.state.inner.reference_carrier_doppler ≈ sat.carrier_doppler * Hz atol = 0.01Hz
-    @test sat.state.inner.reference_code_doppler == sat.code_doppler * Hz
+    @test sat.state.scalar_state.reference_carrier_doppler ≈ sat.carrier_doppler * Hz atol = 0.01Hz
+    @test sat.state.scalar_state.reference_code_doppler == sat.code_doppler * Hz
     @test results[1].status.num_vector_tracking_members == length(rx.sats) - 1
     @test !haskey(get_vector_tracking_members(rx.tracking_loop), (:GPSL1CA, dropped.prn))
     @test all(v.release_reason == VT_NOT_RELEASED for v in channel_slots(rx.group, rx.sats) if v !== dropped)
@@ -314,9 +314,9 @@ end
     @test dropped.release_reason == VT_INELIGIBLE
     nco_command = get_nco_command(sat.timeline, sample + 15 * SAMPLES_PER_MS)
     application_carrier, application_code = nco_command.carrier_doppler, nco_command.code_doppler
-    @test sat.state.inner.reference_carrier_doppler ≈ application_carrier * Hz atol = 0.01Hz
-    @test sat.state.inner.reference_code_doppler == application_code * Hz
-    @test sat.state.inner.reference_carrier_doppler != dropped.carrier_doppler
+    @test sat.state.scalar_state.reference_carrier_doppler ≈ application_carrier * Hz atol = 0.01Hz
+    @test sat.state.scalar_state.reference_code_doppler == application_code * Hz
+    @test sat.state.scalar_state.reference_carrier_doppler != dropped.carrier_doppler
 end
 
 @testset "A satellite is admitted only above the admission mask" begin

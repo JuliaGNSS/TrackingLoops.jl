@@ -21,7 +21,8 @@ end
     for k = 1:7
         output = CorrelatorBankOutput(epl(2000.0), 12_000, 800_000 + 12_000k)
         was_synced = is_bit_or_secondary_code_synced(state)
-        state, _, _, _, overshoot = @test_logs process_correlator_bank_output!(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true)
+        state, integration = @test_logs process_correlator_bank_output!(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true)
+        overshoot = integration.sync_change == SYNC_LOST
         push!(reports, overshoot)
         @test overshoot == (was_synced && !is_bit_or_secondary_code_synced(state))
         overshoot && break
@@ -40,8 +41,8 @@ end
     state = PostCorrelationState(signal)
     for k = 1:100
         p = 2000.0 * code[mod1(k + 7, 25)]
-        state, _, _, blocks = process_correlator_bank_output!(state, signal, 11, CorrelatorBankOutput(epl(p), n, n * k), 4.092e6Hz, 1e-6 / Hz, true)
-        @test blocks == 1
+        state, integration = process_correlator_bank_output!(state, signal, 11, CorrelatorBankOutput(epl(p), n, n * k), 4.092e6Hz, 1e-6 / Hz, true)
+        @test integration.num_code_periods == 1
     end
     @test is_bit_or_secondary_code_synced(state)
 end

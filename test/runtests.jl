@@ -22,7 +22,7 @@ using TrackingLoops:
     effective_fll_assist_loop_filter_bandwidth, effective_code_loop_filter_bandwidth,
     LoopBandwidths, CarrierLoopStage, get_phase_lock_indicator, is_phase_locked,
     calc_carrier_phase_correction, calc_carrier_aided_dopplers, step_code_loop,
-    ScalarLoopState, SatNCOReferencedPLLAndDLL, VectorLoopState,
+    ScalarLoopState, VectorLoopState,
     VectorTrackingStatus, VectorTrackingReleaseReason, SatelliteReport, calc_position_std,
     calc_clock_bias_std, SyncEvent, SYNC_UNCHANGED, SYNC_FOUND, SYNC_LOST,
     loop_state_type, despread_noise!,

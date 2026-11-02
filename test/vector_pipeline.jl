@@ -551,7 +551,7 @@ end
 end
 
 @testset "One host loop drives $name" for (name, tracking_loop, pilot) in (
-    ("a scalar loop on pairs", ConventionalAssistedPLLAndDLL(), true),
+    ("a scalar loop on pairs", ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), true),
     ("a scalar loop on plain signals", DelayCompensatedTrackingLoop(), false),
     ("the vector loop on plain signals", nothing, false),
     ("the vector loop on pairs", nothing, true),

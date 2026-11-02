@@ -37,10 +37,10 @@ behaves identically on the others.
 - **Discriminators and loop filters** — `TrackingLoops.pll_disc`, `TrackingLoops.fll_disc`
   and `TrackingLoops.dll_disc`, the bandwidth rules that keep a loop stable for a given integration time, and the
   code-Doppler aiding from the carrier.
-- **Tracking loops** — `ScalarTrackingLoop`, the FLL-assisted
-  `ConventionalAssistedPLLAndDLL`, and `DelayCompensatedTrackingLoop`, which stays
+- **Tracking loops** — `ScalarTrackingLoop`, optionally using an FLL-assisted
+  carrier filter, and `DelayCompensatedTrackingLoop`, which stays
   stable when the correction it computes only takes effect several integrations
-  later, as it does with a hardware NCO. All three are stepped with one call,
+  later, as it does with a hardware NCO. Both are stepped with one call,
   `step_loop!(tracking_loop, loop_state, integration, nco_history, application_sample_index)`.
 - **NCO timelines** — `NCOTimeline` records which replica frequency ran over
   which samples, so an integration can be attributed to the command it was really
@@ -70,21 +70,20 @@ has room for 64 of them before its vector grows.
 
 ```julia
 using TrackingLoops, GNSSSignals, Unitful
+using TrackingLoopFilters: ThirdOrderAssistedBilinearLF
 
 signal = GPSL1CA()
 fs = 4e6u"Hz"
-tracking_loop = ConventionalAssistedPLLAndDLL()
+tracking_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)
 loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
 signal_state = PostCorrelationState(signal)      # bit synchronizer, C/N₀ estimator, post-correlation filter
 
 # For every coherent integration's `output::CorrelatorBankOutput` the correlator bank produced:
-previous_prompt = signal_state.last_filtered_prompt   # read before `process_correlator_bank_output!` replaces it
-signal_state, prompt, filtered, blocks, overshoot =
+signal_state, integration =
     process_correlator_bank_output!(signal_state, signal, prn, output, fs, noise_density, noise_density_ready)
-overshoot && @warn "integration crossed a navigation-bit boundary; bit sync restarted"
-integration = CoherentIntegration(signal, filtered, previous_prompt, output, blocks, fs)
+integration.sync_change == TrackingLoops.SYNC_LOST && @warn "integration crossed a navigation-bit boundary; bit sync restarted"
 loop_state, carrier_doppler, code_doppler =
-    step_loop!(tracking_loop, loop_state, integration, ConstantNCOCommand(carrier_hz, code_hz), NO_LANDING_SAMPLE)
+    step_loop!(tracking_loop, loop_state, integration, ConstantNCOCommand(carrier_hz, code_hz), nothing)
 # program the next replica with carrier_doppler and code_doppler
 ```
 
@@ -99,11 +98,11 @@ satellite (`prn`), report the replica's code phase at their end (`code_phase`
 on the `CorrelatorBankOutput`) and share one time grid (`sample_index_offset`):
 
 ```julia
-tracking_loop = VectorTrackingLoop(GPSL1CA(), GalileoE1B())   # inner = ConventionalAssistedPLLAndDLL()
+tracking_loop = VectorTrackingLoop(GPSL1CA(), GalileoE1B())   # scalar_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)
 loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
 
 # For every integration, as above, but naming the satellite:
-integration = CoherentIntegration(signal, filtered, previous_prompt, output, blocks, fs; prn, sample_index_offset)
+signal_state, integration = process_correlator_bank_output!(signal_state, signal, prn, output, fs, noise_density, noise_density_ready; sample_index_offset)
 loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, nco_history, application_sample_index)
 
 get_navigation_solution(tracking_loop)   # the latest `PVTSolution`
