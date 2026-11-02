@@ -73,7 +73,7 @@ function VectorTrackingLoop(
         throw(ArgumentError("`navigation_filter_update_interval` must be positive and finite"))
     residual_pll_loop_filter_bandwidth > 0.0Hz ||
         throw(ArgumentError("`residual_pll_loop_filter_bandwidth` must be positive"))
-    navigation = NavigationProcessor(
+    navigation_processor = NavigationProcessor(
         filter_config,
         pairs,
         inner;
@@ -84,7 +84,7 @@ function VectorTrackingLoop(
         enable_ionospheric_correction,
         enable_tropospheric_correction,
     )
-    VectorTrackingLoop(inner, navigation, Float64(ustrip(Hz, residual_pll_loop_filter_bandwidth)) * Hz)
+    VectorTrackingLoop(inner, navigation_processor, Float64(ustrip(Hz, residual_pll_loop_filter_bandwidth)) * Hz)
 end
 
 """
@@ -116,8 +116,8 @@ runs that epoch's cycle. Out of the vector loop the driver's Dopplers equal
     application_sample_index::Int64,
 ) = _step_vector_integration(
     estimator,
-    estimator.navigation,
-    estimator.navigation.groups,
+    estimator.navigation_processor,
+    estimator.navigation_processor.groups,
     1,
     loop_state,
     integration,
@@ -296,18 +296,18 @@ function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSl
     slot.bit_accumulator = zero(ComplexF64)
     slot.bit_from_edge = false
     _clear_prompts!(slot.prompt_history)
-    if nav_processor.pending_epoch == typemin(Int)
-        nav_processor.pending_epoch = _epoch_at_or_after(nav_processor, slot.driver_last_end_time)
+    if nav_processor.pending_epoch_index == typemin(Int)
+        nav_processor.pending_epoch_index = _epoch_at_or_after(nav_processor, slot.driver_last_end_time)
     end
     # A snapshot the slot held is gone with it.
-    slot.snapshot_epoch == nav_processor.pending_epoch && (nav_processor.num_snapshots -= 1)
+    slot.snapshot_epoch_index == nav_processor.pending_epoch_index && (nav_processor.num_snapshots -= 1)
     # An integration starting exactly at an epoch crosses it, so that epoch is the first; if
     # it is not pending yet, the slot is past it by the time it is, and the cycle does
     # not wait for it (`_all_snapshotted`).
-    slot.first_epoch = _epoch_at_or_after(nav_processor, slot.driver_last_end_time)
-    slot.driver_epoch = typemin(Int)
-    slot.decoding_epoch = typemin(Int)
-    slot.snapshot_epoch = typemin(Int)
+    slot.first_epoch_index = _epoch_at_or_after(nav_processor, slot.driver_last_end_time)
+    slot.driver_epoch_index = typemin(Int)
+    slot.decoding_epoch_index = typemin(Int)
+    slot.snapshot_epoch_index = typemin(Int)
     slot.decoder = slot.running_decoder
     slot.epoch_decoder = slot.running_decoder
     slot.epoch_bit_synced = false
@@ -347,7 +347,7 @@ function _take_up_cycle(
     if slot_in_loop && slot.command_cycle_index == id
         code_update, ramp, lead =
             _commands_at_application(nav_processor, group, slot, integration, nco_history, application_sample_index)
-        loop_state = _set_vector_commands(loop_state, code_update * Hz, ramp, lead * s, nco_history, application_sample_index)
+        loop_state = _set_vector_commands(loop_state, code_update * Hz, ramp, lead * s, nco_history, application_sample_index, _sampling_frequency_hz(integration))
     end
     VectorLoopState(loop_state; cycle_index = id)
 end
@@ -365,7 +365,7 @@ function _commands_at_application(
 )
     fs = _sampling_frequency_hz(integration)
     # A command applied on the epoch itself may read a rounding error early.
-    lead = application_sample_index / fs - _epoch_time(nav_processor, nav_processor.cycle_epoch)
+    lead = application_sample_index / fs - _epoch_time(nav_processor, nav_processor.cycle_epoch_index)
     -1 / fs <= lead <= MAX_APPLICATION_LEAD_CYCLES * _update_interval_seconds(nav_processor) || throw(
         ArgumentError(
             "a command must take effect between zero and 2.5 navigation cycles after the " *
@@ -390,23 +390,23 @@ end
 # Integrations resumed after a gap: an integration starting past the pending epoch, while no
 # satellite can still snapshot it, moves the epochs on to where the integrations are.
 function _move_past_gap!(nav_processor::NavigationProcessor, start_time, integration::LoopRecord)
-    epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch)
+    epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch_index)
     nav_processor.num_snapshots == 0 && start_time > epoch_time || return nothing
     end_time = integration.sample_index / _sampling_frequency_hz(integration)
     _fold_groups(_can_reach_epoch, false, nav_processor.groups, nav_processor, epoch_time, end_time) &&
         return nothing
-    nav_processor.pending_epoch = _epoch_at_or_after(nav_processor, start_time)
+    nav_processor.pending_epoch_index = _epoch_at_or_after(nav_processor, start_time)
     nothing
 end
 
 # Whether an integration of one of the slot's signals (last integration ended at
-# `driver_last_end_time`, its snapshot half taken at `half_epoch`) crosses the pending
+# `driver_last_end_time`, its snapshot half taken at `half_epoch_index`) crosses the pending
 # epoch still to snapshot.
-function _crosses_pending_epoch(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, half_epoch, driver_last_end_time, integration::LoopRecord)
-    epoch = nav_processor.pending_epoch
+function _crosses_pending_epoch(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, half_epoch_index, driver_last_end_time, integration::LoopRecord)
+    epoch = nav_processor.pending_epoch_index
     epoch_time = _epoch_time(nav_processor, epoch)
     end_time = integration.sample_index / _sampling_frequency_hz(integration)
-    half_epoch < epoch && slot.first_epoch <= epoch && driver_last_end_time <= epoch_time < end_time
+    half_epoch_index < epoch && slot.first_epoch_index <= epoch && driver_last_end_time <= epoch_time < end_time
 end
 
 # The driver's half of the snapshot at the pending epoch if this integration crosses it:
@@ -421,10 +421,10 @@ function _snapshot_driver!(
     integration::LoopRecord,
     nco_history,
 )
-    _crosses_pending_epoch(nav_processor, slot, slot.driver_epoch, slot.driver_last_end_time, integration) ||
+    _crosses_pending_epoch(nav_processor, slot, slot.driver_epoch_index, slot.driver_last_end_time, integration) ||
         return loop_state
     fs = _sampling_frequency_hz(integration)
-    epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch)
+    epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch_index)
     code_frequency = ustrip(Hz, get_chip_rate(group.driver_signal))
     epoch_sample_index = epoch_time * fs
     code_command = calc_mean_nco_command(nco_history, slot.driver_last_end_sample_index, epoch_sample_index).code_doppler
@@ -440,7 +440,7 @@ function _snapshot_driver!(
     slot.coherent_integration_time = slot.last_coherent_integration_time
     slot.early_late_spacing = slot.last_early_late_spacing
     slot.chips_since_epoch = -chips_to_epoch
-    slot.driver_epoch = nav_processor.pending_epoch
+    slot.driver_epoch_index = nav_processor.pending_epoch_index
     _reset_discriminator_accumulators(loop_state)
 end
 
@@ -448,10 +448,10 @@ end
 # crosses it: the decoder and bit sync at its last integration end, and the code phase at
 # the epoch from the last bit edge, in the decoding signal's own code.
 function _snapshot_decoding!(nav_processor::NavigationProcessor, group::VectorTrackingSlotGroup, slot::VectorTrackingSlot, integration::LoopRecord, nco_history)
-    _crosses_pending_epoch(nav_processor, slot, slot.decoding_epoch, slot.decoding_last_end_time, integration) ||
+    _crosses_pending_epoch(nav_processor, slot, slot.decoding_epoch_index, slot.decoding_last_end_time, integration) ||
         return nothing
     fs = _sampling_frequency_hz(integration)
-    epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch)
+    epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch_index)
     signal = group.decoding_signal
     code_frequency = ustrip(Hz, get_chip_rate(signal))
     code_command = calc_mean_nco_command(nco_history, slot.decoding_last_end_sample_index, epoch_time * fs).code_doppler
@@ -459,7 +459,7 @@ function _snapshot_decoding!(nav_processor::NavigationProcessor, group::VectorTr
     slot.epoch_decoder = slot.running_decoder
     slot.epoch_bit_synced = slot.decoding_bit_synced
     slot.epoch_code_phase = _code_phase_from_bit_edge(signal, slot) + chips_to_epoch
-    slot.decoding_epoch = nav_processor.pending_epoch
+    slot.decoding_epoch_index = nav_processor.pending_epoch_index
     nothing
 end
 
@@ -467,8 +467,8 @@ end
 # from its last bit edge (see `_code_phase_on_driver`), and the lock (driver's
 # C/N₀ at least the threshold and decoding signal's bit sync).
 function _complete_snapshot!(nav_processor::NavigationProcessor, group::VectorTrackingSlotGroup, slot::VectorTrackingSlot)
-    epoch = nav_processor.pending_epoch
-    slot.snapshot_epoch < epoch && slot.driver_epoch == epoch && slot.decoding_epoch == epoch ||
+    epoch = nav_processor.pending_epoch_index
+    slot.snapshot_epoch_index < epoch && slot.driver_epoch_index == epoch && slot.decoding_epoch_index == epoch ||
         return nothing
     code_frequency = ustrip(Hz, get_chip_rate(group.decoding_signal))
     decoder, code_phase = _decoder_at_code_phase(
@@ -482,7 +482,7 @@ function _complete_snapshot!(nav_processor::NavigationProcessor, group::VectorTr
     slot.measurement_ready = measurement_ready
     slot.positioning_ready =
         measurement_ready && has_positioning_data(decoder) && is_sat_healthy(decoder)
-    slot.snapshot_epoch = epoch
+    slot.snapshot_epoch_index = epoch
     nav_processor.num_snapshots += 1
     nothing
 end
@@ -512,12 +512,12 @@ const MAX_CN0_DBHZ = 80.0
 # (`_crosses_pending_epoch`).
 function _can_reach_epoch(acc, group::VectorTrackingSlotGroup, nav_processor::NavigationProcessor, epoch_time, time)
     acc && return true
-    epoch = nav_processor.pending_epoch
+    epoch = nav_processor.pending_epoch_index
     for slot in group.slots
-        slot.occupied && !_is_stale(nav_processor, slot, time) && slot.first_epoch <= epoch &&
-            slot.snapshot_epoch < epoch &&
-            (slot.driver_epoch == epoch || slot.driver_last_end_time <= epoch_time) &&
-            (slot.decoding_epoch == epoch || slot.decoding_last_end_time <= epoch_time) &&
+        slot.occupied && !_is_stale(nav_processor, slot, time) && slot.first_epoch_index <= epoch &&
+            slot.snapshot_epoch_index < epoch &&
+            (slot.driver_epoch_index == epoch || slot.driver_last_end_time <= epoch_time) &&
+            (slot.decoding_epoch_index == epoch || slot.decoding_last_end_time <= epoch_time) &&
             return true
     end
     false
@@ -573,9 +573,9 @@ end
 # not stale, holds an epoch up; the cycle then moves the pending epoch past
 # the satellites stepped before (`_next_pending_epoch`), so the next one runs as due.
 function _run_overdue_cycle!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, integration::LoopRecord)
-    slot.snapshot_epoch == nav_processor.pending_epoch || return false
+    slot.snapshot_epoch_index == nav_processor.pending_epoch_index || return false
     time = integration.sample_index / _sampling_frequency_hz(integration)
-    time > _epoch_time(nav_processor, nav_processor.pending_epoch + 1) || return false
+    time > _epoch_time(nav_processor, nav_processor.pending_epoch_index + 1) || return false
     _navigation_cycle!(nav_processor, time)
     true
 end
@@ -583,7 +583,7 @@ end
 # Whether no satellite of the group can still complete its snapshot of the pending
 # epoch.
 _all_snapshotted(ready, group::VectorTrackingSlotGroup, nav_processor::NavigationProcessor, time) =
-    ready && !_can_reach_epoch(false, group, nav_processor, _epoch_time(nav_processor, nav_processor.pending_epoch), time)
+    ready && !_can_reach_epoch(false, group, nav_processor, _epoch_time(nav_processor, nav_processor.pending_epoch_index), time)
 
 # The epoch to snapshot after the cycle at `epoch`: the next one, or, if a satellite is
 # past it already (see `_run_cycle_if_due!`), the first no satellite is past. The cycle
@@ -614,7 +614,7 @@ _is_stale(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, time) =
 function _prepare_slots!(released, group::VectorTrackingSlotGroup, nav_processor::NavigationProcessor, time)
     for slot in group.slots
         slot.release_reason = VT_NOT_RELEASED
-        slot.in_cycle = slot.occupied && slot.snapshot_epoch == nav_processor.pending_epoch
+        slot.in_cycle = slot.occupied && slot.snapshot_epoch_index == nav_processor.pending_epoch_index
         if slot.occupied && !slot.in_cycle && _is_stale(nav_processor, slot, time)
             slot.occupied = false
             if slot.loop_state.vector_controlled
@@ -641,14 +641,14 @@ end
 function _navigation_cycle!(nav_processor::NavigationProcessor, time)
     groups = nav_processor.groups
     buffers = nav_processor.buffers
-    epoch = nav_processor.pending_epoch
+    epoch = nav_processor.pending_epoch_index
     cycle_time =
-        nav_processor.cycle_epoch == typemin(Int) ? nav_processor.navigation_filter_update_interval :
-        (epoch - nav_processor.cycle_epoch) * nav_processor.navigation_filter_update_interval
+        nav_processor.cycle_epoch_index == typemin(Int) ? nav_processor.navigation_filter_update_interval :
+        (epoch - nav_processor.cycle_epoch_index) * nav_processor.navigation_filter_update_interval
     nav_processor.cycle_index += 1
     dropped = _fold_groups(_prepare_slots!, false, groups, nav_processor, time)
     seeded = released = fell_back = false
-    if nav_processor.enabled && nav_processor.running
+    if nav_processor.enabled && nav_processor.vector_tracking_active
         released, fell_back = _run_cycle!(nav_processor, groups, cycle_time)
     else
         # Scalar solve: no per-member report.
@@ -673,17 +673,17 @@ function _navigation_cycle!(nav_processor::NavigationProcessor, time)
     end
     num_members = _fold_groups_with_buffers(_count_members, 0, groups, buffers.signal_observations, 1)
     nav_processor.status = VectorTrackingStatus(
-        nav_processor.running,
-        nav_processor.running || fell_back ? calc_position_std(nav_processor) * m : NaN * m,
-        nav_processor.running || fell_back ? calc_clock_bias_std(nav_processor) * m : NaN * m,
+        nav_processor.vector_tracking_active,
+        nav_processor.vector_tracking_active || fell_back ? calc_position_std(nav_processor) * m : NaN * m,
+        nav_processor.vector_tracking_active || fell_back ? calc_clock_bias_std(nav_processor) * m : NaN * m,
         nav_processor.measurement_deficit_duration,
         num_members,
         seeded,
         fell_back,
         released || dropped,
     )
-    nav_processor.cycle_epoch = epoch
-    nav_processor.pending_epoch = _next_pending_epoch(nav_processor, epoch)
+    nav_processor.cycle_epoch_index = epoch
+    nav_processor.pending_epoch_index = _next_pending_epoch(nav_processor, epoch)
     nav_processor.num_snapshots = 0
     nothing
 end

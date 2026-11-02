@@ -36,8 +36,8 @@ prompt_integration(signal, prompt, num_samples, fs; sample_index = num_samples, 
 
 # A satellite in the vector loop, commanded the Doppler `ramp` and the code correction
 # `code_update`, its residual PLL taking over from the scalar command `scalar_doppler`.
-function commanded(state, ramp; code_update = 0.0Hz, lead = 0.0s, scalar_doppler = ramp.doppler)
-    TL._set_vector_commands(TL._add_to_vector_loop(state), code_update, ramp, lead, ConstantNCOCommand(scalar_doppler, 0.0), 0)
+function commanded(state, ramp; code_update = 0.0Hz, lead = 0.0s, scalar_doppler = ramp.doppler, fs = 1e6)
+    TL._set_vector_commands(TL._add_to_vector_loop(state), code_update, ramp, lead, ConstantNCOCommand(scalar_doppler, 0.0), 0, fs)
 end
 
 @testset "Vector PLL and DLL state" begin
@@ -53,7 +53,7 @@ end
     @test state.code_frequency_correction == 0.0Hz
     @test state.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test state.code_command_delay == 0.0s
-    @test isnan(state.ramp.time)
+    @test isnan(state.ramp.reference_time)
     @test !TL._has_carrier_ramp(state)
     @test state.residual_pll.bandwidth == 10.0Hz
     @test loop_state_type(tracking_loop, GPSL1CA()) === typeof(state)
@@ -151,7 +151,7 @@ end
     fs = 5e6Hz
     vector = VectorTrackingLoop(GPSL1CA(); inner)
     vector_state = TL._set_vector_commands(init_loop_state(vector, signal, 100.0Hz, 0.1Hz), 0.5Hz,
-        TL.CarrierDopplerRamp(120.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(100.0, 0.0), 0)
+        TL.CarrierDopplerRamp(120.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(100.0, 0.0), 0, 5e6)
     inner_state = init_loop_state(inner, signal, 100.0Hz, 0.1Hz)
     integration = vector_integration(signal, (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im), 5000, fs; previous_prompt = cis(0.1))
     nco_history = ConstantNCOCommand(100.0, 0.1)
@@ -199,7 +199,7 @@ end
     @test TL._disc_mean(state.fll_disc_sum) === nothing
     @test !TL.has_disc_sums(state)
     @test TL._has_carrier_ramp(state)
-    @test state.residual_pll.prompt_center ≈ 0.0005
+    @test state.residual_pll.last_prompt_sample_index ≈ 0.0005 * ustrip(Hz, sampling_frequency)
     # The replica's second half integration is kept for the next span.
     @test state.previous_replica_tail == (ustrip(Hz, carrier_doppler) * 0.0005, 0.0005s)
     @test state.code_frequency_correction == -0.25Hz
@@ -307,7 +307,7 @@ end
     ramp = TL.CarrierDopplerRamp(110.0, 2.0, 0.01)
     # A member joining again changes nothing, so the members can join every cycle.
     steered = VectorLoopState(
-        TL._set_vector_commands(joined, 1.0Hz, ramp, 0.02s, ConstantNCOCommand(100.0, 0.0), 0);
+        TL._set_vector_commands(joined, 1.0Hz, ramp, 0.02s, ConstantNCOCommand(100.0, 0.0), 0, 1e6);
         code_disc_sum = (3, 0.3),
         fll_disc_sum = (3, 0.3Hz),
         previous_replica_tail = (0.1, 0.0005s),
@@ -323,14 +323,14 @@ end
     @test steered.code_command_delay == 0.02s
     # A later one keeps the residual PLL's estimates of the incoming Doppler and its rate.
     next_ramp = TL.CarrierDopplerRamp(105.0, 0.0, 0.11)
-    next = TL._set_vector_commands(steered, 2.0Hz, next_ramp, 0.0s, ConstantNCOCommand(999.0, 0.0), 0)
+    next = TL._set_vector_commands(steered, 2.0Hz, next_ramp, 0.0s, ConstantNCOCommand(999.0, 0.0), 0, 1e6)
     @test TL._doppler_at(next_ramp, 0.01) + next.residual_pll.carrier_frequency_correction ≈ TL._doppler_at(ramp, 0.01) + steered.residual_pll.carrier_frequency_correction
     @test TL._doppler_at(next_ramp, 0.01) + TL._residual_doppler(next.residual_pll) ≈
           TL._doppler_at(ramp, 0.01) + TL._residual_doppler(steered.residual_pll)
-    @test next_ramp.rate + TL._residual_doppler_rate(next.residual_pll) ≈
-          ramp.rate + TL._residual_doppler_rate(steered.residual_pll)
+    @test next_ramp.doppler_rate + TL._residual_doppler_rate(next.residual_pll) ≈
+          ramp.doppler_rate + TL._residual_doppler_rate(steered.residual_pll)
     @test next.code_frequency_correction_history == (2.0Hz, 1.0Hz, 0.0Hz)
-    @test TL._set_vector_commands(next, 3.0Hz, next_ramp, 0.0s, ConstantNCOCommand(0.0, 0.0), 0).code_frequency_correction_history ==
+    @test TL._set_vector_commands(next, 3.0Hz, next_ramp, 0.0s, ConstantNCOCommand(0.0, 0.0), 0, 1e6).code_frequency_correction_history ==
           (3.0Hz, 2.0Hz, 1.0Hz)
     @test next.code_frequency_correction == 2.0Hz
     @test next.code_command_delay == 0.0s
@@ -345,7 +345,7 @@ end
     @test released.code_frequency_correction == 0.0Hz
     @test released.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test released.code_command_delay == 0.0s
-    @test isnan(released.ramp.time)
+    @test isnan(released.ramp.reference_time)
     @test !TL._has_carrier_ramp(released)
     # The replica's last half integration is the replica's: it survives the hand-over both ways.
     @test released.previous_replica_tail == (0.1, 0.0005s)
@@ -360,7 +360,7 @@ end
     ramp = TL.CarrierDopplerRamp(104.0, 0.0, 0.0)
     state = commanded(state, ramp; code_update = 0.5Hz)
     state, = step_satellite(tracking_loop, state, integration, ConstantNCOCommand(100.0, 0.1), NO_LANDING_SAMPLE)
-    state = TL._set_vector_commands(state, 0.6Hz, ramp, 0.01s, ConstantNCOCommand(0.0, 0.0), 0)
+    state = TL._set_vector_commands(state, 0.6Hz, ramp, 0.01s, ConstantNCOCommand(0.0, 0.0), 0, 5e6)
     reset = reinit_loop_state(tracking_loop, state, 150.0Hz, 0.2Hz)
     @test reset isa typeof(state)
     @test reset.vector_controlled
@@ -403,7 +403,7 @@ end
     # A residual PLL out of lock knows no better than the filter: the inner loop starts over
     # from the handed-over replica and the ramp's Doppler rate.
     unlocked = TL.VectorLoopState(state; residual_pll = TL.ResidualPLL(state.residual_pll; lock = TL.ResidualPLLLock()))
-    released = TL._hand_over_to_scalar_loop(unlocked, ConstantNCOCommand(150.0, 0.2), 2000, 1e6)
+    released = TL._hand_over_to_scalar_loop(unlocked, ConstantNCOCommand(150.0, 0.2), 10_000, 5e6)
     @test released isa typeof(state)
     @test !released.vector_controlled
     # The inner loop starts over with its own configuration kept: the per-satellite
@@ -420,12 +420,12 @@ end
     # A residual PLL in lock hands over its estimate where the release takes effect: the ramp plus
     # its residual Doppler, moved on by its rate, and the Doppler rate of both.
     residual_pll = state.residual_pll
-    residual_pll = TL.ResidualPLL(residual_pll.bandwidth, 1.5, TL._residual_pll_loop_filter(1.5, 0.5), residual_pll.prompt_center,
-        residual_pll.carrier_phase_polarity, residual_pll.prompt_phase,
+    residual_pll = TL.ResidualPLL(residual_pll.bandwidth, 1.5, TL._residual_pll_loop_filter(1.5, 0.5), residual_pll.last_prompt_sample_index,
+        residual_pll.carrier_phase_polarity, residual_pll.predicted_prompt_phase,
         TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
-    locked = TL._hand_over_to_scalar_loop(TL.VectorLoopState(state; residual_pll), ConstantNCOCommand(150.0, 0.2), 2000, 1e6)
+    locked = TL._hand_over_to_scalar_loop(TL.VectorLoopState(state; residual_pll), ConstantNCOCommand(150.0, 0.2), 10_000, 5e6)
     @test locked.inner.reference_carrier_doppler ≈
-          (TL._doppler_at(ramp, 0.002) + 1.5 + 0.5 * (0.002 - residual_pll.prompt_center)) * Hz
+          (TL._doppler_at(ramp, 0.002) + 1.5 + 0.5 * (0.002 - residual_pll.last_prompt_sample_index / 5e6)) * Hz
     @test locked.inner.carrier_loop_filter.x2 ≈ 2.5Hz^2
     @test locked.inner.reference_code_doppler == 0.2Hz
     @test released.inner.bandwidths.narrow_carrier == 12.0Hz

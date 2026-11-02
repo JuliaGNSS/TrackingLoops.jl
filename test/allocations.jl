@@ -71,7 +71,7 @@ end
         state = init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz)
         output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000, 0.0)
         integration = LoopRecord(signal, output.correlator_bank, cis(0.1), output, 1, fs; prn = 3)
-        nav_processor = tracking_loop.navigation
+        nav_processor = tracking_loop.navigation_processor
         group = first(nav_processor.groups)
         slot = first(group.slots)
         # The pieces of an integration that never allocate, as far as AllocCheck sees: not the
