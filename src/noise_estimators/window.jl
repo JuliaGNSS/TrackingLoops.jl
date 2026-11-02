@@ -323,12 +323,18 @@ end
     covariance
 end
 
-# Next PRN of the rotation, carried in the newest observation (1 when empty).
+# Next PRN of the rotation over the signal's supported PRNs, carried in the newest
+# observation (the first supported PRN when empty).
 @inline function _next_noise_prn(
     estimator::CorrelatorNoiseEstimator,
     signal_type::AbstractGNSSSignal,
 )
-    num_prns = size(get_codes(signal_type), 2)
-    previous = isempty(estimator.buffered) ? 0 : Int(last(estimator.buffered).prn)
-    mod(previous, num_prns) + 1
+    supported_prns = get_supported_prns(signal_type)
+    isempty(supported_prns) && throw(ArgumentError("noise estimation needs a supported PRN"))
+    isempty(estimator.buffered) && return Int(first(supported_prns))
+    previous = Int(last(estimator.buffered).prn)
+    for prn in supported_prns
+        prn > previous && return Int(prn)
+    end
+    Int(first(supported_prns))
 end
