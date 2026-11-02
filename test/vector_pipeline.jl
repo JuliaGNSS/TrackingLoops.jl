@@ -81,10 +81,10 @@ end
         @test report.tracked && report.bit_or_secondary_code_synced && report.measurement_ready && report.positioning_ready
         @test report.vector_controlled
         @test report.release_reason == VT_NOT_RELEASED
-        @test report.epoch ≈ get_navigation_elapsed_time(tracking_loop)
+        @test report.snapshot_time ≈ get_navigation_elapsed_time(tracking_loop)
         @test 40 < report.cn0_dbhz < 50
-        @test TL.has_positioning_data(report.decoder)
-        @test get_broadcast_ephemeris(report.decoder) == get_broadcast_ephemeris(sat.decoder)
+        @test TL.has_positioning_data(get_decoder(tracking_loop, GPSL1CA(), sat.decoder.prn))
+        @test get_broadcast_ephemeris(get_decoder(tracking_loop, GPSL1CA(), sat.decoder.prn)) == get_broadcast_ephemeris(sat.decoder)
     end
     @test get_satellite_report(tracking_loop, GPSL1CA(), 32) === nothing
     @test get_satellite_report(tracking_loop, GalileoE1B(), rx.sats[1].decoder.prn) === nothing
@@ -92,6 +92,16 @@ end
     signal = GPSL1CA()
     report_of(tracking_loop, signal, rx.sats[1].decoder.prn)
     @test report_of(tracking_loop, signal, rx.sats[1].decoder.prn) == 0
+    prn = rx.sats[1].decoder.prn
+    snapshot = get_satellite_report(tracking_loop, signal, prn)
+    slot = only(filter(slot -> slot.prn == prn, tracking_loop.engine.groups[1].slots))
+    @test get_decoder(tracking_loop, signal, prn) === slot.running_decoder
+    @test !hasproperty(snapshot, :decoder)
+    original_cn0 = slot.cn0_dbhz
+    slot.cn0_dbhz = original_cn0 + 1
+    @test snapshot.cn0_dbhz == original_cn0
+    @test get_satellite_report(tracking_loop, signal, prn).cn0_dbhz == original_cn0 + 1
+    slot.cn0_dbhz = original_cn0
 end
 
 @testset "From integrations alone, on a clean signal" begin
@@ -533,7 +543,7 @@ end
         report = get_satellite_report(rx.tracking_loop, GPSL1CA(), sat.decoder.prn)
         @test report.bit_or_secondary_code_synced && !report.measurement_ready && !report.positioning_ready
         @test report.cn0_dbhz == -Inf
-        @test TL.has_positioning_data(report.decoder)
+        @test TL.has_positioning_data(get_decoder(rx.tracking_loop, GPSL1CA(), sat.decoder.prn))
     end
     results, _, diverged = run_pipeline!(rx, 1.0; start_sample = sample)
     @test !diverged

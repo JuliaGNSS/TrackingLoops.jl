@@ -41,39 +41,29 @@ signal (see
 
   - `prn`, and `tracked`: whether it is stepped now (`false` after two cycles
     without an integration; the rest then describes it as it was);
-  - `decoder`: its navigation-message decoder up to the last integration of its
-    decoding signal. It is the estimator's, to read only: resetting or decoding
-    into it (e.g. `reset_decoder_state!`, `decode!`) changes the estimator's
-    decoder. It shares buffers with the running decoder, so `copy` it to keep it
-    past the next integration; once the slot is freed they go to the next satellite on
-    it, so a consumer that needs a decoder of its own builds a fresh one;
   - `bit_or_secondary_code_synced`: whether the decoding signal's bit clock held the bit sync at
     that signal's last integration;
-  - at its latest snapshot (`epoch`, on the integrations' time grid, `nothing` before
+  - at its latest snapshot (`snapshot_time`, on the navigation-epoch grid, a multiple of
+    `navigation_filter_update_interval`, `nothing` before
     the first): `cn0_dbhz` (the driver's, from the host's C/N₀ estimator),
     `measurement_ready` (decoding signal synced and the driver's C/N₀ at least the lock
     threshold) and `positioning_ready` (in lock, decoded for positioning and healthy);
-  - `vector_controlled` and `get_release_reason`: the latest cycle's decision.
+  - `vector_controlled` and `release_reason`: the latest cycle's decision.
 
-The report is the estimator's own object, refreshed in place by every
-`get_satellite_report` call (no allocation): copy out what is needed beyond the next
-call.
+The report is an immutable snapshot whose values remain valid after later integrations
+and report calls. Access the separately borrowed decoder with [`get_decoder`](@ref).
 """
-mutable struct SatelliteReport{D}
+struct SatelliteReport
     prn::Int
     tracked::Bool
-    decoder::D
     bit_or_secondary_code_synced::Bool
-    epoch::Union{Nothing,typeof(1.0s)}
+    snapshot_time::Union{Nothing,typeof(1.0s)}
     cn0_dbhz::Float64
     measurement_ready::Bool
     positioning_ready::Bool
     vector_controlled::Bool
     release_reason::VectorTrackingReleaseReason
 end
-
-SatelliteReport(decoder) =
-    SatelliteReport(0, false, decoder, false, nothing, NaN, false, false, false, VT_NOT_RELEASED)
 
 # One satellite of the navigation engine. A slot is never deleted: a dropped satellite
 # leaves it, with its storage, for the next one to reuse.
@@ -143,8 +133,6 @@ mutable struct VectorTrackingSlot{D,E<:VectorLoopState}
     release_reason::VectorTrackingReleaseReason
     command_cycle_index::Int
     member_index::Int
-    # What `get_satellite_report` hands out, refreshed in place.
-    const report::SatelliteReport{D}
 end
 
 function VectorTrackingSlot(
@@ -197,7 +185,6 @@ function VectorTrackingSlot(
         VT_NOT_RELEASED,
         -1,
         0,
-        SatelliteReport(decoder),
     )
 end
 
@@ -513,19 +500,42 @@ function _satellite_report(nav, groups::Tuple, signal::S, prn) where {S}
     group.driver_signal isa S || return _satellite_report(nav, Base.tail(groups), signal, prn)
     for slot in group.slots
         slot.prn == prn && slot.slot_generation > 0 || continue
-        report = slot.report
-        report.prn = slot.prn
-        report.tracked = slot.occupied
-        report.decoder = slot.running_decoder
-        report.bit_or_secondary_code_synced = slot.decoding_bit_synced
-        report.epoch =
-            slot.snapshot_epoch_index == typemin(Int) ? nothing : slot.snapshot_epoch_index * nav.navigation_filter_update_interval
-        report.cn0_dbhz = slot.cn0_dbhz
-        report.measurement_ready = slot.measurement_ready
-        report.positioning_ready = slot.positioning_ready
-        report.vector_controlled = slot.loop_state.vector_controlled
-        report.release_reason = slot.release_reason
-        return report
+        snapshot_time = slot.snapshot_epoch_index == typemin(Int) ? nothing :
+            slot.snapshot_epoch_index * nav.navigation_filter_update_interval
+        return SatelliteReport(
+            slot.prn,
+            slot.occupied,
+            slot.decoding_bit_synced,
+            snapshot_time,
+            slot.cn0_dbhz,
+            slot.measurement_ready,
+            slot.positioning_ready,
+            slot.loop_state.vector_controlled,
+            slot.release_reason,
+        )
+    end
+    nothing
+end
+
+"""
+    get_decoder(loop::VectorTrackingLoop, signal, prn)
+
+Borrow the satellite's navigation decoder through its last decoding integration, or
+`nothing` if the satellite has no slot. Treat the decoder as read-only: `decode!`
+and `reset_decoder_state!` would change the engine's state. Its shared buffers may
+change on the next integration, and a reused slot gives them to another satellite.
+Copy the decoder to retain its current contents; construct a fresh decoder for
+independent decoding.
+"""
+get_decoder(loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer) =
+    _get_decoder(loop.engine.groups, signal, Int(prn))
+
+_get_decoder(::Tuple{}, signal, prn) = nothing
+function _get_decoder(groups::Tuple, signal::S, prn) where {S}
+    group = first(groups)
+    group.driver_signal isa S || return _get_decoder(Base.tail(groups), signal, prn)
+    for slot in group.slots
+        slot.prn == prn && slot.slot_generation > 0 && return slot.running_decoder
     end
     nothing
 end
