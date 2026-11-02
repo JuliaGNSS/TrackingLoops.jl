@@ -691,7 +691,7 @@ function _collect_members!(j, group, g, buffer, nav, T)
                 measurement.velocity,
                 measurement.satellite_clock_drift,
                 mean_code_disc_at_epoch(state, T),
-                wavelength *
+                -wavelength *
                 (ustrip(Hz, slot.carrier_doppler) + mean_fll_disc(state)),
                 linear_cn0_floor(slot.cn0_dbhz),
                 slot.early_late_spacing,
@@ -914,8 +914,8 @@ function _predict_after_epoch(nav::VectorNavigation, slot::VTSlot, member::VTMem
     )
     predicted_pseudorange = buffers.landing_range[1]
     user_pos, user_vel, user_clock_drift = nav_filter_states(buffers.x_landing, idxs)
-    # Doppler-signed, as `predict_pseudorange_rate`.
-    predicted_rate = -calc_pseudorange_rate(
+    # Positive receding, as `predict_pseudorange_rate`.
+    predicted_rate = calc_pseudorange_rate(
         user_pos,
         user_vel,
         user_clock_drift,
