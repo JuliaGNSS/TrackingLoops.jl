@@ -8,9 +8,9 @@
 # measure the cycle alone.
 function measure_navigation(rx::SimReceiver, sample; fill! = fill_slot!)
     nav = rx.vt
-    nav.pending_epoch = round(Int, sample / (rx.nominal_ms * SAMPLES_PER_MS))
+    nav.pending_epoch_index = round(Int, sample / (rx.nominal_ms * SAMPLES_PER_MS))
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
-        fill!(group.slots[i], sat, sample, NO_LANDING_SAMPLE, nav)
+        fill!(group.slots[i], sat, sample, nothing, nav)
     end
     now = sample / ustrip(Hz, SIM_FS)
     @allocated TL._navigation_cycle!(nav, now)
@@ -20,7 +20,7 @@ end
 function take_up!(rx::SimReceiver, sample)
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
         sat.state = TL._take_up_cycle(rx.vt, group, group.slots[i], sat.state,
-            take_up_integration(sat, sample), sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(sample))
+            take_up_integration(sat, sample), sim_nco_history(sat, nothing), Int64(sample))
     end
 end
 
@@ -35,7 +35,7 @@ end
 
     rx = SimReceiver(; signals)
     _, sample, _ = run_simulation!(rx, 20)
-    @test rx.vt.running
+    @test rx.vt.vector_tracking_active
     sample += cycle
     @test measure_navigation(rx, sample) == 0
     take_up!(rx, sample)
@@ -60,7 +60,7 @@ end
     rx.vt.measurement_deficit_duration = 10.0s
     sample += cycle
     @test measure_navigation(rx, sample; fill! = unlocked!) == 0
-    @test !rx.vt.running
+    @test !rx.vt.vector_tracking_active
     take_up!(rx, sample)
     sample += cycle
     @test measure_navigation(rx, sample; fill! = unlocked!) == 0
@@ -68,7 +68,7 @@ end
 
     sample += cycle
     @test measure_navigation(rx, sample) == 0
-    @test rx.vt.running
+    @test rx.vt.vector_tracking_active
     @test get_navigation_status(rx.tracking_loop).seeded
 end
 
@@ -82,7 +82,7 @@ end
     @test measure_navigation(scalar, sample + cycle) == 0
     rx = SimReceiver(; kw...)
     _, sample, _ = run_simulation!(rx, 20)
-    @test rx.vt.running
+    @test rx.vt.vector_tracking_active
     @test measure_navigation(rx, sample + cycle) == 0
 end
 
@@ -96,7 +96,7 @@ end
         galileo = only(rx.channels[2])
         galileo.decoder = with_zero_ggto(galileo.decoder)
         _, sample, _ = run_simulation!(rx, 20)
-        @test rx.vt.running == !isnothing(filter_config)
+        @test rx.vt.vector_tracking_active == !isnothing(filter_config)
         isnothing(filter_config) ||
             @test !isempty(rx.vt.buffers.time_offset_constraints)
         @test measure_navigation(rx, sample + 100 * SAMPLES_PER_MS) == 0 skip = VERSION < v"1.11"
@@ -112,7 +112,7 @@ end
     sat = rx.sats[1]
     slot = group.slots[1]
     integration = take_up_integration(sat, sample)
-    nco_history = sim_nco_history(sat, NO_LANDING_SAMPLE)
+    nco_history = sim_nco_history(sat, nothing)
     state = sat.state
     take_up(state) = @allocated TL._take_up_cycle(rx.vt, group, slot, state, integration, nco_history, Int64(sample))
     take_up(state)

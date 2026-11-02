@@ -6,6 +6,25 @@ using TrackingLoopFilters: filter_loop, ThirdOrderBilinearLF
 using Random: MersenneTwister
 using Statistics: median
 
+@testset "Loop filter initialization and reset use explicit factories" begin
+    for factory in (
+        TrackingLoops.FirstOrderLF,
+        TrackingLoops.SecondOrderBilinearLF,
+        TrackingLoops.SecondOrderBoxcarLF,
+        TrackingLoops.ThirdOrderBilinearLF,
+        TrackingLoops.ThirdOrderAssistedBilinearLF,
+        TrackingLoops.ThirdOrderBoxcarLF,
+    )
+        initial = @inferred TrackingLoops._init_loop_filter(factory)
+        @test initial == factory()
+        @test TrackingLoops._init_loop_filter(typeof(initial)) == initial
+        input = initial isa ThirdOrderAssistedBilinearLF ? (0.1, 1.0Hz) : 0.1
+        bandwidth = initial isa ThirdOrderAssistedBilinearLF ? (10.0Hz, 2.0Hz) : 10.0Hz
+        _, stepped = filter_loop(initial, input, 1.0ms, bandwidth)
+        @test @inferred(TrackingLoops._reset_loop_filter(stepped)) === initial
+    end
+end
+
 @testset "Doppler aiding" begin
     gpsl1 = GPSL1CA()
     carrier_freq, code_freq = @inferred calc_carrier_aided_dopplers(gpsl1, 10Hz, 1Hz, 2Hz, -0.5Hz)

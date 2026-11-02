@@ -97,6 +97,7 @@ export NumAntennas,
     is_bit_or_secondary_code_synced,
     is_dataless_with_secondary_code,
     get_soft_bits,
+    drain_soft_bits!,
     MomentsCN0Estimator,
     NWPRCN0Estimator,
     NoCN0Estimator,
@@ -111,10 +112,10 @@ export NumAntennas,
     WIDE_PLL,
     NARROW_PLL,
     VECTOR_LOOP,
+    get_decoder,
     get_carrier_loop_stage,
     AbstractTrackingLoop,
     ScalarTrackingLoop,
-    ConventionalAssistedPLLAndDLL,
     DelayCompensatedTrackingLoop,
     VectorTrackingLoop,
     NavigationFilterConfig,
@@ -143,7 +144,6 @@ export NumAntennas,
     NCOCommand,
     confirm_command!,
     cancel_command!,
-    NO_LANDING_SAMPLE,
     reset_timeline!,
     schedule_command!,
     advance_timeline!,
@@ -207,6 +207,10 @@ lives with the satellite. Hosts drive every tracking loop through one interface:
   - [`reseed_loop_state`](@ref)`(tracking_loop, state, carrier_doppler,
     code_doppler)` re-seeds it from converged Dopplers, keeping what the
     tracking loop chooses to keep.
+
+A host may also ask a tracking loop [`get_decoder`](@ref); its fallback, `nothing`,
+fits any loop without decoders, so a custom tracking loop implements only the three
+methods above.
 
 Implemented by [`ScalarTrackingLoop`](@ref), [`DelayCompensatedTrackingLoop`](@ref)
 and [`VectorTrackingLoop`](@ref), whose navigation engine also runs inside `step_loop!`.

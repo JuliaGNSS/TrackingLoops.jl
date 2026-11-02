@@ -479,7 +479,7 @@ end
     # signal routes to, at its own history width.
     bit_synchronizer = BitSynchronizer{B}()
     for k = 1:3
-        bit_synchronizer = TrackingLoops.buffer(signal, 6, bit_synchronizer, 1, complex(isodd(k) ? 1.0 : -1.0, 0.0))
+        bit_synchronizer = TrackingLoops.update_bit_sync!(signal, 6, bit_synchronizer, 1, complex(isodd(k) ? 1.0 : -1.0, 0.0))
     end
     @test bit_synchronizer isa BitSynchronizer{B}
     # A lock on the first code period freezes the search window at one code period.

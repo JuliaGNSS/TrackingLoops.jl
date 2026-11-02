@@ -31,7 +31,7 @@ function run_noisy!(rx, cycles; noise, fill! = fill_slot!, vector = true,
                 k % n == 0 || continue
                 before = sat.phase_error
                 simulate_integration!(sat, rx.tracking_loop, rx.truth, sim_time(rx, sample_index),
-                    n * SAMPLES_PER_MS, sample_index, NO_LANDING_SAMPLE; rx.polarity)
+                    n * SAMPLES_PER_MS, sample_index, nothing; rx.polarity)
                 on_integration(cycle, i, sat, before, n * 1e-3)
             end
         end
@@ -51,7 +51,7 @@ solution_error(rx, cycle) = position_error(rx, (; pvt = rx.vt.pvt, time = cycle_
 # An integration's true mean residual phase (cycles) against the residual PLL's prediction of it,
 # folded into the Costas range: the error the prompt the engine decodes is rotated with.
 residual_pll_error(sat, before) =
-    rem((before + sat.phase_error) / 2 - sat.state.residual_pll.prompt_phase, 0.5, RoundNearest)
+    rem((before + sat.phase_error) / 2 - sat.state.residual_pll.predicted_prompt_phase, 0.5, RoundNearest)
 
 @testset "The filter alone commands the carrier, the residual PLL follows the rest" begin
     rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()))
@@ -62,7 +62,7 @@ residual_pll_error(sat, before) =
         @test state.vector_controlled && TL._has_carrier_ramp(state)
         # The replica's command is the filter's ramp at the middle of the next integration…
         T = integration_ms(sat.signal) * 1e-3
-        @test sat.carrier_doppler ≈ TL._doppler_at(state.ramp, state.residual_pll.prompt_center + T) atol = 1e-4
+        @test sat.carrier_doppler ≈ TL._doppler_at(state.ramp, state.residual_pll.prompt_time + T) atol = 1e-4
         # …which the residual PLL's residual brings onto the incoming carrier.
         @test abs(TL._residual_doppler(state.residual_pll)) < 0.1
         @test get_phase_lock_indicator(state) > 0.9 && is_phase_locked(state)
@@ -71,7 +71,7 @@ residual_pll_error(sat, before) =
             lock = TL.ResidualPLLLock(state.residual_pll.lock.lock_detector, false, 0)))
         @test get_phase_lock_indicator(unlocked) > 0.9 && !is_phase_locked(unlocked)
         # Out of the vector loop, the inner loop's.
-        @test is_phase_locked(TL._release_from_vector_loop(state)) == is_phase_locked(state.inner)
+        @test is_phase_locked(TL._release_from_vector_loop(state)) == is_phase_locked(state.scalar_state)
     end
     @test rx.sats[1].state.residual_pll.bandwidth == 10.0Hz
     narrow = SimReceiver(; tracking_loop_kw = (; residual_pll_loop_filter_bandwidth = 7.0Hz))
@@ -88,7 +88,7 @@ end
     fs = ustrip(Hz, SIM_FS)
     for channels in rx.channels, sat in channels
         @test sat.state.vector_controlled
-        nco_history = sim_nco_history(sat, NO_LANDING_SAMPLE)
+        nco_history = sim_nco_history(sat, nothing)
         @test calc_carrier_phase_correction(sat.state, nco_history, sample_index, SIM_FS) ≈ sat.phase_error atol = 1e-4
         dt = 2e-3
         f_true = true_doppler(sat, rx.truth, sim_time(rx, sample_index) + dt / 2)
@@ -97,7 +97,7 @@ end
         # Out of the vector loop the replica is the loop's estimate.
         @test calc_carrier_phase_correction(TL._release_from_vector_loop(sat.state), nco_history, sample_index, SIM_FS) == 0.0
     end
-    scalar = init_loop_state(ConventionalAssistedPLLAndDLL(), GPSL1CA(), 100.0Hz, 0.0Hz)
+    scalar = init_loop_state(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA(), 100.0Hz, 0.0Hz)
     @test calc_carrier_phase_correction(scalar, ConstantNCOCommand(100.0, 0.0), 0, SIM_FS) == 0.0
 end
 
@@ -213,7 +213,7 @@ function step_residual(residual, ends; ramp = TL.CarrierDopplerRamp(100.0, 0.0, 
         prompt = amplitude(center) * cis(2π * residual(center)) + noise_std * complex(randn(rng), randn(rng))
         integration = prompt_integration(GPSL1CA(), prompt, 1000, 1e6Hz; sample_index, previous_prompt,
             cn0_dbhz = iszero(amplitude(center)) ? -Inf : 45.0)
-        state, = step_satellite(tracking_loop, state, integration, nco_history, NO_LANDING_SAMPLE)
+        state, = step_satellite(tracking_loop, state, integration, nco_history, nothing)
         previous_prompt = get_prompt(integration.beamformed_correlator_bank)
         on_integration(state, k)
     end
@@ -253,7 +253,7 @@ end
         noise_std = noise_std_at(40.0))
     @test state.residual_pll.lock.locked
     @test TL._residual_doppler(state.residual_pll) ≈ 8.0 atol = 0.1
-    @test abs(rem(state.residual_pll.prompt_phase - (0.1 + 8.0 * state.residual_pll.prompt_center), 0.5, RoundNearest)) < 0.05
+    @test abs(rem(state.residual_pll.predicted_prompt_phase - (0.1 + 8.0 * state.residual_pll.prompt_time), 0.5, RoundNearest)) < 0.05
 end
 
 @testset "Without the signal the residual PLL holds at the ramp" begin
@@ -267,7 +267,7 @@ end
     state = step_residual(residual, 1000:1000:7_000_000; scalar_doppler = 102.0,
         amplitude = t -> outage(t) ? 0.0 : 1.0, noise_std = noise_std_at(40.0),
         on_integration = (state, k) -> begin
-            t = state.residual_pll.prompt_center
+            t = state.residual_pll.prompt_time
             1.5 <= t < 5.0 && push!(during, TL._residual_doppler(state.residual_pll))
             t >= 5.0 && isnan(relock[]) && state.residual_pll.lock.locked && (relock[] = t - 5.0)
         end)
@@ -287,7 +287,7 @@ end
     fll = Float64[]
     previous_acc = Ref((0, 0.0Hz))
     step_residual(residual, ends; scalar_doppler = 102.0, on_integration = (state, k) -> begin
-        push!(errors, rem(state.residual_pll.prompt_phase - residual(state.residual_pll.prompt_center), 0.5, RoundNearest))
+        push!(errors, rem(state.residual_pll.predicted_prompt_phase - residual(state.residual_pll.prompt_time), 0.5, RoundNearest))
         count, total = state.fll_disc_sum
         count > previous_acc[][1] && push!(fll, ustrip(Hz, total - previous_acc[][2]))
         previous_acc[] = state.fll_disc_sum
@@ -308,7 +308,7 @@ end
     # Doppler continued the scalar loop's (here both on the truth).
     residual_pll = sat.state.residual_pll
     @test TL._has_carrier_ramp(sat.state)
-    t = residual_pll.prompt_center
+    t = residual_pll.prompt_time
     @test abs(TL._doppler_at(sat.state.ramp, t) + TL._residual_doppler(residual_pll) -
               true_doppler(sat, rx.truth, sim_time(rx, round(Int, t * ustrip(Hz, SIM_FS))))) < 0.5
     # The scalar loop is re-seeded at the residual PLL's estimate of the incoming Doppler
@@ -317,16 +317,16 @@ end
     @test residual_pll.lock.locked
     application_time = sample / ustrip(Hz, SIM_FS)
     estimate = TL._doppler_at(sat.state.ramp, application_time) + TL._residual_doppler(residual_pll) +
-               TL._residual_doppler_rate(residual_pll) * (application_time - residual_pll.prompt_center)
-    rate = sat.state.ramp.rate + TL._residual_doppler_rate(residual_pll)
+               TL._residual_doppler_rate(residual_pll) * (application_time - residual_pll.prompt_time)
+    rate = sat.state.ramp.doppler_rate + TL._residual_doppler_rate(residual_pll)
     TL._mark_release!(slot, VT_INELIGIBLE)
     rx.vt.cycle_index += 1
     sat.state = TL._take_up_cycle(rx.vt, rx.group, slot, sat.state, take_up_integration(sat, sample),
-        sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(sample))
+        sim_nco_history(sat, nothing), Int64(sample))
     @test !sat.state.vector_controlled
-    @test sat.state.inner.reference_carrier_doppler ≈ estimate * Hz
+    @test sat.state.scalar_state.reference_carrier_doppler ≈ estimate * Hz
     @test abs(estimate - true_doppler(sat, rx.truth, sim_time(rx, sample))) < 0.5
-    @test sat.state.inner.carrier_loop_filter.x2 ≈ rate * Hz^2
+    @test sat.state.scalar_state.carrier_loop_filter.x2 ≈ rate * Hz^2
     @test get_carrier_loop_stage(sat.state) == FLL_ASSISTED_PLL
     @test !TL._has_carrier_ramp(sat.state)
 end
@@ -350,7 +350,7 @@ residual_pll_at(center, prompt_phase; carrier_frequency_correction = 0.0) = TL.R
 @testset "The engine decodes the prompts it rotated onto the incoming carrier" begin
     signal = GPSL1CA()
     tracking_loop = VectorTrackingLoop(signal)
-    nav = tracking_loop.navigation
+    nav = tracking_loop.engine
     group = first(nav.groups)
     slot = first(group.slots)
     nco_history = ConstantNCOCommand(100.0, 0.0)
@@ -443,7 +443,7 @@ end
     # A plain signal decodes its own integrations.
     @test TL._prompt_history_length(GPSL1CA(), GPSL1CA(), 100.0ms) == 0
     tracking_loop = VectorTrackingLoop(GPSL5Q() => GPSL5I(), GPSL1CA())
-    @test [length(group.slots[1].prompt_history.centers) for group in tracking_loop.navigation.groups] == [51, 0]
+    @test [length(group.slots[1].prompt_history.centers) for group in tracking_loop.engine.groups] == [51, 0]
     # A ring: the newest prompts are kept.
     history = TL.PromptHistory(3)
     for k = 1:5
@@ -465,7 +465,7 @@ end
     @test !diverged
     seed = findfirst(r -> r.status.seeded, results)
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
-    @test all(r -> r.status.running, results[seed:end])
+    @test all(r -> r.status.vector_tracking_active, results[seed:end])
     slots = rx.vt.groups[1].slots[1:length(rx.sats)]
     @test all(slot -> slot.decoding_bit_synced && slot.measurement_ready, slots)
     # Every decoder decoded the subframes broadcast while the filter set the carrier, up

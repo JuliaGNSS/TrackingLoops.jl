@@ -167,7 +167,7 @@ end
     )
     # `DefaultBeamformer`'s weights select the last antenna.
     weights = @inferred get_beamforming_weights(DefaultBeamformer(), NumAntennas(2))
-    beamformed_correlator_bank = @inferred TrackingLoops.apply(
+    beamformed_correlator_bank = @inferred TrackingLoops.map_correlator_outputs(
         correlator_output -> TrackingLoops._combine_antennas(weights, correlator_output),
         correlator_bank,
     )
@@ -176,12 +176,12 @@ end
 
     correlator_bank =
         @inferred EarlyPromptLateCorrelatorBank(SVector(1.0 + 0.0im, 1.0 + 0.0im, 1.0 + 0.0im), 0.5)
-    beamformed_correlator_bank = @inferred TrackingLoops.apply(x -> 2 * x, correlator_bank)
+    beamformed_correlator_bank = @inferred TrackingLoops.map_correlator_outputs(x -> 2 * x, correlator_bank)
     @test beamformed_correlator_bank ==
           EarlyPromptLateCorrelatorBank(SVector(2.0 + 0.0im, 2.0 + 0.0im, 2.0 + 0.0im), 0.5)
 
     vepl = VeryEarlyPromptLateCorrelatorBank(SVector(ntuple(k -> complex(k, 0.0), 5)), 0.15, 0.6)
-    @test get_correlator_outputs(TrackingLoops.apply(x -> 2 * x, vepl)) ==
+    @test get_correlator_outputs(TrackingLoops.map_correlator_outputs(x -> 2 * x, vepl)) ==
           SVector(ntuple(k -> complex(2k, 0.0), 5))
 end
 

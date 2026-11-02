@@ -170,7 +170,7 @@ update!(estimator::AbstractCN0Estimator, prompt, ::CN0UpdateContext) =
 $(SIGNATURES)
 
 The default CN0 estimator for `signal`: a [`NoiseReferencedCN0Estimator`](@ref)
-averaging over `num_prompts_for_cn0_estimation` integrations, against that signal's
+averaging over `num_integrations` integrations, against that signal's
 own measured noise density.
 
 It reads a density, so `Tracking.TrackState` provisions the signal a
@@ -208,7 +208,7 @@ outputs without a noise observation**. Everywhere else, prefer appending a
 """
 function default_cn0_estimator(
     signal::AbstractGNSSSignal,
-    num_prompts_for_cn0_estimation::Int,
+    num_integrations::Int,
 )
-    NoiseReferencedCN0Estimator(; num_integrations = num_prompts_for_cn0_estimation)
+    NoiseReferencedCN0Estimator(; num_integrations = num_integrations)
 end

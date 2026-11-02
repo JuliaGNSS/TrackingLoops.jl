@@ -31,7 +31,7 @@ signed sample offsets; `calc_early_late_sample_spacing` returns their full separ
 TrackingLoops.AbstractCorrelatorBank
 TrackingLoops.AbstractEarlyPromptLateCorrelatorBank
 CorrelatorBankOutput
-TrackingLoops.apply(::F, ::AbstractCorrelatorBank) where {F}
+TrackingLoops.map_correlator_outputs(::F, ::AbstractCorrelatorBank) where {F}
 TrackingLoops.calc_correlator_sample_offset(::Any, ::Any, ::Any)
 get_correlator_outputs(::AbstractCorrelatorBank)
 get_early(::AbstractEarlyPromptLateCorrelatorBank)

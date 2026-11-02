@@ -2,7 +2,7 @@
 # filter can take over (see `VectorTrackingLoop`).
 
 """
-    VectorTrackingLoop(signals...; inner = ConventionalAssistedPLLAndDLL(),
+    VectorTrackingLoop(signals...; scalar_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
                     filter_config = NavigationFilterConfig(), navigation_update_interval = 100ms,
                     min_tracking_cn0 = 30dBHz,
                     residual_pll_loop_filter_bandwidth = default_residual_pll_loop_filter_bandwidth(),
@@ -11,12 +11,12 @@
                     enable_ionospheric_correction = true,
                     enable_tropospheric_correction = true)
 
-Vector-tracking Doppler estimator for the ranging `signals`: each a signal that carries
+Vector-tracking Doppler loop for the ranging `signals`: each a signal that carries
 navigation data (`GPSL1CA()`) or a pilot + data pair `driver => decoding_signal`
 (`GalileoE1C() => GalileoE1B()`; see [Pilot + data pairs](@ref)). A decoding signal
 must carry data and have its driver's chip rate. No signal may be given twice.
 
-All satellites stepped with this estimator share one navigation engine which, inside
+All satellites stepped with this loop share one navigation engine which, inside
 [`step_loop!`](@ref), decodes the navigation data, solves the scalar PVT, seeds the
 navigation filter from its first fix and then runs one filter cycle every
 `navigation_update_interval`, taking satellites over and handing them back. A host needs no
@@ -36,7 +36,7 @@ bit sync. An integration without a PRN, or of a driver not among `signals`, thro
 that does not drive this satellite. Step every signal of every satellite at least
 once per `navigation_update_interval / 2` (see [Stepping the satellites](@ref)).
 
-Every driver integration runs `inner` until the filter takes the satellite over, and again
+Every driver integration runs `scalar_loop` until the filter takes the satellite over, and again
 once it is released. In the vector loop (see [The carrier in the vector
 loop](@ref vector-carrier)):
 
@@ -69,12 +69,11 @@ the residual PLL follows a manoeuvre by itself: a third-order loop's error to a 
 platform or `motion_model_order = 3`.
 
 The latest cycle's commands are taken up on the next driver integration, sized for where
-they take effect: at `application_sample_index`, or at the integration's end under `NO_LANDING_SAMPLE`. A
+they take effect: at `application_sample_index`, or at the integration's end when `application_sample_index = nothing`. An
 integration of any other signal returns the command in force there.
 
-`inner` must have an FLL-assisted carrier filter, which pulls a released satellite in
-again: a `ScalarTrackingLoop{ThirdOrderAssistedBilinearLF}` (what
-[`ConventionalAssistedPLLAndDLL`](@ref) builds) or an
+`scalar_loop` must have an FLL-assisted carrier filter, which pulls a released satellite in
+again: a `ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)` or a
 [`DelayCompensatedTrackingLoop`](@ref). Anything else throws an `ArgumentError`, as does a
 dataless signal given alone (pair a pilot such as GPS L1C-P or Galileo E1C with its
 data component). `filter_config = nothing` only ever solves the scalar PVT.
@@ -84,14 +83,14 @@ Storage is allocated for `satellite_capacity_per_signal` satellites per ranging 
 its storage to the next one.
 """
 struct VectorTrackingLoop{E<:AbstractTrackingLoop,N} <: AbstractTrackingLoop
-    inner::E
-    navigation::N
+    scalar_loop::E
+    engine::N
     # Taken on by each satellite's state at `init_loop_state`.
     residual_pll_loop_filter_bandwidth::typeof(1.0Hz)
 end
 
-# Whether an estimator's carrier filter has an FLL path: the FLL-assisted
-# conventional loop and the NCO-referenced loop.
+# Whether a loop's carrier filter has an FLL path: an FLL-assisted scalar loop and
+# the delay-compensated loop.
 _has_fll_path(::AbstractTrackingLoop) = false
 _has_fll_path(::ScalarTrackingLoop{CA}) where {CA} = _has_fll_path(CA)
 _has_fll_path(::DelayCompensatedTrackingLoop) = true
@@ -106,9 +105,9 @@ internal and may change in any release. Inspect it with
 [`get_satellite_report`](@ref) has what the navigation engine knows of the satellite.
 """
 struct VectorLoopState{S}
-    # The inner loop's state plus the interface to the vector-tracking filter:
+    # The scalar loop's state plus the interface to the vector-tracking filter:
     #
-    #   - `vector_controlled`: whether the filter controls the NCOs; while `false` the inner
+    #   - `vector_controlled`: whether the filter controls the NCOs; while `false` the scalar
     #     loop runs and nothing is accumulated.
     #   - `code_disc_sum` / `fll_disc_sum`: `(count, sum)` of the DLL output (chips) and
     #     the FLL discriminator (Hz, integrations with a previous prompt only) since the
@@ -126,7 +125,7 @@ struct VectorLoopState{S}
     #     and cleared out of it (`_has_carrier_ramp`).
     #   - `slot_index`, `slot_generation`, `cycle_index`: where the navigation engine keeps
     #     this satellite (`0` until its first integration), and the latest cycle taken up.
-    inner::S
+    scalar_state::S
     vector_controlled::Bool
     code_disc_sum::Tuple{Int,Float64}
     fll_disc_sum::Tuple{Int,typeof(1.0Hz)}
@@ -142,15 +141,15 @@ struct VectorLoopState{S}
 end
 
 _is_driver_integration(state::VectorLoopState, integration::PredetectionIntegration) =
-    _is_driver_integration(state.inner, integration)
+    _is_driver_integration(state.scalar_state, integration)
 _is_driven_by(state::VectorLoopState, signal::AbstractGNSSSignal) =
-    _is_driven_by(state.inner, signal)
+    _is_driven_by(state.scalar_state, signal)
 
 # A satellite with the vector interface empty, on the slot of `slot_generation`. The
 # replica's last half integration and the residual PLL's bandwidth are not part of it and
 # are kept.
 VectorLoopState(
-    inner,
+    scalar_state,
     vector_controlled::Bool,
     slot_index::Int = 0,
     slot_generation::Int = 0,
@@ -159,7 +158,7 @@ VectorLoopState(
     residual_pll_loop_filter_bandwidth::typeof(1.0Hz) = default_residual_pll_loop_filter_bandwidth(),
 ) =
     VectorLoopState(
-        inner,
+        scalar_state,
         vector_controlled,
         (0, 0.0),
         (0, 0.0Hz),
@@ -176,7 +175,7 @@ VectorLoopState(
 
 function VectorLoopState(
     state::VectorLoopState{S};
-    inner::Maybe{S} = nothing,
+    scalar_state::Maybe{S} = nothing,
     vector_controlled::Maybe{Bool} = nothing,
     code_disc_sum::Maybe{Tuple{Int,Float64}} = nothing,
     fll_disc_sum::Maybe{Tuple{Int,typeof(1.0Hz)}} = nothing,
@@ -191,7 +190,7 @@ function VectorLoopState(
     cycle_index::Maybe{Int} = nothing,
 ) where {S}
     VectorLoopState{S}(
-        isnothing(inner) ? state.inner : inner,
+        isnothing(scalar_state) ? state.scalar_state : scalar_state,
         isnothing(vector_controlled) ? state.vector_controlled : vector_controlled,
         isnothing(code_disc_sum) ? state.code_disc_sum : code_disc_sum,
         isnothing(fll_disc_sum) ? state.fll_disc_sum : fll_disc_sum,
@@ -215,60 +214,59 @@ _registered(state::VectorLoopState, slot_index::Int, slot_generation::Int) =
     VectorLoopState(state; slot_index, slot_generation, cycle_index = -1)
 
 """
-    init_loop_state(estimator::VectorTrackingLoop, driver_signal, carrier_doppler, code_doppler)
+    init_loop_state(loop::VectorTrackingLoop, driver_signal, carrier_doppler, code_doppler)
 
-The inner loop's state with the vector interface empty (out of the vector loop,
-nothing accumulated, no commands) and the residual PLL at the estimator's
+The scalar loop's state with the vector interface empty (out of the vector loop,
+nothing accumulated, no commands) and the residual PLL at the loop's
 `residual_pll_loop_filter_bandwidth`. The satellite registers with the navigation
 engine on its first integration.
 """
 init_loop_state(
-    estimator::VectorTrackingLoop,
+    loop::VectorTrackingLoop,
     driver_signal::AbstractGNSSSignal,
     carrier_doppler,
     code_doppler,
 ) = VectorLoopState(
-    init_loop_state(estimator.inner, driver_signal, carrier_doppler, code_doppler),
+    init_loop_state(loop.scalar_loop, driver_signal, carrier_doppler, code_doppler),
     false;
-    residual_pll_loop_filter_bandwidth = estimator.residual_pll_loop_filter_bandwidth,
+    residual_pll_loop_filter_bandwidth = loop.residual_pll_loop_filter_bandwidth,
 )
 
 """
-    reseed_loop_state(estimator::VectorTrackingLoop, state, carrier_doppler, code_doppler)
+    reseed_loop_state(loop::VectorTrackingLoop, state, carrier_doppler, code_doppler)
 
-Re-seed the inner loop from the converged Dopplers, zero the accumulators and drop
+Re-seed the scalar loop from the converged Dopplers, zero the accumulators and drop
 the code correction, keeping `vector_controlled`, the carrier ramp, the residual PLL and
 the satellite's place in the navigation engine. The converged Dopplers already contain
 the code correction, so keeping it would apply it twice; the replica was still steered
 by it, so the correction history and application_sample_index lead are kept. The carrier ramp replaces
-the inner loop's carrier command rather than adding to it, so it stays.
+the scalar loop's carrier command rather than adding to it, so it stays.
 """
 reseed_loop_state(
-    estimator::VectorTrackingLoop,
+    loop::VectorTrackingLoop,
     state::VectorLoopState,
     carrier_doppler,
     code_doppler,
 ) = VectorLoopState(
     state;
-    inner = reseed_loop_state(estimator.inner, state.inner, carrier_doppler, code_doppler),
+    scalar_state = reseed_loop_state(loop.scalar_loop, state.scalar_state, carrier_doppler, code_doppler),
     code_disc_sum = (0, 0.0),
     fll_disc_sum = (0, 0.0Hz),
     code_frequency_correction = 0.0Hz,
 )
 
-# In the vector loop the residual PLL's (see `VectorTrackingLoop`), else the inner loop's.
 get_carrier_loop_stage(state::VectorLoopState) =
-    state.vector_controlled ? VECTOR_LOOP : get_carrier_loop_stage(state.inner)
+    state.vector_controlled ? VECTOR_LOOP : get_carrier_loop_stage(state.scalar_state)
 get_phase_lock_indicator(state::VectorLoopState) =
     state.vector_controlled ? state.residual_pll.lock.lock_detector.indicator :
-    get_phase_lock_indicator(state.inner)
+    get_phase_lock_indicator(state.scalar_state)
 is_phase_locked(state::VectorLoopState) =
-    state.vector_controlled ? state.residual_pll.lock.locked : is_phase_locked(state.inner)
+    state.vector_controlled ? state.residual_pll.lock.locked : is_phase_locked(state.scalar_state)
 function calc_carrier_phase_correction(state::VectorLoopState, nco_history, sample_index, sampling_frequency)
     residual_pll = state.residual_pll
     state.vector_controlled || return 0.0
     # Both are set by the first driver integration.
-    isnan(residual_pll.prompt_center) && return 0.0
+    isnan(residual_pll.prompt_time) && return 0.0
     isnan(first(state.previous_replica_tail)) && return 0.0
     fs = Float64(ustrip(Hz, sampling_frequency))
     _residual_phase_after(residual_pll, state.ramp, state.previous_replica_tail, sample_index / fs, fs, nco_history)
@@ -284,7 +282,7 @@ end
 _add_to_vector_loop(state::VectorLoopState) =
     state.vector_controlled ? state :
     VectorLoopState(
-        state.inner,
+        state.scalar_state,
         true,
         state.slot_index,
         state.slot_generation,
@@ -293,13 +291,13 @@ _add_to_vector_loop(state::VectorLoopState) =
         residual_pll_loop_filter_bandwidth = state.residual_pll.bandwidth,
     )
 
-# Out of the vector loop with the vector interface cleared and the inner loop as it
+# Out of the vector loop with the vector interface cleared and the scalar loop as it
 # stands, not re-seeded: it marks the release on the slot's copy of the state
 # (`_mark_release!`; the satellite's own state hands over in `_take_up_cycle`) and
 # registers a satellite out of the loop.
 _release_from_vector_loop(state::VectorLoopState) =
     VectorLoopState(
-        state.inner,
+        state.scalar_state,
         false,
         state.slot_index,
         state.slot_generation,
@@ -308,7 +306,7 @@ _release_from_vector_loop(state::VectorLoopState) =
         residual_pll_loop_filter_bandwidth = state.residual_pll.bandwidth,
     )
 
-# `_release_from_vector_loop` with the inner loop re-seeded at the sample `application_sample_index`
+# `_release_from_vector_loop` with the scalar loop re-seeded at the sample `application_sample_index`
 # (integrations' grid at `fs`, Hz) where the release takes effect: at the residual PLL's estimate of
 # the incoming Doppler (ramp plus residual) and its rate, which a third-order carrier
 # filter starts from. A residual PLL out of lock (or never stepped) knows no better than
@@ -321,40 +319,33 @@ function _hand_over_to_scalar_loop(state::VectorLoopState, nco_history, applicat
     code_doppler = code_command * Hz
     time = application_sample_index / fs
     ramp, residual_pll = state.ramp, state.residual_pll
-    rate = ramp.rate
-    if residual_pll.lock.locked && !isnan(residual_pll.prompt_center)
-        dt = time - residual_pll.prompt_center
+    rate = ramp.doppler_rate
+    if residual_pll.lock.locked && !isnan(residual_pll.prompt_time)
+        dt = time - residual_pll.prompt_time
         carrier_doppler =
             (_doppler_at(ramp, time) + _residual_doppler(residual_pll) + _residual_doppler_rate(residual_pll) * dt) * Hz
         rate += _residual_doppler_rate(residual_pll)
     end
     VectorLoopState(
         _release_from_vector_loop(state);
-        inner = _reseed_inner(state.inner, carrier_doppler, code_doppler, rate),
+        scalar_state = _reseed_scalar_state(state.scalar_state, carrier_doppler, code_doppler, rate),
     )
 end
 
-# The inner reset reads only the state, never the estimator's configuration, so a
-# default estimator stands in. The carrier filter starts at the Doppler rate `rate`
+# The scalar reset reads only the state, never the loop's configuration, so a
+# default loop stands in. The carrier filter starts at the Doppler rate `rate`
 # (Hz/s).
-_reseed_inner(state::ScalarLoopState, carrier_doppler, code_doppler, rate) =
+_reseed_scalar_state(state::ScalarLoopState, carrier_doppler, code_doppler, rate) =
     ScalarLoopState(
         reseed_loop_state(ScalarTrackingLoop(), state, carrier_doppler, code_doppler);
         carrier_loop_filter = _carrier_filter_at_rate(state.carrier_loop_filter, rate),
         staging = CarrierLoopStaging(typeof(state.carrier_loop_filter)),
     )
-_reseed_inner(state::SatNCOReferencedPLLAndDLL, carrier_doppler, code_doppler, rate) =
-    SatNCOReferencedPLLAndDLL(
-        reseed_loop_state(DelayCompensatedTrackingLoop(), state, carrier_doppler, code_doppler);
-        carrier_loop_filter = _carrier_filter_at_rate(state.carrier_loop_filter, rate),
-        staging = CarrierLoopStaging(typeof(state.carrier_loop_filter)),
-    )
-
 # A fresh carrier filter of `filter`'s type at the Doppler rate `rate` (Hz/s), kept in
 # `x2` by a third-order one; one of lower order starts at zero.
 _carrier_filter_at_rate(filter, rate) =
-    hasfield(typeof(filter), :x2) ? _constructorof(typeof(filter))(zero(filter.x1), rate * Hz^2) :
-    _constructorof(typeof(filter))()
+    hasfield(typeof(filter), :x2) ? typeof(filter)(zero(filter.x1), rate * Hz^2) :
+    _reset_loop_filter(filter)
 
 # Set the latest cycle's command, applied `application_lead` after the cycle epoch: the
 # code correction (pushed onto `code_frequency_correction_history`) and the carrier `ramp`. A
@@ -373,7 +364,7 @@ function _set_vector_commands(
         _residual_pll_on_new_ramp(state.residual_pll, state.ramp, ramp)
     else
         scalar_doppler, _ = calc_mean_nco_command(nco_history, application_sample_index, application_sample_index)
-        _initialized_residual_pll(state.residual_pll, ramp, scalar_doppler, ramp.time, state.inner.staging)
+        _initialized_residual_pll(state.residual_pll, ramp, scalar_doppler, ramp.reference_time, state.scalar_state.staging)
     end
     VectorLoopState(
         state;
@@ -388,7 +379,7 @@ end
 # Whether the satellite has a carrier ramp: from the filter's first command until it
 # leaves the vector loop. A member always has one; `_set_vector_commands` reads this to
 # tell the first command from the later ones.
-_has_carrier_ramp(state::VectorLoopState) = !isnan(state.ramp.time)
+_has_carrier_ramp(state::VectorLoopState) = !isnan(state.ramp.reference_time)
 
 # Empty both accumulators once the filter has read them.
 _reset_discriminator_accumulators(state::VectorLoopState) =
@@ -419,27 +410,27 @@ end
     iszero(integration.previous_prompt) ? (count, disc_sum) :
     (count + 1, disc_sum + fll_discriminator)
 
-# One integration through the inner loop, or in the vector loop through `_step_vector_loop`.
+# One integration through the scalar loop, or in the vector loop through `_step_vector_loop`.
 @inline function _step_satellite(
-    estimator::VectorTrackingLoop,
+    loop::VectorTrackingLoop,
     state::VectorLoopState,
     integration::PredetectionIntegration,
     nco_history,
-    application_sample_index::Int64,
+    application_sample_index::Union{Nothing,Int64},
 )
     replica_halves = _replica_halves(integration, nco_history)
     if !state.vector_controlled
-        inner, carrier_doppler, code_doppler =
-            step_loop!(estimator.inner, state.inner, integration, nco_history, application_sample_index)
-        return VectorLoopState(state; inner, previous_replica_tail = replica_halves.second),
+        scalar_state, carrier_doppler, code_doppler =
+            step_loop!(loop.scalar_loop, state.scalar_state, integration, nco_history, application_sample_index)
+        return VectorLoopState(state; scalar_state, previous_replica_tail = replica_halves.second),
         carrier_doppler,
         code_doppler
     end
-    _step_vector_loop(state, integration, nco_history, application_sample_index, replica_halves, estimator.navigation.min_tracking_cn0_dbhz)
+    _step_vector_loop(state, integration, nco_history, application_sample_index, replica_halves, loop.engine.min_tracking_cn0_dbhz)
 end
 
 # An integration's DLL output (chips), normalised by the code command the replica ran on, as
-# the inner loops measure it.
+# the scalar loops measure it.
 @inline function _code_discriminator(integration::PredetectionIntegration, nco_history)
     integration_start_sample_index = integration.sample_index - integration.num_integrated_samples
     _, applied_code = calc_mean_nco_command(nco_history, integration_start_sample_index, integration.sample_index)
@@ -448,27 +439,27 @@ end
 
 # One integration of a member: the DLL accumulated, the carrier measured
 # (`_measure_carrier`), and the next command: the ramp at the middle of the integration it
-# takes effect on and, carrier-aided, the code correction. The inner loop and its staging
+# takes effect on and, carrier-aided, the code correction. The scalar loop and its staging
 # stand still; a release re-seeds them.
 @inline function _step_vector_loop(
     state::VectorLoopState,
     integration::PredetectionIntegration,
     nco_history,
-    application_sample_index::Int64,
+    application_sample_index::Union{Nothing,Int64},
     replica_halves,
     min_tracking_cn0_dbhz::Float64,
 )
-    inner = state.inner
-    application_sample_index = application_sample_index == NO_LANDING_SAMPLE ? integration.sample_index : application_sample_index
+    scalar_state = state.scalar_state
+    application_sample_index = isnothing(application_sample_index) ? integration.sample_index : application_sample_index
     residual_pll, fll_disc_sum = _measure_carrier(state, integration, nco_history, replica_halves, min_tracking_cn0_dbhz)
     # The command takes effect on an integration taken to be this one's length.
     carrier =
         _doppler_at(state.ramp, (application_sample_index + integration.num_integrated_samples / 2) / _sampling_frequency_hz(integration))
     carrier_doppler, code_doppler = calc_carrier_aided_dopplers(
         integration.signal,
-        inner.reference_carrier_doppler,
-        inner.reference_code_doppler,
-        carrier * Hz - inner.reference_carrier_doppler,
+        scalar_state.reference_carrier_doppler,
+        scalar_state.reference_code_doppler,
+        carrier * Hz - scalar_state.reference_carrier_doppler,
         state.code_frequency_correction,
     )
     VectorLoopState(
@@ -499,7 +490,7 @@ end
     first_cycles, first_duration = replica_halves.first
     integration_start_sample_index = integration.sample_index - integration.num_integrated_samples
     # The previous integration's end, known once the residual PLL has stepped on its prompt.
-    previous_end = state.residual_pll.prompt_center + ustrip(s, previous_duration)
+    previous_end = state.residual_pll.prompt_time + ustrip(s, previous_duration)
     gap = isnan(previous_end) ? 0.0 : integration_start_sample_index / fs - previous_end
     gap_cycles = 0.0
     if gap > 0.5 / fs
@@ -525,7 +516,7 @@ end
         residual_pll,
         wiped_prompt,
         coherent_integration_time,
-        _phase_lock_time_constant(integration.signal, integration.integrated_code_blocks),
+        _phase_lock_time_constant(integration.signal, integration.num_code_periods),
         min_tracking_cn0_dbhz,
         host_cn0_dbhz >= min_tracking_cn0_dbhz,
     )

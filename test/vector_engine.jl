@@ -10,7 +10,7 @@ engine_integration(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0 + 0.0i
         prn, code_phase)
 
 @testset "The navigation epochs are the multiples of the update interval" begin
-    nav = VectorTrackingLoop(GPSL1CA()).navigation
+    nav = VectorTrackingLoop(GPSL1CA()).engine
     @test TL._epoch_at_or_after(nav, 0.0) == 0
     @test TL._epoch_at_or_after(nav, 0.3) == 3
     @test TL._epoch_at_or_after(nav, 0.3 + 1e-9) == 4
@@ -19,7 +19,7 @@ engine_integration(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0 + 0.0i
     # The first epoch whose time, as the integrations' ends are compared with it, is not
     # before `t`: 129 × 30 ms comes out just short of 3.87 s, which 3.87 / 0.03 rounds
     # to 129.
-    nav = VectorTrackingLoop(GPSL1CA(); navigation_update_interval = 30ms).navigation
+    nav = VectorTrackingLoop(GPSL1CA(); navigation_update_interval = 30ms).engine
     @test TL._epoch_time(nav, 129) < 3.87
     @test TL._epoch_at_or_after(nav, 3.87) == 130
     @test all((0:16_000_000) ./ 4e6) do t
@@ -30,37 +30,37 @@ end
 
 @testset "A satellite registers on its first integration" begin
     tracking_loop = VectorTrackingLoop(GPSL1CA(); satellite_capacity_per_signal = 2)
-    nav = tracking_loop.navigation
+    nav = tracking_loop.engine
     group = nav.groups[1]
     nco_history = ConstantNCOCommand(100.0, 0.1)
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
-    state, = step_loop!(tracking_loop, state, engine_integration(7, 4000), nco_history, NO_LANDING_SAMPLE)
+    state, = step_loop!(tracking_loop, state, engine_integration(7, 4000), nco_history, nothing)
     @test (state.slot_index, state.slot_generation) == (1, 1)
     slot = group.slots[1]
     @test slot.occupied && slot.prn == 7 && slot.running_decoder.prn == 7
     # The integration started at sample 0: the first epoch it can snapshot is the one there,
     # and as the only satellite it ran that epoch's cycle at once.
-    @test slot.first_epoch == 0
-    @test nav.cycle_epoch == 0 && nav.pending_epoch == 1
+    @test slot.first_epoch_index == 0
+    @test nav.cycle_epoch_index == 0 && nav.pending_epoch_index == 1
     @test slot.driver_last_end_sample_index == 4000
     # Later integrations keep the slot.
-    state, = step_loop!(tracking_loop, state, engine_integration(7, 8000), nco_history, NO_LANDING_SAMPLE)
+    state, = step_loop!(tracking_loop, state, engine_integration(7, 8000), nco_history, nothing)
     @test nav.next_slot_generation == 1
     # Another satellite takes the next slot.
     other = init_loop_state(tracking_loop, GPSL1CA(), 50.0Hz, 0.05Hz)
-    other, = step_loop!(tracking_loop, other, engine_integration(9, 8000), nco_history, NO_LANDING_SAMPLE)
+    other, = step_loop!(tracking_loop, other, engine_integration(9, 8000), nco_history, nothing)
     @test other.slot_index == 2 && group.slots[2].prn == 9
     # A fresh state of a PRN already held — the satellite re-acquired — takes its slot
     # over and restarts its bit clock; the old state, of an older slot_generation,
     # registers anew.
     reacquired = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
-    reacquired, = step_loop!(tracking_loop, reacquired, engine_integration(7, 12_000), nco_history, NO_LANDING_SAMPLE)
+    reacquired, = step_loop!(tracking_loop, reacquired, engine_integration(7, 12_000), nco_history, nothing)
     @test reacquired.slot_index == 1 && reacquired.slot_generation == 3
     @test slot.slot_generation == 3
     @test isnothing(slot.running_decoder.num_bits_since_time_reference)
     # A third satellite finds no free slot and grows the group.
     third = init_loop_state(tracking_loop, GPSL1CA(), 10.0Hz, 0.0Hz)
-    third, = step_loop!(tracking_loop, third, engine_integration(11, 12_000), nco_history, NO_LANDING_SAMPLE)
+    third, = step_loop!(tracking_loop, third, engine_integration(11, 12_000), nco_history, nothing)
     @test third.slot_index == 3 && length(group.slots) == 3
 end
 
@@ -75,15 +75,15 @@ b1c_subframe1(prn, soh) = Float32[
     # The slot's decoder is rebuilt on the containers of the satellite that held it.
     # B1C syncs on a PRN codeword, which must be the new satellite's.
     tracking_loop = VectorTrackingLoop(BeiDouB1C_P() => BeiDouB1C_D(); satellite_capacity_per_signal = 1)
-    group = tracking_loop.navigation.groups[1]
+    group = tracking_loop.engine.groups[1]
     nco_history = ConstantNCOCommand(100.0, 0.1)
     state = init_loop_state(tracking_loop, BeiDouB1C_P(), 100.0Hz, 0.1Hz)
-    state, = step_loop!(tracking_loop, state, engine_integration(19, 4000; signal = BeiDouB1C_P()), nco_history, NO_LANDING_SAMPLE)
+    state, = step_loop!(tracking_loop, state, engine_integration(19, 4000; signal = BeiDouB1C_P()), nco_history, nothing)
     slot = group.slots[1]
     @test slot.running_decoder.prn == 19
     slot.occupied = false
     other = init_loop_state(tracking_loop, BeiDouB1C_P(), 100.0Hz, 0.1Hz)
-    other, = step_loop!(tracking_loop, other, engine_integration(30, 8000; signal = BeiDouB1C_P()), nco_history, NO_LANDING_SAMPLE)
+    other, = step_loop!(tracking_loop, other, engine_integration(30, 8000; signal = BeiDouB1C_P()), nco_history, nothing)
     @test other.slot_index == 1 && slot.running_decoder.prn == 30
     # Subframe 1 at both ends of a frame is all the sync reads.
     frame = [b1c_subframe1(30, 10); ones(Float32, 1728); b1c_subframe1(30, 11)]
@@ -98,11 +98,11 @@ end
 function take_snapshot!(nav, group, slot, decoder, epoch_sample_index; code_periods, fraction, end_sample,
         driver_phase = fraction, decoding_end = end_sample, code_doppler = 0.0, synced = true)
     fs = 4e6
-    nav.pending_epoch = 1
+    nav.pending_epoch_index = 1
     nav.num_snapshots = 0
     slot.occupied = true
-    slot.first_epoch = 0
-    slot.driver_epoch = slot.decoding_epoch = slot.snapshot_epoch = typemin(Int)
+    slot.first_epoch_index = 0
+    slot.driver_epoch_index = slot.decoding_epoch_index = slot.snapshot_epoch_index = typemin(Int)
     slot.running_decoder = decoder
     slot.decoding_bit_synced = synced
     slot.decoding_num_code_periods_into_bit = code_periods
@@ -122,7 +122,7 @@ end
 
 @testset "The snapshot reads the code phase from the last bit edge" begin
     signal = GPSL1CA()
-    nav = VectorTrackingLoop(signal).navigation
+    nav = VectorTrackingLoop(signal).engine
     group = nav.groups[1]
     slot = group.slots[1]
     decoder = GNSSDecoderState(GNSSDecoderState(signal, 3); num_bits_since_time_reference = 10)
@@ -136,7 +136,7 @@ end
     num_bits, code_phase = snapshot(5, 0.2, 399_000, 400_000)
     @test num_bits == 10
     @test code_phase ≈ 5 * 1023 + 0.2 + 1000 / fs * code_frequency
-    @test slot.snapshot_epoch == 1 && nav.num_snapshots == 1
+    @test slot.snapshot_epoch_index == 1 && nav.num_snapshots == 1
     # The code Doppler counts.
     _, with_doppler = snapshot(5, 0.2, 399_000, 400_000; code_doppler = 2.0)
     @test with_doppler - code_phase ≈ 1000 / fs * 2.0
@@ -161,7 +161,7 @@ end
     @test !slot.measurement_ready
     # An integration that does not cross the pending epoch takes no snapshot.
     nav.num_snapshots = 0
-    slot.driver_epoch = slot.decoding_epoch = slot.snapshot_epoch = typemin(Int)
+    slot.driver_epoch_index = slot.decoding_epoch_index = slot.snapshot_epoch_index = typemin(Int)
     slot.driver_last_end_sample_index = slot.decoding_last_end_sample_index = 300_000
     slot.driver_last_end_time = slot.decoding_last_end_time = 300_000 / fs
     integration = engine_integration(3, 304_000)
@@ -169,14 +169,14 @@ end
     TL._snapshot_decoding!(nav, group, slot, integration, ConstantNCOCommand(0.0, 0.0))
     TL._complete_snapshot!(nav, group, slot)
     @test nav.num_snapshots == 0
-    @test slot.driver_epoch == slot.decoding_epoch == typemin(Int)
+    @test slot.driver_epoch_index == slot.decoding_epoch_index == typemin(Int)
 end
 
 @testset "A pair's snapshot takes the bit count from the data, the phase from the pilot" begin
     # GPS L2C: the satellite ranges on the 1.5 s CL code and decodes CM, whose 20 ms
     # code is one data bit. The driver's code phase pins the bit phase modulo
     # the CM code, which its 75 times longer code is a multiple of.
-    nav = VectorTrackingLoop(GPSL2CL() => GPSL2CM()).navigation
+    nav = VectorTrackingLoop(GPSL2CL() => GPSL2CM()).engine
     group = nav.groups[1]
     @test group.decoding_signal isa GPSL2CM
     slot = group.slots[1]
@@ -212,16 +212,16 @@ end
 
 @testset "A satellite without integrations for two cycles is dropped" begin
     signal = GPSL1CA()
-    nav = VectorTrackingLoop(signal).navigation
+    nav = VectorTrackingLoop(signal).engine
     group = nav.groups[1]
     fresh, stale, member = group.slots[1], group.slots[2], group.slots[3]
-    nav.pending_epoch = 10
+    nav.pending_epoch_index = 10
     for slot in (fresh, stale, member)
         slot.occupied = true
-        slot.first_epoch = 0
+        slot.first_epoch_index = 0
     end
     ended!(slot, t) = (slot.driver_last_end_time = slot.decoding_last_end_time = t)
-    fresh.snapshot_epoch = 10
+    fresh.snapshot_epoch_index = 10
     ended!(fresh, 1.0)
     ended!(stale, 0.75)
     ended!(member, 0.7)
@@ -237,10 +237,10 @@ end
     # one with the driver's half taken is, while its decoding signal is short of it…
     ended!(stale, 1.001)
     @test TL._all_snapshotted(true, group, nav, 1.002)
-    stale.driver_epoch = 10
+    stale.driver_epoch_index = 10
     stale.decoding_last_end_time = 0.999
     @test !TL._all_snapshotted(true, group, nav, 1.002)
-    stale.driver_epoch = typemin(Int)
+    stale.driver_epoch_index = typemin(Int)
     ended!(stale, 0.75)
     # …and dropped by the cycle, the member released.
     @test TL._prepare_slots!(false, group, nav, 1.0)
@@ -253,67 +253,67 @@ end
 
 @testset "Satellites stepped in turn: the last to reach the epoch runs its cycle" begin
     tracking_loop = VectorTrackingLoop(GPSL1CA())
-    nav = tracking_loop.navigation
+    nav = tracking_loop.engine
     nco_history = ConstantNCOCommand(100.0, 0.1)
     states = [init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz) for _ = 1:3]
     prns = (3, 5, 7)
     for k = 1:99, i = 1:3
-        states[i], = step_loop!(tracking_loop, states[i], engine_integration(prns[i], 4000k), nco_history, NO_LANDING_SAMPLE)
+        states[i], = step_loop!(tracking_loop, states[i], engine_integration(prns[i], 4000k), nco_history, nothing)
     end
     # The first epoch is at sample 0, the start of the first integrations; the next at 0.1 s.
-    @test nav.cycle_index == 1 && nav.cycle_epoch == 0
+    @test nav.cycle_index == 1 && nav.cycle_epoch_index == 0
     for i = 1:2
-        states[i], = step_loop!(tracking_loop, states[i], engine_integration(prns[i], 400_000 + 4000), nco_history, NO_LANDING_SAMPLE)
+        states[i], = step_loop!(tracking_loop, states[i], engine_integration(prns[i], 400_000 + 4000), nco_history, nothing)
         @test nav.cycle_index == 1
         @test nav.num_snapshots == i
     end
-    states[3], = step_loop!(tracking_loop, states[3], engine_integration(prns[3], 400_000 + 4000), nco_history, NO_LANDING_SAMPLE)
-    @test nav.cycle_index == 2 && nav.cycle_epoch == 1 && nav.pending_epoch == 2
+    states[3], = step_loop!(tracking_loop, states[3], engine_integration(prns[3], 400_000 + 4000), nco_history, nothing)
+    @test nav.cycle_index == 2 && nav.cycle_epoch_index == 1 && nav.pending_epoch_index == 2
     # The last one took its cycle up on the spot; the others do on their next integration.
     @test states[3].cycle_index == 2
     @test states[1].cycle_index == 1
     # A satellite that falls behind holds the cycle up until the others are past the
     # epoch after: then the overdue cycle runs without it.
     for k = 102:300, i = 1:2
-        states[i], = step_loop!(tracking_loop, states[i], engine_integration(prns[i], 4000k), nco_history, NO_LANDING_SAMPLE)
+        states[i], = step_loop!(tracking_loop, states[i], engine_integration(prns[i], 4000k), nco_history, nothing)
     end
     @test nav.cycle_index == 2
     @test nav.num_snapshots == 2
-    states[1], = step_loop!(tracking_loop, states[1], engine_integration(prns[1], 4000 * 301), nco_history, NO_LANDING_SAMPLE)
-    @test nav.cycle_index == 3 && nav.cycle_epoch == 2
+    states[1], = step_loop!(tracking_loop, states[1], engine_integration(prns[1], 4000 * 301), nco_history, nothing)
+    @test nav.cycle_index == 3 && nav.cycle_epoch_index == 2
     @test !nav.groups[1].slots[3].in_cycle
 end
 
 @testset "A satellite joining past the pending epoch does not skip it" begin
     tracking_loop = VectorTrackingLoop(GPSL1CA())
-    nav = tracking_loop.navigation
+    nav = tracking_loop.engine
     nco_history = ConstantNCOCommand(100.0, 0.1)
     a = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     for k = 1:99
-        a, = step_loop!(tracking_loop, a, engine_integration(3, 4000k), nco_history, NO_LANDING_SAMPLE)
+        a, = step_loop!(tracking_loop, a, engine_integration(3, 4000k), nco_history, nothing)
     end
-    @test nav.pending_epoch == 1
+    @test nav.pending_epoch_index == 1
     # Stepped first in a chunk that spans the epoch, a newcomer starts past it…
     b = init_loop_state(tracking_loop, GPSL1CA(), 50.0Hz, 0.05Hz)
-    b, = step_loop!(tracking_loop, b, engine_integration(5, 4000 * 102), nco_history, NO_LANDING_SAMPLE)
-    @test nav.pending_epoch == 1
-    @test nav.groups[1].slots[2].first_epoch == 2
+    b, = step_loop!(tracking_loop, b, engine_integration(5, 4000 * 102), nco_history, nothing)
+    @test nav.pending_epoch_index == 1
+    @test nav.groups[1].slots[2].first_epoch_index == 2
     # …and the satellite that was due at it still runs it.
-    a, = step_loop!(tracking_loop, a, engine_integration(3, 4000 * 101), nco_history, NO_LANDING_SAMPLE)
-    @test nav.cycle_epoch == 1 && nav.pending_epoch == 2
+    a, = step_loop!(tracking_loop, a, engine_integration(3, 4000 * 101), nco_history, nothing)
+    @test nav.cycle_epoch_index == 1 && nav.pending_epoch_index == 2
     # After a gap in every satellite's integrations the epochs move on to where they resume.
-    a, = step_loop!(tracking_loop, a, engine_integration(3, 4000 * 1000), nco_history, NO_LANDING_SAMPLE)
-    b, = step_loop!(tracking_loop, b, engine_integration(5, 4000 * 1000), nco_history, NO_LANDING_SAMPLE)
-    a, = step_loop!(tracking_loop, a, engine_integration(3, 4000 * 1001), nco_history, NO_LANDING_SAMPLE)
-    b, = step_loop!(tracking_loop, b, engine_integration(5, 4000 * 1001), nco_history, NO_LANDING_SAMPLE)
-    @test nav.cycle_epoch == 10
+    a, = step_loop!(tracking_loop, a, engine_integration(3, 4000 * 1000), nco_history, nothing)
+    b, = step_loop!(tracking_loop, b, engine_integration(5, 4000 * 1000), nco_history, nothing)
+    a, = step_loop!(tracking_loop, a, engine_integration(3, 4000 * 1001), nco_history, nothing)
+    b, = step_loop!(tracking_loop, b, engine_integration(5, 4000 * 1001), nco_history, nothing)
+    @test nav.cycle_epoch_index == 10
 end
 
 @testset "Satellites stepped past an epoch before it is pending are not locked out" begin
     # GNSSReceiver steps the satellites one after another through each chunk: here
     # 4 ms, four 1 ms integrations each, the integrations' boundaries on the epochs.
     tracking_loop = VectorTrackingLoop(GPSL1CA())
-    nav = tracking_loop.navigation
+    nav = tracking_loop.engine
     slots = nav.groups[1].slots
     nco_history = ConstantNCOCommand(100.0, 0.1)
     prns = (3, 5, 7)
@@ -322,48 +322,48 @@ end
     function step_chunk!(k, sats = 1:3)
         for i in sats, j = k-3:k
             id = nav.cycle_index
-            states[i], = step_loop!(tracking_loop, states[i], engine_integration(prns[i], 4000j), nco_history, NO_LANDING_SAMPLE)
+            states[i], = step_loop!(tracking_loop, states[i], engine_integration(prns[i], 4000j), nco_history, nothing)
             nav.cycle_index == id ||
-                push!(cycles, (; epoch = nav.cycle_epoch, time = j / 1000, in_cycle = [s.in_cycle for s in slots[1:3]]))
+                push!(cycles, (; epoch = nav.cycle_epoch_index, time = j / 1000, in_cycle = [s.in_cycle for s in slots[1:3]]))
         end
     end
     foreach(step_chunk!, 4:4:500)
-    @test nav.cycle_epoch == 4 && nav.pending_epoch == 5
+    @test nav.cycle_epoch_index == 4 && nav.pending_epoch_index == 5
     # The first two lose their signal for an epoch; the third snapshots it, and its
     # cycle waits for them…
     foreach(k -> step_chunk!(k, 3:3), 504:4:600)
-    @test nav.pending_epoch == 5 && slots[3].snapshot_epoch == 5
+    @test nav.pending_epoch_index == 5 && slots[3].snapshot_epoch_index == 5
     # …until they are re-acquired, on integrations that start exactly at the next epoch:
     # registered, they are due from that epoch on, and the second runs the waiting cycle.
     states[1] = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     states[2] = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     step_chunk!(604)
-    @test nav.cycle_epoch == 5
-    @test slots[1].first_epoch == slots[2].first_epoch == 6
+    @test nav.cycle_epoch_index == 5
+    @test slots[1].first_epoch_index == slots[2].first_epoch_index == 6
     # By then the first is past the next epoch, which it can no longer snapshot: the
     # epochs move on to the one after, which no satellite is past. Every satellite
     # snapshots it and every one after it, and every cycle runs as soon as the last
     # satellite crosses its epoch, not an epoch late.
-    @test nav.pending_epoch == 7
+    @test nav.pending_epoch_index == 7
     foreach(step_chunk!, 608:4:1500)
-    @test nav.cycle_epoch == 14
+    @test nav.cycle_epoch_index == 14
     recovered = filter(c -> c.epoch > 5, cycles)
     @test [c.epoch for c in recovered] == 7:14
     @test all(c -> all(c.in_cycle), recovered)
     @test all(c -> c.time - c.epoch * 0.1 < 0.01, recovered)
-    @test all(s -> s.snapshot_epoch == 14, slots[1:3])
+    @test all(s -> s.snapshot_epoch_index == 14, slots[1:3])
 end
 
 @testset "A member dropped while its integrations stopped rejoins released" begin
     tracking_loop = VectorTrackingLoop(GPSL1CA())
-    nav = tracking_loop.navigation
+    nav = tracking_loop.engine
     group = nav.groups[1]
     nco_history = ConstantNCOCommand(100.0, 0.1)
     a = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     b = init_loop_state(tracking_loop, GPSL1CA(), 50.0Hz, 0.05Hz)
     for k = 1:10
-        a, = step_loop!(tracking_loop, a, engine_integration(3, 4000k), nco_history, NO_LANDING_SAMPLE)
-        b, = step_loop!(tracking_loop, b, engine_integration(5, 4000k), nco_history, NO_LANDING_SAMPLE)
+        a, = step_loop!(tracking_loop, a, engine_integration(3, 4000k), nco_history, nothing)
+        b, = step_loop!(tracking_loop, b, engine_integration(5, 4000k), nco_history, nothing)
     end
     # `b` is a member of the vector loop, in the slot and in the state its host keeps.
     slot = group.slots[b.slot_index]
@@ -372,7 +372,7 @@ end
     # Its integrations stop for longer than two cycles: a cycle drops it and releases it, but
     # only in the slot — the host never hands the satellite the release.
     for k = 11:400
-        a, = step_loop!(tracking_loop, a, engine_integration(3, 4000k), nco_history, NO_LANDING_SAMPLE)
+        a, = step_loop!(tracking_loop, a, engine_integration(3, 4000k), nco_history, nothing)
     end
     @test !slot.occupied
     @test !slot.loop_state.vector_controlled
@@ -380,22 +380,22 @@ end
     # Its integrations resume: it registers anew, and takes up the release it missed, its
     # scalar loop re-seeded from the replica's Dopplers.
     resumed = ConstantNCOCommand(120.0, 0.12)
-    b, = step_loop!(tracking_loop, b, engine_integration(5, 4000 * 401), resumed, NO_LANDING_SAMPLE)
+    b, = step_loop!(tracking_loop, b, engine_integration(5, 4000 * 401), resumed, nothing)
     @test slot.occupied
     @test !b.vector_controlled
     @test !slot.loop_state.vector_controlled
     @test b.code_frequency_correction == 0.0Hz
-    @test b.inner.reference_carrier_doppler == 120.0Hz
-    @test b.inner.reference_code_doppler == 0.12Hz
+    @test b.scalar_state.reference_carrier_doppler == 120.0Hz
+    @test b.scalar_state.reference_code_doppler == 0.12Hz
 end
 
 @testset "Vector tracking ranges on drivers and decodes their data components" begin
     pair = VectorTrackingLoop(GPSL1CA(), GalileoE1C() => GalileoE1B())
-    groups = pair.navigation.groups
+    groups = pair.engine.groups
     @test groups[1].driver_signal isa GPSL1CA && groups[1].decoding_signal isa GPSL1CA
     @test groups[2].driver_signal isa GalileoE1C && groups[2].decoding_signal isa GalileoE1B
     @test groups[2].slots[1].running_decoder isa typeof(GNSSDecoderState(GalileoE1B(), 1))
-    @test pair.navigation.layout.signal_id_by_group == [:GPSL1CA, :GalileoE1C]
+    @test pair.engine.layout.signal_id_by_group == [:GPSL1CA, :GalileoE1C]
     # A dataless driver needs a data component to decode; that one must carry data and
     # have the driver's chip rate, and no signal may be given twice.
     @test_throws "pair it with its data component" VectorTrackingLoop(GalileoE1C())
@@ -409,14 +409,14 @@ end
 
 @testset "An integration of each role" begin
     tracking_loop = VectorTrackingLoop(GPSL1C_P() => GPSL1CA())
-    nav = tracking_loop.navigation
+    nav = tracking_loop.engine
     nco_history = ConstantNCOCommand(100.0, 0.1)
     state = init_loop_state(tracking_loop, GPSL1C_P(), 100.0Hz, 0.1Hz)
     # The data component's integration comes first: it registers the satellite and leaves
     # its loop alone, returning the command in force.
-    stepped, carrier, code = step_loop!(tracking_loop, state, engine_integration(7, 4000; signal = GPSL1CA()), nco_history, NO_LANDING_SAMPLE)
+    stepped, carrier, code = step_loop!(tracking_loop, state, engine_integration(7, 4000; signal = GPSL1CA()), nco_history, nothing)
     @test (stepped.slot_index, stepped.slot_generation) == (1, 1)
-    @test stepped.inner === state.inner
+    @test stepped.scalar_state === state.scalar_state
     @test (carrier, code) == (100.0Hz, 0.1Hz)
     @test nav.groups[1].slots[1].decoding_last_end_sample_index == 4000
     # Under an application sample the command in force is the one there.
@@ -426,18 +426,18 @@ end
     _, carrier, code = step_loop!(tracking_loop, stepped, engine_integration(7, 5000; signal = GPSL1CA()), timeline, Int64(7000))
     @test (carrier, code) == (120.0Hz, 0.12Hz)
     # The pilot's integration steps the loop on the same slot.
-    driven, = step_loop!(tracking_loop, stepped, engine_integration(7, 40_000; n = 40_000, signal = GPSL1C_P()), nco_history, NO_LANDING_SAMPLE)
+    driven, = step_loop!(tracking_loop, stepped, engine_integration(7, 40_000; n = 40_000, signal = GPSL1C_P()), nco_history, nothing)
     @test driven.slot_index == 1 && nav.next_slot_generation == 1
     @test nav.groups[1].slots[1].driver_last_end_sample_index == 40_000
     # A passenger the tracking_loop does not decode is ignored; a driver it does not range
     # on is an error, as is a satellite stepped with another satellite's driver.
     plain = VectorTrackingLoop(GPSL1CA())
     l1 = init_loop_state(plain, GPSL1CA(), 100.0Hz, 0.1Hz)
-    ignored, carrier, = step_loop!(plain, l1, engine_integration(7, 4000; signal = GalileoE1B()), nco_history, NO_LANDING_SAMPLE)
+    ignored, carrier, = step_loop!(plain, l1, engine_integration(7, 4000; signal = GalileoE1B()), nco_history, nothing)
     @test ignored === l1 && carrier == 100.0Hz
     galileo = init_loop_state(plain, GalileoE1B(), 100.0Hz, 0.1Hz)
-    @test_throws "not built for GalileoE1B" step_loop!(plain, galileo, engine_integration(7, 4000; signal = GalileoE1B()), nco_history, NO_LANDING_SAMPLE)
-    @test_throws "ranges on as a driver" step_loop!(plain, galileo, engine_integration(7, 4000), nco_history, NO_LANDING_SAMPLE)
+    @test_throws "not built for GalileoE1B" step_loop!(plain, galileo, engine_integration(7, 4000; signal = GalileoE1B()), nco_history, nothing)
+    @test_throws "ranges on as a driver" step_loop!(plain, galileo, engine_integration(7, 4000), nco_history, nothing)
 end
 
 @testset "Another pair's data component is a passenger, not a decoding integration" begin
@@ -445,17 +445,17 @@ end
     # satellite L1 C/A drives: its integrations must leave the L1C group alone, or the
     # satellite would re-register on the two groups by turns.
     tracking_loop = VectorTrackingLoop(GPSL1CA(), GPSL1C_P() => GPSL1C_D())
-    nav = tracking_loop.navigation
+    nav = tracking_loop.engine
     nco_history = ConstantNCOCommand(100.0, 0.1)
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
-    state, = step_loop!(tracking_loop, state, engine_integration(7, 4000), nco_history, NO_LANDING_SAMPLE)
+    state, = step_loop!(tracking_loop, state, engine_integration(7, 4000), nco_history, nothing)
     for k = 1:300
         passenger = engine_integration(7, 40_000k; n = 40_000, signal = GPSL1C_D())
-        stepped, carrier, code = step_loop!(tracking_loop, state, passenger, nco_history, NO_LANDING_SAMPLE)
+        stepped, carrier, code = step_loop!(tracking_loop, state, passenger, nco_history, nothing)
         @test stepped === state
         @test (carrier, code) == (100.0Hz, 0.1Hz)
         for j = 1:10
-            state, = step_loop!(tracking_loop, state, engine_integration(7, 40_000(k - 1) + 4000j), nco_history, NO_LANDING_SAMPLE)
+            state, = step_loop!(tracking_loop, state, engine_integration(7, 40_000(k - 1) + 4000j), nco_history, nothing)
         end
     end
     @test nav.next_slot_generation == 1
@@ -463,7 +463,7 @@ end
     @test !any(slot -> slot.occupied, nav.groups[2].slots)
     # The satellite keeps snapshotting the epochs, so its cycles keep running: one
     # every 100 ms up to the last integration, 3 s in.
-    @test nav.groups[1].slots[1].snapshot_epoch == nav.cycle_epoch == 29
+    @test nav.groups[1].slots[1].snapshot_epoch_index == nav.cycle_epoch_index == 29
 end
 
 # A C/N₀ estimator that always reads the same.
@@ -476,16 +476,16 @@ TL.estimate_cn0(estimator::FixedCN0Estimator, coherent_integration_time) = estim
 @testset "The C/N₀ is the driver's, from the tracking_loop the host configured" begin
     for (configured, read) in ((42.0, 42.0), (95.0, 80.0))
         tracking_loop = VectorTrackingLoop(GPSL1CA())
-        nav = tracking_loop.navigation
+        nav = tracking_loop.engine
         loop = PostCorrelationState(GPSL1CA(); cn0_estimator = FixedCN0Estimator(configured))
         state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
         for k = 1:101
             output = CorrelatorBankOutput(engine_correlator_bank(4000.0), 4000, 4000k, 0.0)
-            integration = PredetectionIntegration(GPSL1CA(), engine_correlator_bank(), output, loop, 4e6Hz; prn = 7)
-            state, = step_loop!(tracking_loop, state, integration, ConstantNCOCommand(100.0, 0.1), NO_LANDING_SAMPLE)
+            loop, integration = process_correlator_bank_output!(loop, GPSL1CA(), 7, output, 4e6Hz, 1e-6 / Hz, true)
+            state, = step_loop!(tracking_loop, state, integration, ConstantNCOCommand(100.0, 0.1), nothing)
         end
         slot = nav.groups[1].slots[1]
-        @test slot.snapshot_epoch == 1
+        @test slot.snapshot_epoch_index == 1
         # Capped at 80 dB-Hz, and out of lock without the bit sync.
         @test slot.cn0_dbhz == read
         @test !slot.measurement_ready

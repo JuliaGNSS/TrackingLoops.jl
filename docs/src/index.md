@@ -53,20 +53,20 @@ integration and every loop:
 
 ```julia
 using TrackingLoops, GNSSSignals, Unitful
+using TrackingLoopFilters: ThirdOrderAssistedBilinearLF
 
 signal = GPSL1CA()
 fs = 4e6u"Hz"
-tracking_loop = ConventionalAssistedPLLAndDLL()
+tracking_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)
 loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
 signal_state = PostCorrelationState(signal)      # bit synchronizer, C/N₀ estimator, beamformer
 
 # For every predetection integration `output::CorrelatorBankOutput` the correlator bank produced:
-signal_state, prompt, filtered, blocks, overshoot =
+signal_state, integration =
     process_correlator_bank_output!(signal_state, signal, prn, output, fs, noise_density, noise_density_ready)
-overshoot && @warn "integration crossed a navigation-bit boundary; bit sync restarted"
-integration = PredetectionIntegration(signal, filtered, output, signal_state, fs; prn)
+integration.sync_change == TrackingLoops.SYNC_LOST && @warn "integration crossed a navigation-bit boundary; bit sync restarted"
 loop_state, carrier_doppler, code_doppler =
-    step_loop!(tracking_loop, loop_state, integration, ConstantNCOCommand(carrier_hz, code_hz), NO_LANDING_SAMPLE)
+    step_loop!(tracking_loop, loop_state, integration, ConstantNCOCommand(carrier_hz, code_hz), nothing)
 # program the next replica with carrier_doppler and code_doppler
 ```
 

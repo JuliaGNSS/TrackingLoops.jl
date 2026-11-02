@@ -9,7 +9,7 @@
 # until its first fix seeds the filter, one filter iteration after. The cycle leaves its
 # decisions (admission, release, commands) in the slots for each satellite to take up
 # on its next integration. Nothing here knows a correlator, so software and hardware loops
-# step the same estimator.
+# step the same loop.
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
@@ -41,39 +41,29 @@ signal (see
 
   - `prn`, and `tracked`: whether it is stepped now (`false` after two cycles
     without an integration; the rest then describes it as it was);
-  - `decoder`: its navigation-message decoder up to the last integration of its
-    decoding signal. It is the estimator's, to read only: resetting or decoding
-    into it (e.g. `reset_decoder_state!`, `decode!`) changes the estimator's
-    decoder. It shares buffers with the running decoder, so `copy` it to keep it
-    past the next integration; once the slot is freed they go to the next satellite on
-    it, so a consumer that needs a decoder of its own builds a fresh one;
   - `bit_or_secondary_code_synced`: whether the decoding signal's bit clock held the bit sync at
     that signal's last integration;
-  - at its latest snapshot (`epoch`, on the integrations' time grid, `nothing` before
+  - at its latest snapshot (`snapshot_time`, on the navigation-epoch grid, a multiple of
+    `navigation_update_interval`, `nothing` before
     the first): `cn0_dbhz` (the driver's, from the host's C/N₀ estimator),
     `measurement_ready` (decoding signal synced and the driver's C/N₀ at least the lock
     threshold) and `positioning_ready` (in lock, decoded for positioning and healthy);
-  - `vector_controlled` and `get_release_reason`: the latest cycle's decision.
+  - `vector_controlled` and `release_reason`: the latest cycle's decision.
 
-The report is the estimator's own object, refreshed in place by every
-`get_satellite_report` call (no allocation): copy out what is needed beyond the next
-call.
+The report is an immutable snapshot whose values remain valid after later integrations
+and report calls. Access the separately borrowed decoder with [`get_decoder`](@ref).
 """
-mutable struct SatelliteReport{D}
+struct SatelliteReport
     prn::Int
     tracked::Bool
-    decoder::D
     bit_or_secondary_code_synced::Bool
-    epoch::Union{Nothing,typeof(1.0s)}
+    snapshot_time::Union{Nothing,typeof(1.0s)}
     cn0_dbhz::Float64
     measurement_ready::Bool
     positioning_ready::Bool
     vector_controlled::Bool
     release_reason::VectorReleaseReason
 end
-
-SatelliteReport(decoder) =
-    SatelliteReport(0, false, decoder, false, nothing, NaN, false, false, false, VT_NOT_RELEASED)
 
 # One satellite of the navigation engine. A slot is never deleted: a dropped satellite
 # leaves it, with its storage, for the next one to reuse.
@@ -114,10 +104,10 @@ mutable struct VTSlot{D,E<:VectorLoopState}
     const prompt_history::PromptHistory
     # The first epoch the slot can snapshot, the epochs of the driver's and decoding
     # signal's halves of a snapshot, and that of its latest complete snapshot.
-    first_epoch::Int
-    driver_epoch::Int
-    decoding_epoch::Int
-    snapshot_epoch::Int
+    first_epoch_index::Int
+    driver_epoch_index::Int
+    decoding_epoch_index::Int
+    snapshot_epoch_index::Int
     # The decoding signal's half of the snapshot in the making: the decoder at its last
     # integration end before the epoch, whether its bit clock held the sync there, and the
     # code phase at the epoch from the decoder's last bit edge (chips).
@@ -143,8 +133,6 @@ mutable struct VTSlot{D,E<:VectorLoopState}
     release_reason::VectorReleaseReason
     command_cycle_index::Int
     member_index::Int
-    # What `get_satellite_report` hands out, refreshed in place.
-    const report::SatelliteReport{D}
 end
 
 function VTSlot(
@@ -197,7 +185,6 @@ function VTSlot(
         VT_NOT_RELEASED,
         -1,
         0,
-        SatelliteReport(decoder),
     )
 end
 
@@ -232,7 +219,7 @@ end
 What the latest navigation cycle of a [`VectorTrackingLoop`](@ref) did (see
 [`get_navigation_status`](@ref)).
 
-  - `running`: vector tracking is running after this cycle;
+  - `vector_tracking_active`: vector tracking is active after this cycle;
   - `position_std`, `clock_bias_std`: the filter's 1σ 3-D position and reference-clock
     uncertainties (`NaN` unless the filter ran or fell back this cycle); a
     degenerate geometry shows here, not in the starvation timer;
@@ -248,7 +235,7 @@ What the latest navigation cycle of a [`VectorTrackingLoop`](@ref) did (see
 The per-member report of the latest cycle is [`get_vector_tracking_members`](@ref).
 """
 struct NavigationStatus
-    running::Bool
+    vector_tracking_active::Bool
     position_std::typeof(1.0m)
     clock_bias_std::typeof(1.0m)
     measurement_deficit_duration::typeof(1.0s)
@@ -373,13 +360,13 @@ mutable struct VectorNavState{G<:Tuple,SB<:Tuple}
     const model::NavFilterModel
     const x::Vector{Float64}
     const P::Matrix{Float64}
-    running::Bool
+    vector_tracking_active::Bool
     # The clock-bias state the solution is reported against.
     reference_clock_index::Int
     # The receive epoch the pseudoranges are referenced to, uncorrected for the receiver
     # clock: the fix's epoch at the seed, advanced by the cycle time every cycle. They
     # difference against its time of week on the GPS Time count (see
-    # `VectorTrackingObservation.time_gpst_count`), so it does not move when the reference clock changes.
+    # `VectorTrackingObservation.transmit_tow_gpst`), so it does not move when the reference clock changes.
     reference_epoch::TAITime
     measurement_deficit_duration::typeof(1.0s)
     const vector_tracking_members::Dictionary{Tuple{Symbol,Int},ObservationResiduals}
@@ -395,18 +382,18 @@ mutable struct VectorNavState{G<:Tuple,SB<:Tuple}
     const min_tracking_cn0_dbhz::Float64
     # The epoch (in `navigation_update_interval`s on the integrations' time grid) the slots snapshot
     # next, and how many have.
-    pending_epoch::Int
+    pending_epoch_index::Int
     num_snapshots::Int
     # The latest cycle's id and epoch.
     cycle_index::Int
-    cycle_epoch::Int
+    cycle_epoch_index::Int
     next_slot_generation::Int
 end
 
 function VectorNavState(
     filter_config::Union{NavigationFilterConfig,Nothing},
     pairs::Tuple,
-    inner::AbstractTrackingLoop;
+    scalar_loop::AbstractTrackingLoop;
     navigation_update_interval,
     min_tracking_cn0_dbhz::Float64,
     satellite_capacity_per_signal::Int,
@@ -420,7 +407,7 @@ function VectorNavState(
     model = NavFilterModel(config, layout, uconvert(s, navigation_update_interval))
     n = num_nav_states(config, layout)
     groups = map(pairs) do (signal, decoding_signal)
-        prototype = VectorLoopState(init_loop_state(inner, signal, 0.0Hz, 0.0Hz), false)
+        prototype = VectorLoopState(init_loop_state(scalar_loop, signal, 0.0Hz, 0.0Hz), false)
         VTSlotGroup(signal, decoding_signal, prototype, satellite_capacity_per_signal, navigation_update_interval)
     end
     max_members = satellite_capacity_per_signal * length(signals)
@@ -459,19 +446,19 @@ _signal_observation_buffer(group::VTSlotGroup{S,DS,<:VTSlot{D}}) where {S,DS,D} 
     sizehint!(SignalObservation{Float64,D,S}[], 2 * max(length(group.slots), 1))
 
 """
-    calc_position_std(estimator::VectorTrackingLoop)
+    calc_position_std(loop::VectorTrackingLoop)
 
 The navigation filter's 1σ 3-D position uncertainty (m), once seeded.
 """
-calc_position_std(estimator::VectorTrackingLoop) = calc_position_std(estimator.navigation)
+calc_position_std(loop::VectorTrackingLoop) = calc_position_std(loop.engine)
 
 """
-    calc_clock_bias_std(estimator::VectorTrackingLoop)
+    calc_clock_bias_std(loop::VectorTrackingLoop)
 
 The navigation filter's 1σ uncertainty (m) of the solution's reference clock
 bias, once seeded.
 """
-calc_clock_bias_std(estimator::VectorTrackingLoop) = calc_clock_bias_std(estimator.navigation)
+calc_clock_bias_std(loop::VectorTrackingLoop) = calc_clock_bias_std(loop.engine)
 
 calc_position_std(nav::VectorNavState) = calc_position_std(nav.P, nav.model.idxs)
 
@@ -481,29 +468,29 @@ function calc_clock_bias_std(nav::VectorNavState)
 end
 
 """
-    get_navigation_solution(estimator::VectorTrackingLoop) -> PVTSolution
+    get_navigation_solution(loop::VectorTrackingLoop) -> PVTSolution
 
 The latest navigation solution: the scalar PVT's until the filter is seeded, the
 filter's after. The next cycle reuses its containers; copy out what is needed.
 """
-get_navigation_solution(estimator::VectorTrackingLoop) = estimator.navigation.pvt
+get_navigation_solution(loop::VectorTrackingLoop) = loop.engine.pvt
 
 """
-    get_navigation_status(estimator::VectorTrackingLoop) -> NavigationStatus
+    get_navigation_status(loop::VectorTrackingLoop) -> NavigationStatus
 
 What the latest navigation cycle did (see [`NavigationStatus`](@ref)).
 """
-get_navigation_status(estimator::VectorTrackingLoop) = estimator.navigation.status
+get_navigation_status(loop::VectorTrackingLoop) = loop.engine.status
 
-get_navigation_cycle_index(estimator::VectorTrackingLoop) = estimator.navigation.cycle_index
+get_navigation_cycle_index(loop::VectorTrackingLoop) = loop.engine.cycle_index
 
-function get_navigation_elapsed_time(estimator::VectorTrackingLoop)
-    nav = estimator.navigation
-    nav.cycle_epoch == typemin(Int) ? nothing : nav.cycle_epoch * nav.navigation_update_interval
+function get_navigation_elapsed_time(loop::VectorTrackingLoop)
+    nav = loop.engine
+    nav.cycle_epoch_index == typemin(Int) ? nothing : nav.cycle_epoch_index * nav.navigation_update_interval
 end
 
-function get_satellite_report(estimator::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
-    nav = estimator.navigation
+function get_satellite_report(loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
+    nav = loop.engine
     _satellite_report(nav, nav.groups, signal, Int(prn))
 end
 
@@ -513,25 +500,48 @@ function _satellite_report(nav, groups::Tuple, signal::S, prn) where {S}
     group.driver_signal isa S || return _satellite_report(nav, Base.tail(groups), signal, prn)
     for slot in group.slots
         slot.prn == prn && slot.slot_generation > 0 || continue
-        report = slot.report
-        report.prn = slot.prn
-        report.tracked = slot.occupied
-        report.decoder = slot.running_decoder
-        report.bit_or_secondary_code_synced = slot.decoding_bit_synced
-        report.epoch =
-            slot.snapshot_epoch == typemin(Int) ? nothing : slot.snapshot_epoch * nav.navigation_update_interval
-        report.cn0_dbhz = slot.cn0_dbhz
-        report.measurement_ready = slot.measurement_ready
-        report.positioning_ready = slot.positioning_ready
-        report.vector_controlled = slot.loop_state.vector_controlled
-        report.release_reason = slot.release_reason
-        return report
+        snapshot_time = slot.snapshot_epoch_index == typemin(Int) ? nothing :
+            slot.snapshot_epoch_index * nav.navigation_update_interval
+        return SatelliteReport(
+            slot.prn,
+            slot.occupied,
+            slot.decoding_bit_synced,
+            snapshot_time,
+            slot.cn0_dbhz,
+            slot.measurement_ready,
+            slot.positioning_ready,
+            slot.loop_state.vector_controlled,
+            slot.release_reason,
+        )
     end
     nothing
 end
 
 """
-    get_vector_tracking_members(estimator::VectorTrackingLoop)
+    get_decoder(loop::VectorTrackingLoop, signal, prn)
+
+Borrow the satellite's navigation decoder through its last decoding integration, or
+`nothing` if the satellite has no slot. Treat the decoder as read-only: `decode!`
+and `reset_decoder_state!` would change the engine's state. Its shared buffers may
+change on the next integration, and a reused slot gives them to another satellite.
+Copy the decoder to retain its current contents; construct a fresh decoder for
+independent decoding.
+"""
+get_decoder(loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer) =
+    _get_decoder(loop.engine.groups, signal, Int(prn))
+
+_get_decoder(::Tuple{}, signal, prn) = nothing
+function _get_decoder(groups::Tuple, signal::S, prn) where {S}
+    group = first(groups)
+    group.driver_signal isa S || return _get_decoder(Base.tail(groups), signal, prn)
+    for slot in group.slots
+        slot.prn == prn && slot.slot_generation > 0 && return slot.running_decoder
+    end
+    nothing
+end
+
+"""
+    get_vector_tracking_members(loop::VectorTrackingLoop)
 
 The latest cycle's per-member results: every member of the vector loop, measured
 *and* coasted, keyed `(driver_signal_id, prn)`, each with the satellite position,
@@ -542,16 +552,16 @@ measured members. Empty while the scalar solve is in control.
 The returned dictionary is borrowed storage, reused by the next navigation cycle;
 copy it to retain the current results.
 """
-get_vector_tracking_members(estimator::VectorTrackingLoop) = estimator.navigation.vector_tracking_members
+get_vector_tracking_members(loop::VectorTrackingLoop) = loop.engine.vector_tracking_members
 
 """
-    get_release_reason(estimator::VectorTrackingLoop, signal, prn) -> VectorReleaseReason
+    get_release_reason(loop::VectorTrackingLoop, signal, prn) -> VectorReleaseReason
 
 Whether and why the latest navigation cycle released the member `prn` of
 `signal` from the vector loop.
 """
-function get_release_reason(estimator::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
-    _release_reason(estimator.navigation.groups, signal, Int(prn))
+function get_release_reason(loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
+    _release_reason(loop.engine.groups, signal, Int(prn))
 end
 
 _release_reason(::Tuple{}, signal, prn) = VT_NOT_RELEASED
@@ -767,7 +777,7 @@ function _measure_pseudoranges!(nav::VectorNavState, ionospheric_model, referenc
     end
     measured = resize!(buffers.measured_pseudoranges, num_members)
     for j in eachindex(members)
-        measured[j] = calc_pseudorange(reference_tow, members[j].time_gpst_count) - delays[j]
+        measured[j] = calc_pseudorange(reference_tow, members[j].transmit_tow_gpst) - delays[j]
     end
     measured
 end
@@ -904,9 +914,9 @@ end
 function _predict_after_epoch(nav::VectorNavState, slot::VTSlot, member::VectorTrackingObservation, j, reference_tow, τ, chips)
     buffers = nav.buffers
     idxs = nav.model.idxs
-    application_time = member.time + chips / member.code_frequency
+    application_transmit_tow = member.transmit_tow + chips / member.code_frequency
     ephemeris = something(get_broadcast_ephemeris(slot.decoder))
-    application_orbit = calc_satellite_position_and_velocity(ephemeris, application_time)
+    application_orbit = calc_satellite_position_and_velocity(ephemeris, application_transmit_tow)
     application_position = application_orbit.position
     application_velocity = application_orbit.velocity
     propagate_state!(buffers.x_application, nav.x, idxs, τ)
@@ -929,10 +939,10 @@ function _predict_after_epoch(nav::VectorNavState, slot::VTSlot, member::VectorT
         user_clock_drift,
         application_position,
         application_velocity,
-        calc_satellite_clock_drift(ephemeris, application_time),
+        calc_satellite_clock_drift(ephemeris, application_transmit_tow),
     )
     measured_pseudorange =
-        calc_pseudorange(reference_tow + τ, application_time, member.time_gpst_count - member.time) -
+        calc_pseudorange(reference_tow + τ, application_transmit_tow, member.transmit_tow_gpst - member.transmit_tow) -
         buffers.delays[j]
     predicted_pseudorange, predicted_rate, measured_pseudorange
 end
@@ -1056,7 +1066,7 @@ function _seed!(nav::VectorNavState, groups, cycle_time)
     resize!(buffers.above_horizon, length(members))
     fill!(buffers.above_horizon, true)
     _fold_groups_with_buffers(_assign_commands!, 0, groups, buffers.signal_observations, 1, nav)
-    nav.running = true
+    nav.vector_tracking_active = true
     nav.reference_epoch = reference_epoch
     nav.measurement_deficit_duration = 0.0s
     nothing
@@ -1126,7 +1136,7 @@ function _run_cycle!(nav::VectorNavState, groups, cycle_time)
     fell_back = measurement_deficit_duration > config.measurement_deficit_timeout || num_above_horizon == 0
     if fell_back
         released = _fold_groups_with_buffers(_release_all!, released, groups, buffers.signal_observations, 1, VT_FALLBACK)
-        nav.running = false
+        nav.vector_tracking_active = false
     else
         _fold_groups_with_buffers(_assign_commands!, 0, groups, buffers.signal_observations, 1, nav)
     end
@@ -1179,9 +1189,9 @@ function _write_solution!(nav::VectorNavState, groups)
     for j in candidates
         set!(observations, _member_key(layout, members[j]), _member_info(buffers, j))
     end
-    get_vector_tracking_members = empty_keeping_capacity!(nav.vector_tracking_members)
+    satellite_reports = empty_keeping_capacity!(nav.vector_tracking_members)
     for j in eachindex(members)
-        set!(get_vector_tracking_members, _member_key(layout, members[j]), _member_info(buffers, j))
+        set!(satellite_reports, _member_key(layout, members[j]), _member_info(buffers, j))
     end
 
     # Only measured biases, as in `calc_pvt`: an unmeasured one coasts on process noise
@@ -1236,7 +1246,7 @@ _member_key(layout::NavFilterLayout, member::VectorTrackingObservation) =
 
 _member_info(buffers::VectorTrackingWorkspace, j) = ObservationResiduals(
     buffers.members[j].sat_pos,
-    buffers.members[j].time * s,
+    buffers.members[j].transmit_tow * s,
     buffers.residuals[j],
     buffers.rate_residuals[j],
 )

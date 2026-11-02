@@ -11,10 +11,9 @@ using Random: MersenneTwister
         sgn = isodd(div(k - 1, 20)) ? -1.0 : 1.0
         p = 2000.0 * sgn
         output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
-        state, prompt, beamformed, blocks = process_correlator_bank_output!(state, signal, 7, output, fs, density, true)
-        @test prompt == p / 4000
-        @test get_prompt(beamformed) == prompt
-        @test blocks == 1
+        state, integration = process_correlator_bank_output!(state, signal, 7, output, fs, density, true)
+        @test get_prompt(integration.beamformed_correlator_bank) == p / 4000
+        @test integration.num_code_periods == 1
     end
     @test is_bit_or_secondary_code_synced(state)
     @test length(get_soft_bits(state)) >= 8
@@ -40,8 +39,8 @@ end
         @test getfield(updated, field) === getfield(state, field)
     end
     # A prompt and a polarity of another number type are converted.
-    updated = PostCorrelationState(state; last_previous_prompt = 1 + 2im, last_carrier_phase_polarity = 1)
-    @test updated.last_previous_prompt === complex(1.0, 2.0)
+    updated = PostCorrelationState(state; last_beamformed_prompt = 1 + 2im, last_carrier_phase_polarity = 1)
+    @test updated.last_beamformed_prompt === complex(1.0, 2.0)
     @test updated.last_carrier_phase_polarity === Int8(1)
 end
 
@@ -53,7 +52,8 @@ end
     state = PostCorrelationState(data)
     p = 2000.0im   # the data component sits on the imaginary axis of the driver's frame
     output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 25_000, 25_000)
-    state, prompt, _, _ = process_correlator_bank_output!(state, data, 3, output, fs, 1e-6 / Hz, true, get_carrier_phase_offset(driver))
+    state, integration = process_correlator_bank_output!(state, data, 3, output, fs, 1e-6 / Hz, true, get_carrier_phase_offset(driver))
+    prompt = get_prompt(integration.beamformed_correlator_bank)
     @test prompt == p / 25_000
     # The recorded prompt is the un-rotated one; the rotation only reaches the bit synchronizer.
     @test state.last_beamformed_prompt == prompt
@@ -92,19 +92,19 @@ end
         p = 2000.0 * (isodd(div(k - 1, 20)) ? -1.0 : 1.0)
         output = CorrelatorBankOutput(epl(p), 4000, 4000k, 0.0)
         previous_prompt = state.last_beamformed_prompt
-        state, _, beamformed, = process_correlator_bank_output!(state, signal, 7, output, fs, 1e-6 / Hz, true)
-        integration = PredetectionIntegration(signal, beamformed, output, state, fs; prn = 7)
+        num_bits = length(get_soft_bits(state))
+        state, integration = process_correlator_bank_output!(state, signal, 7, output, fs, 1e-6 / Hz, true)
         @test integration.previous_prompt == previous_prompt
-        @test integration.integrated_code_blocks == state.last_num_code_periods
+        @test integration.num_code_periods == state.last_num_code_periods
         @test integration.cn0_estimator === state.cn0_estimator
         @test integration.bit_or_secondary_code_synced == is_bit_or_secondary_code_synced(state)
         # Exactly the bits this integration added, however many the soft-bit vector holds.
-        @test integration.new_soft_bits == get_soft_bits(state)[end-state.last_num_new_soft_bits+1:end]
+        @test integration.new_soft_bits == get_soft_bits(state)[num_bits+1:end]
         push!(changes, integration.sync_change)
         if integration.bit_or_secondary_code_synced
             @test integration.num_code_periods_into_bit == state.bit_synchronizer.num_code_periods_into_bit
             # The sign the sync found the soft bits at.
-            @test integration.bit_polarity == state.bit_synchronizer.polarity != 0
+            @test integration.bit_polarity == state.bit_synchronizer.bit_polarity != 0
             # Drained after every other integration: the next integration's bits are still its own.
             iseven(k) && empty!(get_soft_bits(state))
         else
@@ -120,7 +120,7 @@ end
     @test !plain.bit_or_secondary_code_synced && plain.sync_change == SYNC_UNCHANGED && plain.bit_polarity == 0
     @test isempty(plain.new_soft_bits) && plain.cn0_estimator isa NoCN0Estimator
     # A restarted bit clock reports no new bits.
-    @test reset_sync!(state).last_num_new_soft_bits == 0
+    @test isempty(get_soft_bits(reset_sync!(state)))
 end
 
 @testset "A lost sync is reported on the integration" begin
@@ -135,8 +135,7 @@ end
     # Three-period integrations step the bit accumulator past the boundary.
     for k = 1:7
         output = CorrelatorBankOutput(epl(6000.0), 12_000, 800_000 + 12_000k, 0.0)
-        state, _, beamformed, = process_correlator_bank_output!(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true)
-        integration = PredetectionIntegration(signal, beamformed, output, state, 4e6Hz)
+        state, integration = process_correlator_bank_output!(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true)
         if !is_bit_or_secondary_code_synced(state)
             @test integration.sync_change == SYNC_LOST && !integration.bit_or_secondary_code_synced
             break
@@ -164,8 +163,8 @@ end
             p = (synced ? sign : sign * chip(k)) * 4000.0 * cis(0.05) +
                 200 * randn(rng, ComplexF64)
             output = CorrelatorBankOutput(epl(p), 16_000, 16_000 * (k + 1))
-            state, _, beamformed, = process_correlator_bank_output!(state, signal, prn, output, fs, 1e-6 / Hz, true)
-            integration = PredetectionIntegration(signal, beamformed, output, state, fs; prn)
+            state, integration = process_correlator_bank_output!(state, signal, prn, output, fs, 1e-6 / Hz, true)
+            beamformed = integration.beamformed_correlator_bank
             if synced
                 synced_integrations += 1
                 # The prompt's sign, so the four-quadrant PLL reads the small error,
@@ -286,4 +285,29 @@ end
         GPSL2CL(), GalileoE5aQP())
         @test !is_dataless_with_secondary_code(signal)
     end
+end
+
+function process_correlator_bank_output_allocation_probe(state, signal, output)
+    next_state, integration = process_correlator_bank_output!(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true;
+        batch_end_sample_index = 12_000, sample_index_offset = 40_000)
+    next_state, integration.sample_index + integration.batch_end_sample_index + length(integration.new_soft_bits)
+end
+
+function integration_processing_allocations(state, signal, output)
+    process_correlator_bank_output_allocation_probe(state, signal, output)
+    @allocated process_correlator_bank_output_allocation_probe(state, signal, output)
+end
+
+@testset "Integration processing shares the sample grid and reuses its storage" begin
+    signal = GPSL1CA()
+    state = PostCorrelationState(signal)
+    output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(
+        SVector{3,ComplexF64}(1000, 2000, 1000), 0.5), 4000, 8000, 3.25)
+    state, integration = @inferred process_correlator_bank_output!(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true;
+        batch_end_sample_index = 12_000, sample_index_offset = 40_000)
+    @test integration.sample_index == 48_000
+    @test integration.batch_end_sample_index == 52_000
+    @test integration.prn == 7 && integration.code_phase == 3.25
+    @test parent(integration.new_soft_bits) === get_soft_bits(state)
+    @test integration_processing_allocations(state, signal, output) == 0
 end

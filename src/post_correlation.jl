@@ -18,21 +18,12 @@ What one integration did to a signal's bit clock (see [`PostCorrelationState`](@
 @enum SyncEvent::Int8 SYNC_UNCHANGED SYNC_FOUND SYNC_LOST
 
 """
-    PostCorrelationState(signal; num_prompts_for_cn0_estimation = 100, cn0_estimator,
-                    beamformer)
+    PostCorrelationState(signal; cn0_estimator, beamformer)
 
-The per-integration state of one signal component on a satellite: bit synchronizer, C/N₀
-estimator, beamformer, the last beamformed prompt (the FLL chains from
-it) and the last integration's block count. Immutable, rebuilt per integration by
-[`process_correlator_bank_output!`](@ref); the estimators own their buffers, so every component needs
-its own instance: one per signal of every satellite, driver and passengers alike.
-
-It also keeps what the last integration did, for a [`PredetectionIntegration`](@ref) built from it:
-`last_sync_change` (a [`SyncEvent`](@ref)), `last_num_new_soft_bits` (the soft bits
-it appended), `last_previous_prompt` (the prompt the FLL compares its prompt with:
-the one before, or `0` across a change of carrier phase polarity) and
-`last_carrier_phase_polarity` (its prompt's sign where known, else `0`; see
-[`PredetectionIntegration`](@ref)).
+Persistent processing history for one satellite's signal: bit synchronization,
+C/N₀, beamformer state, previous prompt and polarity, and the latest integration
+period count. Every component owns its buffers. [`process_correlator_bank_output!`](@ref) returns
+its updated state together with the completed [`PredetectionIntegration`](@ref).
 """
 struct PostCorrelationState{B<:Unsigned,BF<:AbstractBeamformer,CN0<:AbstractCN0Estimator}
     bit_synchronizer::BitSynchronizer{B}
@@ -40,19 +31,12 @@ struct PostCorrelationState{B<:Unsigned,BF<:AbstractBeamformer,CN0<:AbstractCN0E
     beamformer::BF
     last_beamformed_prompt::ComplexF64
     last_num_code_periods::Int
-    last_sync_change::SyncEvent
-    last_num_new_soft_bits::Int
-    last_previous_prompt::ComplexF64
     last_carrier_phase_polarity::Int8
 end
 
 function PostCorrelationState(
     signal::AbstractGNSSSignal;
-    num_prompts_for_cn0_estimation::Int = 100,
-    cn0_estimator::AbstractCN0Estimator = default_cn0_estimator(
-        signal,
-        num_prompts_for_cn0_estimation,
-    ),
+    cn0_estimator::AbstractCN0Estimator = default_cn0_estimator(signal, 100),
     beamformer::AbstractBeamformer = DefaultBeamformer(),
 )
     bit_synchronizer = BitSynchronizer{prompt_sign_history_type(signal)}()
@@ -71,18 +55,13 @@ function PostCorrelationState(
         beamformer,
         complex(0.0, 0.0),
         1,
-        SYNC_UNCHANGED,
-        0,
-        complex(0.0, 0.0),
         Int8(0),
     )
 end
 
 """
     PostCorrelationState(state::PostCorrelationState; bit_synchronizer, cn0_estimator, beamformer,
-                    last_beamformed_prompt, last_num_code_periods, last_sync_change,
-                    last_num_new_soft_bits, last_previous_prompt,
-                    last_carrier_phase_polarity)
+                    last_beamformed_prompt, last_num_code_periods, last_carrier_phase_polarity)
 
 `state` with the fields passed replaced, every other one kept, so a host that
 swaps a part of the state (a C/N₀ estimator, say) need not list the rest.
@@ -94,9 +73,6 @@ function PostCorrelationState(
     beamformer::Maybe{AbstractBeamformer} = nothing,
     last_beamformed_prompt::Maybe{Complex} = nothing,
     last_num_code_periods::Maybe{Integer} = nothing,
-    last_sync_change::Maybe{SyncEvent} = nothing,
-    last_num_new_soft_bits::Maybe{Integer} = nothing,
-    last_previous_prompt::Maybe{Complex} = nothing,
     last_carrier_phase_polarity::Maybe{Integer} = nothing,
 )
     PostCorrelationState(
@@ -106,11 +82,6 @@ function PostCorrelationState(
         isnothing(last_beamformed_prompt) ? state.last_beamformed_prompt :
         ComplexF64(last_beamformed_prompt),
         isnothing(last_num_code_periods) ? state.last_num_code_periods : Int(last_num_code_periods),
-        isnothing(last_sync_change) ? state.last_sync_change : last_sync_change,
-        isnothing(last_num_new_soft_bits) ? state.last_num_new_soft_bits :
-        Int(last_num_new_soft_bits),
-        isnothing(last_previous_prompt) ? state.last_previous_prompt :
-        ComplexF64(last_previous_prompt),
         isnothing(last_carrier_phase_polarity) ? state.last_carrier_phase_polarity :
         Int8(last_carrier_phase_polarity),
     )
@@ -119,6 +90,8 @@ end
 is_bit_or_secondary_code_synced(state::PostCorrelationState) =
     is_bit_or_secondary_code_synced(state.bit_synchronizer)
 get_soft_bits(state::PostCorrelationState) = get_soft_bits(state.bit_synchronizer)
+drain_soft_bits!(state::PostCorrelationState) = (drain_soft_bits!(state.bit_synchronizer); state)
+
 estimate_cn0(state::PostCorrelationState, coherent_integration_time) =
     estimate_cn0(state.cn0_estimator, coherent_integration_time)
 
@@ -188,7 +161,7 @@ is_dataless_with_secondary_code(signal::AbstractGNSSSignal) =
     bit_synchronizer::BitSynchronizer,
     secondary_code_wiped::Bool,
 ) =
-    is_dataless_with_secondary_code(signal) && secondary_code_wiped ? bit_synchronizer.polarity :
+    is_dataless_with_secondary_code(signal) && secondary_code_wiped ? bit_synchronizer.bit_polarity :
     Int8(0)
 
 """
@@ -197,7 +170,7 @@ is_dataless_with_secondary_code(signal::AbstractGNSSSignal) =
                 driver_carrier_phase_offset;
                 secondary_code_wiped = is_bit_or_secondary_code_synced(bit_synchronizer))
         -> (bit_synchronizer, cn0_estimator, beamformer, prompt, beamformed_correlator_bank,
-            bit_block_count, integrated_code_blocks, overshoot, carrier_phase_polarity)
+            num_bit_synchronizer_code_periods, num_code_periods, overshoot, carrier_phase_polarity)
 
 Apply one completed integration to a signal component's bare state: normalize the raw
 correlator bank by sample count and code amplitude, update and apply the
@@ -236,14 +209,14 @@ wiped), else `0`; a [`PredetectionIntegration`](@ref) carries it to the carrier 
     weights = get_beamforming_weights(beamformer, NumAntennas(normalized_correlator_bank))
     beamformed_correlator_bank = _beamform_correlator_bank(normalized_correlator_bank, weights)
     prompt = get_prompt(beamformed_correlator_bank)
-    bit_block_count = calc_num_bit_synchronizer_code_periods(
+    num_bit_synchronizer_code_periods = calc_num_bit_synchronizer_code_periods(
         signal,
         output.num_integrated_samples,
         sampling_frequency,
         synced_before,
     )
-    # Floor at 1 for the fractional-block integration right after a sync phase snap.
-    integrated_code_blocks = max(1, bit_block_count)
+    # Floor at 1 for the fractional-period integration right after a sync phase snap.
+    num_code_periods = max(1, num_bit_synchronizer_code_periods)
     # Onto the driver's (real) phase frame for sync search and bit accumulation.
     bit_prompt = prompt * _carrier_phase_derotation(driver_carrier_phase_offset, signal)
     drop_prompt = _drops_unwiped_prompt(signal, synced_before, secondary_code_wiped)
@@ -253,23 +226,23 @@ wiped), else `0`; a [`PredetectionIntegration`](@ref) carries it to the carrier 
         prompt,
         signal,
         bit_synchronizer,
-        bit_block_count,
+        num_bit_synchronizer_code_periods,
         !drop_prompt,
         scalar_noise_density,
         noise_density_ready,
         output.num_integrated_samples / sampling_frequency,
     )
-    bit_synchronizer = buffer(
+    bit_synchronizer = update_bit_sync!(
         signal,
         prn,
         bit_synchronizer,
-        bit_block_count,
+        num_bit_synchronizer_code_periods,
         drop_prompt ? zero(bit_prompt) : bit_prompt,
     )
     # An unwiped post-sync integration moves the secondary-code anchor: the code-phase
     # snap after this processing aligns the *upcoming* integration to `bit_synchronizer.secondary_code_phase`.
     if synced_before && !secondary_code_wiped
-        bit_synchronizer = _advance_secondary_phase(signal, bit_synchronizer, bit_block_count)
+        bit_synchronizer = _advance_secondary_phase(signal, bit_synchronizer, num_bit_synchronizer_code_periods)
     end
     overshoot = is_bit_or_secondary_code_synced(bit_synchronizer_before) &&
         !is_bit_or_secondary_code_synced(bit_synchronizer)
@@ -278,8 +251,8 @@ wiped), else `0`; a [`PredetectionIntegration`](@ref) carries it to the carrier 
     beamformer,
     prompt,
     beamformed_correlator_bank,
-    bit_block_count,
-    integrated_code_blocks,
+    num_bit_synchronizer_code_periods,
+    num_code_periods,
     overshoot,
     _carrier_phase_polarity(signal, bit_synchronizer_before, secondary_code_wiped)
 end
@@ -289,15 +262,16 @@ end
                  noise_density, noise_density_ready,
                  driver_carrier_phase_offset = get_carrier_phase_offset(signal);
                  secondary_code_wiped = is_bit_or_secondary_code_synced(state))
-        -> (state, prompt, beamformed_correlator_bank, integrated_code_blocks, overshoot)
+        -> (state, integration)
 
-`_process_correlator_bank_output!` on a [`PostCorrelationState`](@ref). Returns the new state, the prompt,
-the beamformed correlator bank the discriminators read, the blocks the integration covered and
-`overshoot`: whether a post-sync integration carried the bit accumulator past the bit
-boundary, so the buffer dropped sync and restarted its search (`SYNC_LOST`;
-JuliaGNSS/Tracking.jl#238). The new state keeps the beamformed prompt and what the
-integration did, for a [`PredetectionIntegration`](@ref) built from it. Nothing here logs; the caller
-reports `overshoot` (Tracking.jl warns once per satellite).
+Process one correlator bank output and return the persistent state and completed
+[`PredetectionIntegration`](@ref). The integration carries synchronization events, integration timing,
+C/N₀, and exactly the newly demodulated soft bits. Its `new_soft_bits` borrows the
+state's bit vector and remains valid until that vector is drained, reset, or grown;
+consume the integration before modifying the soft-bit vector. Processing and resetting reuse
+allocated storage. A carrier polarity change sets `integration.previous_prompt` to zero.
+`batch_end_sample_index` defaults to the output's sample index;
+`sample_index_offset` shifts both indices onto the receiver's shared time grid.
 
 `driver_carrier_phase_offset` is the carrier-phase offset (cycles, `get_carrier_phase_offset`) of
 the satellite's loop-driving signal; the bit synchronizer's prompt is de-rotated against
@@ -327,6 +301,8 @@ and its polarity is `0`.
     noise_density_ready::Bool,
     driver_carrier_phase_offset::Real = get_carrier_phase_offset(signal);
     secondary_code_wiped::Bool = is_bit_or_secondary_code_synced(state.bit_synchronizer),
+    batch_end_sample_index::Integer = output.sample_index,
+    sample_index_offset::Integer = 0,
 )
     was_synced = is_bit_or_secondary_code_synced(state.bit_synchronizer)
     num_soft_bits = Base.length(state.bit_synchronizer.soft_bits)
@@ -336,7 +312,7 @@ and its polarity is `0`.
     prompt,
     beamformed_correlator_bank,
     _,
-    integrated_code_blocks,
+    num_code_periods,
     overshoot,
     carrier_phase_polarity = _process_correlator_bank_output!(
         signal,
@@ -355,20 +331,25 @@ and its polarity is `0`.
     sync_change =
         !was_synced && is_synced ? SYNC_FOUND :
         was_synced && !is_synced ? SYNC_LOST : SYNC_UNCHANGED
+    previous_prompt = carrier_phase_polarity == state.last_carrier_phase_polarity ?
+        state.last_beamformed_prompt : zero(ComplexF64)
     new_state = PostCorrelationState(
-        bit_synchronizer,
-        cn0_estimator,
-        beamformer,
-        prompt,
-        integrated_code_blocks,
-        sync_change,
-        Base.length(bit_synchronizer.soft_bits) - num_soft_bits,
-        # The FLL cannot compare prompts of different carrier phase polarities.
-        carrier_phase_polarity != state.last_carrier_phase_polarity ? complex(0.0, 0.0) :
-        state.last_beamformed_prompt,
-        carrier_phase_polarity,
+        bit_synchronizer, cn0_estimator, beamformer, prompt,
+        num_code_periods, carrier_phase_polarity,
     )
-    new_state, prompt, beamformed_correlator_bank, integrated_code_blocks, overshoot
+    integration = PredetectionIntegration(
+        signal, beamformed_correlator_bank, previous_prompt,
+        output.num_integrated_samples,
+        output.sample_index + Int(sample_index_offset),
+        Int(batch_end_sample_index) + Int(sample_index_offset),
+        num_code_periods, sampling_frequency, Int(prn), output.code_phase,
+        is_synced, sync_change,
+        is_synced ? bit_synchronizer.num_code_periods_into_bit : 0,
+        view(bit_synchronizer.soft_bits, (num_soft_bits + 1):Base.length(bit_synchronizer.soft_bits)),
+        cn0_estimator, carrier_phase_polarity,
+        is_synced ? bit_synchronizer.bit_polarity : Int8(0),
+    )
+    new_state, integration
 end
 
 """
@@ -380,8 +361,6 @@ everything else kept.
 reset_sync!(state::PostCorrelationState) = PostCorrelationState(
     state;
     bit_synchronizer = _fresh_bit_synchronizer(state.bit_synchronizer),
-    last_sync_change = SYNC_UNCHANGED,
-    last_num_new_soft_bits = 0,
 )
 
 # An unsynchronised bit synchronizer reusing `bit_synchronizer`'s vectors, emptied in place.
@@ -418,9 +397,6 @@ reset_post_correlation!(state::PostCorrelationState) = PostCorrelationState(
     state.beamformer,
     complex(0.0, 0.0),
     1,
-    SYNC_UNCHANGED,
-    0,
-    complex(0.0, 0.0),
     Int8(0),
 )
 
