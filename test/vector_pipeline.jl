@@ -14,7 +14,7 @@ pipeline_slots(receiver) = receiver.vt.groups[1].slots[1:length(receiver.sats)]
 const WARM_PIPELINE = let
     rx = PipelineReceiver(; num_sats = 8, tracking_loop_kw = (; satellite_capacity_per_signal = 8))
     results, sample, diverged = run_pipeline!(rx, 30.0)
-    @assert !diverged && results[end].status.running
+    @assert !diverged && results[end].status.vector_tracking_active
     (; rx, results, sample)
 end
 
@@ -49,12 +49,12 @@ end
     end
     seed = findfirst(r -> r.status.seeded, results)
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
-    @test all(r -> !r.status.running && isempty(r.measured), results[1:seed-1])
+    @test all(r -> !r.status.vector_tracking_active && isempty(r.measured), results[1:seed-1])
     @test position_error(rx, results[seed]) < 10.0
     # Then the filter has every satellite: the solution near the truth, each replica
     # on its signal.
     tail = results[seed+50:end]
-    @test all(r -> r.status.running && r.status.num_vector_tracking_members == length(rx.sats), tail)
+    @test all(r -> r.status.vector_tracking_active && r.status.num_vector_tracking_members == length(rx.sats), tail)
     @test all(r -> length(r.measured) == length(rx.sats), tail)
     @test all(r -> all(==(VT_NOT_RELEASED), r.reasons), tail)
     @test pipeline_errors(rx, tail) < 3.0
@@ -101,7 +101,7 @@ end
     seed = findfirst(r -> r.status.seeded, results)
     @test seed !== nothing
     tail = results[seed+50:end]
-    @test all(r -> r.status.running, tail)
+    @test all(r -> r.status.vector_tracking_active, tail)
     @test pipeline_errors(rx, tail) < 0.3
     @test pipeline_velocity_errors(rx, tail) < 0.2
     @test pipeline_code_errors(tail) < 0.005
@@ -118,7 +118,7 @@ end
     outage(t, i) = t_start + 1 <= t <= t_start + 5 && i <= 3
     results, _, diverged = run_pipeline!(rx, 12.0; start_sample = start, outage)
     @test !diverged
-    @test all(r -> r.status.running && r.status.num_vector_tracking_members == length(rx.sats), results)
+    @test all(r -> r.status.vector_tracking_active && r.status.num_vector_tracking_members == length(rx.sats), results)
     @test all(r -> all(==(VT_NOT_RELEASED), r.reasons), results)
     during = filter(r -> t_start + 3 <= r.time - rx.truth.t0 <= t_start + 5, results)
     @test all(r -> length(r.measured) < length(rx.sats), during)
@@ -140,7 +140,7 @@ end
     rx = PipelineReceiver(; num_sats = 8, filter_config = NavFilterConfig(; measurement_deficit_timeout = 1.0s),
         tracking_loop_kw = (; min_tracking_cn0 = 35dBHz))
     results, start, diverged = run_pipeline!(rx, 30.0)
-    @test !diverged && results[end].status.running
+    @test !diverged && results[end].status.vector_tracking_active
     t_start = start / 4e6
     fade(t, i) = t_start + 0.5 <= t <= t_start + 2.5 && i <= 6 ? 0.25 : 1.0
     results, _, diverged = run_pipeline!(rx, 6.0; start_sample = start, fade)
@@ -149,10 +149,10 @@ end
     @test fallback !== nothing
     @test results[fallback].status.released
     @test all(==(VT_FALLBACK), results[fallback].reasons)
-    @test !results[fallback].status.running
+    @test !results[fallback].status.vector_tracking_active
     reseed = findfirst(r -> r.status.seeded, results)
     @test reseed !== nothing && reseed > fallback
-    @test results[end].status.running
+    @test results[end].status.vector_tracking_active
     @test all(sat -> sat.state.vector_controlled, rx.sats)
 end
 
@@ -164,7 +164,7 @@ end
     rx = PipelineReceiver(; num_sats = 8, filter_config = NavFilterConfig(; measurement_deficit_timeout = 1.0s),
         tracking_loop_kw = (; min_tracking_cn0 = 35dBHz))
     results, start, diverged = run_pipeline!(rx, 30.0)
-    @test !diverged && results[end].status.running
+    @test !diverged && results[end].status.vector_tracking_active
     t_start = start / 4e6
     fade(t, i) = t_start + 0.5 <= t <= t_start + 2.5 && i <= 6 ? 0.25 : 1.0
     # The update that coasted to the timeout is the last before the fallback.
@@ -187,10 +187,10 @@ end
     reseed = findfirst(r -> r.status.seeded, results)
     @test reseed !== nothing && reseed > fallback
     # No satellite is in the loop while the scalar solve is in control.
-    scalar = filter(l -> !l.status.running, lagging)
+    scalar = filter(l -> !l.status.vector_tracking_active, lagging)
     @test !isempty(scalar)
     @test all(l -> l.status.num_vector_tracking_members == 0 && !l.in_loop, scalar)
-    @test results[end].status.running
+    @test results[end].status.vector_tracking_active
     @test all(sat -> sat.state.vector_controlled, rx.sats)
 end
 
@@ -209,7 +209,7 @@ end
     @test seed !== nothing
     tail = results[seed+250:end]
     tail0 = results0[findfirst(r -> r.status.seeded, results0)+250:end]
-    @test all(r -> r.status.running, tail)
+    @test all(r -> r.status.vector_tracking_active, tail)
     @test pipeline_errors(rx, tail) < 2 * pipeline_errors(rx0, tail0) + 0.5
     @test pipeline_code_errors(tail) < 2 * pipeline_code_errors(tail0) + 0.01
     # The feedback delay is the NCO delay plus the wait for the next integration after the update.
@@ -257,7 +257,7 @@ end
     # Dropping, freeing and taking the slot over allocated nothing, and neither did the
     # warm integrations and updates around it.
     @test rx.allocated[] == 0
-    @test all(r -> r.status.running, results)
+    @test all(r -> r.status.vector_tracking_active, results)
     # With every slot taken, one more satellite grows the group.
     another = SimSat(GPSL1CA(), gone.decoder, rx.tracking_loop, rx.truth, sim_time(rx, sample);
         cn0_dbhz = 45.0, stream = gone.stream)
@@ -302,7 +302,7 @@ end
     @test slot.positioning_ready
     @test reacquired.state.vector_controlled
     @test results[end].status.num_vector_tracking_members == length(rx.sats)
-    @test all(r -> r.status.running, results)
+    @test all(r -> r.status.vector_tracking_active, results)
 end
 
 @testset "Satellites stepped past an epoch before it is pending rejoin the next" begin
@@ -324,28 +324,28 @@ end
     held, restarting = 7, 1:6
     others = setdiff(eachindex(rx.sats), held)
     sample = step_ticks!(WARM_PIPELINE.sample, 0.05, eachindex(rx.sats))
-    epoch = nav_processor.pending_epoch
+    epoch = nav_processor.pending_epoch_index
     sample = step_ticks!(sample, 0.1, others)
-    @test nav_processor.pending_epoch == epoch
+    @test nav_processor.pending_epoch_index == epoch
     for i in restarting
         rx.sats[i].state = TL._registered(rx.sats[i].state, 0, 0)
     end
     sample = step_ticks!(sample, 0.07, others)
     @test nav_processor.update_epoch_index == epoch
-    @test all(i -> pipeline_slots(rx)[i].first_epoch == epoch + 1, restarting)
+    @test all(i -> pipeline_slots(rx)[i].first_epoch_index == epoch + 1, restarting)
     # The held-back satellite catches up. Half a second on, every satellite snapshots
     # every epoch, and the updates run as the epochs are crossed, not an epoch late.
     results, sample, diverged = run_pipeline!(rx, 0.5; start_sample = sample)
     @test !diverged
     @test nav_processor.update_epoch_index == fld(sample, round(Int, 0.1 * ustrip(Hz, SIM_FS)))
-    @test all(slot -> slot.snapshot_epoch == nav_processor.update_epoch_index, pipeline_slots(rx))
+    @test all(slot -> slot.snapshot_epoch_index == nav_processor.update_epoch_index, pipeline_slots(rx))
     # Once the restarted satellites have decoded a subframe again, the filter measures
     # all eight.
     results, _, diverged = run_pipeline!(rx, 12.0; start_sample = sample)
     @test !diverged
     @test length(results) == 120
     tail = results[end-19:end]
-    @test all(r -> r.status.running && length(r.measured) == length(rx.sats), tail)
+    @test all(r -> r.status.vector_tracking_active && length(r.measured) == length(rx.sats), tail)
     @test pipeline_errors(rx, tail) < 3.0
 end
 
@@ -355,7 +355,7 @@ end
     results, _, diverged = run_pipeline!(rx, 60.0; start_sample = WARM_PIPELINE.sample)
     @test !diverged
     @test length(results) == 600
-    @test all(r -> r.status.running, results)
+    @test all(r -> r.status.vector_tracking_active, results)
     @test rx.allocated[] == 0
 end
 
@@ -371,7 +371,7 @@ function snapshot_range_errors(rx)
     group = nav_processor.groups[1]
     map(rx.sats) do sat
         slot = group.slots[sat.state.slot_index]
-        t = rx.truth.t0 + TL._epoch_time(nav_processor, slot.snapshot_epoch)
+        t = rx.truth.t0 + TL._epoch_time(nav_processor, slot.snapshot_epoch_index)
         u_true = uncorrected_time(sat, first(true_transmit(sat, rx.truth, t)))
         (calc_uncorrected_transmit_time(TL._signal_observation(group.driver_signal, slot)) - u_true) *
             TL.SPEED_OF_LIGHT
@@ -404,7 +404,7 @@ first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
     @test position_error(rx, results[seed]) < 10.0
     tail = results[seed+50:end]
-    @test all(r -> r.status.running && r.status.num_vector_tracking_members == length(rx.sats), tail)
+    @test all(r -> r.status.vector_tracking_active && r.status.num_vector_tracking_members == length(rx.sats), tail)
     @test pipeline_errors(rx, tail) < 3.0
     @test pipeline_code_errors(tail) < 0.2
     # The solution and the members are keyed by the driver.
@@ -481,7 +481,7 @@ end
     results, _, diverged = run_pipeline!(rx, 4.0; start_sample = sample, on_tick = _ ->
         (dropped[] += count(slot -> slot.loop_state.vector_controlled && !slot.bit_from_edge, slots)))
     @test !diverged
-    @test all(r -> r.status.running && r.status.num_vector_tracking_members == length(rx.sats), results)
+    @test all(r -> r.status.vector_tracking_active && r.status.num_vector_tracking_members == length(rx.sats), results)
     @test dropped[] == 0
     @test all(slot -> slot.prompt_history.count == 6, slots)
     @test pipeline_errors(rx, results) < 3.0

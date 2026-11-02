@@ -368,7 +368,7 @@ struct VectorTrackingObservation
     # Corrected transmit time (own system's time of week, s), at which the broadcast
     # polynomials are evaluated. Differenced across members on the reference system's
     # count, as in `calc_pvt` (see `_measure_pseudoranges!`).
-    time::Float64
+    transmit_tow::Float64
     sat_pos::SVector{3,Float64}
     sat_vel::SVector{3,Float64}
     sat_clock_drift::Float64 # s/s
@@ -403,7 +403,8 @@ function calc_mean_code_disc_at_epoch(loop_state::VectorLoopState, Δt_nav)
 end
 
 # Mean FLL discriminator (Hz), `f_incoming − f_replica`, so it enters with its own sign:
-# the rate observable at the epoch is `carrier_doppler + mean_fll`. `0.0` when nothing
+# the Doppler observable at the epoch is `carrier_doppler + mean_fll`; its pseudorange
+# rate is `−λ·(carrier_doppler + mean_fll)`. `0.0` when nothing
 # was accumulated (see `has_disc_sums`).
 #
 # Deliberately NOT moved to mid-interval, unlike the code: the mean FLL is

@@ -25,7 +25,7 @@ tail_code_errors(results) = maximum(r -> maximum(abs, r.code_errors), results)
     rx = SimReceiver()
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
-    @test all(r -> r.status.running, results)
+    @test all(r -> r.status.vector_tracking_active, results)
     @test all(r -> r.status.num_vector_tracking_members == length(rx.sats), results)
     tail = results[51:end]
     @test tail_errors(rx, tail) < 0.2
@@ -68,7 +68,7 @@ end
     outage(update_index, i) = 20 <= update_index <= 70 && i <= 3
     results, _, diverged = run_simulation!(rx, 120; outage)
     @test !diverged
-    @test all(r -> r.status.running && r.status.num_vector_tracking_members == length(rx.sats), results)
+    @test all(r -> r.status.vector_tracking_active && r.status.num_vector_tracking_members == length(rx.sats), results)
     @test all(r -> r.status.measurement_deficit_duration == 0.0s, results)
     @test all(r -> all(==(VT_NOT_RELEASED), r.reasons), results)
     during = results[25:70]
@@ -96,11 +96,11 @@ end
     # Strictly beyond the ten-second timeout: the 101st unsolvable update.
     fallback = findfirst(r -> r.status.fell_back, results)
     @test fallback == 101
-    @test all(r -> r.status.running, results[1:fallback-1])
+    @test all(r -> r.status.vector_tracking_active, results[1:fallback-1])
     @test timers[fallback] > 10.0s
     @test timers[fallback-1] ≈ 10.0s
     @test results[fallback].status.released
-    @test !results[fallback].status.running
+    @test !results[fallback].status.vector_tracking_active
     @test results[fallback].status.num_vector_tracking_members == 0
     @test all(==(VT_FALLBACK), results[fallback].reasons)
     # A fallback update still emits its (predicted) solution.
@@ -110,13 +110,13 @@ end
     @test all(sat -> !sat.state.vector_controlled && sat.state.code_frequency_correction == 0.0Hz, rx.sats)
     @test all(sat -> sat.state.code_disc_sum == (0, 0.0), rx.sats)
     # Not ready, no satellite enters the scalar solve, so nothing re-seeds…
-    @test all(r -> !r.status.running && !r.status.seeded, results[fallback+1:end])
+    @test all(r -> !r.status.vector_tracking_active && !r.status.seeded, results[fallback+1:end])
     # …until the receiver flags them in lock again: the first scalar fix seeds vector
     # tracking anew, from scalar loops that kept tracking.
     results, _, diverged = run_simulation!(rx, 20; start_sample = sample)
     @test !diverged
     @test results[1].status.seeded
-    @test all(r -> r.status.running, results)
+    @test all(r -> r.status.vector_tracking_active, results)
     @test tail_errors(rx, results[10:end]) < 3.0
 end
 
@@ -125,7 +125,7 @@ end
     num_sats = sum(length, rx.channels)
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
-    @test all(r -> r.status.running && r.status.num_vector_tracking_members == num_sats, results)
+    @test all(r -> r.status.vector_tracking_active && r.status.num_vector_tracking_members == num_sats, results)
     tail = results[51:end]
     @test tail_errors(rx, tail) < 0.2
     @test tail_code_errors(tail) < 0.005
@@ -145,7 +145,7 @@ end
     rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (4, 1))
     results, _, diverged = run_simulation!(rx, 300)
     @test !diverged
-    @test all(r -> r.status.running, results)
+    @test all(r -> r.status.vector_tracking_active, results)
     @test position_error(rx, results[1]) > 3.0
     @test all(r -> position_error(rx, r) < 3 * ustrip(u"m", r.status.position_std), results)
 end
@@ -161,7 +161,7 @@ end
     rx = SimReceiver(; signals = (GPSL1CA(),), num_sats = (4,))
     results, _, diverged = run_simulation!(rx, 1200)
     @test !diverged
-    @test all(r -> r.status.running, results)
+    @test all(r -> r.status.vector_tracking_active, results)
     @test all(r -> position_error(rx, r) < 3 * ustrip(u"m", r.status.position_std), results)
     @test tail_errors(rx, results[601:end]) < 0.5
 end
@@ -183,7 +183,7 @@ end
     for delay in (15, 25)
         rx, results, diverged = run(delay)
         @test !diverged
-        @test all(r -> r.status.running, results)
+        @test all(r -> r.status.vector_tracking_active, results)
         tail = results[750:end]
         @test tail_errors(rx, tail) < 2 * tail_errors(rx0, tail0) + 0.05
         @test tail_code_errors(tail) < 2 * tail_code_errors(tail0) + 0.002
@@ -195,7 +195,7 @@ end
     # The negative control: the same delay with the corrections sized as if they acted at
     # the epoch loses the loop.
     _, results, diverged = run(25; ignore_delay = true)
-    @test diverged || !results[end].status.running
+    @test diverged || !results[end].status.vector_tracking_active
 end
 
 @testset "The fused rates are continuous across updates and weighted as they are noisy" begin
@@ -252,7 +252,7 @@ end
     rx = SimReceiver(; atmosphere = true)
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
-    @test all(r -> r.status.running, results)
+    @test all(r -> r.status.vector_tracking_active, results)
     tail = results[51:end]
     @test tail_errors(rx, tail) < 0.2
     @test tail_code_errors(tail) < 0.005
@@ -270,7 +270,7 @@ end
     @test rx.vt.layout.extra_bands == [:L2]
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
-    @test all(r -> r.status.running && r.status.num_vector_tracking_members == num_sats, results)
+    @test all(r -> r.status.vector_tracking_active && r.status.num_vector_tracking_members == num_sats, results)
     tail = results[51:end]
     @test tail_errors(rx, tail) < 0.2
     @test tail_code_errors(tail) < 0.005
@@ -291,7 +291,7 @@ end
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
     @test results[1].status.seeded
-    @test all(r -> r.status.running && r.status.num_vector_tracking_members == 4, results)
+    @test all(r -> r.status.vector_tracking_active && r.status.num_vector_tracking_members == 4, results)
     @test all(r -> length(r.measured) == 4, results)
     gst_clock, gpst_clock, isb = only(rx.vt.buffers.clock_constraints)
     @test (gst_clock, gpst_clock) == (2, 1)
@@ -311,5 +311,5 @@ end
     # Without the GGTO nothing ties the clocks, and there is no fix to seed from.
     rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1))
     results, _, _ = run_simulation!(rx, 5)
-    @test all(r -> !r.status.running && !r.status.seeded, results)
+    @test all(r -> !r.status.vector_tracking_active && !r.status.seeded, results)
 end
