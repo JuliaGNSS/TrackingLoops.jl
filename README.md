@@ -108,6 +108,8 @@ loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state
 
 get_navigation_solution(tracking_loop)   # the latest `PVTSolution`
 get_navigation_status(tracking_loop)     # what the latest navigation cycle did
+get_satellite_report(tracking_loop, signal, prn)  # immutable snapshot
+get_decoder(tracking_loop, signal, prn)   # borrowed, read-only decoder until the next integration
 ```
 
 Each satellite runs its scalar loop until the filter takes it over. `process_correlator_bank_output!`
