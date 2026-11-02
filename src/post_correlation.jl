@@ -140,7 +140,7 @@ estimate_cn0(state::PostCorrelationState, coherent_integration_time) =
         return estimator
     end
     # Positional, not keyword: this is the per-integration site.
-    update(
+    update!(
         estimator,
         prompt,
         CN0UpdateContext(
@@ -230,7 +230,7 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
     synced_before = is_bit_or_secondary_code_synced(bit_synchronizer)
     normalized_correlator_bank =
         normalize(correlator_bank_output.correlator_bank, correlator_bank_output.num_integrated_samples, get_code_amplitude(signal))
-    post_corr_filter = update(post_corr_filter, get_prompt(normalized_correlator_bank))
+    post_corr_filter = update!(post_corr_filter, get_prompt(normalized_correlator_bank))
     # Used twice: to combine the antennas and to reduce the shared noise covariance
     # to this satellite's density.
     weights = get_weights(post_corr_filter, NumAnts(normalized_correlator_bank))

@@ -10,7 +10,7 @@ An implementation must provide two methods:
   - [`get_weights`](@ref)`(post_corr_filter, ::NumAnts{M})` — the combining weights `w` this
     filter currently applies. A plain `ComplexF64` at `M == 1`, an
     `SVector{M,ComplexF64}` above.
-  - [`update`](@ref)`(post_corr_filter, prompt)` — return the post-correlation filter to use for the next
+  - [`update!`](@ref)`(post_corr_filter, prompt)` — return the post-correlation filter to use for the next
     integration, which is where an adaptive beamformer recomputes its weights.
 
 The contract is deliberately **linear in the antennas**: the combined correlator output is
@@ -38,10 +38,10 @@ struct DefaultPostCorrFilter <: AbstractPostCorrFilter end
 $(SIGNATURES)
 
 Update the post-correlation filter with the latest prompt and return the
-new post_corr_filter (immutable update). This is the extension point for custom
+updated filter, which replaces `post_corr_filter`. This is the extension point for custom
 [`AbstractPostCorrFilter`](@ref)s — e.g. a beamformer adapting its weights.
 """
-update(post_corr_filter::DefaultPostCorrFilter, prompt) = post_corr_filter
+update!(post_corr_filter::DefaultPostCorrFilter, prompt) = post_corr_filter
 
 """
 $(SIGNATURES)
@@ -60,7 +60,7 @@ A beamformer that averages the antenna elements:
 
 ```julia
 struct MyBeamformer <: AbstractPostCorrFilter end
-TrackingLoops.update(f::MyBeamformer, prompt) = f
+TrackingLoops.update!(f::MyBeamformer, prompt) = f
 TrackingLoops.get_weights(::MyBeamformer, ::NumAnts{1}) = 1.0 + 0.0im
 TrackingLoops.get_weights(::MyBeamformer, ::NumAnts{M}) where {M} =
     SVector{M,ComplexF64}(ntuple(_ -> 1 / M + 0.0im, M))

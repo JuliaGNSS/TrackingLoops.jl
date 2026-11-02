@@ -25,7 +25,7 @@ $(SIGNATURES)
 Ignore the prompt and return the estimator unchanged — [`NoCN0Estimator`](@ref)
 holds no state.
 """
-update(estimator::NoCN0Estimator, prompt) = estimator
+update!(estimator::NoCN0Estimator, prompt) = estimator
 
 """
 $(SIGNATURES)

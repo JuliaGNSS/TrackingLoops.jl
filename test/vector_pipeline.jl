@@ -507,7 +507,7 @@ end
 end
 
 @testset "The navigation processor reads the C/N₀ estimator the host configured: $name" for (name, cn0_estimator) in (
-    ("moments", () -> MomentsCN0Estimator(100)),
+    ("moments", () -> MomentsCN0Estimator(; num_averaged_integrations = 100)),
     ("NWPR", () -> NWPRCN0Estimator()),
 )
     rx = PipelineReceiver(; num_sats = 6, cn0_estimator)
