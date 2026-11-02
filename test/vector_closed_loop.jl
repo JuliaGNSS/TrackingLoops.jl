@@ -220,7 +220,7 @@ end
             sample_index = sample + k * SAMPLES_PER_MS
             for sat in rx.sats
                 code_error = simulate_integration!(sat, rx.tracking_loop, rx.truth, sim_time(rx, sample_index),
-                    4 * SAMPLES_PER_MS, sample_index, NO_LANDING_SAMPLE)
+                    4 * SAMPLES_PER_MS, sample_index, nothing)
                 max_code_error = max(max_code_error, abs(code_error))
             end
         end
