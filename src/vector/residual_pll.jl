@@ -222,26 +222,26 @@ end
 # One integration through the residual PLL: predict the phase to the prompt, wipe it, and run
 # the loop filter on the discriminator. `replica_cycles` is the replica's advance from the
 # previous prompt's centre to this one's. Returns the residual PLL and the wiped prompt.
-function _step_residual_pll(residual_pll::ResidualPLL, ramp::CarrierDopplerRamp, integration::LoopRecord, replica_cycles)
-    fs = _sampling_frequency_hz(integration)
-    num_samples = integration.num_integrated_samples
+function _step_residual_pll(residual_pll::ResidualPLL, ramp::CarrierDopplerRamp, post_correlation_state::PostCorrelationState, replica_cycles)
+    fs = _sampling_frequency_hz(post_correlation_state)
+    num_samples = post_correlation_state.last_num_integrated_samples
     coherent_integration_time = num_samples / fs
-    center = integration.sample_index - num_samples / 2
-    polarity = integration.carrier_phase_polarity
+    center = post_correlation_state.last_sample_index - num_samples / 2
+    polarity = post_correlation_state.last_carrier_phase_polarity
 
     # The scalar loop hands over phase-locked: the first prompt is read as is.
     first_integration = isnan(residual_pll.last_prompt_sample_index) || isnan(replica_cycles)
     predicted_phase = first_integration ? 0.0 : _predicted_phase(residual_pll, ramp, center, fs, replica_cycles)
 
-    wiped = _rotated(integration.filtered_correlator_bank, cis(-2π * predicted_phase))
-    phase_error = pll_disc(integration.signal, wiped; polarity)
+    wiped = _rotated(post_correlation_state.last_filtered_correlator_bank, cis(-2π * predicted_phase))
+    phase_error = pll_disc(post_correlation_state.signal, wiped; polarity)
     polarity_changed = polarity != residual_pll.carrier_phase_polarity
     if polarity_changed && !iszero(polarity) && abs(phase_error) > 0.25
         # A four-quadrant discriminator taking over from a two-quadrant one may find the
         # residual PLL half a cycle off the polarity's frame.
         predicted_phase += 0.5
         wiped = _rotated(wiped, -1)
-        phase_error = pll_disc(integration.signal, wiped; polarity)
+        phase_error = pll_disc(post_correlation_state.signal, wiped; polarity)
     end
 
     bandwidth = effective_carrier_loop_filter_bandwidth(residual_pll.bandwidth, coherent_integration_time * s)
@@ -309,14 +309,14 @@ function _bit_prompt_phase(
     ramp::CarrierDopplerRamp,
     previous_replica_tail,
     history::PromptHistory,
-    integration::LoopRecord,
+    post_correlation_state::PostCorrelationState,
     nco_history,
     is_driver::Bool,
 )
     isnan(residual_pll.last_prompt_sample_index) && return NaN
     is_driver && return residual_pll.predicted_prompt_phase
-    fs = _sampling_frequency_hz(integration)
-    center = integration.sample_index - integration.num_integrated_samples / 2
+    fs = _sampling_frequency_hz(post_correlation_state)
+    center = post_correlation_state.last_sample_index - post_correlation_state.last_num_integrated_samples / 2
     center > residual_pll.last_prompt_sample_index + 0.5 &&
         return _residual_phase_after(residual_pll, ramp, previous_replica_tail, center, fs, nco_history)
     history.count == 0 && return NaN
@@ -328,6 +328,6 @@ function _bit_prompt_phase(
     end
     oldest = history.centers[mod1(history.newest - history.count + 1, n)]
     num_driver_samples = 2 * Float64(ustrip(s, last(previous_replica_tail))) * fs
-    oldest - center > max(num_driver_samples, integration.num_integrated_samples) && return NaN
+    oldest - center > max(num_driver_samples, post_correlation_state.last_num_integrated_samples) && return NaN
     history.phases[nearest] + residual_pll.carrier_frequency_correction * (center - history.centers[nearest]) / fs
 end

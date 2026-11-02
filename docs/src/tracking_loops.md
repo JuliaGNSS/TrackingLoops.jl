@@ -4,25 +4,29 @@ CurrentModule = TrackingLoops
 
 # Tracking loops and loop filters
 
-A tracking loop steps once per coherent integration ([`LoopRecord`](@ref)):
-one coherent integration of one signal ahead of the discriminators, its correlator output
-(one hardware dump or a sum of dumps) with the bookkeeping the loop needs.
+A tracking loop steps once per coherent integration of one signal, ahead of the
+discriminators (one hardware dump or a sum of dumps): the latest integration of the
+signal's [`PostCorrelationState`](@ref), with the bookkeeping the loop needs.
 
-A tracking loop closes the carrier and code loops. Scalar-loop configuration
-(loop-filter type and bandwidth) is a plain value, a subtype of
-[`AbstractTrackingLoop`](@ref). A [`VectorTrackingLoop`](@ref) implements the
-same interface and owns the shared navigation processor. Per-satellite state is
-created with [`init_loop_state`](@ref), and every tracking loop is stepped with
-the same call,
+A tracking loop closes the carrier and code loops. Scalar loop configuration
+(loop-filter types and bandwidths) is a plain value. A [`VectorTrackingLoop`](@ref)
+implements the same interface and owns the shared navigation processor. Scalar loops
+keep per-satellite state with the satellite. The scalar state
+`previous_prompt_sample_index` records the last driver prompt center and its
+`driver_key` selects the integrations that close the loops. The state is created with
+[`init_loop_state`](@ref). Every loop is stepped with the
+same call,
 
 ```julia
-loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, nco_history, application_sample_index)
+loop_state, carrier_doppler, code_doppler =
+    step_loop!(tracking_loop, loop_state, post_correlation_state, nco_history, application_sample_index)
 ```
 
-where `integration` is a [`LoopRecord`](@ref), `nco_history` describes the replica frequency
-that was applied while the integration was produced (a [`ConstantNCOCommand`](@ref) for a software correlator,
+where `post_correlation_state` is the signal's [`PostCorrelationState`](@ref) after its latest
+integration, `nco_history` describes the replica frequencies the
+integration was produced under (a [`ConstantNCOCommand`](@ref) for a software correlator,
 the channel's [`NCOTimeline`](@ref) for a hardware one) and `application_sample_index` is
-the sample the new command takes effect at, or [`NO_LANDING_SAMPLE`](@ref) for
+the sample the new command takes effect at, or `nothing` for
 "at the end of each integration".
 
 A host steps every integration of a satellite, of every signal it tracks. The state
@@ -32,7 +36,7 @@ data component of a pilot + data pair) to the host, returning the state
 unchanged and the command in force.
 
 - [`ScalarTrackingLoop`](@ref): a PLL and a carrier-aided DLL.
-- [`ConventionalAssistedPLLAndDLL`](@ref): the same with an FLL assisting the
+- `ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)`: an FLL assists the
   PLL until phase lock (see [Carrier-loop staging](@ref)), to pull in larger
   initial frequency errors. The default in Tracking.jl.
 - [`DelayCompensatedTrackingLoop`](@ref): stays stable when its correction takes
@@ -50,13 +54,15 @@ integrated coherently once its bit or secondary code has been found.
 
 [`process_correlator_bank_output!`](@ref) advances one signal component's
 [`PostCorrelationState`](@ref) (its post-correlation filter, C/N₀ estimator and bit synchronizer) by
-one integration, so every caller does it the same way.
+one integration and returns the state, with that integration as its latest. Pass it directly
+to `step_loop!`. The soft bits it demodulates join the bit synchronizer's soft-bit vector
+([`get_soft_bits`](@ref)), which the host empties with [`drain_soft_bits!`](@ref).
 
 ```@docs
 PostCorrelationState
 PostCorrelationState(::PostCorrelationState)
 TrackingLoops.SyncEvent
-process_correlator_bank_output!(::PostCorrelationState, signal::AbstractGNSSSignal, ::Integer, ::CorrelatorBankOutput, ::Any, ::Any, ::Bool, ::Real = get_carrier_phase_offset(signal))
+process_correlator_bank_output!(::PostCorrelationState, ::CorrelatorBankOutput, ::Any, ::Any, ::Bool)
 is_dataless_with_secondary_code(::AbstractGNSSSignal)
 reset_post_correlation!(::PostCorrelationState)
 reset_sync!(::PostCorrelationState)
@@ -70,12 +76,12 @@ prompt's sign does not disturb them, over ±1/4 cycle for the PLL and ±1/(4T) f
 the FLL. Where the replica wipes every sign modulation off the prompt (a
 dataless signal synced to its secondary code) the prompt's sign is known, and
 the loops switch to the four-quadrant discriminators, over ±1/2 cycle and
-±1/(2T), worth up to 6 dB of tracking threshold. The integration's
-`carrier_phase_polarity`, the prompt's sign, says so; [`process_correlator_bank_output!`](@ref)
-computes it into the [`PostCorrelationState`](@ref), and a [`LoopRecord`](@ref) built
-from that state carries it to the scalar and vector loops alike. An integration whose
-polarity differs from the previous integration's comes without a previous prompt, so
-the four-quadrant FLL never compares prompts across the switch.
+±1/(2T), worth up to 6 dB of tracking threshold. The latest integration's
+`last_carrier_phase_polarity`, the prompt's sign, says so; [`process_correlator_bank_output!`](@ref)
+computes it into the [`PostCorrelationState`](@ref), which carries it to the scalar and
+vector loops alike. An integration whose polarity differs from the previous
+integration's comes without a previous prompt, so the four-quadrant FLL never compares
+prompts across the switch.
 
 GPS L1C-P and L5Q, Galileo E1C, E5a-Q, E5b-Q and E6-C, and BeiDou B1C-P and
 B2a-Q switch once their secondary code is synced; if the Costas loop slipped
@@ -98,26 +104,22 @@ pulls the carrier phase over by half a cycle.
 
 ```@docs
 ScalarTrackingLoop
-LoopRecord
-LoopRecord(::Any, ::Any, ::CorrelatorBankOutput, ::PostCorrelationState, ::Any)
 DelayCompensatedTrackingLoop
 TrackingLoops.ScalarLoopState
-TrackingLoops.SatNCOReferencedPLLAndDLL
-ConventionalAssistedPLLAndDLL(::Type{CO} = SecondOrderBilinearLF) where {CO<:AbstractLoopFilter}
-get_carrier_loop_stage(::Union{ScalarLoopState, SatNCOReferencedPLLAndDLL})
-TrackingLoops.calc_carrier_phase_correction(::Union{ScalarLoopState, SatNCOReferencedPLLAndDLL}, ::Any, ::Any, ::Any)
+get_carrier_loop_stage(::ScalarLoopState)
+TrackingLoops.calc_carrier_phase_correction(::ScalarLoopState, ::Any, ::Any, ::Any)
 TrackingLoops.loop_state_type(::AbstractTrackingLoop, ::AbstractGNSSSignal)
 init_loop_state(::ScalarTrackingLoop{CA, CO}, ::AbstractGNSSSignal, ::Any, ::Any) where {CA<:AbstractLoopFilter, CO<:AbstractLoopFilter}
 get_navigation_cycle_index(::AbstractTrackingLoop)
 get_navigation_elapsed_time(::AbstractTrackingLoop)
 get_navigation_solution(::AbstractTrackingLoop)
 get_navigation_status(::AbstractTrackingLoop)
-TrackingLoops.get_phase_lock_indicator(::Union{ScalarLoopState, SatNCOReferencedPLLAndDLL})
-TrackingLoops.is_phase_locked(::Union{ScalarLoopState, SatNCOReferencedPLLAndDLL})
-reinit_loop_state(::ScalarTrackingLoop, ::ScalarLoopState, ::Any, ::Any)
+TrackingLoops.get_phase_lock_indicator(::ScalarLoopState)
+TrackingLoops.is_phase_locked(::ScalarLoopState)
+reinit_loop_state(::AbstractTrackingLoop, ::ScalarLoopState, ::Any, ::Any)
 get_satellite_report(::AbstractTrackingLoop, ::AbstractGNSSSignal, ::Integer)
-step_loop!(::ScalarTrackingLoop, ::ScalarLoopState, ::LoopRecord, ::Any, ::Int)
-step_loop!(::DelayCompensatedTrackingLoop, ::SatNCOReferencedPLLAndDLL, ::LoopRecord, ::Any, ::Int)
+step_loop!(::ScalarTrackingLoop, ::ScalarLoopState, ::PostCorrelationState, ::Any, ::Union{Nothing,Integer})
+step_loop!(::DelayCompensatedTrackingLoop, ::ScalarLoopState, ::PostCorrelationState, ::Any, ::Union{Nothing,Integer})
 ```
 
 ## Carrier-loop staging

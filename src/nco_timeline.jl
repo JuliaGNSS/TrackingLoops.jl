@@ -1,8 +1,5 @@
 # Physical NCO Doppler commands and their device-sample timeline.
 
-"No explicit application sample: the integration end is used."
-const NO_LANDING_SAMPLE = typemin(Int64)
-
 """
     NCOCommand(carrier_doppler_hz, code_doppler_hz)
 

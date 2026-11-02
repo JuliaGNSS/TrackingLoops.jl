@@ -5,7 +5,8 @@ The device-independent core of a GNSS tracking loop, shared by the software
 receiver (Tracking.jl) and the allocation-free *loop process* of a hardware
 correlator (HardwareLoopCore.jl):
 
-  - coherent integration types, discriminators and the post-correlation filter;
+  - the correlator banks, the discriminators, the post-correlation filter and the
+    post-correlation processing of a coherent integration;
   - the navigation-bit synchronizer with per-signal bit-edge and secondary-code sync;
   - the C/N₀ estimators and the noise-density window they read;
   - loop-filter bandwidth rules and the tracking loops (conventional
@@ -115,7 +116,6 @@ export NumAnts,
     get_carrier_loop_stage,
     AbstractTrackingLoop,
     ScalarTrackingLoop,
-    ConventionalAssistedPLLAndDLL,
     DelayCompensatedTrackingLoop,
     VectorTrackingLoop,
     NavigationFilterConfig,
@@ -127,7 +127,6 @@ export NumAnts,
     get_vector_tracking_members,
     init_loop_state,
     reinit_loop_state,
-    LoopRecord,
     step_loop!,
     PostCorrelationState,
     process_correlator_bank_output!,
@@ -138,7 +137,6 @@ export NumAnts,
     NCOCommand,
     confirm_command!,
     cancel_command!,
-    NO_LANDING_SAMPLE,
     reset_timeline!,
     schedule_command!,
     advance_timeline!,
@@ -193,10 +191,10 @@ lives with the satellite. Hosts drive every tracking loop through one interface:
   - [`init_loop_state`](@ref)`(tracking_loop, driver_signal, carrier_doppler,
     code_doppler)` builds a satellite's state, which records the driver: the
     signal whose integrations close the loops;
-  - [`step_loop!`](@ref)`(tracking_loop, state, integration, nco_history, application_sample_index)`
-    advances it by one integration and returns `(state, carrier_doppler,
-    code_doppler)`. The host calls it on every integration of every signal of the
-    satellite (each built from that signal's [`PostCorrelationState`](@ref)); the
+  - [`step_loop!`](@ref)`(tracking_loop, state, post_correlation_state, nco_history,
+    application_sample_index)` advances it by one integration, the latest of a signal's
+    [`PostCorrelationState`](@ref), and returns `(state, carrier_doppler, code_doppler)`.
+    The host calls it on every integration of every signal of the satellite; the
     tracking loop picks out the ones it uses and, for the rest, returns the state
     unchanged and the command in force;
   - [`reinit_loop_state`](@ref)`(tracking_loop, state, carrier_doppler,

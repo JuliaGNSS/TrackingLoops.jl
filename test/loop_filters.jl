@@ -6,6 +6,25 @@ using TrackingLoopFilters: filter_loop, ThirdOrderBilinearLF
 using Random: MersenneTwister
 using Statistics: median
 
+@testset "Loop filter initialization and reset use explicit factories" begin
+    for factory in (
+        TrackingLoops.FirstOrderLF,
+        TrackingLoops.SecondOrderBilinearLF,
+        TrackingLoops.SecondOrderBoxcarLF,
+        TrackingLoops.ThirdOrderBilinearLF,
+        TrackingLoops.ThirdOrderAssistedBilinearLF,
+        TrackingLoops.ThirdOrderBoxcarLF,
+    )
+        initial = @inferred TrackingLoops._init_loop_filter(factory)
+        @test initial == factory()
+        @test TrackingLoops._init_loop_filter(typeof(initial)) == initial
+        input = initial isa ThirdOrderAssistedBilinearLF ? (0.1, 1.0Hz) : 0.1
+        bandwidth = initial isa ThirdOrderAssistedBilinearLF ? (10.0Hz, 2.0Hz) : 10.0Hz
+        _, stepped = filter_loop(initial, input, 1.0ms, bandwidth)
+        @test @inferred(TrackingLoops._reset_loop_filter(stepped)) === initial
+    end
+end
+
 @testset "Doppler aiding" begin
     gpsl1 = GPSL1CA()
     carrier_freq, code_freq = @inferred calc_carrier_aided_dopplers(gpsl1, 10Hz, 1Hz, 2Hz, -0.5Hz)
@@ -137,7 +156,7 @@ end
 end
 
 # A GPS L1 C/A integration of `num_code_periods` code periods whose correlators all sit at the prompt `p`.
-staging_integration(p, num_code_periods = 1) = LoopRecord(
+staging_integration(p, num_code_periods = 1) = processed_state(
     GPSL1CA(),
     EarlyPromptLateCorrelatorBank(SVector(p / 2, p, p / 2), 0.5),
     complex(0.0),

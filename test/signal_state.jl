@@ -3,10 +3,10 @@ epl(p) = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5
 # GPS L1 C/A at 4 MHz: one code period is 4000 samples, 20 code periods form a bit.
 function synced_l1ca_state(; kwargs...)
     signal = GPSL1CA()
-    state = PostCorrelationState(signal; kwargs...)
+    state = PostCorrelationState(signal, 7; kwargs...)
     for k = 1:200
         p = 2000.0 * (isodd(div(k - 1, 20)) ? -1.0 : 1.0)
-        state, = process_correlator_bank_output!(state, signal, 7, CorrelatorBankOutput(epl(p), 4000, 4000k), 4e6Hz, 1e-6 / Hz, true)
+        state = process_correlator_bank_output!(state, CorrelatorBankOutput(epl(p), 4000, 4000k), 4e6Hz, 1e-6 / Hz, true)
     end
     @test is_bit_or_secondary_code_synced(state)
     state
@@ -21,7 +21,8 @@ end
     for k = 1:7
         output = CorrelatorBankOutput(epl(2000.0), 12_000, 800_000 + 12_000k)
         was_synced = is_bit_or_secondary_code_synced(state)
-        state, _, _, _, overshoot = @test_logs process_correlator_bank_output!(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true)
+        state = @test_logs process_correlator_bank_output!(state, output, 4e6Hz, 1e-6 / Hz, true)
+        overshoot = state.last_sync_change == SYNC_LOST
         push!(reports, overshoot)
         @test overshoot == (was_synced && !is_bit_or_secondary_code_synced(state))
         overshoot && break
@@ -37,11 +38,11 @@ end
     signal = GalileoE1C()
     code = get_secondary_code(signal).code
     n = 16_368
-    state = PostCorrelationState(signal)
+    state = PostCorrelationState(signal, 11)
     for k = 1:100
         p = 2000.0 * code[mod1(k + 7, 25)]
-        state, _, _, blocks = process_correlator_bank_output!(state, signal, 11, CorrelatorBankOutput(epl(p), n, n * k), 4.092e6Hz, 1e-6 / Hz, true)
-        @test blocks == 1
+        state = process_correlator_bank_output!(state, CorrelatorBankOutput(epl(p), n, n * k), 4.092e6Hz, 1e-6 / Hz, true)
+        @test state.last_num_code_periods == 1
     end
     @test is_bit_or_secondary_code_synced(state)
 end
@@ -50,9 +51,10 @@ end
     for cn0_estimator in (NWPRCN0Estimator(; num_coherent_integrations = 20), MomentsCN0Estimator(; num_coherent_integrations = 20), NoiseReferencedCN0Estimator(; num_coherent_integrations = 20))
         state = synced_l1ca_state(; cn0_estimator)
         fresh = reset_post_correlation!(state)
+        @test fresh.prn == 7
         @test !is_bit_or_secondary_code_synced(fresh)
         @test isempty(get_soft_bits(fresh))
-        @test fresh.last_filtered_prompt == 0
+        @test get_prompt(fresh.last_filtered_correlator_bank) == 0
         # The fresh estimator is indistinguishable from a newly built one.
         new = cn0_estimator
         for name in fieldnames(typeof(new))
@@ -71,7 +73,12 @@ end
 
 struct HistoryCN0Estimator <: AbstractCN0Estimator end
 
+@testset "Re-arming a channel for another satellite" begin
+    state = synced_l1ca_state()
+    @test reset_post_correlation!(state; prn = 9).prn == 9
+end
+
 @testset "Re-arming refuses a C/N₀ estimator it cannot reset" begin
-    state = PostCorrelationState(GPSL1CA(); cn0_estimator = HistoryCN0Estimator())
+    state = PostCorrelationState(GPSL1CA(), 7; cn0_estimator = HistoryCN0Estimator())
     @test_throws ArgumentError reset_post_correlation!(state)
 end

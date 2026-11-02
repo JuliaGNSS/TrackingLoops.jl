@@ -6,7 +6,7 @@ nav_processor_correlator_bank(p = 1.0 + 0.0im) = EarlyPromptLateCorrelatorBank(S
 
 # An integration of `n` samples ending at `sample_index` on the 4 MHz grid.
 nav_processor_integration(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0 + 0.0im, signal = GPSL1CA()) =
-    LoopRecord(signal, nav_processor_correlator_bank(p), complex(0.0), n, sample_index, sample_index, 1, 4e6Hz;
+    processed_state(signal, nav_processor_correlator_bank(p), complex(0.0), n, sample_index, sample_index, 1, 4e6Hz;
         prn, code_phase)
 
 @testset "The navigation epochs are the multiples of the update interval" begin
@@ -34,7 +34,7 @@ end
     group = nav_processor.groups[1]
     nco_history = ConstantNCOCommand(100.0, 0.1)
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
-    state, = step_loop!(tracking_loop, state, nav_processor_integration(7, 4000), nco_history, NO_LANDING_SAMPLE)
+    state, = step_loop!(tracking_loop, state, nav_processor_integration(7, 4000), nco_history, nothing)
     @test (state.slot_index, state.slot_generation) == (1, 1)
     slot = group.slots[1]
     @test slot.occupied && slot.prn == 7 && slot.running_decoder.prn == 7
@@ -44,23 +44,23 @@ end
     @test nav_processor.cycle_epoch_index == 0 && nav_processor.pending_epoch_index == 1
     @test slot.driver_last_end_sample_index == 4000
     # Later integrations keep the slot.
-    state, = step_loop!(tracking_loop, state, nav_processor_integration(7, 8000), nco_history, NO_LANDING_SAMPLE)
+    state, = step_loop!(tracking_loop, state, nav_processor_integration(7, 8000), nco_history, nothing)
     @test nav_processor.next_slot_generation == 1
     # Another satellite takes the next slot.
     other = init_loop_state(tracking_loop, GPSL1CA(), 50.0Hz, 0.05Hz)
-    other, = step_loop!(tracking_loop, other, nav_processor_integration(9, 8000), nco_history, NO_LANDING_SAMPLE)
+    other, = step_loop!(tracking_loop, other, nav_processor_integration(9, 8000), nco_history, nothing)
     @test other.slot_index == 2 && group.slots[2].prn == 9
     # A fresh state of a PRN already held — the satellite re-acquired — takes its slot
     # over and restarts its bit clock; the old state, of an older slot_generation,
     # registers anew.
     reacquired = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
-    reacquired, = step_loop!(tracking_loop, reacquired, nav_processor_integration(7, 12_000), nco_history, NO_LANDING_SAMPLE)
+    reacquired, = step_loop!(tracking_loop, reacquired, nav_processor_integration(7, 12_000), nco_history, nothing)
     @test reacquired.slot_index == 1 && reacquired.slot_generation == 3
     @test slot.slot_generation == 3
     @test isnothing(slot.running_decoder.num_bits_since_time_reference)
     # A third satellite finds no free slot and grows the group.
     third = init_loop_state(tracking_loop, GPSL1CA(), 10.0Hz, 0.0Hz)
-    third, = step_loop!(tracking_loop, third, nav_processor_integration(11, 12_000), nco_history, NO_LANDING_SAMPLE)
+    third, = step_loop!(tracking_loop, third, nav_processor_integration(11, 12_000), nco_history, nothing)
     @test third.slot_index == 3 && length(group.slots) == 3
 end
 
@@ -78,12 +78,12 @@ b1c_subframe1(prn, soh) = Float32[
     group = tracking_loop.navigation_processor.groups[1]
     nco_history = ConstantNCOCommand(100.0, 0.1)
     state = init_loop_state(tracking_loop, BeiDouB1C_P(), 100.0Hz, 0.1Hz)
-    state, = step_loop!(tracking_loop, state, nav_processor_integration(19, 4000; signal = BeiDouB1C_P()), nco_history, NO_LANDING_SAMPLE)
+    state, = step_loop!(tracking_loop, state, nav_processor_integration(19, 4000; signal = BeiDouB1C_P()), nco_history, nothing)
     slot = group.slots[1]
     @test slot.running_decoder.prn == 19
     slot.occupied = false
     other = init_loop_state(tracking_loop, BeiDouB1C_P(), 100.0Hz, 0.1Hz)
-    other, = step_loop!(tracking_loop, other, nav_processor_integration(30, 8000; signal = BeiDouB1C_P()), nco_history, NO_LANDING_SAMPLE)
+    other, = step_loop!(tracking_loop, other, nav_processor_integration(30, 8000; signal = BeiDouB1C_P()), nco_history, nothing)
     @test other.slot_index == 1 && slot.running_decoder.prn == 30
     # Subframe 1 at both ends of a frame is all the sync reads.
     frame = [b1c_subframe1(30, 10); ones(Float32, 1728); b1c_subframe1(30, 11)]
@@ -113,9 +113,9 @@ function take_snapshot!(nav_processor, group, slot, decoder, epoch_sample_index;
     slot.driver_last_end_sample_index = end_sample
     slot.driver_last_end_time = end_sample / fs
     nco_history = ConstantNCOCommand(0.0, code_doppler)
-    integration = nav_processor_integration(3, epoch_sample_index + 4000; signal = group.driver_signal)
-    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, integration, nco_history)
-    TL._snapshot_decoding!(nav_processor, group, slot, integration, nco_history)
+    post_correlation_state = nav_processor_integration(3, epoch_sample_index + 4000; signal = group.driver_signal)
+    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, nco_history)
+    TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, nco_history)
     TL._complete_snapshot!(nav_processor, group, slot)
     slot.decoder.num_bits_since_time_reference, slot.code_phase
 end
@@ -164,9 +164,9 @@ end
     slot.driver_epoch_index = slot.decoding_epoch_index = slot.snapshot_epoch_index = typemin(Int)
     slot.driver_last_end_sample_index = slot.decoding_last_end_sample_index = 300_000
     slot.driver_last_end_time = slot.decoding_last_end_time = 300_000 / fs
-    integration = nav_processor_integration(3, 304_000)
-    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, integration, ConstantNCOCommand(0.0, 0.0))
-    TL._snapshot_decoding!(nav_processor, group, slot, integration, ConstantNCOCommand(0.0, 0.0))
+    post_correlation_state = nav_processor_integration(3, 304_000)
+    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, ConstantNCOCommand(0.0, 0.0))
+    TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, ConstantNCOCommand(0.0, 0.0))
     TL._complete_snapshot!(nav_processor, group, slot)
     @test nav_processor.num_snapshots == 0
     @test slot.driver_epoch_index == slot.decoding_epoch_index == typemin(Int)
@@ -258,16 +258,16 @@ end
     states = [init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz) for _ = 1:3]
     prns = (3, 5, 7)
     for k = 1:99, i = 1:3
-        states[i], = step_loop!(tracking_loop, states[i], nav_processor_integration(prns[i], 4000k), nco_history, NO_LANDING_SAMPLE)
+        states[i], = step_loop!(tracking_loop, states[i], nav_processor_integration(prns[i], 4000k), nco_history, nothing)
     end
     # The first epoch is at sample 0, the start of the first integrations; the next at 0.1 s.
     @test nav_processor.cycle_index == 1 && nav_processor.cycle_epoch_index == 0
     for i = 1:2
-        states[i], = step_loop!(tracking_loop, states[i], nav_processor_integration(prns[i], 400_000 + 4000), nco_history, NO_LANDING_SAMPLE)
+        states[i], = step_loop!(tracking_loop, states[i], nav_processor_integration(prns[i], 400_000 + 4000), nco_history, nothing)
         @test nav_processor.cycle_index == 1
         @test nav_processor.num_snapshots == i
     end
-    states[3], = step_loop!(tracking_loop, states[3], nav_processor_integration(prns[3], 400_000 + 4000), nco_history, NO_LANDING_SAMPLE)
+    states[3], = step_loop!(tracking_loop, states[3], nav_processor_integration(prns[3], 400_000 + 4000), nco_history, nothing)
     @test nav_processor.cycle_index == 2 && nav_processor.cycle_epoch_index == 1 && nav_processor.pending_epoch_index == 2
     # The last one took its cycle up on the spot; the others do on their next integration.
     @test states[3].cycle_index == 2
@@ -275,11 +275,11 @@ end
     # A satellite that falls behind holds the cycle up until the others are past the
     # epoch after: then the overdue cycle runs without it.
     for k = 102:300, i = 1:2
-        states[i], = step_loop!(tracking_loop, states[i], nav_processor_integration(prns[i], 4000k), nco_history, NO_LANDING_SAMPLE)
+        states[i], = step_loop!(tracking_loop, states[i], nav_processor_integration(prns[i], 4000k), nco_history, nothing)
     end
     @test nav_processor.cycle_index == 2
     @test nav_processor.num_snapshots == 2
-    states[1], = step_loop!(tracking_loop, states[1], nav_processor_integration(prns[1], 4000 * 301), nco_history, NO_LANDING_SAMPLE)
+    states[1], = step_loop!(tracking_loop, states[1], nav_processor_integration(prns[1], 4000 * 301), nco_history, nothing)
     @test nav_processor.cycle_index == 3 && nav_processor.cycle_epoch_index == 2
     @test !nav_processor.groups[1].slots[3].in_cycle
 end
@@ -290,22 +290,22 @@ end
     nco_history = ConstantNCOCommand(100.0, 0.1)
     a = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     for k = 1:99
-        a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000k), nco_history, NO_LANDING_SAMPLE)
+        a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000k), nco_history, nothing)
     end
     @test nav_processor.pending_epoch_index == 1
     # Stepped first in a chunk that spans the epoch, a newcomer starts past it…
     b = init_loop_state(tracking_loop, GPSL1CA(), 50.0Hz, 0.05Hz)
-    b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 102), nco_history, NO_LANDING_SAMPLE)
+    b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 102), nco_history, nothing)
     @test nav_processor.pending_epoch_index == 1
     @test nav_processor.groups[1].slots[2].first_epoch_index == 2
     # …and the satellite that was due at it still runs it.
-    a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000 * 101), nco_history, NO_LANDING_SAMPLE)
+    a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000 * 101), nco_history, nothing)
     @test nav_processor.cycle_epoch_index == 1 && nav_processor.pending_epoch_index == 2
     # After a gap in every satellite's integrations the epochs move on to where they resume.
-    a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000 * 1000), nco_history, NO_LANDING_SAMPLE)
-    b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 1000), nco_history, NO_LANDING_SAMPLE)
-    a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000 * 1001), nco_history, NO_LANDING_SAMPLE)
-    b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 1001), nco_history, NO_LANDING_SAMPLE)
+    a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000 * 1000), nco_history, nothing)
+    b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 1000), nco_history, nothing)
+    a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000 * 1001), nco_history, nothing)
+    b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 1001), nco_history, nothing)
     @test nav_processor.cycle_epoch_index == 10
 end
 
@@ -322,7 +322,7 @@ end
     function step_chunk!(k, sats = 1:3)
         for i in sats, j = k-3:k
             id = nav_processor.cycle_index
-            states[i], = step_loop!(tracking_loop, states[i], nav_processor_integration(prns[i], 4000j), nco_history, NO_LANDING_SAMPLE)
+            states[i], = step_loop!(tracking_loop, states[i], nav_processor_integration(prns[i], 4000j), nco_history, nothing)
             nav_processor.cycle_index == id ||
                 push!(cycles, (; epoch = nav_processor.cycle_epoch_index, time = j / 1000, in_cycle = [s.in_cycle for s in slots[1:3]]))
         end
@@ -362,8 +362,8 @@ end
     a = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     b = init_loop_state(tracking_loop, GPSL1CA(), 50.0Hz, 0.05Hz)
     for k = 1:10
-        a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000k), nco_history, NO_LANDING_SAMPLE)
-        b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000k), nco_history, NO_LANDING_SAMPLE)
+        a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000k), nco_history, nothing)
+        b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000k), nco_history, nothing)
     end
     # `b` is a member of the vector loop, in the slot and in the state its host keeps.
     slot = group.slots[b.slot_index]
@@ -372,7 +372,7 @@ end
     # Its integrations stop for longer than two cycles: a cycle drops it and releases it, but
     # only in the slot — the host never hands the satellite the release.
     for k = 11:400
-        a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000k), nco_history, NO_LANDING_SAMPLE)
+        a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000k), nco_history, nothing)
     end
     @test !slot.occupied
     @test !slot.loop_state.vector_controlled
@@ -380,13 +380,13 @@ end
     # Its integrations resume: it registers anew, and takes up the release it missed, its
     # scalar loop re-seeded from the replica's Dopplers.
     resumed = ConstantNCOCommand(120.0, 0.12)
-    b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 401), resumed, NO_LANDING_SAMPLE)
+    b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 401), resumed, nothing)
     @test slot.occupied
     @test !b.vector_controlled
     @test !slot.loop_state.vector_controlled
     @test b.code_frequency_correction == 0.0Hz
-    @test b.inner.reference_carrier_doppler == 120.0Hz
-    @test b.inner.reference_code_doppler == 0.12Hz
+    @test b.scalar_state.reference_carrier_doppler == 120.0Hz
+    @test b.scalar_state.reference_code_doppler == 0.12Hz
 end
 
 @testset "Vector tracking ranges on drivers and decodes their data components" begin
@@ -414,9 +414,9 @@ end
     state = init_loop_state(tracking_loop, GPSL1C_P(), 100.0Hz, 0.1Hz)
     # The data component's integration comes first: it registers the satellite and leaves
     # its loop alone, returning the command in force.
-    stepped, carrier, code = step_loop!(tracking_loop, state, nav_processor_integration(7, 4000; signal = GPSL1CA()), nco_history, NO_LANDING_SAMPLE)
+    stepped, carrier, code = step_loop!(tracking_loop, state, nav_processor_integration(7, 4000; signal = GPSL1CA()), nco_history, nothing)
     @test (stepped.slot_index, stepped.slot_generation) == (1, 1)
-    @test stepped.inner === state.inner
+    @test stepped.scalar_state === state.scalar_state
     @test (carrier, code) == (100.0Hz, 0.1Hz)
     @test nav_processor.groups[1].slots[1].decoding_last_end_sample_index == 4000
     # Under an application sample the command in force is the one there.
@@ -426,18 +426,18 @@ end
     _, carrier, code = step_loop!(tracking_loop, stepped, nav_processor_integration(7, 5000; signal = GPSL1CA()), timeline, Int64(7000))
     @test (carrier, code) == (120.0Hz, 0.12Hz)
     # The pilot's integration steps the loop on the same slot.
-    driven, = step_loop!(tracking_loop, stepped, nav_processor_integration(7, 40_000; n = 40_000, signal = GPSL1C_P()), nco_history, NO_LANDING_SAMPLE)
+    driven, = step_loop!(tracking_loop, stepped, nav_processor_integration(7, 40_000; n = 40_000, signal = GPSL1C_P()), nco_history, nothing)
     @test driven.slot_index == 1 && nav_processor.next_slot_generation == 1
     @test nav_processor.groups[1].slots[1].driver_last_end_sample_index == 40_000
     # A passenger the tracking_loop does not decode is ignored; a driver it does not range
     # on is an error, as is a satellite stepped with another satellite's driver.
     plain = VectorTrackingLoop(GPSL1CA())
     l1 = init_loop_state(plain, GPSL1CA(), 100.0Hz, 0.1Hz)
-    ignored, carrier, = step_loop!(plain, l1, nav_processor_integration(7, 4000; signal = GalileoE1B()), nco_history, NO_LANDING_SAMPLE)
+    ignored, carrier, = step_loop!(plain, l1, nav_processor_integration(7, 4000; signal = GalileoE1B()), nco_history, nothing)
     @test ignored === l1 && carrier == 100.0Hz
     galileo = init_loop_state(plain, GalileoE1B(), 100.0Hz, 0.1Hz)
-    @test_throws "not built for GalileoE1B" step_loop!(plain, galileo, nav_processor_integration(7, 4000; signal = GalileoE1B()), nco_history, NO_LANDING_SAMPLE)
-    @test_throws "ranges on as a driver" step_loop!(plain, galileo, nav_processor_integration(7, 4000), nco_history, NO_LANDING_SAMPLE)
+    @test_throws "not built for GalileoE1B" step_loop!(plain, galileo, nav_processor_integration(7, 4000; signal = GalileoE1B()), nco_history, nothing)
+    @test_throws "ranges on as a driver" step_loop!(plain, galileo, nav_processor_integration(7, 4000), nco_history, nothing)
 end
 
 @testset "Another pair's data component is a passenger, not a decoding integration" begin
@@ -448,14 +448,14 @@ end
     nav_processor = tracking_loop.navigation_processor
     nco_history = ConstantNCOCommand(100.0, 0.1)
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
-    state, = step_loop!(tracking_loop, state, nav_processor_integration(7, 4000), nco_history, NO_LANDING_SAMPLE)
+    state, = step_loop!(tracking_loop, state, nav_processor_integration(7, 4000), nco_history, nothing)
     for k = 1:300
         passenger = nav_processor_integration(7, 40_000k; n = 40_000, signal = GPSL1C_D())
-        stepped, carrier, code = step_loop!(tracking_loop, state, passenger, nco_history, NO_LANDING_SAMPLE)
+        stepped, carrier, code = step_loop!(tracking_loop, state, passenger, nco_history, nothing)
         @test stepped === state
         @test (carrier, code) == (100.0Hz, 0.1Hz)
         for j = 1:10
-            state, = step_loop!(tracking_loop, state, nav_processor_integration(7, 40_000(k - 1) + 4000j), nco_history, NO_LANDING_SAMPLE)
+            state, = step_loop!(tracking_loop, state, nav_processor_integration(7, 40_000(k - 1) + 4000j), nco_history, nothing)
         end
     end
     @test nav_processor.next_slot_generation == 1
@@ -477,12 +477,12 @@ TL.estimate_cn0(estimator::FixedCN0Estimator, coherent_integration_time) = estim
     for (configured, read) in ((42.0, 42.0), (95.0, 80.0))
         tracking_loop = VectorTrackingLoop(GPSL1CA())
         nav_processor = tracking_loop.navigation_processor
-        loop = PostCorrelationState(GPSL1CA(); cn0_estimator = FixedCN0Estimator(configured))
+        loop = PostCorrelationState(GPSL1CA(), 7; cn0_estimator = FixedCN0Estimator(configured))
         state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
         for k = 1:101
             output = CorrelatorBankOutput(nav_processor_correlator_bank(4000.0), 4000, 4000k, 0.0)
-            integration = LoopRecord(GPSL1CA(), nav_processor_correlator_bank(), output, loop, 4e6Hz; prn = 7)
-            state, = step_loop!(tracking_loop, state, integration, ConstantNCOCommand(100.0, 0.1), NO_LANDING_SAMPLE)
+            loop = process_correlator_bank_output!(loop, output, 4e6Hz, 1e-6 / Hz, true)
+            state, = step_loop!(tracking_loop, state, loop, ConstantNCOCommand(100.0, 0.1), nothing)
         end
         slot = nav_processor.groups[1].slots[1]
         @test slot.snapshot_epoch_index == 1

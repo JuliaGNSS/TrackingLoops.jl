@@ -53,27 +53,28 @@ integration and every loop:
 
 ```julia
 using TrackingLoops, GNSSSignals, Unitful
+using TrackingLoopFilters: ThirdOrderAssistedBilinearLF
 
 signal = GPSL1CA()
 fs = 4e6u"Hz"
-tracking_loop = ConventionalAssistedPLLAndDLL()
+tracking_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)
 loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
-signal_state = PostCorrelationState(signal)      # bit synchronizer, C/N₀ estimator, post-correlation filter
+post_correlation_state = PostCorrelationState(signal, prn)  # bit synchronizer, C/N₀ estimator, post-correlation filter
 
 # For every coherent integration `correlator_bank_output::CorrelatorBankOutput` the correlator bank produced:
-signal_state, prompt, filtered, blocks, overshoot =
-    process_correlator_bank_output!(signal_state, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready)
-overshoot && @warn "integration crossed a navigation-bit boundary; bit sync restarted"
-integration = LoopRecord(signal, filtered, output, signal_state, fs; prn)
-loop_state, carrier_doppler, code_doppler =
-    step_loop!(tracking_loop, loop_state, integration, ConstantNCOCommand(carrier_hz, code_hz), NO_LANDING_SAMPLE)
+post_correlation_state =
+    process_correlator_bank_output!(post_correlation_state, correlator_bank_output, fs, noise_density, noise_density_ready)
+post_correlation_state.last_sync_change == TrackingLoops.SYNC_LOST &&
+    @warn "integration crossed a navigation-bit boundary; bit sync restarted"
+loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, post_correlation_state,
+    ConstantNCOCommand(carrier_hz, code_hz), nothing)
 # program the next replica with carrier_doppler and code_doppler
 ```
 
 Read the results off the state as they become available:
-[`estimate_cn0`](@ref) on `loop.cn0_estimator`,
-[`is_bit_or_secondary_code_synced`](@ref) and [`get_soft_bits`](@ref) on
-`loop.bit_synchronizer`.
+[`estimate_cn0`](@ref), [`is_bit_or_secondary_code_synced`](@ref) and
+[`get_soft_bits`](@ref) on `post_correlation_state`, and empty the soft bits once read with
+[`drain_soft_bits!`](@ref).
 
 Everything is a plain value or a small mutable state that is preallocated once,
 so a loop can be stepped for hours without allocating — provided the consumer

@@ -36,7 +36,7 @@ Fields:
     bit (`0` = starts a fresh bit). `-1` when the prompt cannot be summed
     coherently against the grid: before bit / secondary-code sync, and, for a
     secondary-coded signal, for an integration correlated without the overlay wipe-off
-    a sync in the same batch just established (see `_process_correlator_bank_output!`).
+    a sync in the same batch just established (see `process_correlator_bank_output!`).
     Such an integration's code periods still count towards the grid.
   - `bit_synchronizer` — the signal's `BitSynchronizer` as of *before* this integration:
     the soft bits decoded so far, the open coherent bit accumulator, the lock
@@ -82,7 +82,7 @@ end
 # Build the context from the post-correlation state. `bit_synchronizer` must be the
 # one from *before* this integration was processed, so `bit_code_period_index` is this
 # integration's offset. `bit_sync_usable = false` forces the "no bit grid" marker (see
-# `drop_prompt` in `_process_correlator_bank_output!`).
+# `drop_prompt` in `process_correlator_bank_output!`).
 #
 # The keyword form is for callers building a context by hand; post-correlation processing
 # calls the positional core below, because a keyword call allocates per call on

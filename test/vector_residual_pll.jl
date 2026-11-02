@@ -31,7 +31,7 @@ function run_noisy!(rx, cycles; noise, fill! = fill_slot!, vector = true,
                 k % n == 0 || continue
                 before = sat.phase_error
                 simulate_integration!(sat, rx.tracking_loop, rx.truth, sim_time(rx, sample_index),
-                    n * SAMPLES_PER_MS, sample_index, NO_LANDING_SAMPLE; rx.polarity)
+                    n * SAMPLES_PER_MS, sample_index, nothing; rx.polarity)
                 on_integration(cycle, i, sat, before, n * 1e-3)
             end
         end
@@ -72,7 +72,7 @@ residual_pll_error(sat, before) =
             lock = TL.ResidualPLLLock(state.residual_pll.lock.lock_detector, false, 0)))
         @test get_phase_lock_indicator(unlocked) > 0.9 && !is_phase_locked(unlocked)
         # Out of the vector loop, the inner loop's.
-        @test is_phase_locked(TL._release_from_vector_loop(state)) == is_phase_locked(state.inner)
+        @test is_phase_locked(TL._release_from_vector_loop(state)) == is_phase_locked(state.scalar_state)
     end
     @test rx.sats[1].state.residual_pll.bandwidth == 10.0Hz
     narrow = SimReceiver(; tracking_loop_kw = (; residual_pll_loop_filter_bandwidth = 7.0Hz))
@@ -89,7 +89,7 @@ end
     fs = ustrip(Hz, SIM_FS)
     for channels in rx.channels, sat in channels
         @test sat.state.vector_controlled
-        nco_history = sim_nco_history(sat, NO_LANDING_SAMPLE)
+        nco_history = sim_nco_history(sat, nothing)
         @test calc_carrier_phase_correction(sat.state, nco_history, sample_index, SIM_FS) ≈ sat.phase_error atol = 1e-4
         dt = 2e-3
         f_true = true_doppler(sat, rx.truth, sim_time(rx, sample_index) + dt / 2)
@@ -98,7 +98,7 @@ end
         # Out of the vector loop the replica is the loop's estimate.
         @test calc_carrier_phase_correction(TL._release_from_vector_loop(sat.state), nco_history, sample_index, SIM_FS) == 0.0
     end
-    scalar = init_loop_state(ConventionalAssistedPLLAndDLL(), GPSL1CA(), 100.0Hz, 0.0Hz)
+    scalar = init_loop_state(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA(), 100.0Hz, 0.0Hz)
     @test calc_carrier_phase_correction(scalar, ConstantNCOCommand(100.0, 0.0), 0, SIM_FS) == 0.0
 end
 
@@ -212,10 +212,10 @@ function step_residual(residual, ends; ramp = TL.CarrierDopplerRamp(100.0, 0.0, 
     for (k, sample_index) in enumerate(ends)
         center = (sample_index - 500) / 1e6
         prompt = amplitude(center) * cis(2π * residual(center)) + noise_std * complex(randn(rng), randn(rng))
-        integration = prompt_integration(GPSL1CA(), prompt, 1000, 1e6Hz; sample_index, previous_prompt,
+        post_correlation_state = prompt_integration(GPSL1CA(), prompt, 1000, 1e6Hz; sample_index, previous_prompt,
             cn0_dbhz = iszero(amplitude(center)) ? -Inf : 45.0)
-        state, = step_satellite(tracking_loop, state, integration, nco_history, NO_LANDING_SAMPLE)
-        previous_prompt = get_prompt(integration.filtered_correlator_bank)
+        state, = step_satellite(tracking_loop, state, post_correlation_state, nco_history, nothing)
+        previous_prompt = get_prompt(post_correlation_state.last_filtered_correlator_bank)
         on_integration(state, k)
     end
     state
@@ -323,11 +323,11 @@ end
     TL._mark_release!(slot, VT_INELIGIBLE)
     rx.vt.cycle_index += 1
     sat.state = TL._take_up_cycle(rx.vt, rx.group, slot, sat.state, take_up_integration(sat, sample),
-        sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(sample))
+        sim_nco_history(sat, nothing), Int64(sample))
     @test !sat.state.vector_controlled
-    @test sat.state.inner.reference_carrier_doppler ≈ estimate * Hz
+    @test sat.state.scalar_state.reference_carrier_doppler ≈ estimate * Hz
     @test abs(estimate - true_doppler(sat, rx.truth, sim_time(rx, sample))) < 0.5
-    @test sat.state.inner.carrier_loop_filter.x2 ≈ rate * Hz^2
+    @test sat.state.scalar_state.carrier_loop_filter.x2 ≈ rate * Hz^2
     @test get_carrier_loop_stage(sat.state) == FLL_ASSISTED_PLL
     @test !TL._has_carrier_ramp(sat.state)
 end
@@ -337,15 +337,22 @@ end
 function decoding_integration(signal, prompt, sample_index; host_bits = Float32[], bit_polarity = 1,
         sync_change = TL.SYNC_UNCHANGED, command_issue_sample_index = sample_index)
     correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5prompt, prompt, 0.5prompt), 0.5)
-    LoopRecord(signal, correlator_bank, complex(0.0), 4000, sample_index, command_issue_sample_index, 1, 4e6Hz, 5, NaN,
-        true, sync_change, 0, view(host_bits, 1:length(host_bits)), NoCN0Estimator(), Int8(0),
-        Int8(bit_polarity))
+    B = TL.prompt_sign_history_type(signal)
+    synced = TL.BitSynchronizer{B}(zero(B), 0, true, 0, Int8(bit_polarity), complex(0.0), 0, host_bits,
+        TL.SyncHypothesisAccumulators())
+    PostCorrelationState(
+        processed_state(signal, correlator_bank, complex(0.0), 4000, sample_index, command_issue_sample_index, 1, 4e6Hz;
+            prn = 5);
+        bit_synchronizer = synced,
+        last_sync_change = sync_change,
+        last_num_new_soft_bits = length(host_bits),
+    )
 end
 
 # A residual PLL of a satellite in the vector loop that wiped its latest prompt, at the
-# sample index `center`, with `predicted_prompt_phase`, its loop filter putting out `carrier_frequency_correction`.
-residual_pll_at(center, predicted_prompt_phase; carrier_frequency_correction = 0.0) = TL.ResidualPLL(
-    10.0Hz, carrier_frequency_correction, TL._residual_pll_loop_filter(carrier_frequency_correction, 0.0), center, Int8(0), predicted_prompt_phase,
+# sample index `center`, with `prompt_phase`, its loop filter putting out `carrier_frequency_correction`.
+residual_pll_at(center, prompt_phase; carrier_frequency_correction = 0.0) = TL.ResidualPLL(
+    10.0Hz, carrier_frequency_correction, TL._residual_pll_loop_filter(carrier_frequency_correction, 0.0), center, Int8(0), prompt_phase,
     TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
 
 @testset "The navigation processor decodes the prompts it rotated onto the incoming carrier" begin
@@ -412,17 +419,17 @@ end
     ramp = TL.CarrierDopplerRamp(1000.0, 0.0, 0.0)
     nco_history = ConstantNCOCommand(1000.0, 0.0)
     half = (1000.0 * 0.0005, 0.0005s)
-    integration(start, stop) = decoding_integration(signal, cis(0.0), stop; command_issue_sample_index = stop) |>
-        r -> LoopRecord(r.signal, r.filtered_correlator_bank, r.previous_prompt, stop - start, stop, stop, 1,
-            r.sampling_frequency, r.prn, r.code_phase, true, r.sync_change, 0, r.new_soft_bits,
-            r.cn0_estimator, Int8(0), Int8(1))
+    spanning(start, stop) = PostCorrelationState(
+        decoding_integration(signal, cis(0.0), stop; command_issue_sample_index = stop);
+        last_num_integrated_samples = stop - start,
+    )
     phase(start, stop; history = history) =
-        TL._bit_prompt_phase(residual_pll, ramp, half, history, integration(start, stop), nco_history, false)
+        TL._bit_prompt_phase(residual_pll, ramp, half, history, spanning(start, stop), nco_history, false)
     @test phase(16000, 20000) ≈ 0.31
     @test phase(0, 4000) ≈ 0.2
     @test phase(0, 8000) ≈ 0.2 + 2.0 * 0.0005
     # The driver's own integration is the prediction it was wiped with.
-    @test TL._bit_prompt_phase(residual_pll, ramp, half, history, integration(16000, 20000), nco_history, true) == 0.31
+    @test TL._bit_prompt_phase(residual_pll, ramp, half, history, spanning(16000, 20000), nco_history, true) == 0.31
     # Past the latest prompt: the residual Doppler carries it on, the replica on the ramp.
     @test phase(20000, 24000) ≈ 0.31 + 2.0 * 0.001
     # Older than the history reaches by more than a driver integration: no phase, rather than

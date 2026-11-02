@@ -968,7 +968,7 @@ Advance a just-synced `bit_synchronizer`'s `secondary_code_phase` by `num_code_p
 
 The detector reports the phase for the code period after the syncing integration, but
 Tracking.jl's code-phase snap reads it only after the whole chunk, so every later
-integration of the chunk (not `secondary_code_wiped`, see `_process_correlator_bank_output!`) must move it along, or
+integration of the chunk (not `secondary_code_wiped`, see `process_correlator_bank_output!`) must move it along, or
 the replica applies the wrong overlay chip (cf. JuliaGNSS/Tracking.jl#219).
 """
 @inline function _advance_secondary_phase(
