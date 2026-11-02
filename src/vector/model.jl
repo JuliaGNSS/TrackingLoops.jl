@@ -419,7 +419,7 @@ end
 # `f_replica(epoch) − mean(f_replica)` is the predicted Doppler's rise over half the
 # cycle, the incoming carrier's to first order: the sum is the incoming Doppler at the
 # epoch. The ramp is the filter's prediction alone, so no loop's jitter enters the
-# replica's word; with the PLL on the NCO, one record's jitter
+# replica's command; with the PLL on the NCO, one record's jitter
 # (`f_NCO,end − mean(f_NCO)`) would make the integrated rate error walk. A command
 # landing inside the cycle (an NCO delay) leaves a share of the filter's own correction
 # in the measurement: on the simulator the residuals stay at `√R` and the integrated

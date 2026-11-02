@@ -41,7 +41,7 @@ end
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
     correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
     output = CorrelatorOutput(correlator, 4000, 4000, 0.0)
-    words = FixedNCOWord(100.0, 0.1)
+    words = ConstantNCOCommand(100.0, 0.1)
     @test_throws ArgumentError step_loop(estimator, state,
         LoopRecord(GPSL1CA(), correlator, complex(0.0), output, 1, 4e6Hz), words, NO_LANDING_SAMPLE)
     galileo = init_estimator_state(estimator, GalileoE1B(), 100.0Hz, 0.1Hz)
@@ -168,7 +168,7 @@ end
         @test sat.state.code_disc_sum == (0, 0.0)
         # Taken up once: a second take-up changes nothing.
         @test TL._take_up_cycle(vt, rx.group, slot, sat.state, take_up_record(sat, 0),
-            sim_words(sat, NO_LANDING_SAMPLE), Int64(0)) === sat.state
+            sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(0)) === sat.state
     end
 end
 
@@ -180,13 +180,13 @@ end
     sat = rx.sats[1]
     j = slot.member_index
     member = vt.buffers.members[j]
-    words = sim_words(sat, NO_LANDING_SAMPLE)
+    words = sim_nco_history(sat, NO_LANDING_SAMPLE)
     record = take_up_record(sat, sample)
     at_epoch = TL._commands_at_landing(vt, rx.group, slot, record, words, Int64(sample))
     @test at_epoch[3] == 0.0
     @test at_epoch[1] ≈ ustrip(Hz, sat.state.code_freq_update) atol = 1e-9
     @test at_epoch[2].doppler ≈ sat.state.ramp.doppler atol = 1e-9
-    # 20 ms on, under the same words: the range has moved on with the replica, so the
+    # 20 ms on, under the same commands: the range has moved on with the replica, so the
     # code correction barely changes, the ramp carries on, and the lead is the 20 ms.
     later = TL._commands_at_landing(vt, rx.group, slot, record, words, Int64(sample + 80_000))
     @test later[3] ≈ 0.02
@@ -260,7 +260,7 @@ end
     @test !dropped.estimator_state.in_vector_loop
     @test !sat.state.in_vector_loop
     @test sat.state.code_freq_update == 0.0Hz
-    # Re-seeded at its residual PLL's estimate, a hair off the replica's word, which
+    # Re-seeded at its residual PLL's estimate, a hair off the replica's command, which
     # the filter's ramp keeps on the carrier.
     @test sat.state.inner.init_carrier_doppler ≈ sat.carrier_doppler * Hz atol = 0.01Hz
     @test sat.state.inner.init_code_doppler == sat.code_doppler * Hz
@@ -300,9 +300,9 @@ end
 end
 
 @testset "A released satellite takes over from the replica at landing" begin
-    # Under an NCO delay the words committed until the landing are the vector loop's,
+    # Under an NCO delay the commands committed until the landing are the vector loop's,
     # so the scalar loop re-seeds from the replica there, not from the epoch's: the
-    # code from its word, the carrier from the residual PLL's estimate on the ramp there.
+    # code from its command, the carrier from the residual PLL's estimate on the ramp there.
     rx = SimReceiver(; inner = NCOReferencedPLLAndDLL(), records_per_cycle = 20, delay_records = 15)
     _, sample, diverged = run_simulation!(rx, 20)
     @test !diverged
@@ -312,7 +312,8 @@ end
         (fill_slot!(v, sat, epoch, landing, nav); v === dropped && drop_slot!(v))
     _, sample, _ = run_simulation!(rx, 1; fill! = drop!, start_sample = sample)
     @test dropped.release_reason == VT_INELIGIBLE
-    landing_carrier, landing_code = nco_word_at(sat.timeline, sample + 15 * SAMPLES_PER_MS)
+    nco_command = get_nco_command(sat.timeline, sample + 15 * SAMPLES_PER_MS)
+    landing_carrier, landing_code = nco_command.carrier_doppler, nco_command.code_doppler
     @test sat.state.inner.init_carrier_doppler ≈ landing_carrier * Hz atol = 0.01Hz
     @test sat.state.inner.init_code_doppler == landing_code * Hz
     @test sat.state.inner.init_carrier_doppler != dropped.carrier_doppler

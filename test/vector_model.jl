@@ -774,7 +774,7 @@ end
     T = 0.1
     # Without an NCO delay the advance is the correction's `c·T/2`, bit for bit.
     for c_new in (0.37, -2.5, 1e-3), c_old in (0.0, 4.0, -1.1)
-        state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, FixedNCOWord(20.0, 0.0), 0), c_new * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, FixedNCOWord(20.0, 0.0), 0)
+        state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c_new * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
         @test state.code_freq_update_history == (c_new * Hz, c_old * Hz, 0.0Hz)
         @test TL.code_phase_advance(state, T) === c_new * T / 2
         state = SatVectorPLLAndDLL(state; code_disc_sum = (4, 0.2))
@@ -784,7 +784,7 @@ end
     # the newest landed: on `c₁` while the newest lands inside it or after the epoch, and
     # on `c₂` while `c₁` itself lands only after mid-cycle (`L > 1.5T`).
     c₂, c₁, c₀ = 0.5, 1.0, 2.0
-    older = TL._set_vector_commands(TL._set_vector_commands(base, c₂ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, FixedNCOWord(20.0, 0.0), 0), c₁ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, FixedNCOWord(20.0, 0.0), 0)
+    older = TL._set_vector_commands(TL._set_vector_commands(base, c₂ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c₁ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
     for (L, expected) in (
         (0.03, c₀ * 0.05),
         (0.075, c₀ * 0.025 + c₁ * 0.025),
@@ -794,7 +794,7 @@ end
         (0.2, c₂ * 0.05),
         (0.25, c₂ * 0.05),
     )
-        state = TL._set_vector_commands(older, c₀ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), L * s, FixedNCOWord(20.0, 0.0), 0)
+        state = TL._set_vector_commands(older, c₀ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), L * s, ConstantNCOCommand(20.0, 0.0), 0)
         @test TL.code_phase_advance(state, T) ≈ expected
     end
 end

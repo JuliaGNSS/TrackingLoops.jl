@@ -11,7 +11,7 @@ state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words
 ```
 
 where `record` is a [`LoopRecord`](@ref), `words` is the replica frequency the
-record was produced under (a [`FixedNCOWord`](@ref) for a software correlator,
+record was produced under (a [`ConstantNCOCommand`](@ref) for a software correlator,
 the channel's [`NCOTimeline`](@ref) for a hardware one) and `landing_sample` is
 the sample the new command takes effect at, or [`NO_LANDING_SAMPLE`](@ref) for
 "at the end of each record".
