@@ -82,7 +82,7 @@ get_weights(::DefaultPostCorrFilter, ::NumAnts{M}) where {M} =
 @inline _filter_correlator_output(correlator_output::StaticVector, w::StaticVector) = w'correlator_output
 
 # The same, for every correlator output of a correlator bank at once. A separate small function on
-# purpose: inline in the large `_process_correlator_bank_output!`, the weight-capturing closure is
+# purpose: inline in the large `process_correlator_bank_output!`, the weight-capturing closure is
 # heap-allocated per integration, breaking the per-integration allocation checks
 # (`test/allocations.jl`).
 @inline _filter_correlator_bank(correlator_bank, weights) = set_correlator_outputs(
