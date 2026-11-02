@@ -173,12 +173,13 @@ struct NumCorrelators{K} end
 NumCorrelators(K) = NumCorrelators{K}()
 
 """
-    update(x, prompt)
+    update!(x, prompt)
 
 Advance a per-integration state (C/N₀ estimator, post-correlation filter) by one prompt
-and return the new state.
+and return the updated state. A state may write its buffers in place, so the
+returned state replaces the argument: discarding it loses the update.
 """
-function update end
+function update! end
 
 """
 $(SIGNATURES)

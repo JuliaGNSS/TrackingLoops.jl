@@ -6,7 +6,7 @@ Each `Tracking.TrackedSignal` holds one estimator instance, stored in a type
 parameter — pass any subtype instance as the `cn0_estimator` keyword of
 `Tracking.TrackedSignal` / `Tracking.TrackedSat` to replace the default
 [`NoiseReferencedCN0Estimator`](@ref); see [`default_cn0_estimator`](@ref) for which to
-pick when. Custom estimators subtype this and implement `TrackingLoops.update` and
+pick when. Custom estimators subtype this and implement `TrackingLoops.update!` and
 [`estimate_cn0`](@ref), plus [`requires_noise_density`](@ref) if they read a
 measured noise floor.
 """
@@ -15,7 +15,7 @@ abstract type AbstractCN0Estimator end
 """
 $(SIGNATURES)
 
-Per-integration side information handed to `update` alongside the prompt:
+Per-integration side information handed to `update!` alongside the prompt:
 what the tracking loop knows about the integration that an estimator cannot recover
 from the prompt stream alone — chiefly the **navigation-bit grid**, which lets an
 estimator sum prompts coherently without straddling a bit flip
@@ -154,17 +154,17 @@ requires_noise_density(estimator::AbstractCN0Estimator) =
 $(SIGNATURES)
 
 Add one completed integration's `prompt` to `estimator` and return the updated
-estimator (immutable update). This three-argument form is the one the tracking
+estimator, which replaces `estimator`. This three-argument form is the one the tracking
 loop calls and the **extension point** for custom
 [`AbstractCN0Estimator`](@ref)s that profit from the navigation-bit information
 in `context` (see [`CN0UpdateContext`](@ref)).
 
 The default implementation drops `context` and calls the two-argument
-`TrackingLoops.update(estimator, prompt)`, so an estimator that only needs the
+`TrackingLoops.update!(estimator, prompt)`, so an estimator that only needs the
 prompt stream — like [`MomentsCN0Estimator`](@ref) — implements just that one.
 """
-update(estimator::AbstractCN0Estimator, prompt, ::CN0UpdateContext) =
-    update(estimator, prompt)
+update!(estimator::AbstractCN0Estimator, prompt, ::CN0UpdateContext) =
+    update!(estimator, prompt)
 
 """
 $(SIGNATURES)
