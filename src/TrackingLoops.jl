@@ -211,16 +211,16 @@ export NumAnts,
     reset_signal_state,
     estimator_state_type,
     NCOTimeline,
-    scheduled_words,
-    FixedNCOWord,
+    ConstantNCOCommand,
+    NCOCommand,
+    confirm_command!,
+    cancel_command!,
     NO_LANDING_SAMPLE,
     reset_timeline!,
-    schedule_word!,
-    promote_words!,
-    reschedule_word!,
-    word_changes_within,
-    nco_word_at,
-    mean_nco_word
+    schedule_command!,
+    advance_timeline!,
+    get_nco_command,
+    calc_mean_nco_command
 
 const Maybe{T} = Union{T,Nothing}
 

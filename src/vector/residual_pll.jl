@@ -1,6 +1,6 @@
 # The carrier in the vector loop (see the manual's "The carrier in the vector loop"):
 # the filter's carrier ramp and each member's residual PLL. The residual PLL propagates
-# over the NCO's exact words (`mean_nco_word`), so what the NCO is commanded never
+# over the NCO's exact words (`calc_mean_nco_command`), so what the NCO is commanded never
 # changes its estimates while the residual stays inside the discriminator's range. Its
 # phase rotates the decoding signal's prompts for the engine's soft bits
 # (`_advance_decoding!`).
@@ -214,7 +214,7 @@ end
     previous_cycles, previous_duration = previous_replica_half
     isnan(previous_cycles) && return NaN
     previous_end = residual_pll.prompt_center + Float64(ustrip(s, previous_duration))
-    word, _ = mean_nco_word(words, previous_end * fs, time * fs)
+    word = calc_mean_nco_command(words, previous_end * fs, time * fs).carrier_doppler
     _predicted_phase(residual_pll, ramp, time, previous_cycles + word * (time - previous_end))
 end
 
