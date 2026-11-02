@@ -334,9 +334,9 @@ end
     @test pooled ≈ sum(t * t' for t in array_taps)
     @test pooled ≈ pooled'
 
-    # The rotation position is carried in the newest observation.
+    # The PRN rotates over the supported PRNs, carried in the newest observation.
     signal = GPSL1CA()
-    num_prns = size(GNSSSignals.get_codes(signal), 2)
+    num_prns = last(get_supported_prns(signal))
     estimator = CorrelatorNoiseEstimator()
     @test TrackingLoops._next_noise_prn(estimator, signal) == 1
     append_noise_observation!(
@@ -461,4 +461,15 @@ end
     @test !TrackingLoops._sufficient_looks(zero(SMatrix{4,4,ComplexF64,16}), 3)
     @test TrackingLoops._sufficient_looks(zero(SMatrix{4,4,ComplexF64,16}), 4)
     @test TrackingLoops._sufficient_looks(1.0 / 1.0Hz, 1)
+end
+
+@testset "Noise PRN rotation stays inside a partial code family" begin
+    signal = BeiDouB2bI()
+    estimator = CorrelatorNoiseEstimator()
+    @test TrackingLoops._next_noise_prn(estimator, signal) == 6
+    for (prn, expected) in ((6, 7), (58, 6))
+        append_noise_observation!(estimator,
+            noise_observation_from_samples(4000.0, 4000, 4e6Hz; prn))
+        @test TrackingLoops._next_noise_prn(estimator, signal) == expected
+    end
 end
