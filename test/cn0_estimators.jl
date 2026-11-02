@@ -77,6 +77,8 @@ end
     @test Base.length(default.buffered_cn0) == 40
     @test requires_noise_density(default)
     @test requires_noise_density(default_cn0_estimator(GPSL1C_P(), 100))
+    @test default_cn0_estimator(GPSL1CA()).num_averaged_integrations ==
+          NoiseReferencedCN0Estimator().num_averaged_integrations == 100
     @test requires_noise_density(NoiseReferencedCN0Estimator)
 end
 

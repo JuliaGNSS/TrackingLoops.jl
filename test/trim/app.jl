@@ -9,6 +9,7 @@ using TrackingLoops, GNSSSignals, StaticArrays, Unitful, LinearAlgebra
 using TrackingLoops: default_cn0_estimator
 using Unitful: Hz, s, ms
 
+include(joinpath(@__DIR__, "..", "post_correlation_helpers.jl"))
 include(joinpath(@__DIR__, "..", "vector_simulation.jl"))
 
 # Every channel's integrations that end within the millisecond ending at `sample`.

@@ -35,7 +35,7 @@ Fields:
     loops hold them); `0` = starts a fresh bit. `-1` when the prompt cannot be summed
     coherently against the grid: before bit / secondary-code sync, and, for a
     secondary-coded signal, for an integration correlated without the overlay wipe-off
-    a sync in the same batch just established (see `_process_correlator_bank_output!`).
+    a sync in the same batch just established (see `process_correlator_bank_output!`).
     Such an integration's code periods still count towards the grid.
   - `bit_synchronizer` — the signal's `BitSynchronizer` as of *before* this integration:
     the soft bits decoded so far, the open coherent bit accumulator, the lock
@@ -78,7 +78,7 @@ end
 # Build the context from the post-correlation state. `bit_synchronizer` must be the
 # one from *before* this integration was processed, so `num_code_periods_into_bit` is this
 # integration's offset. `bit_sync_usable = false` forces the "no bit grid" marker (see
-# `drop_prompt` in `_process_correlator_bank_output!`).
+# `drop_prompt` in `process_correlator_bank_output!`).
 #
 # The keyword form is for callers building a context by hand; post-correlation processing
 # calls the positional core below, because a keyword call allocates per call on
@@ -162,11 +162,12 @@ update!(estimator::AbstractCN0Estimator, prompt, ::CN0UpdateContext) =
     update!(estimator, prompt)
 
 """
-$(SIGNATURES)
+    default_cn0_estimator(signal)
+    default_cn0_estimator(signal, num_averaged_integrations)
 
 The default CN0 estimator for `signal`: a [`NoiseReferencedCN0Estimator`](@ref)
-averaging over `num_averaged_integrations` integrations, against that signal's
-own measured noise density.
+averaging over `num_averaged_integrations` integrations (the estimator's default
+of 100 if not given), against that signal's own measured noise density.
 
 It reads a density, so `Tracking.TrackState` provisions the signal a
 [`CorrelatorNoiseDensityEstimator`](@ref) automatically (see
@@ -207,6 +208,7 @@ function default_cn0_estimator(
 )
     NoiseReferencedCN0Estimator(; num_averaged_integrations = num_averaged_integrations)
 end
+default_cn0_estimator(signal::AbstractGNSSSignal) = NoiseReferencedCN0Estimator()
 
 """Clear estimator history in existing storage and return the reset estimator. Required for custom C/N₀ estimators with history."""
 reset_cn0_estimator!(e::AbstractCN0Estimator) = throw(
