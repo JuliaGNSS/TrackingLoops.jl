@@ -119,6 +119,7 @@ end
 is_bit_or_secondary_code_synced(state::PostCorrelationState) =
     is_bit_or_secondary_code_synced(state.bit_synchronizer)
 get_soft_bits(state::PostCorrelationState) = get_soft_bits(state.bit_synchronizer)
+drain_soft_bits!(state::PostCorrelationState) = (drain_soft_bits!(state.bit_synchronizer); state)
 estimate_cn0(state::PostCorrelationState, coherent_integration_time) =
     estimate_cn0(state.cn0_estimator, coherent_integration_time)
 
@@ -188,7 +189,7 @@ is_dataless_with_secondary_code(signal::AbstractGNSSSignal) =
     bit_synchronizer::BitSynchronizer,
     secondary_code_wiped::Bool,
 ) =
-    is_dataless_with_secondary_code(signal) && secondary_code_wiped ? bit_synchronizer.polarity :
+    is_dataless_with_secondary_code(signal) && secondary_code_wiped ? bit_synchronizer.bit_polarity :
     Int8(0)
 
 """
@@ -259,7 +260,7 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
         noise_density_ready,
         correlator_bank_output.num_integrated_samples / sampling_frequency,
     )
-    bit_synchronizer = buffer(
+    bit_synchronizer = update_bit_sync!(
         signal,
         prn,
         bit_synchronizer,

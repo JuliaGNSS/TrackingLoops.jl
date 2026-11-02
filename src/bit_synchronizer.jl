@@ -116,14 +116,10 @@ SyncHypothesisAccumulators() = SyncHypothesisAccumulators(ComplexF64[], Float64[
 
 # Size the accumulator vectors to `code_periods_per_bit` phases and zero them.
 function _seed_phase_accumulators!(accumulators::SyncHypothesisAccumulators, code_periods_per_bit::Int)
-    for vector in (
-        accumulators.open_bin_sum,
-        accumulators.mean_bin_energy,
-        accumulators.bin_energy_sum_of_squared_deviations,
-        accumulators.last_bin_polarity,
-    )
-        resize!(vector, code_periods_per_bit)
-    end
+    resize!(accumulators.open_bin_sum, code_periods_per_bit)
+    resize!(accumulators.mean_bin_energy, code_periods_per_bit)
+    resize!(accumulators.bin_energy_sum_of_squared_deviations, code_periods_per_bit)
+    resize!(accumulators.last_bin_polarity, code_periods_per_bit)
     _reset_phase_accumulators!(accumulators)
 end
 
@@ -555,9 +551,9 @@ the hard path.
 struct BitSynchronizer{B<:Unsigned}
     prompt_sign_history::B
     num_prompt_signs::Int
-    found::Bool
+    bit_or_secondary_code_synced::Bool
     secondary_code_phase::Int      # 0 until found; secondary-chip offset post-sync
-    polarity::Int8            # +1 or -1 once found; 0 before sync
+    bit_polarity::Int8            # +1 or -1 once found; 0 before sync
     bit_prompt_sum::ComplexF64
     num_code_periods_into_bit::Int
     soft_bits::Vector{Float32}
@@ -625,7 +621,7 @@ Whether the navigation-bit boundary or secondary-code phase has been found; from
 then on the signal may integrate over several code periods and bits are collected
 for [`get_soft_bits`](@ref).
 """
-@inline is_bit_or_secondary_code_synced(bit_synchronizer::BitSynchronizer) = bit_synchronizer.found
+@inline is_bit_or_secondary_code_synced(bit_synchronizer::BitSynchronizer) = bit_synchronizer.bit_or_secondary_code_synced
 
 """
     get_soft_bits(bit_synchronizer::BitSynchronizer)
@@ -745,7 +741,7 @@ $(SIGNATURES)
 
 Advance the bit synchronizer by one integration of `num_code_periods` code periods.
 
-Post-sync, one soft bit is emitted each time the period count reaches a bit. A
+Post-sync, one soft bit is emitted each time the period count reaches a bit. An
 integration carrying the count *past* the boundary (only from a non-bit-aligned external
 producer) drops sync instead (JuliaGNSS/Tracking.jl#238): its energy belongs to two
 bits, and the equality test would never be met again. The detector then re-runs
@@ -753,7 +749,7 @@ from clean accumulators and the caller falls back to single-period integrations;
 decoded `soft_bits` are kept. Silent; [`process_correlator_bank_output!`](@ref) reports it as
 `overshoot`.
 """
-function buffer(
+function update_bit_sync!(
     signal::AbstractGNSSSignal,
     prn::Integer,
     bit_synchronizer::BitSynchronizer{B},
@@ -762,7 +758,7 @@ function buffer(
 ) where {B<:Unsigned}
     num_code_periods_per_bit = get_code_periods_per_bit(signal)
 
-    if (bit_synchronizer.found == false)
+    if (bit_synchronizer.bit_or_secondary_code_synced == false)
         return _update_sync_search(
             signal,
             prn,
@@ -786,14 +782,14 @@ function buffer(
         return _resync_bit_synchronizer(bit_synchronizer)
     elseif num_code_periods_into_bit == num_code_periods_per_bit
         bit_acc =
-            bit_synchronizer.polarity < 0 ? -real(bit_prompt_sum) : real(bit_prompt_sum)
+            bit_synchronizer.bit_polarity < 0 ? -real(bit_prompt_sum) : real(bit_prompt_sum)
         push!(bit_synchronizer.soft_bits, Float32(bit_acc))
         return BitSynchronizer{B}(
             bit_synchronizer.prompt_sign_history,
             bit_synchronizer.num_prompt_signs,
             true,
             bit_synchronizer.secondary_code_phase,
-            bit_synchronizer.polarity,
+            bit_synchronizer.bit_polarity,
             zero(bit_prompt_sum),
             0,
             bit_synchronizer.soft_bits,
@@ -805,7 +801,7 @@ function buffer(
             bit_synchronizer.num_prompt_signs,
             true,
             bit_synchronizer.secondary_code_phase,
-            bit_synchronizer.polarity,
+            bit_synchronizer.bit_polarity,
             bit_prompt_sum,
             num_code_periods_into_bit,
             bit_synchronizer.soft_bits,
@@ -985,9 +981,9 @@ the replica applies the wrong overlay chip (cf. JuliaGNSS/Tracking.jl#219).
     BitSynchronizer{B}(
         bit_synchronizer.prompt_sign_history,
         bit_synchronizer.num_prompt_signs,
-        bit_synchronizer.found,
+        bit_synchronizer.bit_or_secondary_code_synced,
         mod(bit_synchronizer.secondary_code_phase + Int(num_code_periods), secondary_code_length),
-        bit_synchronizer.polarity,
+        bit_synchronizer.bit_polarity,
         bit_synchronizer.bit_prompt_sum,
         bit_synchronizer.num_code_periods_into_bit,
         bit_synchronizer.soft_bits,
@@ -996,23 +992,12 @@ the replica applies the wrong overlay chip (cf. JuliaGNSS/Tracking.jl#219).
 end
 
 """
-    reset(bit_synchronizer::BitSynchronizer) -> BitSynchronizer
+    drain_soft_bits!(state::BitSynchronizer) -> BitSynchronizer
 
-A bit synchronizer with no sync and no soft bits, for a signal that is re-acquired: its
-storage is kept (the soft-bit vector is emptied in place), everything it detected
-is cleared.
+Empty the buffered soft bits in place, preserving synchronization and accumulation
+history. Previously returned integration bit views must be consumed before this call.
 """
-function reset(bit_synchronizer::BitSynchronizer{B}) where {B<:Unsigned}
-    empty!(bit_synchronizer.soft_bits)
-    BitSynchronizer{B}(
-        bit_synchronizer.prompt_sign_history,
-        bit_synchronizer.num_prompt_signs,
-        bit_synchronizer.found,
-        bit_synchronizer.secondary_code_phase,
-        bit_synchronizer.polarity,
-        bit_synchronizer.bit_prompt_sum,
-        bit_synchronizer.num_code_periods_into_bit,
-        bit_synchronizer.soft_bits,
-        bit_synchronizer.phase_accumulators,
-    )
+function drain_soft_bits!(state::BitSynchronizer)
+    empty!(state.soft_bits)
+    state
 end

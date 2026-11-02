@@ -352,7 +352,7 @@ function _bb_feed_prompts(prompts; signal = GPSL1CA(), prn = 1, stop_at_lock = f
     bit_synchronizer = BitSynchronizer{prompt_sign_history_type(signal)}()
     found_at = 0
     for (i, prompt) in enumerate(prompts)
-        bit_synchronizer = TrackingLoops.buffer(signal, prn, bit_synchronizer, 1, prompt)
+        bit_synchronizer = TrackingLoops.update_bit_sync!(signal, prn, bit_synchronizer, 1, prompt)
         if found_at == 0 && is_bit_or_secondary_code_synced(bit_synchronizer)
             found_at = i
             stop_at_lock && break
@@ -364,10 +364,10 @@ end
 @testset "The L1 C/A bit-edge lock through update_bit_sync! is not one code period early" begin
     found_at, bit_synchronizer = _bb_feed_prompts([fill(-1.0 + 0.0im, 40); fill(1.0 + 0.0im, 20)])
     @test found_at == 60
-    @test bit_synchronizer.polarity == +1
+    @test bit_synchronizer.bit_polarity == +1
     found_at, bit_synchronizer = _bb_feed_prompts([fill(1.0 + 0.0im, 40); fill(-1.0 + 0.0im, 20)])
     @test found_at == 60
-    @test bit_synchronizer.polarity == -1
+    @test bit_synchronizer.bit_polarity == -1
     found_at, _ = _bb_feed_prompts(fill(1.0 + 0.0im, 80))
     @test found_at == 0
 end
@@ -378,7 +378,7 @@ end
         @test bit_synchronizer.num_prompt_signs == 0
         @test is_bit_or_secondary_code_synced(bit_synchronizer) == false
         @test bit_synchronizer.secondary_code_phase == 0
-        @test bit_synchronizer.polarity == 0
+        @test bit_synchronizer.bit_polarity == 0
         @test isempty(get_soft_bits(bit_synchronizer))
         @test get_soft_bits(bit_synchronizer) isa Vector{Float32}
         @test length(bit_synchronizer) == 0
@@ -389,7 +389,7 @@ end
 end
 
 @testset "Buffering more than one code period before sync is an error" begin
-    @test_throws "The number of code periods must be equal to 1" TrackingLoops.buffer(
+    @test_throws "The number of code periods must be equal to 1" TrackingLoops.update_bit_sync!(
         GPSL1CA(),
         1,
         BitSynchronizer(),
@@ -399,7 +399,7 @@ end
 end
 
 @testset "A pre-sync code period shifts its prompt sign into the search window" begin
-    next_bit_synchronizer = @inferred TrackingLoops.buffer(GPSL1CA(), 1, BitSynchronizer(), 1, 2 + 0im)
+    next_bit_synchronizer = @inferred TrackingLoops.update_bit_sync!(GPSL1CA(), 1, BitSynchronizer(), 1, 2 + 0im)
     @test length(next_bit_synchronizer) == 0
     @test next_bit_synchronizer.prompt_sign_history == 1
     @test next_bit_synchronizer.num_prompt_signs == 1
@@ -414,8 +414,8 @@ end
     )
         found_at, bit_synchronizer = _bb_feed_prompts(prompts)
         @test found_at == 60
-        @test bit_synchronizer.found == true
-        @test bit_synchronizer.polarity == polarity
+        @test bit_synchronizer.bit_or_secondary_code_synced == true
+        @test bit_synchronizer.bit_polarity == polarity
         @test length(bit_synchronizer) == 3
         @test bit_synchronizer.num_prompt_signs == 60
         soft = get_soft_bits(bit_synchronizer)
@@ -436,7 +436,7 @@ end
     signal = GPSL1CA()
 
     bit_synchronizer = BitSynchronizer(prompt_sign_history, num_prompt_signs, true, complex(-1, 0), 1)
-    next_bit_synchronizer = @inferred TrackingLoops.buffer(signal, 1, bit_synchronizer, 1, -2 + 0im)
+    next_bit_synchronizer = @inferred TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 1, -2 + 0im)
     @test isempty(get_soft_bits(next_bit_synchronizer))
     @test next_bit_synchronizer.bit_prompt_sum == -3 + 0im
     @test next_bit_synchronizer.num_code_periods_into_bit == 2
@@ -451,7 +451,7 @@ end
         19,
         Float32[-1.0, 1.0],
     )
-    next_bit_synchronizer = @inferred TrackingLoops.buffer(signal, 1, bit_synchronizer, 1, -2 + 0im)
+    next_bit_synchronizer = @inferred TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 1, -2 + 0im)
     @test get_soft_bits(next_bit_synchronizer) == Float32[-1.0, 1.0, -12.0]
     @test next_bit_synchronizer.bit_prompt_sum == 0 + 0im
     @test next_bit_synchronizer.num_code_periods_into_bit == 0
@@ -465,15 +465,15 @@ end
         10,
         Float32[1.0, 1.0],
     )
-    next_bit_synchronizer = @inferred TrackingLoops.buffer(signal, 1, bit_synchronizer, 10, 10 + 1im)
+    next_bit_synchronizer = @inferred TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 10, 10 + 1im)
     @test get_soft_bits(next_bit_synchronizer) == Float32[1.0, 1.0, 20.0]
     @test next_bit_synchronizer.num_code_periods_into_bit == 0
 end
 
 @testset "A negative-polarity lock flips the post-sync soft bits" begin
     _, bit_synchronizer = _bb_feed_prompts([fill(1.0 + 0.0im, 40); fill(-1.0 + 0.0im, 20)])
-    @test bit_synchronizer.polarity == -1
-    bit_synchronizer = TrackingLoops.buffer(GPSL1CA(), 1, bit_synchronizer, 20, -20.0 + 0.0im)
+    @test bit_synchronizer.bit_polarity == -1
+    bit_synchronizer = TrackingLoops.update_bit_sync!(GPSL1CA(), 1, bit_synchronizer, 20, -20.0 + 0.0im)
     @test last(get_soft_bits(bit_synchronizer)) == 20.0f0
 end
 
@@ -481,11 +481,11 @@ end
     signal = GPSL1CA()
     soft_bits = Float32[1.0, -1.0]
     bit_synchronizer = BitSynchronizer(UInt64(0xff), 40, true, complex(18.0, 0.0), 18, soft_bits)
-    resynced = TrackingLoops.buffer(signal, 1, bit_synchronizer, 3, 3.0 + 0.0im)
+    resynced = TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 3, 3.0 + 0.0im)
     @test !is_bit_or_secondary_code_synced(resynced)
     @test resynced.prompt_sign_history == 0
     @test resynced.num_prompt_signs == 0
-    @test resynced.polarity == 0
+    @test resynced.bit_polarity == 0
     @test resynced.bit_prompt_sum == 0
     @test resynced.num_code_periods_into_bit == 0
     # The bits completed before the bad integration are kept, in the same vector.
@@ -496,7 +496,7 @@ end
     # so the next pre-sync code period starts a clean search.
     _, synced = _bb_feed_prompts([fill(1.0 + 0.0im, 40); fill(-1.0 + 0.0im, 20)])
     @test any(!iszero, synced.phase_accumulators.mean_bin_energy)
-    resynced = TrackingLoops.buffer(signal, 1, synced, 21, 1.0 + 0.0im)
+    resynced = TrackingLoops.update_bit_sync!(signal, 1, synced, 21, 1.0 + 0.0im)
     @test !is_bit_or_secondary_code_synced(resynced)
     @test length(resynced.phase_accumulators.mean_bin_energy) == BB_L1CA_CODE_PERIODS_PER_BIT
     @test all(iszero, resynced.phase_accumulators.mean_bin_energy)
@@ -507,7 +507,7 @@ end
     # GPS L1 C/A, synced at 17 of the bit's 20 code periods: a 3-period integration ends it.
     signal = GPSL1CA()
     bit_synchronizer = BitSynchronizer(UInt64(0), 0, true, complex(10.0, 0.0), 17)
-    committed = TrackingLoops.buffer(signal, 1, bit_synchronizer, 3, 3.0 + 0.0im)
+    committed = TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 3, 3.0 + 0.0im)
     @test is_bit_or_secondary_code_synced(committed)
     @test get_soft_bits(committed) == Float32[13.0]
     @test committed.bit_prompt_sum == 0
@@ -530,10 +530,10 @@ end
         soft_bits,
         SyncHypothesisAccumulators(),
     )
-    resynced = TrackingLoops.buffer(signal, 1, bit_synchronizer, 3, 3.0 + 0.0im)
+    resynced = TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 3, 3.0 + 0.0im)
     @test !is_bit_or_secondary_code_synced(resynced)
     @test resynced.secondary_code_phase == 0
-    @test resynced.polarity == 0
+    @test resynced.bit_polarity == 0
     @test resynced.num_code_periods_into_bit == 0
     @test get_soft_bits(resynced) === soft_bits
     @test soft_bits == Float32[5.0]
@@ -551,13 +551,13 @@ end
     while i <= length(prompts)
         if num_bits_at_overshoot < 0 && is_bit_or_secondary_code_synced(bit_synchronizer) &&
            bit_synchronizer.num_code_periods_into_bit == 18
-            bit_synchronizer = TrackingLoops.buffer(signal, 1, bit_synchronizer, 3, sum(prompts[i:i+2]))
+            bit_synchronizer = TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 3, sum(prompts[i:i+2]))
             @test !is_bit_or_secondary_code_synced(bit_synchronizer)
             num_bits_at_overshoot = length(get_soft_bits(bit_synchronizer))
             i += 3
             continue
         end
-        bit_synchronizer = TrackingLoops.buffer(signal, 1, bit_synchronizer, 1, prompts[i])
+        bit_synchronizer = TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 1, prompts[i])
         if num_bits_at_overshoot >= 0
             relocked |= is_bit_or_secondary_code_synced(bit_synchronizer)
             @test bit_synchronizer.num_code_periods_into_bit < BB_L1CA_CODE_PERIODS_PER_BIT
@@ -575,7 +575,7 @@ end
     signal = GPSL1CA()
     bit_synchronizer = BitSynchronizer(UInt128(0), 0, true, complex(0.0, 0.0), 0)
     for _ = 1:(200*20)
-        bit_synchronizer = TrackingLoops.buffer(signal, 1, bit_synchronizer, 1, 1.0 + 0.0im)
+        bit_synchronizer = TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 1, 1.0 + 0.0im)
     end
     @test length(bit_synchronizer) == 200
     @test all(>(0), get_soft_bits(bit_synchronizer))
@@ -585,11 +585,11 @@ end
     _, bit_synchronizer = _bb_feed_prompts([fill(1.0 + 0.0im, 40); fill(-1.0 + 0.0im, 20)])
     soft_bits = get_soft_bits(bit_synchronizer)
     @test !isempty(soft_bits)
-    reset_bit_synchronizer = TrackingLoops.reset(bit_synchronizer)
+    reset_bit_synchronizer = TrackingLoops.drain_soft_bits!(bit_synchronizer)
     @test isempty(get_soft_bits(reset_bit_synchronizer))
     @test get_soft_bits(reset_bit_synchronizer) === soft_bits
     @test is_bit_or_secondary_code_synced(reset_bit_synchronizer)
-    @test reset_bit_synchronizer.polarity == bit_synchronizer.polarity
+    @test reset_bit_synchronizer.bit_polarity == bit_synchronizer.bit_polarity
 end
 
 @testset "A secondary-code lock through update_bit_sync! seeds the bit accumulator with the phase" begin
@@ -606,9 +606,9 @@ end
     @test bit_synchronizer.secondary_code_phase == 0
     @test bit_synchronizer.num_code_periods_into_bit == 0
     @test isempty(get_soft_bits(bit_synchronizer))
-    @test bit_synchronizer.polarity in (-1, 1)
+    @test bit_synchronizer.bit_polarity in (-1, 1)
     # One whole bit later the first post-sync soft bit is emitted.
-    bit_synchronizer = TrackingLoops.buffer(signal, 1, bit_synchronizer, N, 8.0 * N + 0.0im)
+    bit_synchronizer = TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, N, 8.0 * N + 0.0im)
     @test length(get_soft_bits(bit_synchronizer)) == 1
 end
 
@@ -620,33 +620,33 @@ end
     chips = _bb_secondary_chips(signal, prn)
     found_at, bit_synchronizer = _bb_feed_prompts(ComplexF64.(chips); signal, prn)
     @test found_at == 1800
-    @test bit_synchronizer.polarity == +1
+    @test bit_synchronizer.bit_polarity == +1
     @test bit_synchronizer.secondary_code_phase == 0
     @test bit_synchronizer isa BitSynchronizer{TrackingLoops.UInt1800}
     # Post-sync a pilot has no data bits to decode: the bit synchronizer is returned as is.
-    @test TrackingLoops.buffer(signal, prn, bit_synchronizer, 5, 1.0 + 0.0im) === bit_synchronizer
+    @test TrackingLoops.update_bit_sync!(signal, prn, bit_synchronizer, 5, 1.0 + 0.0im) === bit_synchronizer
 end
 
 @testset "A one-bit-per-code-period signal locks on its first code period" begin
     # GPS L2CM: the hard detector reports found immediately, and the single
     # buffered code period is recovered as the first soft bit.
     signal = GPSL2CM()
-    bit_synchronizer = TrackingLoops.buffer(signal, 1, BitSynchronizer{UInt8}(), 1, -3.0 + 0.0im)
+    bit_synchronizer = TrackingLoops.update_bit_sync!(signal, 1, BitSynchronizer{UInt8}(), 1, -3.0 + 0.0im)
     @test is_bit_or_secondary_code_synced(bit_synchronizer)
-    @test bit_synchronizer.polarity == +1
+    @test bit_synchronizer.bit_polarity == +1
     @test get_soft_bits(bit_synchronizer) == Float32[-3.0]
-    bit_synchronizer = TrackingLoops.buffer(signal, 1, bit_synchronizer, 1, 2.0 + 0.0im)
+    bit_synchronizer = TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 1, 2.0 + 0.0im)
     @test get_soft_bits(bit_synchronizer) == Float32[-3.0, 2.0]
 end
 
 @testset "A dataless signal without overlay locks without recovering bits" begin
     # Galileo E5a-QP: neither data nor a secondary code.
     signal = GalileoE5aQP()
-    bit_synchronizer = TrackingLoops.buffer(signal, 1, BitSynchronizer{UInt8}(), 1, 1.0 + 0.0im)
+    bit_synchronizer = TrackingLoops.update_bit_sync!(signal, 1, BitSynchronizer{UInt8}(), 1, 1.0 + 0.0im)
     @test is_bit_or_secondary_code_synced(bit_synchronizer)
     @test bit_synchronizer.secondary_code_phase == 0
     @test isempty(get_soft_bits(bit_synchronizer))
-    @test TrackingLoops.buffer(signal, 1, bit_synchronizer, 31, 1.0 + 0.0im) === bit_synchronizer
+    @test TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 31, 1.0 + 0.0im) === bit_synchronizer
 end
 
 @testset "A dataless signal without a sync feature never locks" begin
@@ -661,7 +661,7 @@ end
     advanced = _advance_secondary_phase(GPSL5I(), bit_synchronizer, 13)
     @test advanced.secondary_code_phase == 3
     @test _advance_secondary_phase(GPSL5I(), advanced, 7).secondary_code_phase == 0
-    @test advanced.found
+    @test advanced.bit_or_secondary_code_synced
     # A signal without a secondary code leaves the bit synchronizer untouched.
     @test _advance_secondary_phase(GPSL1CA(), bit_synchronizer, 13) === bit_synchronizer
 end
