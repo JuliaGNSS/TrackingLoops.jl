@@ -48,7 +48,7 @@ satellites stepped with one estimator share its navigation engine, which
   satellite's snapshot: the scalar PVT until the filter is seeded, a filter
   iteration after that;
 - leaves the cycle's decisions (admission, release, commands) for each
-  satellite to take up on its next record, sized for where its command lands.
+  satellite to take up on its next integration, sized for where its command takes effect.
 
 ```julia
 signal = GPSL1CA()
@@ -106,7 +106,7 @@ record, and builds the record from it:
 loop, prompt, filtered, code_periods, overshoot =
     process_correlator_bank_output!(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready, driver_phase_offset)
 integration = LoopRecord(signal, filtered, output, loop, fs; prn)
-loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, words, landing_sample)
+loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, nco_history, application_sample_index)
 ```
 
 The integration summarises that state: whether the bit clock holds the sync and
@@ -127,8 +127,8 @@ only the correlator knows:
   one origin shared by all satellites. A host whose correlator restarts its
   sample count passes the offset as `sample_offset` when it builds the integration.
 
-`NO_LANDING_SAMPLE` still means the command computed from a record acts from the
-record's end; a hardware host passes the landing sample (see
+`NO_LANDING_SAMPLE` still means the command computed from an integration acts from the
+integration's end; a hardware host passes the application sample (see
 [Under a hardware NCO delay](@ref)).
 
 ## The lifecycle of a satellite
@@ -189,23 +189,23 @@ no phase discriminator sit between them. So the FLL measures the incoming carrie
 against a replica nothing else moves, and a residual PLL per satellite follows
 the carrier on the prompts the NCO leaves, for the data.
 
-- **The filter sets the carrier NCO.** Each record is commanded the filter's
-  predicted Doppler at the middle of the record its command lands on: a ramp
-  evaluated from the latest cycle's state at the landing and one cycle later
+- **The filter sets the carrier NCO.** Each integration is commanded the filter's
+  predicted Doppler at the middle of the integration its command takes effect on: a ramp
+  evaluated from the latest cycle's state at the application sample and one cycle later
   (velocity, acceleration where the motion model has one, clock drift and the
   satellite's motion). The code is commanded from that Doppler, carrier-aided,
   plus the filter's code correction.
 - **A residual PLL follows the carrier.** Per satellite, a third-order software
   loop estimates the residual phase, Doppler and Doppler rate against the
-  filter's ramp from the prompts and the words the NCO ran, Costas or
-  four-quadrant by the record's `carrier_phase_polarity`. It never steers the
+  filter's ramp from the prompts and the commands the NCO ran, Costas or
+  four-quadrant by the integration's `carrier_phase_polarity`. It never steers the
   NCO, and neither the command nor a new ramp moves its estimate of the incoming
   Doppler. Its only outputs are the phase the decoded prompts are rotated by, and
   its lock.
 - **The rate measurement** is the replica's Doppler at the epoch plus the mean
   FLL discriminator over the cycle: the replica follows the filter's ramp, so its
   rise to the epoch matches the incoming carrier's, and no loop's jitter is in
-  its word. The FLL compares consecutive prompts, so it needs no phase lock, and
+  its command. The FLL compares consecutive prompts, so it needs no phase lock, and
   the measurements telescope across cycles (lag-1 correlation −½ without an NCO
   delay, an integrated error bounded by the boundary prompts' noise).
 - **The engine decodes the prompts it rotated.** The prompts turn at the
@@ -240,7 +240,7 @@ the carrier on the prompts the NCO leaves, for the data.
   loops). It steps by half a cycle where a pilot turns the discriminator
   four-quadrant and the residual PLL moves to its frame, and by the residual
   on a release.
-- **Hand-over.** A satellite is added at its scalar loop's word, which its
+- **Hand-over.** A satellite is added at its scalar loop's command, which its
   residual PLL starts from. It is released into its scalar loop at the residual
   PLL's estimate of the incoming Doppler and its rate (the ramp's plus the
   residual PLL's), which the third-order carrier filter starts from; out of lock,
@@ -270,12 +270,13 @@ integration rate (vector phase lock), and a carrier-phase output for RTK.
 
 ## Under a hardware NCO delay
 
-With a hardware correlator, the command computed from a record takes effect only
-when it lands at the NCO. Pass the landing sample to `step_loop` and the
-channel's [`NCOTimeline`](@ref) as its words: each satellite then sizes its
-commands for the moment they land, against the replica the timeline predicts
+With a hardware correlator, the command computed from an integration takes effect only
+when the NCO applies it. Pass the application sample and the channel's
+[`NCOTimeline`](@ref) to `step_loop!` as `application_sample_index` and
+`nco_history`, respectively. Each satellite then sizes its
+commands for the moment they take effect, against the replica the timeline predicts
 there, and a released satellite's scalar loop takes over from that replica. The
-landing may lie up to 2.5 cycles after the epoch.
+application sample may lie up to 2.5 cycles after the epoch.
 
 ## Reading the results
 

@@ -41,9 +41,9 @@ behaves identically on the others.
   `ConventionalAssistedPLLAndDLL`, and `DelayCompensatedTrackingLoop`, which stays
   stable when the correction it computes only takes effect several integrations
   later, as it does with a hardware NCO. All three are stepped with one call,
-  `step_loop(estimator, state, record, words, landing_sample)`.
+  `step_loop!(tracking_loop, loop_state, integration, nco_history, application_sample_index)`.
 - **NCO timelines** — `NCOTimeline` records which replica frequency ran over
-  which samples, so a record can be attributed to the word it was really
+  which samples, so an integration can be attributed to the command it was really
   produced under rather than the one that was last requested.
 - **Bit and secondary-code synchronisation** — the `TrackingLoops.BitSynchronizer` with the
   bit-edge and overlay-code detectors for every GPS, Galileo and BeiDou signal
@@ -104,7 +104,7 @@ loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_dopple
 
 # For every integration, as above, but naming the satellite:
 integration = LoopRecord(signal, filtered, previous_prompt, output, code_periods, fs; prn, sample_offset)
-loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, words, landing_sample)
+loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, nco_history, application_sample_index)
 
 navigation_solution(tracking_loop)   # the latest `PVTSolution`
 navigation_status(tracking_loop)     # what the latest navigation cycle did

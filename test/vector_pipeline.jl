@@ -195,9 +195,9 @@ end
 end
 
 @testset "From integrations alone, under an NCO delay" begin
-    # A 20 ms navigation cycle and the delay-compensated inner loop, the commands landing
+    # A 20 ms navigation cycle and the delay-compensated inner loop, the commands applied
     # 15 ms after the integration that computed them: each satellite sizes its corrections
-    # for its own landing.
+    # for its own application sample.
     kw = (; num_sats = 8, inner = DelayCompensatedTrackingLoop(), tracking_loop_kw = (; vt_update_interval = 20ms))
     rx0 = PipelineReceiver(; kw...)
     results0, _, diverged0 = run_pipeline!(rx0, 33.0)
@@ -436,9 +436,9 @@ end
     # The data's integrations reach the tracking_loop 25 ms after the pilot's, more than one
     # 10 ms pilot integration late — or the pilot's 25 ms after the data's. Every epoch's
     # snapshot is the same either way, and so is every scalar fix up to the one that
-    # seeds the filter; the commands land 30 ms after their record, after the late
-    # records, so the replicas do not depend on when the records are stepped. (The
-    # satellites register in the order their first records arrive, so the solve sums
+    # seeds the filter; the commands take effect 30 ms after their integration, after the late
+    # integrations, so the replicas do not depend on when the integrations are stepped. (The
+    # satellites register in the order their first integrations arrive, so the solve sums
     # them in another order: the fixes agree to the solver's convergence. It stops at a
     # step of ~2 µm (PositionVelocityTime's `x_tol` of 1e-13 against the ~2e7 m clock
     # bias), so the rounding of the other order — which also depends on the BLAS
@@ -464,10 +464,10 @@ end
 end
 
 @testset "A data component almost half a cycle behind its pilot keeps its phase" begin
-    # The data's records reach the estimator 45 ms after the pilot's, at 100 ms cycles,
-    # the commands landing 50 ms after their record, after the late records: up to five
-    # 10 ms pilot records later, which a slot's history of half a cycle and one record
-    # holds, all of it in use. Every data record in the loop is rotated by the phase the
+    # The data's integrations reach the tracking_loop 45 ms after the pilot's, at 100 ms cycles,
+    # the commands applied 50 ms after their integration, after the late integrations: up to five
+    # 10 ms pilot integrations later, which a slot's history of half a cycle and one integration
+    # holds, all of it in use. Every data integration in the loop is rotated by the phase the
     # residual PLL estimated for its span; none falls back to the host's soft bits.
     rx = PipelineReceiver(; pilot = true, num_sats = 6, passenger_lag_ms = 45,
         inner = DelayCompensatedTrackingLoop(), delay_integrations = 50)
