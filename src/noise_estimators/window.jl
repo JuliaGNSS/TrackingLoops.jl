@@ -1,4 +1,4 @@
-# Running sums over a `CorrelatorNoiseEstimator`'s window so neither appending nor
+# Running sums over a `CorrelatorNoiseDensityEstimator`'s window so neither appending nor
 # reading walks it: `span` drives the trim, `weighted_density / looks` is
 # `get_noise_density`.
 #
@@ -23,7 +23,7 @@ NoiseWindowTotals{D,T}() where {D,T} = NoiseWindowTotals{D,T}(zero(T), zero(D), 
 $(SIGNATURES)
 
 The signal's noise reference, measured by **despreading a PRN at a random code
-phase and Doppler**. The only shipped [`AbstractNoiseEstimator`](@ref). A host
+phase and Doppler**. The only shipped [`AbstractNoiseDensityEstimator`](@ref). A host
 fills it with the despreads [`noise_despreads`](@ref) plans, a software one through
 [`update_noise!`](@ref), or appends the observations it builds itself with
 [`append_noise_observation!`](@ref).
@@ -68,12 +68,12 @@ lobe. On an FPGA a free-running code generator gives an arbitrary phase for free
 
   - `window_duration`: how far back the sliding window reaches (1 s). Longer means
     lower variance but more smear across AGC changes. The default holds
-    `K_n ≈ 1000` looks per tap at one despread per code period, ≤ 0.08 dB
-    from a variance-free reference at every C/N₀.
-  - `tap_code_shift`: tap spacing in chips (1.5). Taps help only if independent:
-    `corr(|Bᵢ|²,|Bⱼ|²) = |ρᵢⱼ|²`, so at ±0.5 chip three taps are worth 2.25 looks,
-    at ≥ 1 chip 2.98. 1.5 chips sits in the autocorrelation null, clear of the 1-
-    and 2-chip sidelobes.
+    `K_n ≈ 1000` squared magnitudes per correlator at one despread per
+    code period, ≤ 0.08 dB from a variance-free reference at every C/N₀.
+  - `early_late_to_prompt_spacing`: early/late-to-prompt spacing in chips (1.5).
+    Correlators help only if independent: `corr(|Bᵢ|²,|Bⱼ|²) = |ρᵢⱼ|²`, so at ±0.5
+    chip three correlators are worth 2.25 squared magnitudes, at ≥ 1 chip 2.98.
+    1.5 chips sits in the autocorrelation null, clear of the 1- and 2-chip sidelobes.
   - `carrier_dither`: half-width of the uniform offset added to the nominal IF per
     despread (5 kHz, the terrestrial Doppler spread). Zero is useful only to
     isolate the code-phase draw in a test.
@@ -92,15 +92,15 @@ lobe. On an FPGA a free-running code generator gives an arbitrary phase for free
 
 The despread length is **not** a field: it is the signal's primary code
 period. Coherent integration buys nothing for noise power (`Var(|B|²) = (E|B|²)²`),
-so only the number of looks matters, yet shorter dumps would cost SIMD efficiency
+so only the number of squared magnitudes matters, yet shorter dumps would cost SIMD efficiency
 and a new kernel (losing bit-identical arithmetic), lose the full-period Gold code's
 DC balance (an ADC offset would bias the despread), and break cadence parity with a
 hardware correlator dumping on the code epoch. A long window buys the variance back
 cheaply (~1000 `Float64` per signal per second).
 """
-struct CorrelatorNoiseEstimator{D,T,R<:AbstractRNG} <: AbstractNoiseEstimator
+struct CorrelatorNoiseDensityEstimator{D,T,R<:AbstractRNG} <: AbstractNoiseDensityEstimator
     window_duration::typeof(1.0s)
-    tap_code_shift::Float64
+    early_late_to_prompt_spacing::Float64
     carrier_dither::typeof(1.0Hz)
     buffered::Vector{NoiseObservation{D,T}}
     totals::Base.RefValue{NoiseWindowTotals{D,T}}
@@ -110,7 +110,7 @@ end
 """
 $(SIGNATURES)
 
-Construct a [`CorrelatorNoiseEstimator`](@ref); see the type for the parameters.
+Construct a [`CorrelatorNoiseDensityEstimator`](@ref); see the type for the parameters.
 
 The window is `sizehint!`-ed to 4× the 1 ms observations in `window_duration`: with
 less headroom Julia periodically shifts the FIFO's front offset back and
@@ -122,26 +122,26 @@ own floor `wᴴR̂w` through its beamforming weights (see [`update_noise!`](@ref
 [`AbstractPostCorrFilter`](@ref)). `TrackState` provisions the count when
 `noise_estimators` is `nothing` and rejects a mismatch otherwise.
 """
-function CorrelatorNoiseEstimator(;
+function CorrelatorNoiseDensityEstimator(;
     window_duration = 1.0s,
-    tap_code_shift = 1.5,
+    early_late_to_prompt_spacing = 1.5,
     carrier_dither = 5000.0Hz,
     num_ants::NumAnts = NumAnts(1),
     rng::AbstractRNG = Xoshiro(0),
 )
     window_duration > zero(window_duration) ||
         throw(ArgumentError("window_duration must be positive, got $window_duration"))
-    tap_code_shift > 0 ||
-        throw(ArgumentError("tap_code_shift must be positive, got $tap_code_shift"))
+    early_late_to_prompt_spacing > 0 ||
+        throw(ArgumentError("early_late_to_prompt_spacing must be positive, got $early_late_to_prompt_spacing"))
     carrier_dither >= zero(carrier_dither) ||
         throw(ArgumentError("carrier_dither must not be negative, got $carrier_dither"))
     D = _density_type_for_num_ants(num_ants)
     buffered = NoiseObservation{D,typeof(1.0s)}[]
     # 4× the 1 ms despread count; see the docstring.
     sizehint!(buffered, 4 * max(1, round(Int, window_duration / 1.0ms)) + 1)
-    CorrelatorNoiseEstimator(
+    CorrelatorNoiseDensityEstimator(
         uconvert(s, float(window_duration)),
-        Float64(tap_code_shift),
+        Float64(early_late_to_prompt_spacing),
         uconvert(Hz, float(carrier_dither)),
         buffered,
         Ref(NoiseWindowTotals{D,typeof(1.0s)}()),
@@ -165,7 +165,7 @@ builder output), so a hand-assembled or `Float32` one is not silently dropped by
 falling through to the abstract no-op.
 """
 function append_noise_observation!(
-    estimator::CorrelatorNoiseEstimator{D,T},
+    estimator::CorrelatorNoiseDensityEstimator{D,T},
     observation::NoiseObservation,
 ) where {D,T}
     observation = convert(NoiseObservation{D,T}, observation)
@@ -182,8 +182,8 @@ end
     t = totals[]
     totals[] = typeof(t)(
         t.span + observation.duration,
-        t.weighted_density + observation.num_sub_integrations * observation.noise_density,
-        t.looks + observation.num_sub_integrations,
+        t.weighted_density + observation.num_squared_magnitudes * observation.noise_density,
+        t.looks + observation.num_squared_magnitudes,
         t.stale,
     )
     nothing
@@ -193,8 +193,8 @@ end
     t = totals[]
     totals[] = typeof(t)(
         t.span - observation.duration,
-        t.weighted_density - observation.num_sub_integrations * observation.noise_density,
-        t.looks - observation.num_sub_integrations,
+        t.weighted_density - observation.num_squared_magnitudes * observation.noise_density,
+        t.looks - observation.num_squared_magnitudes,
         t.stale,
     )
     nothing
@@ -236,8 +236,8 @@ function _refresh_totals!(
     @inbounds for i in eachindex(buffered)
         observation = buffered[i]
         span += observation.duration
-        weighted_density += observation.num_sub_integrations * observation.noise_density
-        looks += observation.num_sub_integrations
+        weighted_density += observation.num_squared_magnitudes * observation.noise_density
+        looks += observation.num_squared_magnitudes
     end
     totals[] = NoiseWindowTotals{D,T}(span, weighted_density, looks, 0)
     nothing
@@ -246,22 +246,22 @@ end
 """
 $(SIGNATURES)
 
-The window's mean density weighted by `num_sub_integrations` (`M`), or `nothing`
+The window's mean density weighted by `num_squared_magnitudes` (`M`), or `nothing`
 while it is empty. **O(1)**, read off the running totals.
 
-An entry's relative variance is `1/M` (its independent looks), so entries of
+An entry's relative variance is `1/M` (its squared magnitudes), so entries of
 different dump counts combine correctly only weighted by `M`.
 """
-function get_noise_density(estimator::CorrelatorNoiseEstimator)
+function get_noise_density(estimator::CorrelatorNoiseDensityEstimator)
     totals = estimator.totals[]
     totals.looks == 0 && return nothing
     totals.weighted_density / totals.looks
 end
 
-noise_density_type(::CorrelatorNoiseEstimator{D}) where {D} = D
+noise_density_type(::CorrelatorNoiseDensityEstimator{D}) where {D} = D
 
-# `looks` is the running sum of `num_sub_integrations`, the independent-look count.
-noise_window_looks(estimator::CorrelatorNoiseEstimator) = estimator.totals[].looks
+# `looks` is the running sum of the observations' `num_squared_magnitudes`.
+get_num_squared_magnitudes(estimator::CorrelatorNoiseDensityEstimator) = estimator.totals[].looks
 
 """
 $(SIGNATURES)
@@ -269,36 +269,28 @@ $(SIGNATURES)
 Number of observations in the window. Diagnostic only: it varies with the
 producer's dump cadence.
 """
-Base.length(estimator::CorrelatorNoiseEstimator) = length(estimator.buffered)
+Base.length(estimator::CorrelatorNoiseDensityEstimator) = length(estimator.buffered)
 
 """
 $(SIGNATURES)
 
-Measure this signal's noise over samples `first_sample:last_sample` of
-`measurement`, append the observations and return `estimator`. Forwards to
-[`despread_noise!`](@ref) on `context.downconvert_and_correlator`; a loop process
-fills the window through [`noise_despreads`](@ref) instead.
+Measure this signal's noise over samples `sample_range` of `measurement`, append the
+observations and return `estimator`. Forwards to [`despread_noise!`](@ref) on
+`context.downconvert_and_correlate`; a loop process fills the window through
+[`noise_despreads`](@ref) instead.
 """
 update_noise!(
-    estimator::CorrelatorNoiseEstimator,
+    estimator::CorrelatorNoiseDensityEstimator,
     measurement,
-    first_sample::Integer,
-    last_sample::Integer,
+    sample_range::AbstractUnitRange{<:Integer},
     context::NoiseUpdateContext,
-) = despread_noise!(
-    context.downconvert_and_correlator,
-    estimator,
-    measurement,
-    first_sample,
-    last_sample,
-    context,
-)
+) = despread_noise!(context.downconvert_and_correlate, estimator, measurement, sample_range, context)
 
 """
-    despread_noise!(backend, estimator, measurement, first_sample, last_sample, context)
+    despread_noise!(backend, estimator, measurement, sample_range, context)
 
-The software fill path of a [`CorrelatorNoiseEstimator`](@ref): despread each of the
-slice's [`noise_despreads`](@ref) with [`get_noise_correlator_bank`](@ref)'s taps on `backend`'s
+The software fill path of a [`CorrelatorNoiseDensityEstimator`](@ref): despread each of the
+slice's [`noise_despreads`](@ref) with [`get_noise_correlator_bank`](@ref)'s correlators on `backend`'s
 kernel, the one the prompt goes through, and append it with
 [`append_despread_noise!`](@ref). Implemented by Tracking.jl for its backends, which
 read the sampling and intermediate frequencies off `measurement`.
@@ -308,7 +300,7 @@ function despread_noise! end
 """
     NoiseProbe
 
-One draw of a [`CorrelatorNoiseEstimator`](@ref)'s reference: despread with `signal`'s
+One draw of a [`CorrelatorNoiseDensityEstimator`](@ref)'s reference: despread with `signal`'s
 code for `prn`, starting at `code_phase` chips at the first sample despread, at the
 nominal `code_frequency` and at `carrier_frequency`, the band's intermediate frequency
 plus the dither, with no carrier phase. [`draw_noise_probe`](@ref) draws one;
@@ -327,7 +319,7 @@ end
 """
     NoiseDespread
 
-One despread of a [`CorrelatorNoiseEstimator`](@ref)'s reference, as
+One despread of a [`CorrelatorNoiseDensityEstimator`](@ref)'s reference, as
 [`noise_despreads`](@ref) plans it: the [`NoiseProbe`](@ref) `probe` over samples
 `sample_range`, sampled at `sampling_frequency`. A software host runs it on its kernel
 and hands the correlator outputs to [`append_despread_noise!`](@ref).
@@ -351,7 +343,7 @@ struct NoiseDespreads{S<:AbstractGNSSSignal,R<:AbstractRNG,F,I}
 end
 
 """
-    noise_despreads(estimator::CorrelatorNoiseEstimator, signal::AbstractGNSSSignal,
+    noise_despreads(estimator::CorrelatorNoiseDensityEstimator, signal::AbstractGNSSSignal,
                     sample_range, sampling_frequency, intermediate_frequency)
 
 The despreads a host runs to measure `signal`'s noise over samples
@@ -367,7 +359,7 @@ num_despreads = max(1, round(Int, slice_duration / code_period))
 ```
 
 with `code_period` the primary code period of `signal` (see
-[`CorrelatorNoiseEstimator`](@ref) for why it is derived, not configured), and at most
+[`CorrelatorNoiseDensityEstimator`](@ref) for why it is derived, not configured), and at most
 one per sample. Equal slices waste no remainder; the `max(1, …)` keeps a code longer
 than the chunk (10 ms code, 1 ms chunks) from never yielding an observation. Each
 despread is its own observation, so the window's time span does not follow the
@@ -383,7 +375,7 @@ unbiased for any `N` and start phase, and no partial accumulator is carried acro
 calls. Allocates nothing.
 """
 function noise_despreads(
-    estimator::CorrelatorNoiseEstimator,
+    estimator::CorrelatorNoiseDensityEstimator,
     signal::AbstractGNSSSignal,
     sample_range::AbstractUnitRange{<:Integer},
     sampling_frequency,
@@ -433,7 +425,7 @@ end
 end
 
 """
-    draw_noise_probe(estimator::CorrelatorNoiseEstimator, signal::AbstractGNSSSignal,
+    draw_noise_probe(estimator::CorrelatorNoiseDensityEstimator, signal::AbstractGNSSSignal,
                      intermediate_frequency) -> NoiseProbe
 
 Draw the next [`NoiseProbe`](@ref) for `signal` on a band at `intermediate_frequency`:
@@ -443,7 +435,7 @@ draws before an append share it), a random code phase and a carrier within
 noise channel and appends every dump with [`append_noise_correlator_outputs!`](@ref); see
 [A hardware noise channel](@ref) for how often to redraw.
 """
-draw_noise_probe(estimator::CorrelatorNoiseEstimator, signal::AbstractGNSSSignal, intermediate_frequency) =
+draw_noise_probe(estimator::CorrelatorNoiseDensityEstimator, signal::AbstractGNSSSignal, intermediate_frequency) =
     _draw_noise_probe(
         estimator.rng,
         signal,
@@ -453,20 +445,20 @@ draw_noise_probe(estimator::CorrelatorNoiseEstimator, signal::AbstractGNSSSignal
     )
 
 """
-    get_noise_correlator_bank(estimator::CorrelatorNoiseEstimator) -> EarlyPromptLateCorrelator
+    get_noise_correlator_bank(estimator::CorrelatorNoiseDensityEstimator) -> EarlyPromptLateCorrelatorBank
 
-The correlator a [`NoiseProbe`](@ref) runs through: three taps `tap_code_shift` chips
-apart, one column per antenna. At that spacing the taps are independent looks, which
-[`append_noise_correlator_outputs!`](@ref) pools.
+The correlator bank a [`NoiseProbe`](@ref) runs through: three correlators `early_late_to_prompt_spacing` chips
+apart, one column per antenna. At that spacing their outputs are independent, and
+[`append_noise_correlator_outputs!`](@ref) pools their squared magnitudes.
 """
-get_noise_correlator_bank(estimator::CorrelatorNoiseEstimator) = EarlyPromptLateCorrelatorBank(;
+get_noise_correlator_bank(estimator::CorrelatorNoiseDensityEstimator) = EarlyPromptLateCorrelatorBank(;
     num_ants = NumAnts(estimator),
-    preferred_early_late_to_prompt_spacing = estimator.tap_code_shift,
+    preferred_early_late_to_prompt_spacing = estimator.early_late_to_prompt_spacing,
 )
 
-# Pool the taps of one despread (independent looks at ≥ 1 chip spacing): the scalar
+# Pool the correlator outputs of one despread (independent at ≥ 1 chip spacing): the scalar
 # power for one antenna, the spatial covariance for an array.
-@inline function _pool_taps(correlator_outputs, ::NumAnts{1})
+@inline function _pool_correlator_outputs(correlator_outputs, ::NumAnts{1})
     power = 0.0
     for correlator_output in correlator_outputs
         power += abs2(correlator_output)
@@ -474,7 +466,7 @@ get_noise_correlator_bank(estimator::CorrelatorNoiseEstimator) = EarlyPromptLate
     power
 end
 
-@inline function _pool_taps(correlator_outputs, ::NumAnts{M}) where {M}
+@inline function _pool_correlator_outputs(correlator_outputs, ::NumAnts{M}) where {M}
     covariance = zero(SMatrix{M,M,ComplexF64,M * M})
     for correlator_output in correlator_outputs
         covariance += correlator_output * correlator_output'
@@ -485,10 +477,10 @@ end
 # Next PRN of the rotation over the signal's supported PRNs, carried in the newest
 # observation (the first supported PRN when empty).
 @inline function _next_noise_prn(
-    estimator::CorrelatorNoiseEstimator,
-    signal_type::AbstractGNSSSignal,
+    estimator::CorrelatorNoiseDensityEstimator,
+    signal::AbstractGNSSSignal,
 )
-    supported_prns = get_supported_prns(signal_type)
+    supported_prns = get_supported_prns(signal)
     isempty(supported_prns) && throw(ArgumentError("noise estimation needs a supported PRN"))
     isempty(estimator.buffered) && return Int(first(supported_prns))
     previous = Int(last(estimator.buffered).prn)
@@ -499,18 +491,18 @@ end
 end
 
 """
-    append_noise_correlator_outputs!(estimator::CorrelatorNoiseEstimator, probe::NoiseProbe,
-                       accumulators, num_samples, sampling_frequency) -> estimator
+    append_noise_correlator_outputs!(estimator::CorrelatorNoiseDensityEstimator, probe::NoiseProbe,
+                       correlator_outputs, num_samples, sampling_frequency) -> estimator
 
 Append the observation of `probe` measured over `num_samples` samples at
-`sampling_frequency`: `accumulators` are the taps of [`get_noise_correlator_bank`](@ref). The
-taps are independent looks, so they pool into one power sum, or into the spatial covariance
+`sampling_frequency`: `correlator_outputs` are the correlator outputs of [`get_noise_correlator_bank`](@ref). The
+correlator outputs are independent, so they pool into one power sum, or into the spatial covariance
 `Σ b·bᴴ` for an array, which each satellite reduces to its own floor `wᴴR̂w` at C/N₀
 time; the observation spans the samples every tap integrated, under the probe's PRN.
 A hardware host passes each dump's own sample count. Allocates nothing.
 """
 @inline function append_noise_correlator_outputs!(
-    estimator::CorrelatorNoiseEstimator,
+    estimator::CorrelatorNoiseDensityEstimator,
     probe::NoiseProbe,
     correlator_outputs,
     num_samples::Integer,
@@ -520,7 +512,7 @@ A hardware host passes each dump's own sample count. Allocates nothing.
     append_noise_observation!(
         estimator,
         _noise_observation(
-            _pool_taps(correlator_outputs, NumAnts(estimator)),
+            _pool_correlator_outputs(correlator_outputs, NumAnts(estimator)),
             num_correlators,
             num_correlators * num_samples,
             sampling_frequency,
@@ -532,14 +524,14 @@ A hardware host passes each dump's own sample count. Allocates nothing.
 end
 
 """
-    append_despread_noise!(estimator::CorrelatorNoiseEstimator, despread::NoiseDespread,
-                           accumulators) -> estimator
+    append_despread_noise!(estimator::CorrelatorNoiseDensityEstimator, despread::NoiseDespread,
+                           correlator_outputs) -> estimator
 
 [`append_noise_correlator_outputs!`](@ref) for one of [`noise_despreads`](@ref): the despread's probe
 over its planned samples.
 """
 @inline append_despread_noise!(
-    estimator::CorrelatorNoiseEstimator,
+    estimator::CorrelatorNoiseDensityEstimator,
     despread::NoiseDespread,
     correlator_outputs,
 ) = append_noise_correlator_outputs!(

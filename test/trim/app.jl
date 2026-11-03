@@ -42,7 +42,7 @@ end
 # own `Xoshiro`, each dump's correlator outputs appended over its own sample count.
 function report_noise(io)
     signal = GPSL1CA()
-    estimator = CorrelatorNoiseEstimator()
+    estimator = CorrelatorNoiseDensityEstimator()
     for k = 1:20
         probe = TrackingLoops.draw_noise_probe(estimator, signal, 0.0Hz)
         correlator_outputs = SVector(
