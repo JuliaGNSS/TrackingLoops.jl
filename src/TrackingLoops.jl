@@ -84,15 +84,15 @@ import Base.zero, Base.length
 BitIntegers.@define_integers 1800
 
 export NumAnts,
-    EarlyPromptLateCorrelator,
-    VeryEarlyPromptLateCorrelator,
+    EarlyPromptLateCorrelatorBank,
+    VeryEarlyPromptLateCorrelatorBank,
     CorrelatorOutput,
     get_early,
     get_prompt,
     get_late,
-    get_accumulators,
+    get_correlator_outputs,
     get_num_ants,
-    get_default_correlator,
+    get_default_correlator_bank,
     DefaultPostCorrFilter,
     has_bit_or_secondary_code_been_found,
     is_dataless_with_secondary_code,
@@ -155,7 +155,7 @@ Type parameter wrapper for the number of antennas; create with `NumAnts(n)`. The
 forms read it off what carries one, as a constant of its type: a correlator's antenna
 count, a noise estimator's (through [`noise_density_type`](@ref)), or a noise density
 type's (`NumAnts(1)` for a scalar density, `NumAnts(M)` for an `M×M` covariance). A
-host checks a noise estimator against its correlators with them, and specialises a
+host checks a noise estimator against its correlator banks with them, and specialises a
 kernel on the count without `NumAnts(get_num_ants(c))`, which allocates per call.
 """
 struct NumAnts{x} end
@@ -165,12 +165,12 @@ NumAnts(x) = NumAnts{x}()
 """
 $(SIGNATURES)
 
-Type parameter wrapper for the number of correlator accumulators; create with
-`NumAccumulators(n)`.
+Type parameter wrapper for the number of correlators; create with
+`NumCorrelators(n)`.
 """
-struct NumAccumulators{x} end
+struct NumCorrelators{x} end
 
-NumAccumulators(x) = NumAccumulators{x}()
+NumCorrelators(x) = NumCorrelators{x}()
 
 """
     update(x, prompt)

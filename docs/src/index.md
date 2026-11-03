@@ -7,7 +7,7 @@ CurrentModule = TrackingLoops
 The arithmetic of a GNSS tracking loop, one correlator record at a time.
 
 A tracking loop takes the correlator outputs of one integration — early, prompt
-and late accumulators for one satellite — and turns them into what the next
+and late correlator outputs for one satellite — and turns them into what the next
 integration should run with: a carrier Doppler, a code Doppler, a navigation bit
 when one has completed, and a C/N₀ estimate. This package is that step, and
 nothing around it. It does not correlate, it does not read samples, and it does
@@ -60,7 +60,7 @@ estimator = ConventionalAssistedPLLAndDLL()
 state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  # one per satellite
 loop = SignalLoopState(signal)              # bit buffer, C/N₀ estimator, prompt filter
 
-# For every correlator record `output::CorrelatorOutput` the correlator produced:
+# For every coherent record `output::CorrelatorOutput` the correlator produced:
 loop, prompt, filtered, blocks, overshoot =
     apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready)
 overshoot && @warn "record crossed a navigation-bit boundary; bit sync restarted"
@@ -114,7 +114,7 @@ TrackingLoops
 
 ```@docs
 AbstractDopplerEstimator
-TrackingLoops.NumAccumulators
+TrackingLoops.NumCorrelators
 NumAnts
 TrackingLoops.update
 ```
