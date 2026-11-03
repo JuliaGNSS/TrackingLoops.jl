@@ -3,7 +3,7 @@
 # that broadcast real navigation bits — bit sync, decoding, the scalar fix, the seed
 # and a steady state through a partial outage — printed so the trimmed executable's
 # output can be compared against a regular Julia session. It is the loop process's
-# workload: `apply_record` and `step_loop` on every record of every channel, and
+# workload: `process_correlator_bank_output!` and `step_loop!` on every integration of every channel, and
 # nothing else.
 using TrackingLoops, GNSSSignals, StaticArrays, Unitful, LinearAlgebra
 using TrackingLoops: default_cn0_estimator

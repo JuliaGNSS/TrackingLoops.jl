@@ -4,8 +4,8 @@ CurrentModule = TrackingLoops
 
 # C/N₀ estimation
 
-A C/N₀ estimator is advanced once per record with the record's prompt
-(`TrackingLoops.update`, called by [`apply_record`](@ref)) and read with
+A C/N₀ estimator is advanced once per integration with the integration's prompt
+(`TrackingLoops.update`, called by [`process_correlator_bank_output!`](@ref)) and read with
 [`estimate_cn0`](@ref). The package provides:
 
 - [`MomentsCN0Estimator`](@ref) — the moments method on a window of prompts;

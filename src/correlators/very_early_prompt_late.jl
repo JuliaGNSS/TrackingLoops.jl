@@ -58,9 +58,9 @@ function VeryEarlyPromptLateCorrelatorBank(;
         preferred_very_early_late_to_prompt_spacing,
     ) < 1 || throw(
         ArgumentError(
-            "VeryEarlyPromptLateCorrelatorBank: the early/late-to-prompt code shift " *
+            "VeryEarlyPromptLateCorrelatorBank: the early/late-to-prompt spacing " *
             "($preferred_early_late_to_prompt_spacing chips) or the very-early/very-late-to-prompt " *
-            "code shift ($preferred_very_early_late_to_prompt_spacing chips) must be " *
+            "spacing ($preferred_very_early_late_to_prompt_spacing chips) must be " *
             "below one chip; the VEML discriminator is calibrated on the BOC(1,1) " *
             "correlation peak, which has vanished from one chip on.",
         ),

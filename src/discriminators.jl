@@ -131,9 +131,9 @@ $(SIGNATURES)
 Carrier frequency error in `Hz`, whatever unit the integration time carries, from
 the rotation between the previous and current prompt; zero without a previous
 prompt. With `polarity = 0` (default) the two-quadrant `atan(cross / dot)`,
-insensitive to a sign flip between the prompts, range ±1 / (4 · `integration_time`).
+insensitive to a sign flip between the prompts, range ±1 / (4 · `coherent_integration_time`).
 With `polarity = ±1` the four-quadrant `atan(cross, dot)`, range
-±1 / (2 · `integration_time`); it needs both prompts to share their sign, as for
+±1 / (2 · `coherent_integration_time`); it needs both prompts to share their sign, as for
 [`pll_disc`](@ref). Which sign does not matter (it cancels in the product), only
 whether `polarity` is nonzero.
 
@@ -144,11 +144,11 @@ function fll_disc(
     signal::AbstractGNSSSignal,
     correlator_bank,
     previous_prompt,
-    integration_time;
+    coherent_integration_time;
     polarity::Real = 0,
 )
     if previous_prompt == 0
-        return uconvert(Hz, 0.0/integration_time)
+        return uconvert(Hz, 0.0/coherent_integration_time)
     end
 
     current_prompt = get_prompt(correlator_bank)
@@ -159,5 +159,5 @@ function fll_disc(
 
     # Two-quadrant: `cross / dot` is ±Inf where `dot` is zero, which `atan` maps to ±π/2.
     rotation = iszero(polarity) ? atan(cross / dot) : atan(cross, dot)
-    return uconvert(Hz, rotation / (2 * pi * integration_time))
+    return uconvert(Hz, rotation / (2 * pi * coherent_integration_time))
 end

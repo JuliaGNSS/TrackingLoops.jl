@@ -41,7 +41,7 @@ end
 end
 
 # The carrier bandwidth, wide or narrow, is capped by its stability product, not
-# scaled by the block count.
+# scaled by the period count.
 @testset "carrier loop bandwidth is capped, not scaled, by the integration length" begin
     bw = 18.0Hz
     @test calc_effective_carrier_loop_bandwidth(bw, 1ms) == bw
@@ -49,9 +49,9 @@ end
     @test calc_effective_carrier_loop_bandwidth(bw, 5ms) ≈ bw
     @test calc_effective_carrier_loop_bandwidth(bw, 10ms) ≈ 9.0Hz
     @test calc_effective_carrier_loop_bandwidth(bw, 20ms) ≈ 4.5Hz
-    for integration_time in (10ms, 20ms, 100ms, 1500ms)
-        @test calc_effective_carrier_loop_bandwidth(bw, integration_time) *
-              integration_time ≈ MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT
+    for coherent_integration_time in (10ms, 20ms, 100ms, 1500ms)
+        @test calc_effective_carrier_loop_bandwidth(bw, coherent_integration_time) *
+              coherent_integration_time ≈ MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT
     end
     # An explicit bandwidth below the cap is used verbatim.
     @test calc_effective_carrier_loop_bandwidth(2.0Hz, 20ms) == 2.0Hz
@@ -71,11 +71,11 @@ end
     @test calc_effective_code_loop_bandwidth(bw, 10 * l1ca_period) == bw
     @test calc_effective_code_loop_bandwidth(bw, 20 * l1ca_period) ≈ 0.9Hz
 
-    # Where it binds it holds the stability product, not a block ratio.
-    for num_blocks in (20, 100, 1500)
-        integration_time = num_blocks * l1ca_period
-        @test calc_effective_code_loop_bandwidth(bw, integration_time) *
-              integration_time ≈ MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT
+    # Where it binds it holds the stability product, not a period ratio.
+    for num_code_periods in (20, 100, 1500)
+        coherent_integration_time = num_code_periods * l1ca_period
+        @test calc_effective_code_loop_bandwidth(bw, coherent_integration_time) *
+              coherent_integration_time ≈ MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT
     end
 
     # An explicit bandwidth below the cap is used verbatim, at any length.
@@ -107,15 +107,15 @@ end
     @test 0.85 < effective_bandwidth / ustrip(Hz, bandwidth) < 1.15
 end
 
-# A GPS L1 C/A integration of `num_code_blocks` blocks whose correlators all sit at the prompt `p`.
-staging_integration(p, num_code_blocks = 1) = LoopRecord(
+# A GPS L1 C/A integration of `num_code_periods` code periods whose correlators all sit at the prompt `p`.
+staging_integration(p, num_code_periods = 1) = LoopRecord(
     GPSL1CA(),
     EarlyPromptLateCorrelatorBank(SVector(p / 2, p, p / 2), 0.5),
     complex(0.0),
-    4000num_code_blocks,
-    4000num_code_blocks,
-    4000num_code_blocks,
-    num_code_blocks,
+    4000num_code_periods,
+    4000num_code_periods,
+    4000num_code_periods,
+    num_code_periods,
     4e6Hz,
 )
 

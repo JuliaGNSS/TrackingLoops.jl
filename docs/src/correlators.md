@@ -4,12 +4,12 @@ CurrentModule = TrackingLoops
 
 # Correlator banks and discriminators
 
-A correlator holds the accumulators of one integration: one complex value per
-tap and antenna. [`EarlyPromptLateCorrelator`](@ref) has the early, prompt and
-late taps a DLL needs; [`VeryEarlyPromptLateCorrelator`](@ref) adds a very-early
-and a very-late tap, e.g. for multipath monitoring or BOC tracking. A
-[`CorrelatorOutput`](@ref) is one completed record as a correlator hands it to
-the loop: the correlator together with the sample span it was integrated over.
+A correlator bank holds the correlator outputs of one integration: one complex value per
+correlator and antenna. [`EarlyPromptLateCorrelatorBank`](@ref) has the early, prompt and
+late correlators a DLL needs; [`VeryEarlyPromptLateCorrelatorBank`](@ref) adds a very-early
+and a very-late correlator, e.g. for multipath monitoring or BOC tracking. A
+[`CorrelatorBankOutput`](@ref) is one completed integration as a correlator bank hands it to
+the loop: the correlator bank together with the sample span it was integrated over.
 
 The discriminators [`pll_disc`](@ref TrackingLoops.pll_disc), [`fll_disc`](@ref TrackingLoops.fll_disc) and
 [`dll_disc`](@ref TrackingLoops.dll_disc) turn a (filtered) correlator bank into the carrier-phase,
@@ -30,7 +30,7 @@ signed sample offsets; `calc_early_late_sample_spacing` returns their full separ
 ```@docs
 TrackingLoops.AbstractCorrelatorBank
 TrackingLoops.AbstractEarlyPromptLateCorrelatorBank
-CorrelatorOutput
+CorrelatorBankOutput
 TrackingLoops.apply(::F, ::AbstractCorrelatorBank) where {F}
 TrackingLoops.calc_correlator_sample_offset(::Any, ::Any, ::Any)
 get_correlator_outputs(::AbstractCorrelatorBank)

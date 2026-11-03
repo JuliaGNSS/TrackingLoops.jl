@@ -495,7 +495,7 @@ end
     lock_cn0_threshold_dbhz::Float64,
 )
     fs = _sampling_frequency_hz(integration)
-    integration_time = integration.integrated_samples / fs
+    coherent_integration_time = integration.integrated_samples / fs
     previous_cycles, previous_duration = loop_state.previous_replica_half
     first_cycles, first_duration = replica_halves.first
     integration_start_sample_index = integration.sample_index - integration.integrated_samples
@@ -516,16 +516,16 @@ end
         integration.signal,
         integration.filtered_correlator,
         integration.previous_prompt,
-        (isnan(span) ? integration_time : span) * s;
+        (isnan(span) ? coherent_integration_time : span) * s;
         polarity = integration.carrier_phase_polarity,
     )
     residual_pll, wiped_prompt =
         _step_residual_pll(loop_state.residual_pll, loop_state.ramp, integration, previous_cycles + gap_cycles + first_cycles)
-    host_cn0_dbhz = Float64(ustrip(estimate_cn0(integration.cn0_estimator, integration_time * s)))
+    host_cn0_dbhz = Float64(ustrip(estimate_cn0(integration.cn0_estimator, coherent_integration_time * s)))
     residual_pll = _with_lock_test(
         residual_pll,
         wiped_prompt,
-        integration_time,
+        coherent_integration_time,
         _phase_lock_time_constant(integration.signal, integration.integrated_code_blocks),
         lock_cn0_threshold_dbhz,
         host_cn0_dbhz >= lock_cn0_threshold_dbhz,

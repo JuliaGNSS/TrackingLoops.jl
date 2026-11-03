@@ -33,4 +33,6 @@ $(SIGNATURES)
 Always `-Inf dB-Hz`; see [`NoCN0Estimator`](@ref) for why that value and not
 `NaN`.
 """
-estimate_cn0(::NoCN0Estimator, integration_time) = dBHz(0.0 / integration_time)
+estimate_cn0(::NoCN0Estimator, coherent_integration_time) = dBHz(0.0 / coherent_integration_time)
+
+reset_cn0_estimator!(e::NoCN0Estimator) = e
