@@ -43,20 +43,20 @@ Fields:
     (vector tracking); Tracking.jl uses the current `track!` measurement, so an
     external producer feeding it must map its counter onto that origin.
   - `code_phase`: the replica's code phase (chips) at `sample_index`, read by
-    [`VectorPLLAndDLL`](@ref) since the end sample pins it only to one sample. Only
-    the part past the nearest code-block boundary is used, so any wrap convention
+    [`VectorTrackingLoop`](@ref) since the end sample pins it only to one sample. Only
+    the part past the nearest code-period boundary is used, so any wrap convention
     works. `NaN` when not reported (three-argument constructor); only vector
     tracking needs it.
 """
-struct CorrelatorOutput{C<:AbstractCorrelatorBank}
+struct CorrelatorBankOutput{C<:AbstractCorrelatorBank}
     correlator_bank::C
     num_integrated_samples::Int
     sample_index::Int
     code_phase::Float64
 end
 
-CorrelatorOutput(correlator_bank::AbstractCorrelatorBank, num_integrated_samples::Integer, sample_index::Integer) =
-    CorrelatorOutput(correlator_bank, Int(num_integrated_samples), Int(sample_index), NaN)
+CorrelatorBankOutput(correlator_bank::AbstractCorrelatorBank, num_integrated_samples::Integer, sample_index::Integer) =
+    CorrelatorBankOutput(correlator_bank, Int(num_integrated_samples), Int(sample_index), NaN)
 
 correlator_output_type(num_ants::NumAnts{1}) = ComplexF64
 correlator_output_type(num_ants::NumAnts{M}) where {M} = SVector{M,ComplexF64}

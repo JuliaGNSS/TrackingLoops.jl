@@ -1,7 +1,7 @@
 # The per-integration and per-step paths must allocate nothing in steady state.
 # `AllocCheck` proves it statically for the arithmetic — the loop-filter step,
 # the timeline and the discriminators — and a dynamic `@allocated` check covers
-# the whole record fold, whose bit buffer pushes soft bits into a vector that a
+# the whole post-correlation processing, whose bit synchronizer pushes soft bits into a vector that a
 # static analysis has to count as growable.
 @testset "The per-integration paths are allocation-free" begin
     signal = GPSL1CA()
@@ -11,22 +11,22 @@
     est_state = init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz)
     timeline = NCOTimeline()
     reset_timeline!(timeline, 100.0, 0.1)
-    state_ref = Ref(SignalLoopState(signal))
+    state_ref = Ref(PostCorrelationState(signal))
     est_ref = Ref(est_state)
     # Keeps everything in `Ref`s so the loop returns nothing and the measurement
-    # sees only what the fold itself allocates. The loop's own variables are
+    # sees only what the processing itself allocates. The loop's own variables are
     # named apart from the testset's: a closure assigning a name that exists in
     # the enclosing scope captures and boxes that variable, and the boxed
-    # dispatch would be charged to the fold.
+    # dispatch would be charged to the processing.
     function run_integrations!(state_ref, est_ref, first_k, n)
-        local sgn, p, output, prompt, filtered, blocks, integration, carrier, code
+        local sgn, p, output, prompt, filtered, code_periods, integration, carrier, code
         st = state_ref[]
         es = est_ref[]
         for k = first_k:(first_k+n-1)
             sgn = isodd(div(k - 1, 20)) ? -1.0 : 1.0
             p = 2000.0 * sgn * cis(0.01)
-            output = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
-            st, prompt, filtered, blocks = apply_record(st, signal, 7, output, fs, density, true)
+            output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
+            st, prompt, filtered, code_periods = process_correlator_bank_output!(st, signal, 7, output, fs, density, true)
             integration = LoopRecord(signal, filtered, output, st, fs)
             es, carrier, code = step_loop!(tracking_loop, es, integration, timeline, Int64(4000k + 8000))
             schedule_command!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
@@ -38,8 +38,8 @@
     end
     # Warm up: sync found, soft-bit vector grown to its working size.
     run_integrations!(state_ref, est_ref, 1, 400)
-    @test has_bit_or_secondary_code_been_found(state_ref[])
-    # The soft bits are drained by their consumer once per fold; here once.
+    @test is_bit_or_secondary_code_synced(state_ref[])
+    # The soft bits are drained by their consumer once per chunk; here once.
     empty!(get_soft_bits(state_ref[]))
     run_integrations!(state_ref, est_ref, 401, 1)
     allocated = @allocated run_integrations!(state_ref, est_ref, 402, 200)
@@ -47,7 +47,7 @@
     state = state_ref[]
     est_state = est_ref[]
 
-    output = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000)
+    output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000)
     integration = LoopRecord(signal, output.correlator_bank, complex(0.0, 0.0), output, 1, fs)
     step_sig = Tuple{typeof(tracking_loop),typeof(est_state),typeof(integration),typeof(timeline),Int64}
     @test isempty(AllocCheck.check_allocs(step_loop!, step_sig; ignore_throw = true))
@@ -69,7 +69,7 @@ end
     for inner in (ConventionalAssistedPLLAndDLL(), DelayCompensatedTrackingLoop())
         tracking_loop = VectorTrackingLoop(signal; inner)
         state = init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz)
-        output = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000, 0.0)
+        output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000, 0.0)
         integration = LoopRecord(signal, output.correlator_bank, cis(0.1), output, 1, fs; prn = 3)
         nav = tracking_loop.navigation
         group = first(nav.groups)
@@ -103,7 +103,7 @@ end
             previous = complex(0.0, 0.0)
             for k = first_k:(first_k+n-1)
                 p = cis(0.01k) * (isodd(k ÷ 20) ? 1 : -1)
-                out = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k, 0.0)
+                out = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k, 0.0)
                 rec = LoopRecord(signal, out.correlator_bank, previous, out, 1, fs; prn = 3)
                 st, carrier, code = step_loop!(tracking_loop, st, rec, timeline, Int64(4000k + 8000))
                 schedule_command!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))

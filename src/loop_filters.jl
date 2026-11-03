@@ -131,40 +131,40 @@ LoopBandwidths(
 """
 $(SIGNATURES)
 
-PLL bandwidth for a record of `integration_time`, wide or narrow alike: `bandwidth`
-capped at `MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT / integration_time` for
+PLL bandwidth for an integration of `coherent_integration_time`, wide or narrow alike: `bandwidth`
+capped at `MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT / coherent_integration_time` for
 stability on long integrations. Only ever narrows, an explicit bandwidth as much as
 a default.
 """
-@inline function calc_effective_carrier_loop_bandwidth(bandwidth, integration_time)
+@inline function calc_effective_carrier_loop_bandwidth(bandwidth, coherent_integration_time)
     min(
         bandwidth,
-        uconvert(Hz, MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT / integration_time),
+        uconvert(Hz, MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT / coherent_integration_time),
     )
 end
 
 """
 $(SIGNATURES)
 
-Code-loop bandwidth for a record of `integration_time`: `bandwidth` capped at
-`MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT / integration_time`. Integration time does
+Code-loop bandwidth for an integration of `coherent_integration_time`: `bandwidth` capped at
+`MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT / coherent_integration_time`. Integration time does
 not otherwise narrow the DLL, as neither its dynamics nor its noise floor depend on
 it. The default 1 Hz is capped only past 18 ms (0.9 Hz at 20 ms).
 """
-@inline function calc_effective_code_loop_bandwidth(bandwidth, integration_time)
-    min(bandwidth, uconvert(Hz, MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT / integration_time))
+@inline function calc_effective_code_loop_bandwidth(bandwidth, coherent_integration_time)
+    min(bandwidth, uconvert(Hz, MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT / coherent_integration_time))
 end
 
 """
 $(SIGNATURES)
 
-FLL-assist bandwidth for a record of `integration_time`: `bandwidth` capped at
-`MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT / integration_time`.
+FLL-assist bandwidth for an integration of `coherent_integration_time`: `bandwidth` capped at
+`MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT / coherent_integration_time`.
 """
-@inline function calc_effective_fll_assist_loop_bandwidth(bandwidth, integration_time)
+@inline function calc_effective_fll_assist_loop_bandwidth(bandwidth, coherent_integration_time)
     min(
         bandwidth,
-        uconvert(Hz, MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT / integration_time),
+        uconvert(Hz, MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT / coherent_integration_time),
     )
 end
 
@@ -187,7 +187,7 @@ function calc_carrier_aided_dopplers(
     initial_carrier_doppler + carrier_doppler, initial_code_doppler + code_doppler
 end
 
-# Rotates a component's bit-buffer prompt onto the real axis, given the loops lock
+# Rotates a component's bit synchronizer prompt onto the real axis, given the loops lock
 # the driver there: a bit-identical no-op (`cispi(0)`) for an in-phase component,
 # `±90°` for a quadrature one (GPS L5 / Galileo E5a I vs Q). The offsets are in cycles.
 @inline _carrier_phase_derotation(driver_carrier_phase_offset::Real, signal) =

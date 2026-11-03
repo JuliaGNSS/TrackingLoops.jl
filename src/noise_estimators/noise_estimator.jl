@@ -41,8 +41,8 @@ const NoiseEstimators = NamedTuple{<:Any,<:Tuple{Vararg{AbstractNoiseEstimator}}
 """
 $(SIGNATURES)
 
-One noise measurement, the producer-side value parallel to
-[`CorrelatorOutput`](@ref): the already-normalised **density** plus the
+One noise observation, the producer-side value parallel to
+[`CorrelatorBankOutput`](@ref): the already-normalised **density** plus the
 bookkeeping a sliding window needs. Build one with [`noise_observation`](@ref),
 [`noise_observation_from_correlator`](@ref) or
 [`noise_observation_from_samples`](@ref) rather than by hand; all three reduce to the
@@ -119,7 +119,7 @@ Base.convert(::Type{NoiseObservation{D,T}}, o::NoiseObservation) where {D,T} =
 $(SIGNATURES)
 
 The concrete type `get_noise_density` returns for `estimator` once its window
-holds anything, so the fold's density argument stays a plain scalar rather than
+holds anything, so the processing's density argument stays a plain scalar rather than
 a `Union{Nothing,…}`.
 
 Defaults to `typeof(1.0/1.0Hz)`, which every shipped builder produces.
@@ -391,7 +391,7 @@ end
 #
 # "Ready" also requires a finite, positive floor. A zero floor is reachable (a
 # front-end dropout gives all-zero samples) and would give a `NaN` C/N₀, which
-# clears every lock threshold (see `NoCN0Estimator`). Not ready means the fold
+# clears every lock threshold (see `NoCN0Estimator`). Not ready means post-correlation processing
 # skips the update and `estimate_cn0` reports `-Inf dB-Hz`.
 #
 # Dispatched, because neither `isfinite` nor `>` is defined on an `SMatrix`.

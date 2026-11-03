@@ -4,11 +4,16 @@ CurrentModule = TrackingLoops
 
 # Tracking loops and loop filters
 
-A Doppler estimator closes the carrier and code loops. Its configuration (loop
-filter types and bandwidths) is a plain value, a subtype of
-[`AbstractDopplerEstimator`](@ref); the per-satellite state it advances is
-created with [`init_estimator_state`](@ref). Every estimator is stepped with the
-same call,
+A tracking loop steps once per coherent integration ([`LoopRecord`](@ref)):
+one coherent integration of one signal ahead of the discriminators, its correlator output
+(one hardware dump or a sum of dumps) with the bookkeeping the loop needs.
+
+A tracking loop closes the carrier and code loops. Scalar-loop configuration
+(loop-filter type and bandwidth) is a plain value, a subtype of
+[`AbstractTrackingLoop`](@ref). A [`VectorTrackingLoop`](@ref) implements the
+same interface and owns the shared navigation processor. Per-satellite state is
+created with [`init_loop_state`](@ref), and every tracking loop is stepped with
+the same call,
 
 ```julia
 loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, words, landing_sample)
@@ -38,23 +43,23 @@ unchanged and the command in force.
 The bandwidth rules ([`default_wide_carrier_loop_bandwidth`](@ref),
 [`calc_effective_carrier_loop_bandwidth`](@ref), …) keep the loops stable for a
 given integration time; the integration-length rules
-([`calc_num_code_blocks_to_integrate`](@ref TrackingLoops.calc_num_code_blocks_to_integrate), …) say how long a signal may be
+([`calc_num_code_periods_to_integrate`](@ref TrackingLoops.calc_num_code_periods_to_integrate), …) say how long a signal may be
 integrated coherently once its bit or secondary code has been found.
 
-## The per-record fold
+## Post-correlation processing
 
-[`apply_record`](@ref) advances one signal component's
-[`SignalLoopState`](@ref) (its prompt filter, C/N₀ estimator and bit buffer) by
-one record, so every caller does it the same way.
+[`process_correlator_bank_output!`](@ref) advances one signal component's
+[`PostCorrelationState`](@ref) (its post-correlation filter, C/N₀ estimator and bit synchronizer) by
+one integration, so every caller does it the same way.
 
 ```@docs
-SignalLoopState
-SignalLoopState(::SignalLoopState)
-TrackingLoops.SyncChange
-apply_record(::SignalLoopState, signal::AbstractGNSSSignal, ::Integer, ::CorrelatorOutput, ::Any, ::Any, ::Bool, ::Real = get_carrier_phase_offset(signal))
+PostCorrelationState
+PostCorrelationState(::PostCorrelationState)
+TrackingLoops.SyncEvent
+process_correlator_bank_output!(::PostCorrelationState, signal::AbstractGNSSSignal, ::Integer, ::CorrelatorBankOutput, ::Any, ::Any, ::Bool, ::Real = get_carrier_phase_offset(signal))
 is_dataless_with_secondary_code(::AbstractGNSSSignal)
-reset_signal_state(::SignalLoopState)
-restart_bit_clock(::SignalLoopState)
+reset_post_correlation!(::PostCorrelationState)
+reset_sync!(::PostCorrelationState)
 ```
 
 ## Two- and four-quadrant discriminators
@@ -64,12 +69,12 @@ prompt and its negation alike, so a data bit or secondary-code chip flipping the
 prompt's sign does not disturb them, over ±1/4 cycle for the PLL and ±1/(4T) for
 the FLL. Where the replica wipes every sign modulation off the prompt (a
 dataless signal synced to its secondary code) the prompt's sign is known, and
-the estimators switch to the four-quadrant discriminators, over ±1/2 cycle and
-±1/(2T), worth up to 6 dB of tracking threshold. The record's
-`carrier_phase_polarity`, the prompt's sign, says so; [`apply_record`](@ref)
-computes it into the [`SignalLoopState`](@ref), and a [`LoopRecord`](@ref) built
-from that state carries it to the scalar and vector loops alike. A record whose
-polarity differs from the previous record's comes without a previous prompt, so
+the loops switch to the four-quadrant discriminators, over ±1/2 cycle and
+±1/(2T), worth up to 6 dB of tracking threshold. The integration's
+`carrier_phase_polarity`, the prompt's sign, says so; [`process_correlator_bank_output!`](@ref)
+computes it into the [`PostCorrelationState`](@ref), and a [`LoopRecord`](@ref) built
+from that state carries it to the scalar and vector loops alike. An integration whose
+polarity differs from the previous integration's comes without a previous prompt, so
 the four-quadrant FLL never compares prompts across the switch.
 
 GPS L1C-P and L5Q, Galileo E1C, E5a-Q, E5b-Q and E6-C, and BeiDou B1C-P and
@@ -84,7 +89,7 @@ integration's PLL reads.
 The sign rests on a contract with whoever correlates the integrations, a hardware
 correlator as much as Tracking.jl: until the sync, these signals' integrations
 ([`is_dataless_with_secondary_code`](@ref)) are primary-only. A replica carrying
-the same secondary chip on every block is fine once the host multiplies the records
+the same secondary chip on every code period is fine once the host multiplies the integrations
 by that chip (Tracking.jl's carries chip 0 and multiplies by it). A negative chip
 left in makes the sync read the wrong sign, and on the switch the four-quadrant PLL
 pulls the carrier phase over by half a cycle.
@@ -94,7 +99,7 @@ pulls the carrier phase over by half a cycle.
 ```@docs
 ScalarTrackingLoop
 LoopRecord
-LoopRecord(::Any, ::Any, ::CorrelatorOutput, ::SignalLoopState, ::Any)
+LoopRecord(::Any, ::Any, ::CorrelatorBankOutput, ::PostCorrelationState, ::Any)
 DelayCompensatedTrackingLoop
 TrackingLoops.ScalarLoopState
 TrackingLoops.SatNCOReferencedPLLAndDLL
@@ -211,8 +216,8 @@ TrackingLoops.calc_effective_fll_assist_loop_bandwidth(::Any, ::Any)
 ## Integration length
 
 ```@docs
-TrackingLoops.calc_num_code_blocks_for_bit_buffer(::AbstractGNSSSignal, ::Integer, ::Any, ::Bool)
-TrackingLoops.calc_num_code_blocks_to_integrate(::AbstractGNSSSignal, ::Int, ::Bool)
-TrackingLoops.default_num_code_blocks_to_integrate(::AbstractGNSSSignal)
-TrackingLoops.max_num_code_blocks_to_integrate(::AbstractGNSSSignal)
+TrackingLoops.calc_num_code_periods_for_bit_sync(::AbstractGNSSSignal, ::Integer, ::Any, ::Bool)
+TrackingLoops.calc_num_code_periods_to_integrate(::AbstractGNSSSignal, ::Int, ::Bool)
+TrackingLoops.default_num_code_periods_to_integrate(::AbstractGNSSSignal)
+TrackingLoops.max_num_code_periods_to_integrate(::AbstractGNSSSignal)
 ```

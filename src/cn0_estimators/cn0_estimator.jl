@@ -23,8 +23,8 @@ estimator sum prompts coherently without straddling a bit flip
 
 Fields:
 
-  - `signal` — the signal the record belongs to.
-  - `num_code_blocks` — primary-code blocks this record spanned. One for the
+  - `signal` — the signal the integration belongs to.
+  - `num_code_periods` — primary-code periods this integration spanned. One for the
     default configuration; more when the correlate step was lengthened by
     `Tracking.set_preferred_num_code_blocks_to_integrate!` or an external
     producer handed over longer records.
@@ -35,46 +35,46 @@ Fields:
   - `bit_code_block_index` — this record's offset inside the open navigation
     bit (`0` = starts a fresh bit). `-1` when the prompt cannot be summed
     coherently against the grid: before bit / secondary-code sync, and, for a
-    secondary-coded signal, for a record correlated without the overlay wipe-off
-    a sync in the same fold just established (see `fold_record`).
-    Such a record's blocks still count towards the grid.
-  - `bit_buffer` — the signal's `BitBuffer` as of *before* this record:
+    secondary-coded signal, for an integration correlated without the overlay wipe-off
+    a sync in the same batch just established (see `_process_correlator_bank_output!`).
+    Such an integration's code periods still count towards the grid.
+  - `bit_synchronizer` — the signal's `BitSynchronizer` as of *before* this integration:
     the soft bits decoded so far, the open coherent bit accumulator, the lock
     polarity and the secondary-code phase.
   - `noise_density` — **this signal's** measured noise density `N₀` (dimension
     `1/Hz`), read by [`NoiseRefCN0Estimator`](@ref). `Nothing` (in the type, not
     as a sentinel) means no [`AbstractNoiseEstimator`](@ref) is configured for
     the signal, so call sites monomorphise. A configured source whose window is
-    still empty never reaches here — the fold skips the update — so otherwise
+    still empty never reaches here — post-correlation processing skips the update — so otherwise
     this is always a plain scalar.
-  - `integration_time` — this record's own `T`, so records of different lengths
+  - `coherent_integration_time` — this integration's own `T`, so integrations of different lengths
     in one ring are each handled correctly. `nothing` on the bare-prompt-stream
     path.
 """
 struct CN0UpdateContext{S<:AbstractGNSSSignal,B<:Unsigned,N,T}
     signal::S
-    num_code_blocks::Int
+    num_code_periods::Int
     num_code_periods_per_bit::Int
     bit_code_block_index::Int
-    bit_buffer::BitBuffer{B}
+    bit_synchronizer::BitSynchronizer{B}
     noise_density::N
-    integration_time::T
+    coherent_integration_time::T
 end
 
 # Positional convenience for the first five fields, defaulting the two only a
 # noise-referenced estimator reads.
 @inline CN0UpdateContext(
     signal::AbstractGNSSSignal,
-    num_code_blocks::Integer,
+    num_code_periods::Integer,
     num_code_periods_per_bit::Integer,
     bit_code_block_index::Integer,
-    bit_buffer::BitBuffer,
+    bit_synchronizer::BitSynchronizer,
 ) = CN0UpdateContext(
     signal,
-    Int(num_code_blocks),
+    Int(num_code_periods),
     Int(num_code_periods_per_bit),
     Int(bit_code_block_index),
-    bit_buffer,
+    bit_synchronizer,
     nothing,
     nothing,
 )
@@ -84,42 +84,42 @@ end
 # record's offset. `bit_sync_usable = false` forces the "no bit grid" marker (see
 # `drop_prompt` in `fold_record`).
 #
-# The keyword form is for callers building a context by hand; the per-record fold
+# The keyword form is for callers building a context by hand; post-correlation processing
 # calls the positional core below, because a keyword call allocates per call on
 # Julia 1.10 (still supported) and this is the hottest construction site.
 @inline CN0UpdateContext(
     signal::AbstractGNSSSignal,
-    bit_buffer::BitBuffer,
-    num_code_blocks::Integer,
+    bit_synchronizer::BitSynchronizer,
+    num_code_periods::Integer,
     bit_sync_usable::Bool = true;
     noise_density = nothing,
-    integration_time = nothing,
+    coherent_integration_time = nothing,
 ) = CN0UpdateContext(
     signal,
-    bit_buffer,
-    num_code_blocks,
+    bit_synchronizer,
+    num_code_periods,
     bit_sync_usable,
     noise_density,
-    integration_time,
+    coherent_integration_time,
 )
 
 @inline function CN0UpdateContext(
     signal::AbstractGNSSSignal,
-    bit_buffer::BitBuffer,
-    num_code_blocks::Integer,
+    bit_synchronizer::BitSynchronizer,
+    num_code_periods::Integer,
     bit_sync_usable::Bool,
     noise_density,
-    integration_time,
+    coherent_integration_time,
 )
-    usable = bit_sync_usable && has_bit_or_secondary_code_been_found(bit_buffer)
+    usable = bit_sync_usable && is_bit_or_secondary_code_synced(bit_synchronizer)
     CN0UpdateContext(
         signal,
-        Int(num_code_blocks),
+        Int(num_code_periods),
         get_code_periods_per_bit(signal),
-        usable ? bit_buffer.prompt_accumulator_integrated_code_blocks : -1,
-        bit_buffer,
+        usable ? bit_synchronizer.num_code_periods_into_bit : -1,
+        bit_synchronizer,
         noise_density,
-        integration_time,
+        coherent_integration_time,
     )
 end
 
@@ -138,7 +138,7 @@ A trait, so a custom estimator can opt in. Two things key off it:
     [`CorrelatorNoiseEstimator`](@ref) only where its estimator returns `true`;
     any other signal runs no despread at all.
   - **The warm-up skip.** While a configured source's window is still empty, the
-    fold skips the C/N₀ update for the requiring signal *only*. Skipping its
+    post-correlation processing skips the C/N₀ update for the requiring signal *only*. Skipping its
     neighbours too would make an `NWPRCN0Estimator` beside it drop its open
     window on every skipped integration (see `_update_nwpr`).
 
@@ -182,10 +182,10 @@ sample-driven path needs no configuration at all.
 
 [`NWPRCN0Estimator`](@ref) needs a coherent narrowband window, so it does not
 apply uniformly. Measured through `track!` on a data-modulated GPS L1 C/A signal,
-1200 code blocks, median over 9 seeds, fraction of runs reporting `-Inf dB-Hz`
+1200 code periods, median over 9 seeds, fraction of runs reporting `-Inf dB-Hz`
 in brackets:
 
-| true | NWPR, 1-block records | NoiseRef    | NWPR, 20-block records | NoiseRef    |
+| true | NWPR, 1-period integrations | NoiseRef    | NWPR, 20-period integrations | NoiseRef    |
 |:---- | ---------------------:| -----------:| ----------------------:| -----------:|
 | 25   | 11.2 (56 %)           | 23.4 (0)    | —                      | —           |
 | 30   | 29.3 ± 1.40           | 29.6 ± 0.62 | —                      | —           |
@@ -212,3 +212,10 @@ function default_cn0_estimator(
 )
     NoiseRefCN0Estimator(; num_records = num_prompts_for_cn0_estimation)
 end
+
+reset_cn0_estimator!(e::AbstractCN0Estimator) = throw(
+    ArgumentError(
+        "this C/N₀ estimator has no `TrackingLoops.reset_cn0_estimator!` " *
+        "method; add one that empties its history",
+    ),
+)
