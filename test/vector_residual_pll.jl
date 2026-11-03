@@ -1,8 +1,8 @@
 # The carrier of a satellite in the vector loop: the navigation filter sets its NCO, the
 # FLL measures the rate against it, and a residual PLL follows the carrier on the
-# prompts the NCO leaves and gives the phase the engine rotates the prompts it decodes
-# by. On the synthetic satellites of `vector_simulation.jl`, and the engine's
-# decoding record by record.
+# prompts the NCO leaves and gives the phase the navigation processor rotates the prompts it decodes
+# by. On the synthetic satellites of `vector_simulation.jl`, and the navigation processor's
+# decoding integration by integration.
 
 using Random: Xoshiro
 using Statistics: mean, std
@@ -13,43 +13,43 @@ noise_std_at(cn0_dbhz) = sqrt(1 / (2 * 10^(cn0_dbhz / 10) * 1e-3))
 # A slot filled as `fill_slot!` fills it, reporting `cn0_dbhz` — whatever the signal
 # does: a host's C/N₀ estimator that does not notice a fade.
 reporting(cn0_dbhz) =
-    (slot, sat, epoch, application_sample_index, nav; in_lock = sat.in_view) ->
-        (fill_slot!(slot, sat, epoch, application_sample_index, nav; in_lock); slot.cn0_dbhz = cn0_dbhz; slot)
+    (slot, sat, epoch, application_sample_index, nav_processor; measurement_ready = sat.in_view) ->
+        (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor; measurement_ready); slot.cn0_dbhz = cn0_dbhz; slot)
 
-# Run `cycles` 100 ms cycles of 1 ms ticks, each channel's noise σ set by
-# `noise(cycle, i)` before the cycle. `on_integration(cycle, i, sat, phase_error_before,
-# integration_seconds)` after every integration, `on_cycle(cycle)` after every navigation cycle.
-function run_noisy!(rx, cycles; noise, fill! = fill_slot!, vector = true,
-        on_integration = (c, i, sat, before, T) -> nothing, on_cycle = c -> nothing)
+# Run `num_updates` updates, 100 ms apart, of 1 ms ticks, each channel's noise σ set by
+# `noise(update_index, i)` before the update. `on_integration(update_index, i, sat, phase_error_before,
+# integration_seconds)` after every integration, `on_update(update)` after every navigation filter update.
+function run_noisy!(rx, num_updates; noise, fill! = fill_slot!, vector = true,
+        on_integration = (c, i, sat, before, T) -> nothing, on_update = c -> nothing)
     sample = 0
-    for cycle = 1:cycles
-        foreach(((i, sat),) -> sat.noise_std = noise(cycle, i), enumerate(rx.sats))
+    for update_index = 1:num_updates
+        foreach(((i, sat),) -> sat.noise_std = noise(update_index, i), enumerate(rx.sats))
         for k = 1:100
             sample_index = sample + k * SAMPLES_PER_MS
             for (i, sat) in enumerate(rx.sats)
                 n = integration_ms(sat.signal)
                 k % n == 0 || continue
                 before = sat.phase_error
-                simulate_record!(sat, rx.tracking_loop, rx.truth, sim_time(rx, sample_index),
+                simulate_integration!(sat, rx.tracking_loop, rx.truth, sim_time(rx, sample_index),
                     n * SAMPLES_PER_MS, sample_index, NO_LANDING_SAMPLE; rx.polarity)
-                on_integration(cycle, i, sat, before, n * 1e-3)
+                on_integration(update_index, i, sat, before, n * 1e-3)
             end
         end
         sample += 100 * SAMPLES_PER_MS
-        vector && run_cycle!(rx, sample, fill!)
-        on_cycle(cycle)
+        vector && run_update!(rx, sample, fill!)
+        on_update(update_index)
     end
     sample
 end
 
-cycle_time(rx, cycle) = rx.truth.t0 + cycle * 0.1
-velocity_error(rx, cycle) =
+update_time(rx, update_index) = rx.truth.t0 + update_index * 0.1
+velocity_error(rx, update_index) =
     norm(SVector(rx.vt.pvt.velocity.x, rx.vt.pvt.velocity.y, rx.vt.pvt.velocity.z) -
-         truth_velocity(rx.truth, cycle_time(rx, cycle)))
-solution_error(rx, cycle) = position_error(rx, (; pvt = rx.vt.pvt, time = cycle_time(rx, cycle)))
+         truth_velocity(rx.truth, update_time(rx, update_index)))
+solution_error(rx, update_index) = position_error(rx, (; pvt = rx.vt.pvt, time = update_time(rx, update_index)))
 
-# A record's true mean residual phase (cycles) against the residual PLL's prediction of it,
-# folded into the Costas range: the error the prompt the engine decodes is rotated with.
+# An integration's true mean residual phase (cycles) against the residual PLL's prediction of it,
+# folded into the Costas range: the error the prompt the navigation processor decodes is rotated with.
 residual_pll_error(sat, before) =
     rem((before + sat.phase_error) / 2 - sat.state.residual_pll.prompt_phase, 0.5, RoundNearest)
 
@@ -59,8 +59,8 @@ residual_pll_error(sat, before) =
     @test !diverged
     for channels in rx.channels, sat in channels
         state = sat.state
-        @test state.in_vector_loop && TL._has_carrier_ramp(state)
-        # The replica's command is the filter's ramp at the middle of the next record…
+        @test state.vector_controlled && TL._has_carrier_ramp(state)
+        # The replica's command is the filter's ramp at the middle of the next integration…
         T = integration_ms(sat.signal) * 1e-3
         @test sat.carrier_doppler ≈ TL._doppler_at(state.ramp, state.residual_pll.prompt_center + T) atol = 1e-4
         # …which the residual PLL's residual brings onto the incoming carrier.
@@ -79,7 +79,7 @@ residual_pll_error(sat, before) =
 end
 
 @testset "The carrier phase correction brings the replica onto the incoming carrier" begin
-    # Through the engine: the correction at the end of the latest record and later on is the
+    # Through the navigation processor: the correction at the end of the latest integration and later on is the
     # simulated carrier phase error against the replica, the residual PLL having taken over
     # from the phase-locked scalar loop on it.
     rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()))
@@ -87,7 +87,7 @@ end
     @test !diverged
     fs = ustrip(Hz, SIM_FS)
     for channels in rx.channels, sat in channels
-        @test sat.state.in_vector_loop
+        @test sat.state.vector_controlled
         nco_history = sim_nco_history(sat, NO_LANDING_SAMPLE)
         @test calc_carrier_phase_correction(sat.state, nco_history, sample_index, SIM_FS) ≈ sat.phase_error atol = 1e-4
         dt = 2e-3
@@ -108,7 +108,7 @@ end
     # The 18 Hz PLL alone, and the residual PLL at its default 10 Hz, on the same noisy
     # signal: each integration's true mean phase error against what the loop predicted for it —
     # the replica's phase for the scalar loop, the residual PLL's prediction for the
-    # residual PLL, which the engine rotates the prompts it decodes by. A third-order loop's
+    # residual PLL, which the navigation processor rotates the prompts it decodes by. A third-order loop's
     # jitter goes as `√B_L`, so 10 Hz is `√(10/18) = 0.75` times the 18 Hz loop's.
     noise = (c, i) -> noise_std_at(40.0)
     scalar = SimReceiver(; signals = (signal,))
@@ -120,7 +120,7 @@ end
     errors = Float64[]
     run_noisy!(rx, 100; noise, on_integration = (c, i, sat, before, T) ->
         c > 30 && push!(errors, residual_pll_error(sat, before)))
-    @test all(sat -> sat.state.in_vector_loop, rx.sats)
+    @test all(sat -> sat.state.vector_controlled, rx.sats)
     @test length(errors) == length(scalar_errors)
     @test std(errors) / std(scalar_errors) < 0.85
 end
@@ -144,13 +144,13 @@ end
     residuals = [Float64[] for _ in rx.sats]
     variances = Float64[]
     run_noisy!(rx, 400; noise = (c, i) -> noise_std_at(cn0_dbhz), fill! = reporting(cn0_dbhz),
-        on_cycle = c -> begin
+        on_update = c -> begin
             c > 50 || return
             for member in rx.vt.buffers.members
                 @test member.available
                 sat = rx.sats[member.slot_index]
                 push!(residuals[member.slot_index], member.pseudorange_rate +
-                    member.wavelength * true_doppler(sat, rx.truth, cycle_time(rx, c)))
+                    member.wavelength * true_doppler(sat, rx.truth, update_time(rx, c)))
                 push!(variances, TL.pseudorange_rate_noise_variance(member, T))
             end
         end)
@@ -184,14 +184,14 @@ end
                 max_frequency = max(max_frequency, abs(TL._residual_doppler(sat.state.residual_pll)))
                 push!(errors, residual_pll_error(sat, before))
             end,
-            on_cycle = c -> begin
+            on_update = c -> begin
                 c >= 90 || return
                 @test solution_error(rx, c) < 2.0
                 @test velocity_error(rx, c) < 0.8
             end)
         @test max_frequency < max_residual
         @test maximum(abs, errors) < 0.1
-        @test all(sat -> sat.state.in_vector_loop, rx.sats)
+        @test all(sat -> sat.state.vector_controlled, rx.sats)
     end
 end
 
@@ -200,7 +200,7 @@ end
 # replica's command, the ramp's, is `residual(t)` (cycles), at amplitude `amplitude(t)` plus
 # noise of σ `noise_std`, the host reading no signal while the amplitude is zero; the
 # integrations end at `ends` (samples). `on_integration(state, k)` after the `k`-th.
-function step_residual(residual, ends; ramp = TL.CarrierRamp(100.0, 0.0, 0.0), scalar_doppler = ramp.doppler,
+function step_residual(residual, ends; ramp = TL.CarrierDopplerRamp(100.0, 0.0, 0.0), scalar_doppler = ramp.doppler,
         unlocked = false, amplitude = t -> 1.0, noise_std = 0.0, on_integration = (state, k) -> nothing)
     rng = Xoshiro(1)
     tracking_loop = VectorTrackingLoop(GPSL1CA())
@@ -211,7 +211,7 @@ function step_residual(residual, ends; ramp = TL.CarrierRamp(100.0, 0.0, 0.0), s
     for (k, sample_index) in enumerate(ends)
         center = (sample_index - 500) / 1e6
         prompt = amplitude(center) * cis(2π * residual(center)) + noise_std * complex(randn(rng), randn(rng))
-        integration = prompt_record(GPSL1CA(), prompt, 1000, 1e6Hz; sample_index, previous_prompt,
+        integration = prompt_integration(GPSL1CA(), prompt, 1000, 1e6Hz; sample_index, previous_prompt,
             cn0_dbhz = iszero(amplitude(center)) ? -Inf : 45.0)
         state, = step_satellite(tracking_loop, state, integration, nco_history, NO_LANDING_SAMPLE)
         previous_prompt = get_prompt(integration.filtered_correlator)
@@ -232,7 +232,7 @@ end
     corrections = Float64[]
     step_residual(residual, 1000:1000:3_000_000; scalar_doppler = 105.0, on_integration = (state, k) -> begin
         k > 1500 || return
-        @test state.in_vector_loop && is_phase_locked(state)
+        @test state.vector_controlled && is_phase_locked(state)
         sample_index = 1000 * k
         correction = calc_carrier_phase_correction(state, nco_history, sample_index, 1e6Hz)
         push!(corrections, correction)
@@ -320,10 +320,10 @@ end
                TL._residual_doppler_rate(residual_pll) * (application_time - residual_pll.prompt_center)
     rate = sat.state.ramp.rate + TL._residual_doppler_rate(residual_pll)
     TL._mark_release!(slot, VT_INELIGIBLE)
-    rx.vt.cycle_id += 1
-    sat.state = TL._take_up_cycle(rx.vt, rx.group, slot, sat.state, feedback_integration(sat, sample),
+    rx.vt.update_index += 1
+    sat.state = TL._apply_filter_feedback(rx.vt, rx.group, slot, sat.state, feedback_integration(sat, sample),
         sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(sample))
-    @test !sat.state.in_vector_loop
+    @test !sat.state.vector_controlled
     @test sat.state.inner.initial_carrier_doppler ≈ estimate * Hz
     @test abs(estimate - true_doppler(sat, rx.truth, sim_time(rx, sample))) < 0.5
     @test sat.state.inner.carrier_loop_filter.x2 ≈ rate * Hz^2
@@ -333,7 +333,7 @@ end
 
 # A decoding integration of `signal` at `sample_index` whose prompt is `prompt`: synced, the
 # host's bit clock having appended `host_bits`, signed by `bit_polarity`.
-function decoding_record(signal, prompt, sample_index; host_bits = Float32[], bit_polarity = 1,
+function decoding_integration(signal, prompt, sample_index; host_bits = Float32[], bit_polarity = 1,
         sync_change = TL.SYNC_UNCHANGED, fold_end = sample_index)
     correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5prompt, prompt, 0.5prompt), 0.5)
     LoopRecord(signal, correlator_bank, complex(0.0), 4000, sample_index, fold_end, 1, 4e6Hz, 5, NaN,
@@ -342,16 +342,16 @@ function decoding_record(signal, prompt, sample_index; host_bits = Float32[], bi
 end
 
 # A residual PLL of a satellite in the vector loop that wiped its latest prompt, at
-# `center` (s), with `prompt_phase`, its loop filter putting out `carrier_freq_update`.
-residual_pll_at(center, prompt_phase; carrier_freq_update = 0.0) = TL.ResidualPLL(
-    10.0Hz, carrier_freq_update, TL._residual_pll_loop_filter(carrier_freq_update, 0.0), center, Int8(0), prompt_phase,
+# `center` (s), with `prompt_phase`, its loop filter putting out `carrier_frequency_correction`.
+residual_pll_at(center, prompt_phase; carrier_frequency_correction = 0.0) = TL.ResidualPLL(
+    10.0Hz, carrier_frequency_correction, TL._residual_pll_loop_filter(carrier_frequency_correction, 0.0), center, Int8(0), prompt_phase,
     TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
 
-@testset "The engine decodes the prompts it rotated onto the incoming carrier" begin
+@testset "The navigation processor decodes the prompts it rotated onto the incoming carrier" begin
     signal = GPSL1CA()
     tracking_loop = VectorTrackingLoop(signal)
-    nav = tracking_loop.navigation
-    group = first(nav.groups)
+    nav_processor = tracking_loop.navigation
+    group = first(nav_processor.groups)
     slot = first(group.slots)
     nco_history = ConstantNCOCommand(100.0, 0.0)
     state = TL._add_to_vector_loop(init_loop_state(tracking_loop, signal, 100.0Hz, 0.0Hz))
@@ -361,14 +361,14 @@ residual_pll_at(center, prompt_phase; carrier_freq_update = 0.0) = TL.ResidualPL
     # filter's Doppler error, and the residual PLL's prediction turns with them: rotated
     # back, they sum to the real axis, which the host's bit clock, signed by its sync
     # polarity, turns into a soft bit at the integration that ends the bit.
-    feed!(k, phase; host_bits = Float32[], bit_polarity = 1, unwiped = false) = TL._decode_record!(
-        group, slot, decoding_record(signal, -cis(2π * phase), 4000k; host_bits, bit_polarity),
+    feed!(k, phase; host_bits = Float32[], bit_polarity = 1, unwiped = false) = TL._decode_integration!(
+        group, slot, decoding_integration(signal, -cis(2π * phase), 4000k; host_bits, bit_polarity),
         VectorLoopState(state; residual_pll = residual_pll_at((4000k - 2000) / 4e6, phase)), nco_history, true, unwiped)
     # A bit the satellite joins the loop within is the host's.
     feed!(1, 0.1; host_bits = Float32[0.5])
     @test slot.soft_bit[1] == sentinel
     @test slot.bit_from_edge
-    # The next ones are the engine's: three records, the last ending the bit.
+    # The next ones are the navigation processor's: three integrations, the last ending the bit.
     feed!(2, 0.2)
     feed!(3, 0.3)
     @test slot.bit_accumulator ≈ -2.0
@@ -388,10 +388,10 @@ residual_pll_at(center, prompt_phase; carrier_freq_update = 0.0) = TL.ResidualPL
     @test slot.bit_from_edge
     feed!(9, 0.9; host_bits = Float32[0.7])
     @test slot.soft_bit[1] ≈ -1.0f0
-    # Out of the vector loop the engine decodes the host's soft bits.
+    # Out of the vector loop the navigation processor decodes the host's soft bits.
     slot.soft_bit[1] = sentinel
     out = init_loop_state(tracking_loop, signal, 100.0Hz, 0.0Hz)
-    TL._decode_record!(group, slot, decoding_record(signal, cis(0.3), 40000; host_bits = Float32[0.7]),
+    TL._decode_integration!(group, slot, decoding_integration(signal, cis(0.3), 40000; host_bits = Float32[0.7]),
         out, nco_history, true, false)
     @test slot.soft_bit[1] == sentinel
     @test !slot.bit_from_edge
@@ -404,14 +404,14 @@ end
     # past the residual PLL's latest prompt takes its prediction over the commands the
     # replica ran on.
     signal = GalileoE1B()
-    residual_pll = residual_pll_at(0.0045, 0.31; carrier_freq_update = 2.0)
+    residual_pll = residual_pll_at(0.0045, 0.31; carrier_frequency_correction = 2.0)
     history = TL.PromptHistory(8)
     TL._push_prompt!(history, residual_pll_at(0.0005, 0.2))
     TL._push_prompt!(history, residual_pll)
-    ramp = TL.CarrierRamp(1000.0, 0.0, 0.0)
+    ramp = TL.CarrierDopplerRamp(1000.0, 0.0, 0.0)
     nco_history = ConstantNCOCommand(1000.0, 0.0)
     half = (1000.0 * 0.0005, 0.0005s)
-    integration(start, stop) = decoding_record(signal, cis(0.0), stop; fold_end = stop) |>
+    integration(start, stop) = decoding_integration(signal, cis(0.0), stop; fold_end = stop) |>
         r -> LoopRecord(r.signal, r.filtered_correlator, r.previous_prompt, stop - start, stop, stop, 1,
             r.sampling_frequency, r.prn, r.code_phase, true, r.sync_change, 0, r.new_soft_bits,
             r.cn0_estimator, Int8(0), Int8(1))
@@ -434,7 +434,7 @@ end
     @test isnan(phase(16000, 20000; history = TL._clear_prompts!(short)))
 end
 
-@testset "A slot remembers half a navigation cycle of the driver's prompts" begin
+@testset "A slot remembers half an update interval of the driver's prompts" begin
     # The most a host steps one of a satellite's signals ahead of the other, in the
     # driver's shortest integrations, one code period each, and the integration straddling it.
     @test TL._prompt_history_length(GPSL5Q(), GPSL5I(), 100.0ms) == 51
@@ -456,10 +456,10 @@ end
 
 @testset "Decoding through the filter-set carrier, and a −25 dB fade" begin
     # GPS L1 C/A broadcasting LNAV, stepped as a host steps it (the pipeline harness): the
-    # engine decodes the prompts it rotated by the residual PLLs, and the decoders go on
+    # navigation processor decodes the prompts it rotated by the residual PLLs, and the decoders go on
     # decoding. One satellite fades by 25 dB for 8 s, which the host's own C/N₀ estimator
     # follows: it leaves the update and rejoins within seconds.
-    rx = PipelineReceiver(; num_sats = 8, tracking_loop_kw = (; max_satellites_per_signal = 8))
+    rx = PipelineReceiver(; num_sats = 8, tracking_loop_kw = (; satellite_capacity_per_signal = 8))
     fade = (40.0, 48.0)
     results, _, diverged = run_pipeline!(rx, 66.0; fade = (t, i) -> i == 1 && fade[1] <= t < fade[2] ? 10^(-25 / 20) : 1.0)
     @test !diverged
@@ -467,9 +467,9 @@ end
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
     @test all(r -> r.status.running, results[seed:end])
     slots = rx.vt.groups[1].slots[1:length(rx.sats)]
-    @test all(slot -> slot.decoding_bit_synced && slot.in_lock, slots)
+    @test all(slot -> slot.decoding_bit_synced && slot.measurement_ready, slots)
     # Every decoder decoded the subframes broadcast while the filter set the carrier, up
-    # to a minute after the receiver started, from the engine's own soft bits.
+    # to a minute after the receiver started, from the navigation processor's own soft bits.
     @test all(slot -> slot.bit_from_edge, slots)
     @test all(slot -> get_broadcast_time_of_week(slot.running_decoder) >=
         get_broadcast_time_of_week(rx.sats[1].decoder) + 60, slots)

@@ -22,15 +22,15 @@ end
 
 # One `print` per value: a long `print(io, xs...)` is not specialised on its
 # arguments' types, which leaves the call dynamic.
-function report(io, cycle, pvt, status)
-    print(io, "cycle ", cycle, ":")
+function report(io, update_index, pvt, status)
+    print(io, "update ", update_index, ":")
     for x in (pvt.position.x, pvt.position.y, pvt.position.z, pvt.velocity.x,
         pvt.velocity.y, pvt.velocity.z,
-        status.position_std.val, status.time_with_insufficient_meas.val)
+        status.position_std.val, status.measurement_deficit_duration.val)
         print(io, " ", x)
     end
     print(io, " ", length(pvt.observations))
-    print(io, " ", status.num_members)
+    print(io, " ", status.num_vector_tracking_members)
     print(io, " ", status.running)
     print(io, " ", status.seeded)
     t = pvt.time
@@ -64,18 +64,18 @@ end
 function (@main)(args::Vector{String})::Cint
     io = Core.stdout
     rx = PipelineReceiver(Val(false))
-    nav = rx.tracking_loop.navigation
-    last_cycle = nav.cycle_id
+    nav_processor = rx.tracking_loop.navigation
+    last_update = nav_processor.update_index
     sample = 0
     # 33 s: the first fix comes 26.2 s in; a two-second outage of two satellites late on.
     for _ = 1:33_000
         sample += SAMPLES_PER_MS
         t = sample / 4e6
         step_channels!(rx, sample, 29.0 <= t <= 31.0)
-        if nav.cycle_id != last_cycle
-            last_cycle = nav.cycle_id
-            status = nav.status
-            (status.seeded || last_cycle % 20 == 0) && report(io, last_cycle, nav.pvt, status)
+        if nav_processor.update_index != last_update
+            last_update = nav_processor.update_index
+            status = nav_processor.status
+            (status.seeded || last_update % 20 == 0) && report(io, last_update, nav_processor.pvt, status)
         end
     end
     report_noise(io)

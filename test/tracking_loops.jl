@@ -192,11 +192,11 @@ end
     VectorTrackingLoop(LOOP_SIGNAL),
     VectorTrackingLoop(LOOP_SIGNAL; inner = DelayCompensatedTrackingLoop()),
 )
-    # What a host calls, and nothing else: build, step a integration, reset.
+    # What a host calls, and nothing else: build, step an integration, reset.
     state = init_loop_state(tracking_loop, LOOP_SIGNAL, 100.0Hz, 0.0Hz)
     @test state isa loop_state_type(tracking_loop, LOOP_SIGNAL)
     output = CorrelatorBankOutput(loop_epl(0.5, 1.0, 0.5), LOOP_N, LOOP_N)
-    # The integration names its satellite, which the vector loop's navigation engine needs.
+    # The integration names its satellite, which the vector loop's navigation processor needs.
     integration = LoopRecord(LOOP_SIGNAL, output.correlator_bank, complex(0.0, 0.0), output, 1, LOOP_FS; prn = 5)
     stepped, carrier_doppler, code_doppler =
         @inferred step_loop!(tracking_loop, state, integration, ConstantNCOCommand(100.0, 0.0), NO_LANDING_SAMPLE)
@@ -207,15 +207,15 @@ end
           typeof(state)
     # What it knows of the navigation solution: nothing, for a scalar loop.
     if tracking_loop isa VectorTrackingLoop
-        @test navigation_cycle(tracking_loop) isa Int
-        @test navigation_solution(tracking_loop) !== nothing
-        @test satellite_report(tracking_loop, LOOP_SIGNAL, 5) isa SatelliteReport
+        @test get_navigation_update_index(tracking_loop) isa Int
+        @test get_navigation_solution(tracking_loop) !== nothing
+        @test get_satellite_report(tracking_loop, LOOP_SIGNAL, 5) isa SatelliteReport
     else
-        @test navigation_solution(tracking_loop) === nothing
-        @test navigation_status(tracking_loop) === nothing
-        @test navigation_cycle(tracking_loop) === nothing
-        @test navigation_epoch(tracking_loop) === nothing
-        @test satellite_report(tracking_loop, LOOP_SIGNAL, 5) === nothing
+        @test get_navigation_solution(tracking_loop) === nothing
+        @test get_navigation_status(tracking_loop) === nothing
+        @test get_navigation_update_index(tracking_loop) === nothing
+        @test get_navigation_elapsed_time(tracking_loop) === nothing
+        @test get_satellite_report(tracking_loop, LOOP_SIGNAL, 5) === nothing
     end
 end
 
@@ -266,10 +266,10 @@ end
     interleaved, interleaved_state = dopplers(true)
     @test plain == interleaved
     @test plain_state == interleaved_state
-    @test navigation_solution(tracking_loop) === nothing
+    @test get_navigation_solution(tracking_loop) === nothing
 end
 
-@testset "$(nameof(typeof(tracking_loop))) reads a integration of known sign four-quadrant" for tracking_loop in (
+@testset "$(nameof(typeof(tracking_loop))) reads an integration of known sign four-quadrant" for tracking_loop in (
     ConventionalAssistedPLLAndDLL(),
     DelayCompensatedTrackingLoop(),
 )

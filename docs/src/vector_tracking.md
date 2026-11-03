@@ -17,13 +17,13 @@ The filter is an unscented Kalman filter over position, velocity, one clock bias
 per GNSS time system (all driven by the one oscillator's drift) and one
 inter-frequency bias per band beyond the reference band. It follows the bias
 model of [PositionVelocityTime.jl](https://github.com/JuliaGNSS/PositionVelocityTime.jl):
-which biases a cycle can determine is decided per cycle, and where the
+which biases an update can determine is decided per update, and where the
 measurements cannot separate two clocks, a broadcast offset between their
 systems (GGTO, BGTO) ties them as a pseudo-measurement. With `use_pseudorange_rates = true` (the
 default) it also measures the pseudorange rates (VDFLL); with `false` it is a
 VDLL, and the carrier NCOs' Doppler comes from the code measurements alone.
 
-`NavigationFilterConfig` selects the dynamics with `motion_model_order = 2`
+`NavFilterConfig` selects the dynamics with `motion_model_order = 2`
 and `clock_model_order = 2` by default. Motion orders `1`, `2`, and `3` carry
 position, position and velocity, and position, velocity and acceleration,
 respectively. Clock order `1` carries per-system biases; order `2` also carries
@@ -33,31 +33,28 @@ coefficients.
 
 ## One tracking loop does it all
 
-[`VectorPLLAndDLL`](@ref) is a Doppler estimator like any other: a host builds
-each satellite's state with [`init_estimator_state`](@ref) and steps it with
-[`step_loop`](@ref) on every record of the satellite. Everything vector
-tracking needs happens inside that step, from what the records carry. All
-satellites stepped with one estimator share its navigation engine, which
+[`VectorTrackingLoop`](@ref) is a tracking loop: a host builds each satellite's
+state with [`init_loop_state`](@ref) and steps it with [`step_loop!`](@ref) on
+every integration. Everything vector tracking needs happens inside that step, from
+what the integrations carry. All satellites stepped with one loop share its navigation
+processor, which
 
-- decodes each satellite's navigation data from the soft bits its records
-  carry;
-- snapshots each satellite at every navigation epoch (every `vt_update_interval`
-  on the records' time grid): code phase from the last data-bit edge, decoder,
+- decodes each satellite's navigation data from the demodulated soft bits its
+  integrations carry;
+- snapshots each satellite at every navigation epoch (every `navigation_filter_update_interval`
+  on the integrations' time grid): code phase from the last data-bit edge, decoder,
   Dopplers, C/N₀ and the discriminators accumulated since the last epoch;
-- runs the epoch's navigation cycle on the integration that completes the last
+- runs the epoch's navigation filter update on the integration that completes the last
   satellite's snapshot: the scalar PVT until the filter is seeded, a filter
   iteration after that;
-- leaves the cycle's decisions (admission, release, commands) for each
-  satellite to take up on its next integration, sized for where its command takes effect.
+- leaves the update's decisions (admission, release, commands) for each
+  satellite to apply on its next integration, sized for where its command takes effect.
 
 ```julia
 signal = GPSL1CA()
-tracking_loop = VectorTrackingLoop(signal, GalileoE1C() => GalileoE1B())   # owns decoders, filter and PVT
-loop_state = init_loop_state(tracking_loop, signal, doppler_estimator code_doppler)
-for chunk in chunks
-    track!(tracking_loop)  # decodes, solves, steers
-end
-navigation_solution(estimator)         # the PVTSolution; navigation_status(tracking_loop)
+tracking_loop = VectorTrackingLoop(signal, GalileoE1C() => GalileoE1B())
+loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)
+get_navigation_solution(tracking_loop)  # PVTSolution; get_navigation_status(tracking_loop)
 ```
 
 Several constellations or bands share one filter: list every ranging signal at
@@ -86,26 +83,26 @@ counted plus the driver's code phase within the current bit, as
 PositionVelocityTime builds it for a pair. The two codes are aligned at the
 satellite, so their lengths may differ (L2 CL is 1.5 s, L2 CM 20 ms); the chip
 rates must agree. A satellite is in lock when the driver's C/N₀ clears
-`lock_cn0_threshold` and the decoding signal holds its bit sync; a data
+`min_tracking_cn0` and the decoding signal holds its bit sync; a data
 component too weak to decode never completes its decoder, so the satellite never
 becomes ready for the PVT. The solution, the reports and the release reasons
 are keyed by the driver.
 
 The integrations of the two arrive independently and in any order: a satellite's
 snapshot of an epoch is complete once an integration of each has crossed it, and the
-cycle waits for that as for a late satellite.
+update waits for that as for a late satellite.
 
 ## What the integrations must carry
 
-The engine runs no bit clock and no C/N₀ estimator of its own. The host holds a
-[`SignalLoopState`](@ref) per signal of every satellite (bit clock, C/N₀
-estimator, prompt filter), advances it with [`apply_record`](@ref) on every
-record, and builds the record from it:
+The navigation processor runs no bit clock and no C/N₀ estimator of its own. The host holds a
+[`PostCorrelationState`](@ref) per signal of every satellite (bit clock, C/N₀
+estimator, post-correlation filter), advances it with [`process_correlator_bank_output!`](@ref) on every
+integration, and builds the integration from it:
 
 ```julia
-loop, prompt, filtered, code_periods, overshoot =
-    process_correlator_bank_output!(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready, driver_phase_offset)
-integration = LoopRecord(signal, filtered, output, loop, fs; prn)
+signal_state, prompt, filtered, code_periods, overshoot =
+    process_correlator_bank_output!(signal_state, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready, driver_phase_offset)
+integration = LoopRecord(signal, filtered, output, signal_state, fs; prn)
 loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, nco_history, application_sample_index)
 ```
 
@@ -136,9 +133,9 @@ integration's end; a hardware host passes the application sample (see
 Vector tracking needs a decoded navigation message and a first position fix, so
 every satellite starts on its scalar loop:
 
-1. A satellite registers with the engine on its first record. Until vector
-   tracking runs, each cycle solves the scalar PVT over the satellites in lock
-   (C/N₀ at least `lock_cn0_threshold`, bit sync found), decoded for positioning and
+1. A satellite registers with the navigation processor on its first integration. Until vector
+   tracking runs, each update solves the scalar PVT over the satellites in lock
+   (C/N₀ at least `min_tracking_cn0`, bit sync found), decoded for positioning and
    healthy.
 2. The first fix seeds the filter with its position and clock biases and the
    covariance its geometry gives them, so a fix of poor geometry (high DOP)
@@ -150,17 +147,17 @@ every satellite starts on its scalar loop:
 3. While it runs, a satellite is admitted once it is decoded, healthy, in lock
    and 1° (`ADMISSION_ELEVATION`) above the horizon. A member out of lock (C/N₀
    or bit sync) stays in the loop, unmeasured, and is predicted through the
-   outage. A member that misses an epoch sits that cycle out.
+   outage. A member that misses an epoch sits that update out.
 4. A member is released when it is no longer eligible ([`VT_INELIGIBLE`](@ref
-   TrackingLoops.VTReleaseReason); this includes a satellite without a record for two cycles,
+   TrackingLoops.VectorTrackingReleaseReason); this includes a satellite without an integration for two update intervals,
    whose slot is freed) or drops below the horizon
-   ([`VT_BELOW_HORIZON`](@ref TrackingLoops.VTReleaseReason)). Its scalar loop is re-seeded at
+   ([`VT_BELOW_HORIZON`](@ref TrackingLoops.VectorTrackingReleaseReason)). Its scalar loop is re-seeded at
    the vector loop's estimate of the Doppler and its rate (see
    [The carrier in the vector loop](@ref vector-carrier)) and its carrier-loop
    staging restarts, so it pulls in afresh, FLL-assisted at the wide bandwidth.
-5. After `insufficient_meas_timeout` of unsolvable cycles, or with no member
+5. After `measurement_deficit_timeout` of unsolvable updates, or with no member
    left, every satellite in the loop, members that missed the epoch included, is
-   released ([`VT_FALLBACK`](@ref TrackingLoops.VTReleaseReason)) and the scalar PVT runs again
+   released ([`VT_FALLBACK`](@ref TrackingLoops.VectorTrackingReleaseReason)) and the scalar PVT runs again
    until a fresh fix seeds the filter anew.
 
 A re-acquired satellite (a fresh state on a PRN seen before) gets its old slot
@@ -170,14 +167,14 @@ found the bit edges again.
 
 ## Stepping the satellites
 
-A cycle runs once every satellite that can still complete its epoch's snapshot
-has, and a satellite that has gone two cycles without an integration of one of its
+An update runs once every satellite that can still complete its epoch's snapshot
+has, and a satellite that has gone two update intervals without an integration of one of its
 signals is dropped, so a host should step every signal of every satellite at
-least once per half cycle (Tracking.jl's `track!` does, for any chunk shorter
-than that). A satellite that falls behind holds a cycle up only until the others
-reach the next epoch; then the cycle runs without it. A satellite already past
-an epoch when it becomes pending (stepped earlier in the chunk than the record
-that ran the previous cycle, as after a re-registration) sits that epoch's cycle
+least once per half update interval (Tracking.jl's `track!` does, for any chunk shorter
+than that). A satellite that falls behind holds an update up only until the others
+reach the next epoch; then the update runs without it. A satellite already past
+an epoch when it becomes pending (stepped earlier in the chunk than the integration
+that ran the previous update, as after a re-slot_generation) sits that epoch's update
 out; the next pending epoch is the first no satellite is past. A host never has
 to hold an integration back or order its channels: each integration is stepped as it
 arrives.
@@ -191,7 +188,7 @@ the carrier on the prompts the NCO leaves, for the data.
 
 - **The filter sets the carrier NCO.** Each integration is commanded the filter's
   predicted Doppler at the middle of the integration its command takes effect on: a ramp
-  evaluated from the latest cycle's state at the application sample and one cycle later
+  evaluated from the latest update's state at the application sample and one update interval later
   (velocity, acceleration where the motion model has one, clock drift and the
   satellite's motion). The code is commanded from that Doppler, carrier-aided,
   plus the filter's code correction.
@@ -203,13 +200,13 @@ the carrier on the prompts the NCO leaves, for the data.
   Doppler. Its only outputs are the phase the decoded prompts are rotated by, and
   its lock.
 - **The rate measurement** is the replica's Doppler at the epoch plus the mean
-  FLL discriminator over the cycle: the replica follows the filter's ramp, so its
+  FLL discriminator over the update interval: the replica follows the filter's ramp, so its
   rise to the epoch matches the incoming carrier's, and no loop's jitter is in
   its command. The FLL compares consecutive prompts, so it needs no phase lock, and
-  the measurements telescope across cycles (lag-1 correlation −½ without an NCO
+  the measurements telescope across updates (lag-1 correlation −½ without an NCO
   delay, an integrated error bounded by the boundary prompts' noise).
-- **The engine decodes the prompts it rotated.** The prompts turn at the
-  filter's Doppler error, so the engine rotates each of the decoding signal's
+- **The navigation processor decodes the prompts it rotated.** The prompts turn at the
+  filter's Doppler error, so the navigation processor rotates each of the decoding signal's
   prompts onto the incoming carrier by the residual PLL's phase (and a data
   component's carrier-phase offset from its pilot), sums them over each data
   bit the host's bit clock counts and decodes the sum's real part. A plain
@@ -222,11 +219,11 @@ the carrier on the prompts the NCO leaves, for the data.
   as the default noise-referenced and the moment-based ones do: a coherent one
   ([`NWPRCN0Estimator`](@ref)) reads the turning prompts as a small loss.
 - **Lock.** A member is measured while the host's C/N₀ clears
-  `lock_cn0_threshold` and its decoding signal holds the bit sync, as for any
-  satellite. The residual PLL's own phase lock ([`phase_locked`](@ref TrackingLoops.phase_locked)) reads
+  `min_tracking_cn0` and its decoding signal holds the bit sync, as for any
+  satellite. The residual PLL's own phase lock ([`is_phase_locked`](@ref TrackingLoops.is_phase_locked)) reads
   the indicator on the prompts it rotated, with the C/N₀ those moments read no
-  more than 6 dB below `lock_cn0_threshold`. While the host's C/N₀ is below
-  `lock_cn0_threshold` (no signal) it holds its residual at the filter's
+  more than 6 dB below `min_tracking_cn0`. While the host's C/N₀ is below
+  `min_tracking_cn0` (no signal) it holds its residual at the filter's
   Doppler, so it does not integrate a fade's noise into tens of hertz and pulls
   in again from the filter's prediction once the signal is back; its own
   moments read up to the threshold on bare noise, so they do not decide that.
@@ -276,21 +273,22 @@ when the NCO applies it. Pass the application sample and the channel's
 `nco_history`, respectively. Each satellite then sizes its
 commands for the moment they take effect, against the replica the timeline predicts
 there, and a released satellite's scalar loop takes over from that replica. The
-application sample may lie up to 2.5 cycles after the epoch.
+application sample may lie up to 2.5 update intervals after the epoch.
 
 ## Reading the results
 
-Nothing is logged. [`navigation_solution`](@ref) is the latest solution (the
-scalar PVT's before the filter is seeded) and [`navigation_status`](@ref) the
-[`NavigationStatus`](@ref TrackingLoops.NavigationStatus) of the latest cycle: its events and the filter's
-position and clock uncertainties (also [`position_uncertainty`](@ref TrackingLoops.position_uncertainty) and
-[`clock_uncertainty`](@ref TrackingLoops.clock_uncertainty)). A satellite's [`satellite_report`](@ref) says whether and why the
-latest cycle released it (`release_reason`), and [`vector_loop_members`](@ref) reports every
-member, measured and coasted. [`navigation_cycle`](@ref) counts the cycles, so a
-consumer polling it after each step reads every solution exactly once, and
-[`navigation_epoch`](@ref) is the moment the latest solution describes, on the
-records' time grid.
-[`satellite_report`](@ref) hands out what the engine knows of a satellite
+Nothing is logged. [`get_navigation_solution`](@ref) is the latest solution (the
+scalar PVT's before the filter is seeded) and [`get_navigation_status`](@ref) the
+[`VectorTrackingStatus`](@ref TrackingLoops.VectorTrackingStatus) of the latest update: its events and the filter's
+position and clock uncertainties (also [`calc_position_std`](@ref TrackingLoops.calc_position_std) and
+[`calc_clock_bias_std`](@ref TrackingLoops.calc_clock_bias_std)). A satellite's [`get_satellite_report`](@ref) says whether and why the
+latest update released it (`release_reason`), and [`get_vector_tracking_members`](@ref) reports every
+member, measured and coasted. [`get_navigation_update_index`](@ref) counts the updates, so a
+consumer polling it after each step reads each update's results, and
+[`get_navigation_elapsed_time`](@ref) is the elapsed time of the latest navigation
+update on the integrations' time grid. An unsuccessful solve retains the previous PVT
+solution, so the elapsed time may be newer than the solution's fix.
+[`get_satellite_report`](@ref) hands out what the navigation processor knows of a satellite
 (decoder, bit sync, C/N₀, lock, PVT readiness, membership), so a receiver need
 not decode or estimate the C/N₀ a second time.
 
@@ -298,23 +296,23 @@ Scalar loops answer these with `nothing`, so a host can ask whichever tracking
 loop it was given:
 
 ```julia
-cycle = navigation_cycle(tracking_loop)
-if cycle != last_cycle            # `nothing` for a scalar loop: never a new solution
-    last_cycle = cycle
-    pvt = navigation_solution(tracking_loop)       # position, velocity, time, DOP, …
-    report = satellite_report(tracking_loop, GPSL1CA(), prn)
+update_index = get_navigation_update_index(tracking_loop)
+if !isnothing(update_index) && update_index != last_update
+    last_update = update_index              # a failed solve may retain the earlier PVT fix
+    pvt = get_navigation_solution(tracking_loop)       # position, velocity, time, DOP, …
+    report = get_satellite_report(tracking_loop, GPSL1CA(), prn)
 end
 ```
 
-The returned objects are the estimator's own and reused by the next cycle or
+The returned objects are the estimator's own and reused by the next update or
 call: copy out what is needed later.
 
 ## Storage
 
 All storage (decoders and the filter's buffers) is allocated at construction for
-`max_satellites_per_signal` satellites per ranging signal; a dropped satellite
+`satellite_capacity_per_signal` satellites per ranging signal; a dropped satellite
 leaves its slot to the next one, and only past that capacity does a group grow.
-Once warm, integrations and cycles allocate nothing, and the tracking loop compiles with
+Once warm, integrations and updates allocate nothing, and the tracking loop compiles with
 `juliac --trim=safe`.
 
 ## Known limits
@@ -327,10 +325,9 @@ Once warm, integrations and cycles allocate nothing, and the tracking loop compi
   about 40 dB-Hz: a phase difference between two prompts wraps at the Costas
   discriminator's ±90° often enough to break the telescoping, and the residuals
   reach three times `√R`.
-- Membership follows the host's C/N₀, which lags a sudden blockage: a cycle in
+- Membership follows the host's C/N₀, which lags a sudden blockage: an update in
   which the signal is suddenly gone can still be measured with noise-only FLL
   discriminators.
-- HardwareLoopCore does not yet report the records' `prn` and `code_phase`.
 
 ## The tracking loop
 
@@ -343,16 +340,16 @@ step_loop!(::VectorTrackingLoop, ::VectorLoopState, ::LoopRecord, ::Any, ::Int)
 TrackingLoops.default_residual_pll_loop_bandwidth()
 ```
 
-## The navigation cycle
+## The navigation filter update
 
 ```@docs
-TrackingLoops.NavigationStatus
+TrackingLoops.VectorTrackingStatus
 TrackingLoops.SatelliteReport
-TrackingLoops.VTReleaseReason
-TrackingLoops.clock_uncertainty(::VectorTrackingLoop)
-navigation_solution(::VectorTrackingLoop)
-navigation_status(::VectorTrackingLoop)
-TrackingLoops.position_uncertainty(::VectorTrackingLoop)
-vector_loop_members(::VectorTrackingLoop)
-NavigationFilterConfig
+TrackingLoops.VectorTrackingReleaseReason
+TrackingLoops.calc_clock_bias_std(::VectorTrackingLoop)
+get_navigation_solution(::VectorTrackingLoop)
+get_navigation_status(::VectorTrackingLoop)
+TrackingLoops.calc_position_std(::VectorTrackingLoop)
+get_vector_tracking_members(::VectorTrackingLoop)
+NavFilterConfig
 ```
