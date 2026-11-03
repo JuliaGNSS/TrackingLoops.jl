@@ -49,4 +49,4 @@ if length(trimmed_lines) != length(regular_lines) ||
     error("the trimmed executable's output differs from the regular session's")
 end
 println("Trimmed executable ($(filesize(executable) ÷ 1024) KiB) matches the regular ",
-    "session on all $(count(==('\n'), trimmed)) reported cycles.")
+    "session on all $(count(==('\n'), trimmed)) reported updates.")

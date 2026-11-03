@@ -116,13 +116,13 @@ export NumAnts,
     ConventionalAssistedPLLAndDLL,
     DelayCompensatedTrackingLoop,
     VectorTrackingLoop,
-    NavigationFilterConfig,
-    navigation_solution,
-    navigation_status,
-    navigation_cycle,
-    navigation_epoch,
-    satellite_report,
-    vector_loop_members,
+    NavFilterConfig,
+    get_navigation_solution,
+    get_navigation_status,
+    get_navigation_update_index,
+    get_navigation_elapsed_time,
+    get_satellite_report,
+    get_vector_tracking_members,
     init_loop_state,
     reinit_loop_state,
     LoopRecord,
@@ -158,9 +158,9 @@ type's (`NumAnts(1)` for a scalar density, `NumAnts(M)` for an `M×M` covariance
 host checks a noise estimator against its correlator banks with them, and specialises a
 kernel on the count without `NumAnts(get_num_ants(c))`, which allocates per call.
 """
-struct NumAnts{x} end
+struct NumAnts{M} end
 
-NumAnts(x) = NumAnts{x}()
+NumAnts(M) = NumAnts{M}()
 
 """
 $(SIGNATURES)
@@ -168,9 +168,9 @@ $(SIGNATURES)
 Type parameter wrapper for the number of correlators; create with
 `NumCorrelators(n)`.
 """
-struct NumCorrelators{x} end
+struct NumCorrelators{K} end
 
-NumCorrelators(x) = NumCorrelators{x}()
+NumCorrelators(K) = NumCorrelators{K}()
 
 """
     update(x, prompt)
@@ -200,8 +200,8 @@ lives with the satellite. Hosts drive every tracking loop through one interface:
     code_doppler)` re-seeds it from converged Dopplers, keeping what the
     tracking loop chooses to keep.
 
-Implemented by [`ConventionalPLLAndDLL`](@ref), [`NCOReferencedPLLAndDLL`](@ref)
-and [`VectorPLLAndDLL`](@ref), whose navigation engine also runs inside `step_loop`.
+Implemented by [`ScalarTrackingLoop`](@ref), [`DelayCompensatedTrackingLoop`](@ref)
+and [`VectorTrackingLoop`](@ref), whose navigation processor also runs inside `step_loop!`.
 """
 abstract type AbstractTrackingLoop end
 

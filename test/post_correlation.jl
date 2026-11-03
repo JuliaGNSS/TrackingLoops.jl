@@ -59,7 +59,7 @@ end
     @test state.last_filtered_prompt == prompt
 end
 
-@testset "A loop integration identifies its satellite and replica phase" begin
+@testset "A coherent integration identifies its satellite and replica phase" begin
     correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
     output = CorrelatorBankOutput(correlator_bank, 4000, 8000, 3.25)
     integration = LoopRecord(GPSL1CA(), correlator_bank, cis(0.1), output, 1, 4e6Hz)
@@ -81,7 +81,7 @@ end
         prn = 3, code_phase = 0.5).prn == 3
 end
 
-@testset "A integration built from the signal's state carries its bit clock and C/N₀" begin
+@testset "An integration built from the signal's state carries its bit clock and C/N₀" begin
     signal = GPSL1CA()
     fs = 4e6Hz
     state = PostCorrelationState(signal)
@@ -182,7 +182,7 @@ end
             end
         end
         @test synced_integrations > 100
-        # A host whose replica has not wiped the overlay under a integration says so.
+        # A host whose replica has not wiped the overlay under an integration says so.
         output = CorrelatorBankOutput(epl(sign * 4000.0), 16_000, 16_000 * 302)
         unwiped, = process_correlator_bank_output!(state, signal, prn, output, fs, 1e-6 / Hz, true; secondary_code_wiped = false)
         @test unwiped.last_carrier_phase_polarity == 0
@@ -219,7 +219,7 @@ end
     @test @inferred(polarity(GPSL5Q(), synced(GPSL5Q(), 1))) isa Int8
 end
 
-@testset "A integration whose replica has not wiped the overlay yet stays out of the bit sum" begin
+@testset "An integration whose replica has not wiped the overlay yet stays out of the bit sum" begin
     # GPS L5I, synced to its NH10 secondary code, 1 ms integrations at 10.23 MHz.
     signal = GPSL5I()
     B = prompt_sign_history_type(signal)

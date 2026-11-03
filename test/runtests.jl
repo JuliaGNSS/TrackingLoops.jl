@@ -24,9 +24,9 @@ using TrackingLoops:
     LoopBandwidths, CarrierLoopStage, get_phase_lock_indicator, is_phase_locked,
     calc_carrier_phase_correction, calc_carrier_aided_dopplers,
     ScalarLoopState, SatNCOReferencedPLLAndDLL, VectorLoopState,
-    NavigationStatus, VTReleaseReason, VT_NOT_RELEASED, VT_INELIGIBLE, VT_BELOW_HORIZON,
-    VT_FALLBACK, SatelliteReport, position_uncertainty,
-    clock_uncertainty, SyncEvent, SYNC_UNCHANGED, SYNC_FOUND, SYNC_LOST,
+    VectorTrackingStatus, VectorTrackingReleaseReason, VT_NOT_RELEASED, VT_INELIGIBLE,
+    VT_BELOW_HORIZON, VT_FALLBACK, SatelliteReport, calc_position_std,
+    calc_clock_bias_std, SyncEvent, SYNC_UNCHANGED, SYNC_FOUND, SYNC_LOST,
     loop_state_type, despread_noise!,
     NoiseUpdateContext, NoiseProbe, NoiseDespread, noise_despreads, draw_noise_probe,
     get_noise_correlator_bank, append_noise_correlator_outputs!, append_despread_noise!, get_noise_density_and_ready, get_noise_window_filling

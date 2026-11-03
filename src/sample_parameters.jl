@@ -41,9 +41,9 @@ straddles a bit boundary.
 function calc_num_code_periods_to_integrate(
     signal::AbstractGNSSSignal,
     preferred_num_code_periods::Int,
-    secondary_code_or_bit_found::Bool,
+    bit_or_secondary_code_synced::Bool,
 )
-    secondary_code_or_bit_found || return 1
+    bit_or_secondary_code_synced || return 1
     num_code_periods_that_form_a_bit = max_num_code_periods_to_integrate(signal)
     num_code_periods =
         clamp(preferred_num_code_periods, 1, num_code_periods_that_form_a_bit)
@@ -65,9 +65,9 @@ integration actually covered, recovered from its sample count.
     signal::AbstractGNSSSignal,
     num_integrated_samples::Integer,
     sampling_frequency,
-    secondary_code_or_bit_found::Bool,
+    bit_or_secondary_code_synced::Bool,
 )
-    secondary_code_or_bit_found || return 1
+    bit_or_secondary_code_synced || return 1
     round(
         Int,
         num_integrated_samples * get_chip_rate(signal) /

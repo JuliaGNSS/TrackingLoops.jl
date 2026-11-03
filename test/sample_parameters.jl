@@ -44,7 +44,7 @@ end
     # Afterwards the whole code periods the integration covered, from its sample count.
     @test @inferred(calc_num_code_periods_for_bit_sync(gpsl1, 4000, fs, true)) == 1
     @test @inferred(calc_num_code_periods_for_bit_sync(gpsl1, 20 * 4000, fs, true)) == 20
-    # A integration a sample short or long of a whole code period still rounds to it.
+    # An integration a sample short or long of a whole code period still rounds to it.
     @test calc_num_code_periods_for_bit_sync(gpsl1, 5 * 4000 - 1, fs, true) == 5
     @test calc_num_code_periods_for_bit_sync(gpsl1, 5 * 4000 + 1, fs, true) == 5
     # GPS L5I: 10 230 chips at 10.23 MHz, i.e. 1 ms code periods.

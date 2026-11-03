@@ -477,7 +477,7 @@ end
     @test last(get_soft_bits(bit_synchronizer)) == 20.0f0
 end
 
-@testset "A integration that carries the accumulator past the bit boundary drops sync" begin
+@testset "An integration that carries the accumulator past the bit boundary drops sync" begin
     signal = GPSL1CA()
     soft_bits = Float32[1.0, -1.0]
     bit_synchronizer = BitSynchronizer(UInt64(0xff), 40, true, complex(18.0, 0.0), 18, soft_bits)
@@ -503,7 +503,7 @@ end
     @test all(iszero, resynced.phase_accumulators.last_bin_polarity)
 end
 
-@testset "A integration that lands exactly on the bit boundary commits the bit" begin
+@testset "An integration that lands exactly on the bit boundary commits the bit" begin
     # GPS L1 C/A, synced at 17 of the bit's 20 code periods: a 3-period integration ends it.
     signal = GPSL1CA()
     bit_synchronizer = BitSynchronizer(UInt64(0), 0, true, complex(10.0, 0.0), 17)

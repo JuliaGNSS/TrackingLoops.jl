@@ -22,7 +22,7 @@ member_bias_columns(members, layout, indices = eachindex(members)) = TL.member_b
     indices,
 )
 
-# A `VTMember` with hand-picked geometry for the measurement-model tests; the
+# A `VectorTrackingObservation` with hand-picked geometry for the measurement-model tests; the
 # defaults describe a GPS L1 C/A satellite straight overhead along +x, at 45 dB-Hz,
 # with a one-chip early-late spacing and one code period of coherent integration.
 function _test_member(;
@@ -44,17 +44,17 @@ function _test_member(;
     coherent_integration_time = nothing,
 )
     c = SPEED_OF_LIGHT
-    code_frequency = Float64(ustrip(Hz, get_chip_rate(signal)))
-    tcoh = something(coherent_integration_time, get_code_length(signal) / code_frequency)
-    TL.VTMember(
+    chip_rate = Float64(ustrip(Hz, get_chip_rate(signal)))
+    tcoh = something(coherent_integration_time, get_code_length(signal) / chip_rate)
+    TL.VectorTrackingObservation(
         group,
         slot,
         prn,
         clock_bias_index,
         ifb_index,
-        c / code_frequency,
+        c / chip_rate,
         c / ustrip(Hz, get_center_frequency(signal)),
-        code_frequency,
+        chip_rate,
         available,
         time,
         sat_pos,
@@ -120,20 +120,20 @@ end
     @test bds.time == 86.0
 end
 
-@testset "NavigationFilterConfig configuration" begin
-    config = NavigationFilterConfig()
+@testset "NavFilterConfig configuration" begin
+    config = NavFilterConfig()
     @test config.use_pseudorange_rates # VDFLL by default
     @test config.motion_model_order == 2
     @test config.clock_model_order == 2
-    @test config.insufficient_meas_timeout == 10.0s
+    @test config.measurement_deficit_timeout == 10.0s
 
-    vdll = NavigationFilterConfig(use_pseudorange_rates = false)
+    vdll = NavFilterConfig(use_pseudorange_rates = false)
     @test !vdll.use_pseudorange_rates
 
-    @test_throws ArgumentError NavigationFilterConfig(motion_model_order = 0)
-    @test_throws ArgumentError NavigationFilterConfig(motion_model_order = 4)
-    @test_throws ArgumentError NavigationFilterConfig(clock_model_order = 0)
-    @test_throws ArgumentError NavigationFilterConfig(clock_model_order = 3)
+    @test_throws ArgumentError NavFilterConfig(motion_model_order = 0)
+    @test_throws ArgumentError NavFilterConfig(motion_model_order = 4)
+    @test_throws ArgumentError NavFilterConfig(clock_model_order = 0)
+    @test_throws ArgumentError NavFilterConfig(clock_model_order = 3)
 end
 
 @testset "Navigation filter layout from the configured signals" begin
@@ -218,33 +218,33 @@ end
 end
 
 @testset "Navigation filter process model" begin
-    config = NavigationFilterConfig()
-    T = 0.1
+    config = NavFilterConfig()
+    Δt_nav = 0.1
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
-    nav = TL.NavFilterModel(config, layout, 100.0ms)
-    @test size(nav.F) == (9, 9)
-    # Per-axis constant-velocity blocks propagate x += T * ẋ.
+    nav_processor = TL.NavFilterModel(config, layout, 100.0ms)
+    @test size(nav_processor.F) == (9, 9)
+    # Per-axis constant-velocity blocks propagate x += Δt_nav * ẋ.
     for i in [1, 3, 5]
-        @test nav.F[i, i] == 1.0
-        @test nav.F[i, i+1] == T
-        @test nav.F[i+1, i+1] == 1.0
-        @test nav.F[i+1, i] == 0.0
+        @test nav_processor.F[i, i] == 1.0
+        @test nav_processor.F[i, i+1] == Δt_nav
+        @test nav_processor.F[i+1, i+1] == 1.0
+        @test nav_processor.F[i+1, i] == 0.0
     end
     # Both clock biases integrate the single oscillator drift.
-    @test nav.F[7, 9] == T
-    @test nav.F[8, 9] == T
-    @test nav.F[9, 9] == 1.0
+    @test nav_processor.F[7, 9] == Δt_nav
+    @test nav_processor.F[8, 9] == Δt_nav
+    @test nav_processor.F[9, 9] == 1.0
     # Process noise is symmetric positive semi-definite with positive variances,
     # and the drift random walk is fully correlated across the biases (one
     # oscillator).
-    @test nav.Q ≈ nav.Q'
-    @test all(diag(nav.Q) .> 0)
-    @test all(eigvals(Symmetric(nav.Q)) .> -1e-12)
-    @test nav.Q[7, 8] > 0
+    @test nav_processor.Q ≈ nav_processor.Q'
+    @test all(diag(nav_processor.Q) .> 0)
+    @test all(eigvals(Symmetric(nav_processor.Q)) .> -1e-12)
+    @test nav_processor.Q[7, 8] > 0
 
     # Position-only, bias-only model: pure identity dynamics.
     nav1 = TL.NavFilterModel(
-        NavigationFilterConfig(; motion_model_order = 1, clock_model_order = 1),
+        NavFilterConfig(; motion_model_order = 1, clock_model_order = 1),
         TL.NavFilterLayout((GPSL1CA(),)),
         100.0ms,
     )
@@ -258,9 +258,9 @@ end
     @test all(nav_ifb.F[ifb_index, 1:end .!= ifb_index] .== 0.0)
     # The IFB random walk is driven by the configured density (m/√s), so a front end whose
     # bands drift apart can be described without touching the source.
-    @test nav_ifb.Q[ifb_index, ifb_index] ≈ ustrip(u"m/sqrt(s)", config.ifb_noise_density)^2 * T
+    @test nav_ifb.Q[ifb_index, ifb_index] ≈ ustrip(u"m/sqrt(s)", config.ifb_noise_density)^2 * Δt_nav
     loose_ifb = TL.NavFilterModel(
-        NavigationFilterConfig(; ifb_noise_density = 0.05u"m/sqrt(s)"),
+        NavFilterConfig(; ifb_noise_density = 0.05u"m/sqrt(s)"),
         TL.NavFilterLayout((GPSL1CA(), GPSL5I())),
         100.0ms,
     )
@@ -269,31 +269,31 @@ end
     # Integration-time management: the process model follows the measured interval,
     # however small the deviation (a chunk's 4 ms on 100 ms is metres of clock bias at a
     # TCXO's drift), rebuilt in place.
-    nav = TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 100.0ms)
-    F = nav.F
-    Q = copy(nav.Q)
-    TL.ensure_nav_filter_cycle_time!(nav, config, 100.0ms)
-    @test nav.Q == Q
-    TL.ensure_nav_filter_cycle_time!(nav, config, 0.104s)
-    @test nav.cycle_time == 0.104s
-    @test nav.F[1, 2] == 0.104
-    @test nav.Q == TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 0.104s).Q
-    TL.ensure_nav_filter_cycle_time!(nav, config, 0.2s)
-    @test nav.cycle_time == 0.2s
-    @test nav.F[1, 2] ≈ 0.2
-    @test nav.F === F
+    nav_processor = TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 100.0ms)
+    F = nav_processor.F
+    Q = copy(nav_processor.Q)
+    TL.ensure_nav_filter_update_interval!(nav_processor, config, 100.0ms)
+    @test nav_processor.Q == Q
+    TL.ensure_nav_filter_update_interval!(nav_processor, config, 0.104s)
+    @test nav_processor.update_interval == 0.104s
+    @test nav_processor.F[1, 2] == 0.104
+    @test nav_processor.Q == TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 0.104s).Q
+    TL.ensure_nav_filter_update_interval!(nav_processor, config, 0.2s)
+    @test nav_processor.update_interval == 0.2s
+    @test nav_processor.F[1, 2] ≈ 0.2
+    @test nav_processor.F === F
 end
 
 @testset "Motion and clock model orders preserve the state dynamics" begin
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GPSL5I()))
     for motion_model_order in 1:3, clock_model_order in 1:2
-        config = NavigationFilterConfig(; motion_model_order, clock_model_order)
-        nav = TL.NavFilterModel(config, layout, 0.25s)
+        config = NavFilterConfig(; motion_model_order, clock_model_order)
+        nav_processor = TL.NavFilterModel(config, layout, 0.25s)
         x = collect(1.0:TL.num_nav_states(config, layout))
-        @test length(nav.idxs.vel) == (motion_model_order == 1 ? 0 : 3)
-        @test length(nav.idxs.acc) == (motion_model_order == 3 ? 3 : 0)
-        @test (nav.idxs.clock_drift == 0) == (clock_model_order == 1)
-        @test TL.propagate_state!(similar(x), x, nav.idxs, 0.25) ≈ nav.F * x
+        @test length(nav_processor.idxs.vel) == (motion_model_order == 1 ? 0 : 3)
+        @test length(nav_processor.idxs.acc) == (motion_model_order == 3 ? 3 : 0)
+        @test (nav_processor.idxs.clock_drift == 0) == (clock_model_order == 1)
+        @test TL.propagate_state!(similar(x), x, nav_processor.idxs, 0.25) ≈ nav_processor.F * x
     end
 end
 
@@ -307,32 +307,32 @@ end
     τ = ustrip(s, TL.MANOEUVRE_TIME)
     σ_v = σ_a * τ   # velocity change over one manoeuvre
     σ_j = σ_a / τ   # jerk making up one manoeuvre
-    T = 0.1
+    Δt_nav = 0.1
     layout = TL.NavFilterLayout((GPSL1CA(),))
-    config(order) = NavigationFilterConfig(; motion_model_order = order, acceleration_noise_std = acc)
-    axis_block(order) = TL.NavFilterModel(config(order), layout, T * s).Q[1:order, 1:order]
+    config(order) = NavFilterConfig(; motion_model_order = order, acceleration_noise_std = acc)
+    axis_block(order) = TL.NavFilterModel(config(order), layout, Δt_nav * s).Q[1:order, 1:order]
 
     @test TL.MANOEUVRE_TIME == 2.0s
-    @test axis_block(1) ≈ [T] * [T]' * σ_v^2
-    @test axis_block(2) ≈ [T^2 / 2, T] * [T^2 / 2, T]' * σ_a^2
-    @test axis_block(3) ≈ [T^3 / 6, T^2 / 2, T] * [T^3 / 6, T^2 / 2, T]' * σ_j^2
+    @test axis_block(1) ≈ [Δt_nav] * [Δt_nav]' * σ_v^2
+    @test axis_block(2) ≈ [Δt_nav^2 / 2, Δt_nav] * [Δt_nav^2 / 2, Δt_nav]' * σ_a^2
+    @test axis_block(3) ≈ [Δt_nav^3 / 6, Δt_nav^2 / 2, Δt_nav] * [Δt_nav^3 / 6, Δt_nav^2 / 2, Δt_nav]' * σ_j^2
 
     # Order 2 is the one whose unmodelled derivative *is* the acceleration, so the manoeuvre
     # time constant does not enter: its driving noise is the configured figure itself.
-    @test TL.motion_noise_model(config(2), T)[2] == σ_a
+    @test TL.motion_noise_model(config(2), Δt_nav)[2] == σ_a
     # The two derived figures sit either side of it by the same factor, so one number
     # describes the platform at all three orders.
-    @test TL.motion_noise_model(config(1), T)[2] / σ_a ≈ τ
-    @test σ_a / TL.motion_noise_model(config(3), T)[2] ≈ τ
+    @test TL.motion_noise_model(config(1), Δt_nav)[2] / σ_a ≈ τ
+    @test σ_a / TL.motion_noise_model(config(3), Δt_nav)[2] ≈ τ
 
     # The physical figure is what is held fixed across filter intervals, not the resulting
     # variance: at every order the noise recovered from `Q` is the same number at 100 ms as
     # at 1 s.
     for (order, expected) in ((1, σ_v), (2, σ_a), (3, σ_j))
         recovered(interval) = let
-            nav = TL.NavFilterModel(config(order), layout, interval)
-            # The last modelled derivative's own gain is `T` at every order.
-            sqrt(nav.Q[order, order]) / ustrip(s, interval)
+            nav_processor = TL.NavFilterModel(config(order), layout, interval)
+            # The last modelled derivative's own gain is `Δt_nav` at every order.
+            sqrt(nav_processor.Q[order, order]) / ustrip(s, interval)
         end
         @test recovered(0.1s) ≈ expected
         @test recovered(1.0s) ≈ expected
@@ -362,10 +362,10 @@ end
 end
 
 @testset "Measurement prediction" begin
-    config = NavigationFilterConfig()
+    config = NavFilterConfig()
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
-    nav = TL.NavFilterModel(config, layout, 100.0ms)
-    idxs = nav.idxs
+    nav_processor = TL.NavFilterModel(config, layout, 100.0ms)
+    idxs = nav_processor.idxs
 
     # One GPS satellite along +x, one Galileo along +z: each pseudorange
     # carries its own system's clock bias.
@@ -409,8 +409,8 @@ end
     sat_pos = SVector(2.6e7, 0.0, 0.0)
     user_pos = SVector(6.378e6, 0.0, 0.0)
     for order in (1, 2, 3)
-        idxs = TL.NavFilterIndices(NavigationFilterConfig(; motion_model_order = order), layout)
-        x = zeros(TL.num_nav_states(NavigationFilterConfig(; motion_model_order = order), layout))
+        idxs = TL.NavFilterIndices(NavFilterConfig(; motion_model_order = order), layout)
+        x = zeros(TL.num_nav_states(NavFilterConfig(; motion_model_order = order), layout))
         x[idxs.pos] = user_pos
         order >= 2 && (x[idxs.vel] = [3.0, 4.0, 0.0])
         order >= 3 && (x[idxs.acc] = [5.0, 0.0, 0.0])
@@ -427,14 +427,14 @@ end
 @testset "Measurement noise" begin
     l1 = _test_member(; prn = 1)
     l5 = _test_member(; prn = 2, signal = GPSL5I(), group = 2)
-    T = 0.1
+    Δt_nav = 0.1
     # The DLL thermal noise scales with the squared chip length: GPS L5's chips
     # are 10× shorter than L1 C/A's, so its thermal variance is 100× smaller.
     # (L1 C/A and L5I share a 1 ms coherent dump, so the squaring loss cancels here.)
-    @test TL.pseudorange_noise_variance(l1, T) / TL.pseudorange_noise_variance(l5, T) ≈
+    @test TL.pseudorange_noise_variance(l1, Δt_nav) / TL.pseudorange_noise_variance(l5, Δt_nav) ≈
           (l1.chip_length / l5.chip_length)^2
     # The rate rows scale with the squared carrier wavelength.
-    @test TL.pseudorange_rate_noise_variance(l1, T) / TL.pseudorange_rate_noise_variance(l5, T) ≈
+    @test TL.pseudorange_rate_noise_variance(l1, Δt_nav) / TL.pseudorange_rate_noise_variance(l5, Δt_nav) ≈
           (l1.wavelength / l5.wavelength)^2
 
     # Both rows use each member's coherent integration time: GPS L1 C/A integrates 1 ms per
@@ -444,29 +444,29 @@ end
     e1b = _test_member(; prn = 1, signal = GalileoE1B(), group = 2)
     @test ca.coherent_integration_time ≈ 1e-3
     @test e1b.coherent_integration_time ≈ 4e-3
-    # Averaged noncoherent DLL variance d/(4·C/N0·T)·(1 + 2/((2−d)·C/N0·T_coh)), in metres².
-    function range_var(m, T = T)
+    # Averaged noncoherent DLL variance d/(4·C/N0·Δt_nav)·(1 + 2/((2−d)·C/N0·T_coh)), in metres².
+    function range_var(m, Δt_nav = Δt_nav)
         d = m.early_late_spacing
         squaring_loss = 1 + 2 / ((2 - d) * m.cn0_lin * m.coherent_integration_time)
-        d / (4 * T * m.cn0_lin) * squaring_loss * m.chip_length^2
+        d / (4 * Δt_nav * m.cn0_lin) * squaring_loss * m.chip_length^2
     end
-    # Mean-FLL variance 2·σ_φ²/(2π·T)² with σ_φ² = 1/(2·C/N0·T_coh)(1+1/(2·C/N0·T_coh)),
-    # expressed as a rate (λ²). No inflation factor: the derived single-cycle variance is the
+    # Mean-FLL variance 2·σ_φ²/(2π·Δt_nav)² with σ_φ² = 1/(2·C/N0·T_coh)(1+1/(2·C/N0·T_coh)),
+    # expressed as a rate (λ²). No inflation factor: the derived single-update variance is the
     # right one for this estimator, and the lag-1 correlation the telescoping creates makes a
     # white-noise filter pessimistic rather than overconfident.
     rate_var(m) = let ct = m.cn0_lin * m.coherent_integration_time
-        m.wavelength^2 * (1 / (2 * ct) * (1 + 1 / (2 * ct))) / (2 * π^2 * T^2)
+        m.wavelength^2 * (1 / (2 * ct) * (1 + 1 / (2 * ct))) / (2 * π^2 * Δt_nav^2)
     end
-    @test TL.pseudorange_noise_variance(ca, T) ≈ range_var(ca)
-    @test TL.pseudorange_noise_variance(e1b, T) ≈ range_var(e1b)
-    @test TL.pseudorange_rate_noise_variance(ca, T) ≈ rate_var(ca)
-    @test TL.pseudorange_rate_noise_variance(e1b, T) ≈ rate_var(e1b)
+    @test TL.pseudorange_noise_variance(ca, Δt_nav) ≈ range_var(ca)
+    @test TL.pseudorange_noise_variance(e1b, Δt_nav) ≈ range_var(e1b)
+    @test TL.pseudorange_rate_noise_variance(ca, Δt_nav) ≈ rate_var(ca)
+    @test TL.pseudorange_rate_noise_variance(e1b, Δt_nav) ≈ rate_var(e1b)
     # shorter-T_coh C/A is the noisier rate measurement
-    @test TL.pseudorange_rate_noise_variance(ca, T) > TL.pseudorange_rate_noise_variance(e1b, T)
+    @test TL.pseudorange_rate_noise_variance(ca, Δt_nav) > TL.pseudorange_rate_noise_variance(e1b, Δt_nav)
     # E1B's chips are 293 m against C/A's 293 m, so at equal C/N0 and spacing the only
     # difference in the range rows is the squaring loss — C/A's shorter dump costs it more.
     @test ca.chip_length ≈ e1b.chip_length
-    @test TL.pseudorange_noise_variance(ca, T) > TL.pseudorange_noise_variance(e1b, T)
+    @test TL.pseudorange_noise_variance(ca, Δt_nav) > TL.pseudorange_noise_variance(e1b, Δt_nav)
 
     # The squaring loss is pinned to the coherent dump, not the filter interval: lengthening
     # the filter interval averages the thermal term down but cannot buy back the loss.
@@ -484,9 +484,9 @@ end
     @test TL.pseudorange_noise_variance(narrow, 0.1) < range_var(ca, 0.1)
 
     # The C/N₀ floor keeps a starved or NaN estimate from degenerating the weights.
-    @test TL.linear_cn0_floor(45.0) ≈ 10^4.5
-    @test TL.linear_cn0_floor(-10.0) == 1.0
-    @test TL.linear_cn0_floor(NaN) == 1.0
+    @test TL.calc_linear_cn0_floor(45.0) ≈ 10^4.5
+    @test TL.calc_linear_cn0_floor(-10.0) == 1.0
+    @test TL.calc_linear_cn0_floor(NaN) == 1.0
 end
 
 # A decoder with a decoded broadcast offset, set by hand.
@@ -516,12 +516,12 @@ function with_gal_bgto(decoder, a_0gal)
     @set decoder.data = data
 end
 
-@testset "A cycle's bias layout and its broadcast time offsets" begin
+@testset "An update's bias layout and its broadcast time offsets" begin
     # The decision itself is `decide_bias_layout!`'s; these check what the vector loop
-    # makes of it: the candidate subset, and its constraints on the filter's clock states.
-    function assess(layout, measurements, candidates, inter_system_time_offsets = BroadcastInterSystemTimeOffsets())
+    # makes of it: the used subset, and its constraints on the filter's clock states.
+    function assess(layout, measurements, used, inter_system_time_offsets = BroadcastInterSystemTimeOffsets())
         bias_layout = TL.BiasLayout()
-        solvable = TL.decide_bias_layout!(bias_layout, view(measurements, candidates), inter_system_time_offsets)
+        solvable = TL.decide_bias_layout!(bias_layout, view(measurements, used), inter_system_time_offsets)
         constraints = TL.clock_constraints!(Tuple{Int,Int,Float64}[], layout, bias_layout)
         solvable, constraints
     end
@@ -532,7 +532,7 @@ end
     e1b(prn) = _test_measurement(; prn, signal = GalileoE1B())
     e5a(prn) = _test_measurement(; prn, signal = GalileoE5aI())
 
-    # Only the candidates count.
+    # Only the used members count.
     @test assess(layout, [gps(i) for i = 1:4], 1:4) == (true, [])
     @test assess(layout, [gps(i) for i = 1:4], 1:3) == (false, [])
 
@@ -553,7 +553,7 @@ end
     @test isb ≈ -SPEED_OF_LIGHT * 1e-9
 
     # A mixed epoch ties each non-GPS clock through its own broadcast offset, Galileo
-    # through the GGTO and BeiDou through the BGTO, in one cycle: B1I is on its own band,
+    # through the GGTO and BeiDou through the BGTO, in one update: B1I is on its own band,
     # and only both offsets together connect the coverage graph.
     tri = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), BeiDouB1I()))
     gps_tri, gal_tri, bds_tri = tri.clock_bias_index_by_group
@@ -588,18 +588,18 @@ end
     # clocks stay tied.
     @test assess(duo, measurements, 2:5, bgto_gal) == (false, [gst_constraint])
 
-    # The layout is reused from cycle to cycle, and the constraints follow the latest.
+    # The layout is reused from update to update, and the constraints follow the latest.
     bias_layout = TL.BiasLayout()
     constraints = Tuple{Int,Int,Float64}[]
-    function cycle_constraints(candidates, inter_system_time_offsets = bgto_gal)
-        TL.decide_bias_layout!(bias_layout, view(measurements, candidates), inter_system_time_offsets)
+    function update_constraints(used, inter_system_time_offsets = bgto_gal)
+        TL.decide_bias_layout!(bias_layout, view(measurements, used), inter_system_time_offsets)
         TL.clock_constraints!(constraints, duo, bias_layout)
     end
-    @test length(cycle_constraints(1:5)) == 1
-    # A cycle without candidates is decided too, with no constraint left over.
-    @test isempty(cycle_constraints(1:0))
+    @test length(update_constraints(1:5)) == 1
+    # An update without used members is decided too, with no constraint left over.
+    @test isempty(update_constraints(1:0))
     # Without a broadcast offset there is nothing to keep.
-    @test isempty(cycle_constraints(1:5, BroadcastInterSystemTimeOffsets()))
+    @test isempty(update_constraints(1:5, BroadcastInterSystemTimeOffsets()))
 
     # The outage of the review: two GPS satellites and one Galileo satellite with a decoded
     # GGTO cannot determine the state even with the clocks tied, but the GGTO still ties
@@ -615,14 +615,14 @@ end
 
     # The position uncertainty reported with the solution is the root sum of the position
     # variances, read off the position block of P.
-    idxs = TL.NavFilterIndices(NavigationFilterConfig(), layout)
+    idxs = TL.NavFilterIndices(NavFilterConfig(), layout)
     P = zeros(10, 10)
     P[idxs.pos, idxs.pos] = Diagonal([9.0, 16.0, 144.0])
-    @test TL.position_uncertainty(P, idxs) ≈ sqrt(169.0)
+    @test TL.calc_position_std(P, idxs) ≈ sqrt(169.0)
 end
 
 @testset "The DOP's clock column of the reference system" begin
-    # The DOP takes the cycle's decided columns, numbered in order of first appearance:
+    # The DOP takes the update's decided columns, numbered in order of first appearance:
     # Galileo's clock first here.
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GalileoE5aI()))
     measurements = [
@@ -630,9 +630,9 @@ end
         [_test_measurement(; prn) for prn = 4:6]
     ]
     bias_layout = TL.BiasLayout()
-    function column(time_system, candidates, inter_system_time_offsets = BroadcastInterSystemTimeOffsets())
-        TL.decide_bias_layout!(bias_layout, view(measurements, candidates), inter_system_time_offsets)
-        TL.clock_column(bias_layout, view(measurements, candidates), time_system)
+    function column(time_system, used, inter_system_time_offsets = BroadcastInterSystemTimeOffsets())
+        TL.decide_bias_layout!(bias_layout, view(measurements, used), inter_system_time_offsets)
+        TL.clock_column(bias_layout, view(measurements, used), time_system)
     end
     @test column(GST(), 1:6) == 1
     @test column(GPST(), 1:6) == 2
@@ -645,7 +645,7 @@ end
 
 @testset "The receive epoch crosses into the next week by itself" begin
     # The time of week the pseudoranges difference against is read off the receive epoch,
-    # so one cycle before a week crossover and one after are one cycle apart, the time of
+    # so one update before a week crossover and one after are one update interval apart, the time of
     # week starting over.
     before = get_week_start_epoch(GPST(), 2052) + (GNSSSignals.SECONDS_PER_WEEK - 0.05)
     after = before + 0.1
@@ -686,7 +686,7 @@ end
 end
 
 @testset "Pseudorange rate differentiates range and reverses Doppler" begin
-    config = NavigationFilterConfig()
+    config = NavFilterConfig()
     layout = TL.NavFilterLayout((GPSL1CA(),))
     idxs = TL.NavFilterIndices(config, layout)
     member = _test_member()
@@ -705,7 +705,7 @@ end
         rate = TL.predict_pseudorange_rate(x, idxs, member)
         @test rate ≈ (range_at(dt) - range_at(-dt)) / (2dt) atol = 1e-6
         @test sign(rate) == -sign(velocity)
-        doppler = TL.predicted_carrier_doppler(rate, member.wavelength)
+        doppler = TL.predict_carrier_doppler(rate, member.wavelength)
         @test sign(doppler) == sign(velocity)
         @test -member.wavelength * doppler ≈ rate
     end
@@ -715,18 +715,18 @@ end
     member = _test_member(; prn = 7, pseudorange_rate = 100.0)
     c = SPEED_OF_LIGHT
     # A predicted pseudorange 10 m beyond the measured one must speed the code
-    # NCO up by f_code · 10 m / (T · c): the replica is 10 m late. A predicted
+    # NCO up by f_code · 10 m / (Δt_nav · c): the replica is 10 m late. A predicted
     # rate of 105 m/s is a carrier Doppler of −105/λ Hz.
-    @test TL.nco_code_correction(1000.0 + 10.0, 1000.0, member.code_frequency, 0.1) ≈
-          -10.0 * member.code_frequency / (0.1 * c)
-    @test TL.predicted_carrier_doppler(105.0, member.wavelength) ≈ -105.0 / member.wavelength
+    @test TL.calc_nco_code_correction(1000.0 + 10.0, 1000.0, member.chip_rate, 0.1) ≈
+          -10.0 * member.chip_rate / (0.1 * c)
+    @test TL.predict_carrier_doppler(105.0, member.wavelength) ≈ -105.0 / member.wavelength
 
     # The prediction is evaluated at the updated state, so it *is* the whole
     # correction — the measurement update's state correction must not be added
     # on top of it a second time. A satellite the filter moved 10 m towards
     # therefore gets the same single-counted NCO update as above, not double.
     layout = TL.NavFilterLayout((GPSL1CA(),))
-    idxs = TL.NavFilterIndices(NavigationFilterConfig(), layout)
+    idxs = TL.NavFilterIndices(NavFilterConfig(), layout)
     user_pos = SVector(6.378e6, 0.0, 0.0)
     x = zeros(8)
     x[idxs.pos] = user_pos
@@ -735,8 +735,8 @@ end
     columns = member_bias_columns([member], layout)
     predict(x) = predict_pseudoranges!(zeros(1), [member.sat_pos], position_and_bias_vector(x, idxs), columns)[1]
     @test predict(x_updated) - predict(x) ≈ -10.0 rtol = 1e-3
-    @test TL.nco_code_correction(predict(x_updated), predict(x), member.code_frequency, 0.1) ≈
-          10.0 * member.code_frequency / (0.1 * c) rtol = 1e-3
+    @test TL.calc_nco_code_correction(predict(x_updated), predict(x), member.chip_rate, 0.1) ≈
+          10.0 * member.chip_rate / (0.1 * c) rtol = 1e-3
 end
 
 @testset "Post-fit pseudorange and range-rate residuals" begin
@@ -747,7 +747,7 @@ end
     steered = _test_member(; prn = 4, code_discriminator = 0.02) # chips
     steered = @set steered.pseudorange_rate = -800.0 - 5.0 * steered.wavelength
     diverged = _test_member(; prn = 9, pseudorange_rate = -600.0)
-    residual, rate_residual = TL.post_fit_residuals(steered, 2.05e7, 2.05e7, -800.0)
+    residual, rate_residual = TL.calc_post_fit_residuals(steered, 2.05e7, 2.05e7, -800.0)
     # Both go straight into `ObservationResiduals`'s unit-typed fields, so the units are part of the
     # contract: metres and metres per second.
     @test residual isa typeof(1.0u"m")
@@ -761,7 +761,7 @@ end
     # `calc_pvt`'s conventions: a measurement beyond the prediction reads positive
     # in both the range and rate domains.
     residual, rate_residual =
-        TL.post_fit_residuals(diverged, 2.10e7, 2.10e7 - 30.0, diverged.pseudorange_rate - 2.0)
+        TL.calc_post_fit_residuals(diverged, 2.10e7, 2.10e7 - 30.0, diverged.pseudorange_rate - 2.0)
     @test ustrip(u"m", residual) ≈ 30.0
     @test ustrip(u"m/s", rate_residual) ≈ 2.0
 end
@@ -774,29 +774,29 @@ end
     pos = VectorLoopState(base; fll_disc_sum = (1, 3.0Hz))
     neg = VectorLoopState(base; fll_disc_sum = (2, -8.0Hz))
     empty_acc = VectorLoopState(base; fll_disc_sum = (0, 0.0Hz))
-    @test TL.mean_fll_disc(pos) ≈ 3.0
-    @test TL.mean_fll_disc(neg) ≈ -4.0
-    @test TL.mean_fll_disc(empty_acc) == 0.0
+    @test TL.calc_mean_fll_disc(pos) ≈ 3.0
+    @test TL.calc_mean_fll_disc(neg) ≈ -4.0
+    @test TL.calc_mean_fll_disc(empty_acc) == 0.0
     # The DLL mean enters negated.
-    @test TL.mean_code_disc_at_epoch(VectorLoopState(base; code_disc_sum = (2, 0.1)), 0.1) ≈ -0.05
+    @test TL.calc_mean_code_disc_at_epoch(VectorLoopState(base; code_disc_sum = (2, 0.1)), 0.1) ≈ -0.05
 end
 
-@testset "The code measurement is moved from mid-cycle to the epoch" begin
+@testset "The code measurement is moved from mid-interval to the epoch" begin
     base = init_loop_state(VectorTrackingLoop(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
-    T = 0.1
-    # Without an NCO delay the advance is the correction's `c·T/2`, bit for bit.
+    Δt_nav = 0.1
+    # Without an NCO delay the advance is the correction's `c·Δt_nav/2`, bit for bit.
     for c_new in (0.37, -2.5, 1e-3), c_old in (0.0, 4.0, -1.1)
-        state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c_new * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
-        @test state.code_freq_update_history == (c_new * Hz, c_old * Hz, 0.0Hz)
-        @test TL.code_phase_advance(state, T) === c_new * T / 2
+        state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c_new * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
+        @test state.code_frequency_correction_history == (c_new * Hz, c_old * Hz, 0.0Hz)
+        @test TL.code_phase_advance(state, Δt_nav) === c_new * Δt_nav / 2
         state = VectorLoopState(state; code_disc_sum = (4, 0.2))
-        @test TL.mean_code_disc_at_epoch(state, T) === -0.05 + c_new * T / 2
+        @test TL.calc_mean_code_disc_at_epoch(state, Δt_nav) === -0.05 + c_new * Δt_nav / 2
     end
-    # Under an NCO delay the second half-cycle ran on the corrections in effect before
+    # Under an NCO delay the second half-interval ran on the corrections in effect before
     # the newest took effect: on `c₁` while the newest takes effect inside it or after the epoch, and
-    # on `c₂` while `c₁` itself takes effect only after mid-cycle (`L > 1.5T`).
+    # on `c₂` while `c₁` itself takes effect only after mid-interval (`L > 1.5Δt_nav`).
     c₂, c₁, c₀ = 0.5, 1.0, 2.0
-    older = TL._set_vector_commands(TL._set_vector_commands(base, c₂ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c₁ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
+    older = TL._set_vector_commands(TL._set_vector_commands(base, c₂ * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c₁ * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
     for (L, expected) in (
         (0.03, c₀ * 0.05),
         (0.075, c₀ * 0.025 + c₁ * 0.025),
@@ -806,13 +806,13 @@ end
         (0.2, c₂ * 0.05),
         (0.25, c₂ * 0.05),
     )
-        state = TL._set_vector_commands(older, c₀ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), L * s, ConstantNCOCommand(20.0, 0.0), 0)
-        @test TL.code_phase_advance(state, T) ≈ expected
+        state = TL._set_vector_commands(older, c₀ * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), L * s, ConstantNCOCommand(20.0, 0.0), 0)
+        @test TL.code_phase_advance(state, Δt_nav) ≈ expected
     end
 end
 
-@testset "A cycle without both a code and a carrier measurement withholds the member" begin
-    # `mean_code_disc_at_epoch` and `mean_fll_disc` substitute a zero when nothing was
+@testset "An update without both a code and a carrier measurement withholds the member" begin
+    # `calc_mean_code_disc_at_epoch` and `calc_mean_fll_disc` substitute a zero when nothing was
     # accumulated, which the navigation filter cannot distinguish from a genuine zero
     # residual measured at full weight. `has_disc_sums` is the guard that keeps such a
     # member out of the measurement set.
@@ -823,15 +823,15 @@ end
         fll_disc_sum = (0, 0.0Hz))
     @test TL.has_disc_sums(accumulated)
     @test !TL.has_disc_sums(nothing_accumulated)
-    # A cycle without a frequency measurement — its only integration the first after a
+    # An update without a frequency measurement — its only integration the first after a
     # (re)start — has no rate to measure, and is withheld too.
     no_fll = VectorLoopState(base; code_disc_sum = (1, 0.02),
         fll_disc_sum = (0, 0.0Hz))
     @test !TL.has_disc_sums(no_fll)
     # The zero the helpers would otherwise hand to the filter is indistinguishable from a
     # measured zero — which is exactly why the guard is needed rather than the fallback.
-    @test TL.mean_fll_disc(nothing_accumulated) == 0.0
-    @test TL.mean_code_disc_at_epoch(nothing_accumulated, 0.1) == 0.0
+    @test TL.calc_mean_fll_disc(nothing_accumulated) == 0.0
+    @test TL.calc_mean_code_disc_at_epoch(nothing_accumulated, 0.1) == 0.0
 end
 
 @testset "Pseudorange differencing across a GNSS week crossover" begin
@@ -846,7 +846,7 @@ end
 
 @testset "Initial navigation state from a scalar fix" begin
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GPSL5I()))
-    config = NavigationFilterConfig()
+    config = NavFilterConfig()
     idxs = TL.NavFilterIndices(config, layout)
     n = TL.num_nav_states(config, layout)
     pvt = PVTSolution(;
@@ -883,7 +883,7 @@ end
     @test x[idxs.ifb[1]] == 0.0
     @test P[idxs.ifb[1], idxs.ifb[1]] == 30.0^2
     # A third-order motion model starts with zero acceleration, of its own variance.
-    config3 = NavigationFilterConfig(; motion_model_order = 3)
+    config3 = NavFilterConfig(; motion_model_order = 3)
     idxs_acc = TL.NavFilterIndices(config3, layout)
     n_acc = TL.num_nav_states(config3, layout)
     x_acc, P_acc = zeros(n_acc), zeros(n_acc, n_acc)
@@ -911,7 +911,7 @@ _fix_positions(user, directions) = [user + 2.0e7 * SVector(d) / norm(SVector(d))
 
 @testset "The seeded covariance is the fix's, scaled by its geometry" begin
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
-    config = NavigationFilterConfig()
+    config = NavFilterConfig()
     idxs = TL.NavFilterIndices(config, layout)
     n = TL.num_nav_states(config, layout)
     user = SVector(6.378e6, 0.0, 0.0)
@@ -933,7 +933,7 @@ _fix_positions(user, directions) = [user + 2.0e7 * SVector(d) / norm(SVector(d))
     @test TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(5, 5), fix_bias_layout)
     block = [idxs.pos; idxs.clock_biases]
     @test P[block, block] ≈ TL.FIX_PSEUDORANGE_STD^2 * inv(H' * H)
-    @test TL.position_uncertainty(P, idxs) ≈ TL.FIX_PSEUDORANGE_STD * dop.PDOP
+    @test TL.calc_position_std(P, idxs) ≈ TL.FIX_PSEUDORANGE_STD * dop.PDOP
     @test P ≈ P'
     @test isposdef(Symmetric(P))
     @test P[idxs.clock_biases[2], idxs.pos[1]] != 0
@@ -965,7 +965,7 @@ end
     # Galileo clock, so the fix's layout has no column for it, and the seed fills the
     # position and both clocks while the bias keeps its variance.
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GalileoE5aI()))
-    config = NavigationFilterConfig()
+    config = NavFilterConfig()
     idxs = TL.NavFilterIndices(config, layout)
     n = TL.num_nav_states(config, layout)
     user = SVector(6.378e6, 0.0, 0.0)

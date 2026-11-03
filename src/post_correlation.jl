@@ -300,7 +300,7 @@ integration did, for a [`LoopRecord`](@ref) built from it. Nothing here logs; th
 reports `overshoot` (Tracking.jl warns once per satellite).
 
 `driver_carrier_phase_offset` is the carrier-phase offset (cycles, `get_carrier_phase_offset`) of
-the satellite's estimator-driver signal; the bit-buffer prompt is de-rotated against
+the satellite's loop-driving signal; the bit synchronizer's prompt is de-rotated against
 it. The default (the signal's own) suits the driver; a passenger component (the data
 half of a pilot/data pair) must be handed the driver's.
 

@@ -71,30 +71,30 @@ end
         state = init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz)
         output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000, 0.0)
         integration = LoopRecord(signal, output.correlator_bank, cis(0.1), output, 1, fs; prn = 3)
-        nav = tracking_loop.navigation
-        group = first(nav.groups)
+        nav_processor = tracking_loop.navigation
+        group = first(nav_processor.groups)
         slot = first(group.slots)
-        # The pieces of a record that never allocate, as far as AllocCheck sees: not the
-        # registration, which may grow a group past its preallocated slots by design, nor
+        # The pieces of an integration that never allocate, as far as AllocCheck sees: not the
+        # slot_generation, which may grow a group past its preallocated slots by design, nor
         # the decoding, whose bounded vote tally and logging it cannot see through. The
         # run below measures the whole integration.
         for words_type in (ConstantNCOCommand, NCOTimeline)
             sig = Tuple{typeof(tracking_loop),typeof(state),typeof(integration),words_type,Int64}
             @test isempty(AllocCheck.check_allocs(TrackingLoops._step_satellite, sig; ignore_throw = true))
             @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_driver!,
-                Tuple{typeof(nav),typeof(group),typeof(slot),typeof(state),typeof(integration),words_type};
+                Tuple{typeof(nav_processor),typeof(group),typeof(slot),typeof(state),typeof(integration),words_type};
                 ignore_throw = true))
             @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_decoding!,
-                Tuple{typeof(nav),typeof(group),typeof(slot),typeof(integration),words_type};
+                Tuple{typeof(nav_processor),typeof(group),typeof(slot),typeof(integration),words_type};
                 ignore_throw = true))
             @test isempty(AllocCheck.check_allocs(TrackingLoops._advance_driver!,
                 Tuple{typeof(group),typeof(slot),typeof(integration),words_type};
                 ignore_throw = true))
         end
         @test isempty(AllocCheck.check_allocs(TrackingLoops._complete_snapshot!,
-            Tuple{typeof(nav),typeof(group),typeof(slot)}; ignore_throw = true))
+            Tuple{typeof(nav_processor),typeof(group),typeof(slot)}; ignore_throw = true))
         # A run through the whole tracking_loop, the state kept in a `Ref`: the satellite
-        # registers, syncs to nothing and the engine cycles every 100 ms.
+        # registers, syncs to nothing and the navigation processor updates every 100 ms.
         timeline = NCOTimeline()
         reset_timeline!(timeline, 100.0, 0.1)
         function run_vector_integrations!(state_ref, tracking_loop, timeline, first_k, n)
@@ -116,6 +116,6 @@ end
         state_ref = Ref(state)
         run_vector_integrations!(state_ref, tracking_loop, timeline, 1, 400)
         @test (@allocated run_vector_integrations!(state_ref, tracking_loop, timeline, 401, 400)) == 0
-        @test nav.cycle_id >= 7
+        @test nav_processor.update_index >= 7
     end
 end

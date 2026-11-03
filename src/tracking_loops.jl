@@ -543,7 +543,7 @@ end
     coherent_integration_time = discriminators.coherent_integration_time
     code_loop_bandwidth =
         calc_effective_code_loop_bandwidth(loop_state.bandwidths.code, coherent_integration_time)
-    carrier_freq_update, carrier_loop_filter = filter_loop(
+    carrier_frequency_correction, carrier_loop_filter = filter_loop(
         loop_state.carrier_loop_filter,
         _carrier_filter_input(
             loop_state.carrier_loop_filter,
@@ -553,7 +553,7 @@ end
         coherent_integration_time,
         _carrier_loop_bandwidth(loop_state, coherent_integration_time),
     )
-    code_freq_update, code_loop_filter = filter_loop(
+    code_frequency_correction, code_loop_filter = filter_loop(
         loop_state.code_loop_filter,
         discriminators.code_error,
         coherent_integration_time,
@@ -563,8 +563,8 @@ end
         integration.signal,
         loop_state.initial_carrier_doppler,
         loop_state.initial_code_doppler,
-        carrier_freq_update,
-        code_freq_update,
+        carrier_frequency_correction,
+        code_frequency_correction,
     )
     _stepped_state(
         loop_state,
@@ -892,7 +892,7 @@ Whether the carrier loop of a scalar estimator's per-satellite state, or of a
 scalar loop while its [`get_phase_lock_indicator`](@ref) reads at least 0.5, the
 staging's threshold (`false` while `NaN`). In the vector loop it is the residual
 PLL's lock, which also asks that the C/N₀ the rotated prompts' moments read be at
-most 6 dB below the estimator's `lock_cn0_threshold`, as on bare noise the indicator
+most 6 dB below the estimator's `min_tracking_cn0`, as on bare noise the indicator
 alone reads lock now and then. Out of the vector loop, the inner loop's.
 """
 is_phase_locked(loop_state::Union{ScalarLoopState,SatNCOReferencedPLLAndDLL}) =
@@ -948,43 +948,47 @@ loop_state_type(estimator::AbstractTrackingLoop, driver_signal::AbstractGNSSSign
 # ── What an estimator knows of the navigation solution ───────────────────────
 
 """
-    navigation_solution(estimator) -> Union{PVTSolution,Nothing}
+    get_navigation_solution(estimator) -> Union{PVTSolution,Nothing}
 
 The latest navigation solution (position, velocity, time, clock bias and drift, DOP,
 the satellites used with their residuals, inter-system and inter-frequency biases),
 or `nothing` for the scalar loops. For [`VectorTrackingLoop`](@ref) see its method.
 """
-navigation_solution(::AbstractTrackingLoop) = nothing
+get_navigation_solution(::AbstractTrackingLoop) = nothing
 
 """
-    navigation_status(estimator) -> Union{NavigationStatus,Nothing}
+    get_navigation_status(estimator) -> Union{VectorTrackingStatus,Nothing}
 
-What the latest navigation cycle did ([`NavigationStatus`](@ref)), or `nothing` for an
+What the latest navigation filter update did ([`VectorTrackingStatus`](@ref)), or `nothing` for an
 estimator without one.
 """
-navigation_status(::AbstractTrackingLoop) = nothing
+get_navigation_status(::AbstractTrackingLoop) = nothing
 
 """
-    navigation_cycle(estimator) -> Union{Int,Nothing}
+    get_navigation_update_index(estimator) -> Union{Int,Nothing}
 
-Number of navigation cycles run, or `nothing` without them. Changes exactly when
-[`navigation_solution`](@ref) and [`navigation_status`](@ref) do, so polling it
-reads each solution once.
+Number of navigation filter updates run, or `nothing` without them. Advances with each
+attempted update and its [`get_navigation_status`](@ref).
+An unsuccessful positioning attempt retains the previous [`get_navigation_solution`](@ref),
+so a new update index does not by itself indicate a new fix.
 """
-navigation_cycle(::AbstractTrackingLoop) = nothing
-
-"""
-    navigation_epoch(estimator) -> Union{typeof(1.0s),Nothing}
-
-The epoch of the latest navigation solution as `sample_index /
-sampling_frequency`; `nothing` before the first cycle or without cycles.
-"""
-navigation_epoch(::AbstractTrackingLoop) = nothing
+get_navigation_update_index(::AbstractTrackingLoop) = nothing
 
 """
-    satellite_report(estimator, signal, prn) -> Union{SatelliteReport,Nothing}
+    get_navigation_elapsed_time(estimator) -> Union{typeof(1.0s),Nothing}
+
+Elapsed time of the latest navigation filter update, in seconds since the shared origin
+of the integrations' sample grid. Returns `nothing` before the first update or for a loop
+without navigation filter updates. This advances even when a positioning attempt fails and
+the previous solution is retained. Read `get_navigation_solution(loop).time` for
+the solution's absolute timestamp.
+"""
+get_navigation_elapsed_time(::AbstractTrackingLoop) = nothing
+
+"""
+    get_satellite_report(estimator, signal, prn) -> Union{SatelliteReport,Nothing}
 
 A [`SatelliteReport`](@ref) of satellite `prn` of `signal`, or `nothing` for the
 scalar loops or a satellite never seen.
 """
-satellite_report(::AbstractTrackingLoop, ::AbstractGNSSSignal, ::Integer) = nothing
+get_satellite_report(::AbstractTrackingLoop, ::AbstractGNSSSignal, ::Integer) = nothing
