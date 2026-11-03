@@ -90,7 +90,7 @@ Get number of antennas from correlator bank
 """
 get_num_ants(correlator_bank::AbstractCorrelatorBank{M}) where {M} = M
 
-# Type-stable `NumAnts{M}`; `NumAnts(get_num_ants(c))` would allocate per record.
+# Type-stable `NumAnts{M}`; `NumAnts(get_num_ants(c))` would allocate per integration.
 @inline NumAnts(::AbstractCorrelatorBank{M}) where {M} = NumAnts{M}()
 
 """

@@ -41,10 +41,10 @@ end
     fs = 4e6Hz
     # Before sync the detectors shift exactly one prompt per call.
     @test @inferred(calc_num_code_blocks_for_bit_buffer(gpsl1, 20 * 4000, fs, false)) == 1
-    # Afterwards the whole blocks the record covered, from its sample count.
+    # Afterwards the whole blocks the integration covered, from its sample count.
     @test @inferred(calc_num_code_blocks_for_bit_buffer(gpsl1, 4000, fs, true)) == 1
     @test @inferred(calc_num_code_blocks_for_bit_buffer(gpsl1, 20 * 4000, fs, true)) == 20
-    # A record a sample short or long of a whole block still rounds to it.
+    # A integration a sample short or long of a whole block still rounds to it.
     @test calc_num_code_blocks_for_bit_buffer(gpsl1, 5 * 4000 - 1, fs, true) == 5
     @test calc_num_code_blocks_for_bit_buffer(gpsl1, 5 * 4000 + 1, fs, true) == 5
     # GPS L5I: 10 230 chips at 10.23 MHz, i.e. 1 ms blocks.
