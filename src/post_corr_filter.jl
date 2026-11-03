@@ -16,7 +16,7 @@ An implementation must provide two methods:
 The contract is deliberately **linear in the antennas**: the combined correlator output is
 `wᴴ·b`. That is what lets the C/N₀ path stay honest without any per-satellite
 noise state. The noise reference measures one spatial covariance `R̂` per signal
-(see [`AbstractNoiseEstimator`](@ref)), and each satellite reduces it to its own
+(see [`AbstractNoiseDensityEstimator`](@ref)), and each satellite reduces it to its own
 scalar floor through its own weights, `N₀ = wᴴR̂w` — exact for any fixed `w`,
 because `E[|wᴴn|²] = wᴴRw`. A filter that combined its antennas non-linearly
 would have no such closed form, and its C/N₀ would silently be a ratio of two
@@ -92,8 +92,8 @@ get_weights(::DefaultPostCorrFilter, ::NumAnts{M}) where {M} =
 
 # Reduce a measured noise floor to the scalar one that *this* combiner sees.
 # `nothing` (no noise estimator configured) passes through, keeping the C/N₀
-# context's type parameter `Nothing`, so `NoiseRefCN0Estimator`'s `update` throws
-# the wiring-mistake error at the first record. The scalar case is
+# context's type parameter `Nothing`, so `NoiseReferencedCN0Estimator`'s `update` throws
+# the wiring-mistake error at the first integration. The scalar case is
 # `|w|²·N₀`; the matrix case `wᴴRw` needs no extra `‖w‖²` factor, because the
 # covariance already carries the antennas' relative scale.
 @inline _reduce_noise_density(::Nothing, w) = nothing

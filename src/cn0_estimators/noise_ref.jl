@@ -7,8 +7,8 @@ C/N₀ against a **measured noise reference**: per integration,
 Ĉ/N₀ = ⟨|P|²⟩ / N̂₀ − 1/T
 ```
 
-with `N̂₀` the signal's noise density from its [`AbstractNoiseEstimator`](@ref) and
-`T` that record's own integration time. The ring averages the per-record terms
+with `N̂₀` the signal's noise density from its [`AbstractNoiseDensityEstimator`](@ref) and
+`T` that integration's own integration time. The ring averages the per-integration terms
 and [`estimate_cn0`](@ref) converts the mean once.
 
 Unlike [`NWPRCN0Estimator`](@ref) this is **non-coherent**: no bit sync, no
@@ -20,7 +20,7 @@ GPS L1C-D, Galileo E1B and secondary-coded signals before sync (JuliaGNSS/Tracki
 
 A noise density for its **own signal** (see [Noise estimation](@ref) for why per
 signal). On the sample-driven path `Tracking.TrackState` provisions a
-[`CorrelatorNoiseEstimator`](@ref) automatically (see
+[`CorrelatorNoiseDensityEstimator`](@ref) automatically (see
 [`requires_noise_density`](@ref)); on a correlator-ingest path fill the same type
 with [`append_noise_observation!`](@ref). With **no** source configured, `update`
 throws: a silent substitution would hide a backend that never populates the
@@ -48,13 +48,13 @@ Below 40 dB-Hz, where lock and loss are decided, it sits under NWPR's own
 
 # Fields / configuration
 
-  - `num_records` — how many records the estimate averages over, i.e. the memory
+  - `num_averaged_integrations` — how many integrations the estimate averages over, i.e. the memory
     of the estimator (100 by default, ~100 ms at GPS L1 C/A).
   - `buffered_cn0`, `current_index`, `filled_length` — the ring of per-integration
     C/N₀ terms in **linear Hz**, written in place, plus its position and fill.
 """
-struct NoiseRefCN0Estimator <: AbstractCN0Estimator
-    num_records::Int
+struct NoiseReferencedCN0Estimator <: AbstractCN0Estimator
+    num_averaged_integrations::Int
     buffered_cn0::Vector{Float64}
     current_index::Int
     filled_length::Int
@@ -63,34 +63,34 @@ end
 """
 $(SIGNATURES)
 
-Construct a fresh [`NoiseRefCN0Estimator`](@ref) averaging over the last
-`num_records` records.
+Construct a fresh [`NoiseReferencedCN0Estimator`](@ref) averaging over the last
+`num_averaged_integrations` integrations.
 """
-function NoiseRefCN0Estimator(; num_records::Int = 100)
-    num_records >= 1 ||
-        throw(ArgumentError("num_records must be at least 1, got $num_records"))
-    NoiseRefCN0Estimator(num_records, zeros(Float64, num_records), 0, 0)
+function NoiseReferencedCN0Estimator(; num_averaged_integrations::Int = 100)
+    num_averaged_integrations >= 1 ||
+        throw(ArgumentError("num_averaged_integrations must be at least 1, got $num_averaged_integrations"))
+    NoiseReferencedCN0Estimator(num_averaged_integrations, zeros(Float64, num_averaged_integrations), 0, 0)
 end
 
-length(estimator::NoiseRefCN0Estimator) = estimator.filled_length
-get_current_index(estimator::NoiseRefCN0Estimator) = estimator.current_index
+length(estimator::NoiseReferencedCN0Estimator) = estimator.filled_length
+get_current_index(estimator::NoiseReferencedCN0Estimator) = estimator.current_index
 
 """
 $(SIGNATURES)
 
 `true`: a signal carrying this estimator is provisioned a
-[`CorrelatorNoiseEstimator`](@ref); see [`requires_noise_density`](@ref).
+[`CorrelatorNoiseDensityEstimator`](@ref); see [`requires_noise_density`](@ref).
 """
-requires_noise_density(::Type{NoiseRefCN0Estimator}) = true
+requires_noise_density(::Type{NoiseReferencedCN0Estimator}) = true
 
 """
 $(SIGNATURES)
 
-Fold one record's `prompt` into the ring: `|P|²/N̂₀ − 1/T` in linear Hz, with the
-density and the record's own integration time taken from `context`. The term is
-**not** clamped (see [`NoiseRefCN0Estimator`](@ref)).
+Add one integration's `prompt` to the ring: `|P|²/N̂₀ − 1/T` in linear Hz, with the
+density and the integration's own integration time taken from `context`. The term is
+**not** clamped (see [`NoiseReferencedCN0Estimator`](@ref)).
 """
-function update(estimator::NoiseRefCN0Estimator, prompt, context::CN0UpdateContext)
+function update(estimator::NoiseReferencedCN0Estimator, prompt, context::CN0UpdateContext)
     cn0 = ustrip(
         Hz,
         uconvert(Hz, abs2(prompt) / context.noise_density - 1 / context.coherent_integration_time),
@@ -98,8 +98,8 @@ function update(estimator::NoiseRefCN0Estimator, prompt, context::CN0UpdateConte
     buffer_length = Base.length(estimator.buffered_cn0)
     next_index = mod(estimator.current_index, buffer_length) + 1
     estimator.buffered_cn0[next_index] = cn0
-    NoiseRefCN0Estimator(
-        estimator.num_records,
+    NoiseReferencedCN0Estimator(
+        estimator.num_averaged_integrations,
         estimator.buffered_cn0,
         next_index,
         min(estimator.filled_length + 1, buffer_length),
@@ -111,25 +111,25 @@ end
 # ambiguity of `{…,Nothing,Nothing}` and reports the missing source, the root
 # cause.
 @noinline update(
-    ::NoiseRefCN0Estimator,
+    ::NoiseReferencedCN0Estimator,
     prompt,
     ::CN0UpdateContext{<:AbstractGNSSSignal,<:Unsigned,Nothing},
 ) = _throw_noise_ref_needs_density()
 @noinline update(
-    ::NoiseRefCN0Estimator,
+    ::NoiseReferencedCN0Estimator,
     prompt,
     ::CN0UpdateContext{<:AbstractGNSSSignal,<:Unsigned,Nothing,Nothing},
 ) = _throw_noise_ref_needs_density()
 @noinline update(
-    ::NoiseRefCN0Estimator,
+    ::NoiseReferencedCN0Estimator,
     prompt,
     ::CN0UpdateContext{<:AbstractGNSSSignal,<:Unsigned,<:Any,Nothing},
-) = _throw_noise_ref_needs_integration_time()
+) = _throw_noise_ref_needs_coherent_integration_time()
 
 @noinline _throw_noise_ref_needs_density() = throw(
     ArgumentError(
-        "NoiseRefCN0Estimator needs a noise density for its signal, but no " *
-        "AbstractNoiseEstimator is configured for it. Pass " *
+        "NoiseReferencedCN0Estimator needs a noise density for its signal, but no " *
+        "AbstractNoiseDensityEstimator is configured for it. Pass " *
         "`cn0_estimator = NWPRCN0Estimator()` if you are feeding externally " *
         "supplied correlator outputs without a noise observation, or give " *
         "`TrackState` a `noise_estimators` entry for this signal and fill it " *
@@ -137,9 +137,9 @@ end
     ),
 )
 
-@noinline _throw_noise_ref_needs_integration_time() = throw(
+@noinline _throw_noise_ref_needs_coherent_integration_time() = throw(
     ArgumentError(
-        "NoiseRefCN0Estimator has this signal's noise density but no integration " *
+        "NoiseReferencedCN0Estimator has this signal's noise density but no integration " *
         "time: it applies `T` per integration (`|P|²/N̂₀ - 1/T`), so it cannot add one " *
         "without it. Build the context with both — " *
         "`CN0UpdateContext(signal, bit_synchronizer, num_code_periods; noise_density, " *
@@ -158,9 +158,9 @@ estimator has no two-argument form — use the three-argument
 what the tracking loop calls, or [`MomentsCN0Estimator`](@ref) /
 [`NWPRCN0Estimator`](@ref) for folding a captured prompt stream by hand.
 """
-@noinline update(::NoiseRefCN0Estimator, prompt) = throw(
+@noinline update(::NoiseReferencedCN0Estimator, prompt) = throw(
     ArgumentError(
-        "NoiseRefCN0Estimator cannot be updated from a bare prompt: it needs the " *
+        "NoiseReferencedCN0Estimator cannot be updated from a bare prompt: it needs the " *
         "signal's noise density and the integration's integration time, both of which " *
         "live in the CN0UpdateContext. Call the three-argument `update`.",
     ),
@@ -171,8 +171,8 @@ $(SIGNATURES)
 
 Mean of the buffered per-integration terms, converted once with `dBHz`.
 
-`integration_time` is **ignored**: `T` was applied per record in `update`, so a
-record lengthened by `Tracking.set_preferred_num_code_blocks_to_integrate!` is
+`coherent_integration_time` is **ignored**: `T` was applied per integration in `update`, so a
+integration lengthened by `Tracking.set_preferred_num_code_periods_to_integrate!` is
 handled correctly beside shorter ones. The argument stays for interface
 uniformity.
 
@@ -181,7 +181,7 @@ report `-Inf dB-Hz`, never `NaN` (see [`NoCN0Estimator`](@ref) for why). The
 explicit `isfinite` catches a `NaN` prompt, which passes `mean_cn0 <= 0` (a zero
 floor is already kept out of the ring by [`get_noise_density_and_ready`](@ref)).
 """
-function estimate_cn0(estimator::NoiseRefCN0Estimator, coherent_integration_time)
+function estimate_cn0(estimator::NoiseReferencedCN0Estimator, coherent_integration_time)
     filled = length(estimator)
     filled == 0 && return dBHz(0.0Hz)
     total = 0.0
@@ -193,5 +193,5 @@ function estimate_cn0(estimator::NoiseRefCN0Estimator, coherent_integration_time
     dBHz(mean_cn0 * Hz)
 end
 
-reset_cn0_estimator!(e::NoiseRefCN0Estimator) =
-    (fill!(e.buffered_cn0, 0.0); NoiseRefCN0Estimator(e.num_records, e.buffered_cn0, 0, 0))
+reset_cn0_estimator!(e::NoiseReferencedCN0Estimator) =
+    (fill!(e.buffered_cn0, 0.0); NoiseReferencedCN0Estimator(e.num_averaged_integrations, e.buffered_cn0, 0, 0))

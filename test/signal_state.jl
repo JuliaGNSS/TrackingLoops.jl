@@ -47,7 +47,7 @@ end
 end
 
 @testset "Re-arming a channel forgets the previous satellite" begin
-    for cn0_estimator in (NWPRCN0Estimator(; num_records = 20), MomentsCN0Estimator(20), NoiseRefCN0Estimator(; num_records = 20))
+    for cn0_estimator in (NWPRCN0Estimator(; num_averaged_integrations = 20), MomentsCN0Estimator(20), NoiseReferencedCN0Estimator(; num_averaged_integrations = 20))
         state = synced_l1ca_state(; cn0_estimator)
         fresh = reset_post_correlation!(state)
         @test !is_bit_or_secondary_code_synced(fresh)
