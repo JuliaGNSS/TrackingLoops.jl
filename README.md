@@ -53,9 +53,9 @@ behaves identically on the others.
 - **Post-correlation processing** — `process_correlator_bank_output!` advances a signal component's prompt
   filter, C/N₀ estimator and bit synchronizer in one step, so every caller does it the
   same way.
-- **Vector tracking** — `VectorPLLAndDLL` is a Doppler estimator like the
-  others, stepped with the same `step_loop`, whose navigation engine does the
-  whole pipeline from the records it is handed: it decodes every satellite's
+- **Vector tracking** — `VectorTrackingLoop` is another tracking loop, stepped
+  with the same `step_loop!`; its navigation processor does the
+  whole pipeline from the integrations it is handed: it decodes every satellite's
   navigation bits, solves the PVT, and then closes every satellite's code and
   carrier loops at once with a navigation filter — an unscented Kalman filter
   over position, velocity, one clock per GNSS time system and the
@@ -75,12 +75,12 @@ signal = GPSL1CA()
 fs = 4e6u"Hz"
 tracking_loop = ConventionalAssistedPLLAndDLL()
 loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
-loop = PostCorrelationState(signal)      # bit synchronizer, C/N₀ estimator, post-correlation filter
+signal_state = PostCorrelationState(signal)      # bit synchronizer, C/N₀ estimator, post-correlation filter
 
 # For every coherent integration's `correlator_bank_output::CorrelatorBankOutput` the correlator bank produced:
-previous_prompt = loop.last_filtered_prompt   # read before `process_correlator_bank_output!` replaces it
-loop, prompt, filtered, code_periods, overshoot =
-    process_correlator_bank_output!(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready)
+previous_prompt = signal_state.last_filtered_prompt   # read before `process_correlator_bank_output!` replaces it
+signal_state, prompt, filtered, code_periods, overshoot =
+    process_correlator_bank_output!(signal_state, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready)
 overshoot && @warn "integration crossed a navigation-bit boundary; bit sync restarted"
 integration = LoopRecord(signal, filtered, previous_prompt, output, code_periods, fs)
 loop_state, carrier_doppler, code_doppler =
@@ -106,21 +106,21 @@ loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_dopple
 integration = LoopRecord(signal, filtered, previous_prompt, output, code_periods, fs; prn, sample_offset)
 loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, nco_history, application_sample_index)
 
-navigation_solution(tracking_loop)   # the latest `PVTSolution`
-navigation_status(tracking_loop)     # what the latest navigation cycle did
+get_navigation_solution(tracking_loop)   # the latest `PVTSolution`
+get_navigation_status(tracking_loop)     # what the latest navigation filter update did
 ```
 
 Each satellite runs its scalar loop until the filter takes it over. `process_correlator_bank_output!`
 handles bit synchronization, demodulation and C/N₀ estimation. `step_loop!` decodes
 the navigation data and snapshots host C/N₀ at every navigation epoch; the integration that brings the
-last satellite past an epoch runs that epoch's cycle — the scalar PVT until its
+last satellite past an epoch runs that epoch's update — the scalar PVT until its
 first fix seeds the filter, a filter iteration after that — and each satellite
-takes the cycle's admission, release and corrections up on its next record,
-sized for where its command lands (at `landing_sample` with a hardware NCO).
-Nothing is logged: `navigation_status` reports the events, a satellite's report (`satellite_report`)
+applies the update's admission, release and corrections on its next integration,
+sized for where its command takes effect (at `application_sample_index` with a hardware NCO).
+Nothing is logged: `get_navigation_status` reports the events, a satellite's report (`get_satellite_report`)
 why it was handed back. Storage is preallocated for
-`max_satellites_per_signal` satellites per signal and reused as satellites come
-and go; once warm, records and cycles allocate nothing and compile with
+`satellite_capacity_per_signal` satellites per signal and reused as satellites come
+and go; once warm, integrations and updates allocate nothing and compile with
 `juliac --trim=safe` (see `test/trim`).
 
 ## Platforms

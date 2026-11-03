@@ -178,12 +178,12 @@ function calc_carrier_aided_dopplers(
     signal::AbstractGNSSSignal,
     initial_carrier_doppler,
     initial_code_doppler,
-    carrier_freq_update,
-    code_freq_update,
+    carrier_frequency_correction,
+    code_frequency_correction,
 )
-    carrier_doppler = carrier_freq_update
+    carrier_doppler = carrier_frequency_correction
     code_doppler =
-        code_freq_update + carrier_doppler * get_chip_rate_to_center_frequency_ratio(signal)
+        code_frequency_correction + carrier_doppler * get_chip_rate_to_center_frequency_ratio(signal)
     initial_carrier_doppler + carrier_doppler, initial_code_doppler + code_doppler
 end
 

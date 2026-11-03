@@ -58,13 +58,13 @@ signal = GPSL1CA()
 fs = 4e6u"Hz"
 tracking_loop = ConventionalAssistedPLLAndDLL()
 loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
-loop = PostCorrelationState(signal)      # bit synchronizer, C/N₀ estimator, post-correlation filter
+signal_state = PostCorrelationState(signal)      # bit synchronizer, C/N₀ estimator, post-correlation filter
 
 # For every coherent integration `correlator_bank_output::CorrelatorBankOutput` the correlator bank produced:
-loop, prompt, filtered, code_periods, overshoot =
-    process_correlator_bank_output!(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready)
+signal_state, prompt, filtered, code_periods, overshoot =
+    process_correlator_bank_output!(signal_state, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready)
 overshoot && @warn "integration crossed a navigation-bit boundary; bit sync restarted"
-integration = LoopRecord(signal, filtered, output, loop, fs; prn)
+integration = LoopRecord(signal, filtered, output, signal_state, fs; prn)
 loop_state, carrier_doppler, code_doppler =
     step_loop!(tracking_loop, loop_state, integration, ConstantNCOCommand(carrier_hz, code_hz), NO_LANDING_SAMPLE)
 # program the next replica with carrier_doppler and code_doppler
