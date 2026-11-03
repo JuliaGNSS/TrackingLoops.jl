@@ -20,10 +20,10 @@ abstract type AbstractEarlyPromptLateCorrelatorBank{M} <: AbstractCorrelatorBank
 """
 $(SIGNATURES)
 
-One completed coherent integration (a *record*): the raw accumulator snapshotted
-when the integration completes. Tracking.jl's `track!` produces these; an external
-producer (e.g. an FPGA) can build them and feed [`apply_record`](@ref) and
-[`step_loop`](@ref), or Tracking.jl's `append_correlator_output!`.
+The raw correlator bank output of one coherent integration (one hardware dump or a sum
+of dumps), before normalisation, snapshotted when the integration completes. Tracking.jl's `track!` produces these; an external
+producer (e.g. an FPGA) can build them and feed [`process_correlator_bank_output!`](@ref) and
+[`step_loop!`](@ref), or Tracking.jl's `append_correlator_bank_output!`.
 
 Fields:
 

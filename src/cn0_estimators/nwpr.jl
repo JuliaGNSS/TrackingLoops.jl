@@ -13,7 +13,7 @@ NBP = |Σ_M prompt|²          (coherent — narrowband)
 WBP =  Σ_M |prompt|²         (incoherent — wideband)
 ```
 
-and over the windows that fit in `num_records` records reports
+and over the windows that fit in `num_averaged_integrations` integrations reports
 
 ```
 μ̂    = Σ_K NBP_k / Σ_K WBP_k
@@ -58,14 +58,14 @@ must stay short against residual Doppler (`M·T ≪ 1/(2·Δf)`; 25 Hz over 20 m
 half a cycle, ~9 dB). The window follows the
 navigation-bit grid in [`CN0UpdateContext`](@ref):
 
-| signal state                      | narrowband window                               |
-|:--------------------------------- |:----------------------------------------------- |
-| synced, data-bearing              | `num_narrowband_code_blocks`, tiling the bit    |
-| synced, pilot (no bit grid)       | `num_narrowband_code_blocks`, free-running      |
-| unsynced, data, no secondary code | `num_presync_narrowband_code_blocks`, unaligned |
-| unsynced, secondary code          | none: the unknown overlay flips every block     |
-| one bit per block (L1C-D, E1B)    | none: no coherent window beyond one record      |
-| record at least as long as window | none: one record has `NBP == WBP`               |
+| signal state                           | narrowband window                                 |
+|:-------------------------------------- |:------------------------------------------------- |
+| synced, data-bearing                   | `num_narrowband_code_periods`, tiling the bit     |
+| synced, pilot (no bit grid)            | `num_narrowband_code_periods`, free-running       |
+| unsynced, data, no secondary code      | `num_presync_narrowband_code_periods`, unaligned  |
+| unsynced, secondary code               | none: the unknown overlay flips every code period |
+| one bit per code period (L1C-D, E1B)   | none: no coherent window beyond one integration   |
+| integration at least as long as window | none: one integration has `NBP == WBP`            |
 
 The unaligned pre-sync window exists because bit sync takes seconds and fails
 below ~30 dB-Hz; it straddles a flip with probability `(M−1)/L` (~0.6 dB below
@@ -97,73 +97,73 @@ a whole navigation bit.
 
 # Fields / configuration
 
-  - `num_records`: records the estimate averages over (100, ~100 ms at GPS L1 C/A);
+  - `num_averaged_integrations`: integrations the estimate averages over (100, ~100 ms at GPS L1 C/A);
     memory is independent of `M`.
-  - `num_narrowband_code_blocks`: window length in primary-code blocks, the cap on
+  - `num_narrowband_code_periods`: window length in primary-code periods, the cap on
     the coherent sum (the length itself without a bit grid: a pilot, or the
     two-argument `TrackingLoops.update`).
-  - `num_presync_narrowband_code_blocks`: window length before the bit grid is
+  - `num_presync_narrowband_code_periods`: window length before the bit grid is
     known; `0` reports the `fallback` until sync.
   - `buffered_narrowband_powers`, `buffered_wideband_powers`,
-    `ratio_current_index`, `filled_ratio_length`, `num_records_per_ratio`,
+    `ratio_current_index`, `filled_ratio_length`, `num_integrations_per_ratio`,
     `ratios_are_bit_aligned`: rings of completed windows' `NBP` and `WBP`, the `M`
     they were formed with and whether they followed the bit grid; a change of
     either restarts the rings.
-  - `narrowband_sum`, `wideband_power`, `num_accumulated_records`,
-    `num_accumulated_code_blocks`: the open window.
+  - `narrowband_sum`, `wideband_power`, `num_accumulated_integrations`,
+    `num_accumulated_code_periods`: the open window.
   - `fallback`: reported until a window completes, or always where none is
     admissible; fed every prompt.
 """
 struct NWPRCN0Estimator{F<:AbstractCN0Estimator} <: AbstractCN0Estimator
-    num_records::Int
-    num_narrowband_code_blocks::Int
-    num_presync_narrowband_code_blocks::Int
+    num_averaged_integrations::Int
+    num_narrowband_code_periods::Int
+    num_presync_narrowband_code_periods::Int
     buffered_narrowband_powers::Vector{Float64}
     buffered_wideband_powers::Vector{Float64}
     ratio_current_index::Int
     filled_ratio_length::Int
-    num_records_per_ratio::Int
+    num_integrations_per_ratio::Int
     ratios_are_bit_aligned::Bool
     narrowband_sum::ComplexF64
     wideband_power::Float64
-    num_accumulated_records::Int
-    num_accumulated_code_blocks::Int
+    num_accumulated_integrations::Int
+    num_accumulated_code_periods::Int
     fallback::F
 end
 
 """
 $(SIGNATURES)
 
-Construct a fresh [`NWPRCN0Estimator`](@ref) averaging over the last `num_records`
-records; see there for the parameters.
+Construct a fresh [`NWPRCN0Estimator`](@ref) averaging over the last `num_averaged_integrations`
+integrations; see there for the parameters.
 """
 function NWPRCN0Estimator(;
-    num_records::Int = 100,
-    num_narrowband_code_blocks::Int = 5,
-    num_presync_narrowband_code_blocks::Int = 5,
-    fallback::AbstractCN0Estimator = MomentsCN0Estimator(num_records),
+    num_averaged_integrations::Int = 100,
+    num_narrowband_code_periods::Int = 5,
+    num_presync_narrowband_code_periods::Int = 5,
+    fallback::AbstractCN0Estimator = MomentsCN0Estimator(num_averaged_integrations),
 )
-    num_records >= 2 ||
-        throw(ArgumentError("num_records must be at least 2, got $num_records"))
-    num_narrowband_code_blocks >= 1 || throw(
+    num_averaged_integrations >= 2 ||
+        throw(ArgumentError("num_averaged_integrations must be at least 2, got $num_averaged_integrations"))
+    num_narrowband_code_periods >= 1 || throw(
         ArgumentError(
-            "num_narrowband_code_blocks must be at least 1, got " *
-            "$num_narrowband_code_blocks",
+            "num_narrowband_code_periods must be at least 1, got " *
+            "$num_narrowband_code_periods",
         ),
     )
-    num_presync_narrowband_code_blocks >= 0 || throw(
+    num_presync_narrowband_code_periods >= 0 || throw(
         ArgumentError(
-            "num_presync_narrowband_code_blocks must not be negative, got " *
-            "$num_presync_narrowband_code_blocks",
+            "num_presync_narrowband_code_periods must not be negative, got " *
+            "$num_presync_narrowband_code_periods",
         ),
     )
-    # A window holds at least two records, so at most `num_records ÷ 2` windows.
+    # A window holds at least two integrations, so at most `num_averaged_integrations ÷ 2` windows.
     NWPRCN0Estimator(
-        num_records,
-        num_narrowband_code_blocks,
-        num_presync_narrowband_code_blocks,
-        zeros(Float64, div(num_records, 2)),
-        zeros(Float64, div(num_records, 2)),
+        num_averaged_integrations,
+        num_narrowband_code_periods,
+        num_presync_narrowband_code_periods,
+        zeros(Float64, div(num_averaged_integrations, 2)),
+        zeros(Float64, div(num_averaged_integrations, 2)),
         0,
         0,
         0,
@@ -198,15 +198,15 @@ Every other keyword is forwarded unchanged.
 """
 function NWPRCN0Estimator(
     signal::AbstractGNSSSignal;
-    num_records::Int = 100,
-    num_narrowband_code_blocks::Int = _default_narrowband_code_blocks(signal),
+    num_averaged_integrations::Int = 100,
+    num_narrowband_code_periods::Int = _default_narrowband_code_periods(signal),
     kwargs...,
 )
-    NWPRCN0Estimator(; num_records, num_narrowband_code_blocks, kwargs...)
+    NWPRCN0Estimator(; num_averaged_integrations, num_narrowband_code_periods, kwargs...)
 end
 
 # Whole code periods covering ~5 ms, at least two.
-@inline function _default_narrowband_code_blocks(signal::AbstractGNSSSignal)
+@inline function _default_narrowband_code_periods(signal::AbstractGNSSSignal)
     code_period = get_code_length(signal) / get_chip_rate(signal)
     max(2, round(Int, 5ms / code_period))
 end
@@ -221,35 +221,35 @@ get_current_index(estimator::NWPRCN0Estimator) = estimator.ratio_current_index
 # Ring slots in use at the current `M`, capped by the buffer.
 @inline function _num_ratios(estimator::NWPRCN0Estimator)
     capacity = Base.length(estimator.buffered_narrowband_powers)
-    estimator.num_records_per_ratio < 1 && return capacity
-    clamp(div(estimator.num_records, estimator.num_records_per_ratio), 1, capacity)
+    estimator.num_integrations_per_ratio < 1 && return capacity
+    clamp(div(estimator.num_averaged_integrations, estimator.num_integrations_per_ratio), 1, capacity)
 end
 
-# `(window_code_blocks, window_block_index)`: the window length (`0` = none,
-# report the fallback) and the record's offset in a grid-following window (`-1` =
+# `(window_code_periods, window_code_period_index)`: the window length (`0` = none,
+# report the fallback) and the integration's offset in a grid-following window (`-1` =
 # free-running). Cases: see the table in `NWPRCN0Estimator`.
 @inline function _narrowband_window(estimator::NWPRCN0Estimator, context::CN0UpdateContext)
     num_code_periods_per_bit = context.num_code_periods_per_bit
-    if context.bit_code_block_index < 0
+    if context.bit_code_period_index < 0
         # Bit grid unknown: only a data signal without secondary code is coherent in a bit.
         num_code_periods_per_bit > 1 && get_secondary_code_length(context.signal) == 1 ||
             return (0, -1)
         return (
-            min(estimator.num_presync_narrowband_code_blocks, num_code_periods_per_bit),
+            min(estimator.num_presync_narrowband_code_periods, num_code_periods_per_bit),
             -1,
         )
     end
     # One bit per code period.
     num_code_periods_per_bit == 1 && return (0, -1)
     # Pilot: secondary code wiped off post-sync, window free-running.
-    num_code_periods_per_bit == 0 && return (estimator.num_narrowband_code_blocks, -1)
+    num_code_periods_per_bit == 0 && return (estimator.num_narrowband_code_periods, -1)
     # Data-bearing and synced: tile the bit from its start. The trailing remainder
     # is skipped: a shorter window has another `M` and would restart the ring.
-    window_code_blocks = min(estimator.num_narrowband_code_blocks, num_code_periods_per_bit)
+    window_code_periods = min(estimator.num_narrowband_code_periods, num_code_periods_per_bit)
     window_start =
-        div(context.bit_code_block_index, window_code_blocks) * window_code_blocks
-    window_start + window_code_blocks > num_code_periods_per_bit && return (0, -1)
-    (window_code_blocks, context.bit_code_block_index - window_start)
+        div(context.bit_code_period_index, window_code_periods) * window_code_periods
+    window_start + window_code_periods > num_code_periods_per_bit && return (0, -1)
+    (window_code_periods, context.bit_code_period_index - window_start)
 end
 
 """
@@ -262,14 +262,14 @@ closing on one integration (`NBP == WBP`) empties the rings, handing over to the
 `fallback`.
 """
 function update(estimator::NWPRCN0Estimator, prompt, context::CN0UpdateContext)
-    window_code_blocks, window_block_index = _narrowband_window(estimator, context)
+    window_code_periods, window_code_period_index = _narrowband_window(estimator, context)
     _update_nwpr(
         estimator,
         prompt,
         update(estimator.fallback, prompt, context),
         context.num_code_periods,
-        window_code_blocks,
-        window_block_index,
+        window_code_periods,
+        window_code_period_index,
     )
 end
 
@@ -277,14 +277,14 @@ end
 $(SIGNATURES)
 
 Advance the estimator on a bare prompt stream without bit context: each prompt is a
-one-block record and windows run back to back at `num_narrowband_code_blocks`.
+one-period integration and windows run back to back at `num_narrowband_code_periods`.
 """
 update(estimator::NWPRCN0Estimator, prompt) = _update_nwpr(
     estimator,
     prompt,
     update(estimator.fallback, prompt),
     1,
-    estimator.num_narrowband_code_blocks,
+    estimator.num_narrowband_code_periods,
     -1,
 )
 
@@ -295,50 +295,50 @@ update(estimator::NWPRCN0Estimator, prompt) = _update_nwpr(
     prompt,
     fallback::AbstractCN0Estimator,
     num_code_periods::Int,
-    window_code_blocks::Int,
-    window_block_index::Int,
+    window_code_periods::Int,
+    window_code_period_index::Int,
 )
     # No admissible window: drop whatever was open.
-    window_code_blocks < 1 && return _with_window_state(estimator, fallback)
+    window_code_periods < 1 && return _with_window_state(estimator, fallback)
     # A fractional-period integration (after a sync phase snap) would break the
     # inversion's `M` equal integrations: skip it, window untouched.
     num_code_periods < 1 && return _with_open_window(estimator, fallback)
     # A grid-following window holding `k` code periods must sit `k` code periods in; otherwise
     # the grid moved (sync just found): drop it, and only a window start reopens.
-    if window_block_index >= 0 &&
-       window_block_index != estimator.num_accumulated_code_blocks
-        window_block_index == 0 || return _with_window_state(estimator, fallback)
+    if window_code_period_index >= 0 &&
+       window_code_period_index != estimator.num_accumulated_code_periods
+        window_code_period_index == 0 || return _with_window_state(estimator, fallback)
         estimator = _with_window_state(estimator, fallback)
     end
     narrowband_sum = estimator.narrowband_sum + prompt
     wideband_power = estimator.wideband_power + abs2(prompt)
-    num_records = estimator.num_accumulated_records + 1
-    num_code_blocks_accumulated = estimator.num_accumulated_code_blocks + num_code_periods
-    num_code_blocks_accumulated < window_code_blocks && return _with_window_state(
+    num_averaged_integrations = estimator.num_accumulated_integrations + 1
+    num_code_periods_accumulated = estimator.num_accumulated_code_periods + num_code_periods
+    num_code_periods_accumulated < window_code_periods && return _with_window_state(
         estimator,
         fallback;
         narrowband_sum,
         wideband_power,
-        num_accumulated_records = num_records,
-        num_accumulated_code_blocks = num_code_blocks_accumulated,
+        num_accumulated_integrations = num_averaged_integrations,
+        num_accumulated_code_periods = num_code_periods_accumulated,
     )
     # Window complete. With one integration (integrations grew to the window length, a
     # lasting change) also empty the ring, or the estimate would freeze on old
     # windows: `estimate_cn0` consults the `fallback` only while it is empty.
-    num_records < 2 && return _with_window_state(
+    num_averaged_integrations < 2 && return _with_window_state(
         estimator,
         fallback;
         ratio_current_index = 0,
         filled_ratio_length = 0,
-        num_records_per_ratio = 0,
+        num_integrations_per_ratio = 0,
     )
     # All-zero window: division guard.
     iszero(wideband_power) && return _with_window_state(estimator, fallback)
     narrowband_powers = estimator.buffered_narrowband_powers
     wideband_powers = estimator.buffered_wideband_powers
     narrowband_power = abs2(narrowband_sum)
-    bit_aligned = window_block_index >= 0
-    if num_records == estimator.num_records_per_ratio &&
+    bit_aligned = window_code_period_index >= 0
+    if num_averaged_integrations == estimator.num_integrations_per_ratio &&
        bit_aligned == estimator.ratios_are_bit_aligned
         num_ratios = _num_ratios(estimator)
         ratio_current_index = mod(estimator.ratio_current_index, num_ratios) + 1
@@ -349,7 +349,7 @@ update(estimator::NWPRCN0Estimator, prompt) = _update_nwpr(
             fallback;
             ratio_current_index,
             filled_ratio_length = min(estimator.filled_ratio_length + 1, num_ratios),
-            num_records_per_ratio = num_records,
+            num_integrations_per_ratio = num_averaged_integrations,
             ratios_are_bit_aligned = bit_aligned,
         )
     end
@@ -365,7 +365,7 @@ update(estimator::NWPRCN0Estimator, prompt) = _update_nwpr(
         fallback;
         ratio_current_index = 1,
         filled_ratio_length = 1,
-        num_records_per_ratio = num_records,
+        num_integrations_per_ratio = num_averaged_integrations,
         ratios_are_bit_aligned = bit_aligned,
     )
 end
@@ -377,26 +377,26 @@ end
     fallback::AbstractCN0Estimator;
     ratio_current_index::Int = estimator.ratio_current_index,
     filled_ratio_length::Int = estimator.filled_ratio_length,
-    num_records_per_ratio::Int = estimator.num_records_per_ratio,
+    num_integrations_per_ratio::Int = estimator.num_integrations_per_ratio,
     ratios_are_bit_aligned::Bool = estimator.ratios_are_bit_aligned,
     narrowband_sum::ComplexF64 = complex(0.0, 0.0),
     wideband_power::Float64 = 0.0,
-    num_accumulated_records::Int = 0,
-    num_accumulated_code_blocks::Int = 0,
+    num_accumulated_integrations::Int = 0,
+    num_accumulated_code_periods::Int = 0,
 ) = NWPRCN0Estimator(
-    estimator.num_records,
-    estimator.num_narrowband_code_blocks,
-    estimator.num_presync_narrowband_code_blocks,
+    estimator.num_averaged_integrations,
+    estimator.num_narrowband_code_periods,
+    estimator.num_presync_narrowband_code_periods,
     estimator.buffered_narrowband_powers,
     estimator.buffered_wideband_powers,
     ratio_current_index,
     filled_ratio_length,
-    num_records_per_ratio,
+    num_integrations_per_ratio,
     ratios_are_bit_aligned,
     narrowband_sum,
     wideband_power,
-    num_accumulated_records,
-    num_accumulated_code_blocks,
+    num_accumulated_integrations,
+    num_accumulated_code_periods,
     fallback,
 )
 
@@ -407,8 +407,8 @@ end
         fallback;
         narrowband_sum = estimator.narrowband_sum,
         wideband_power = estimator.wideband_power,
-        num_accumulated_records = estimator.num_accumulated_records,
-        num_accumulated_code_blocks = estimator.num_accumulated_code_blocks,
+        num_accumulated_integrations = estimator.num_accumulated_integrations,
+        num_accumulated_code_periods = estimator.num_accumulated_code_periods,
     )
 
 """
@@ -424,14 +424,14 @@ averaging the estimate does.
 """
 function estimate_cn0(estimator::NWPRCN0Estimator, coherent_integration_time)
     length(estimator) == 0 && return estimate_cn0(estimator.fallback, coherent_integration_time)
-    num_records = estimator.num_records_per_ratio
+    num_averaged_integrations = estimator.num_integrations_per_ratio
     total_wideband_power = sum(get_buffered_wideband_powers(estimator))
     iszero(total_wideband_power) &&
         return estimate_cn0(estimator.fallback, coherent_integration_time)
     mean_ratio = sum(get_buffered_narrowband_powers(estimator)) / total_wideband_power
     mean_ratio <= 1 && return dBHz(0.0 / coherent_integration_time)
-    mean_ratio >= num_records && return dBHz(Inf / coherent_integration_time)
-    SNR = (mean_ratio - 1) / (num_records - mean_ratio)
+    mean_ratio >= num_averaged_integrations && return dBHz(Inf / coherent_integration_time)
+    SNR = (mean_ratio - 1) / (num_averaged_integrations - mean_ratio)
     dBHz(SNR / coherent_integration_time)
 end
 
@@ -443,7 +443,7 @@ function reset_cn0_estimator!(e::NWPRCN0Estimator)
         reset_cn0_estimator!(e.fallback);
         ratio_current_index = 0,
         filled_ratio_length = 0,
-        num_records_per_ratio = 0,
+        num_integrations_per_ratio = 0,
         ratios_are_bit_aligned = false,
     )
 end

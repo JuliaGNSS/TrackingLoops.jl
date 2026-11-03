@@ -100,9 +100,9 @@ export NumAnts,
     MomentsCN0Estimator,
     NWPRCN0Estimator,
     NoCN0Estimator,
-    NoiseRefCN0Estimator,
+    NoiseReferencedCN0Estimator,
     estimate_cn0,
-    CorrelatorNoiseEstimator,
+    CorrelatorNoiseDensityEstimator,
     append_noise_observation!,
     default_wide_carrier_loop_bandwidth,
     calc_effective_carrier_loop_bandwidth,
@@ -147,8 +147,8 @@ const Maybe{T} = Union{T,Nothing}
 
 """
     NumAnts(n)
-    NumAnts(correlator::AbstractCorrelator)
-    NumAnts(estimator::AbstractNoiseEstimator)
+    NumAnts(correlator_bank::AbstractCorrelatorBank)
+    NumAnts(estimator::AbstractNoiseDensityEstimator)
     NumAnts(density_type::Type)
 
 Type parameter wrapper for the number of antennas; create with `NumAnts(n)`. The other
