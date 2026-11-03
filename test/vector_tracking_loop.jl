@@ -100,7 +100,7 @@ end
     ConventionalAssistedPLLAndDLL(),
     DelayCompensatedTrackingLoop(),
 )
-    # The command is the filter's ramp at the middle of the record it lands on, whatever
+    # The command is the filter's ramp at the middle of the integration it takes effect in, whatever
     # the prompt reads; the code is commanded from it, carrier-aided, plus the filter's
     # code correction.
     signal = GPSL1CA()
@@ -108,21 +108,21 @@ end
     tracking_loop = VectorTrackingLoop(signal; inner)
     ramp = TL.CarrierRamp(110.0, 4.0, 0.0)
     state = commanded(init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz), ramp; code_update = -0.25Hz)
-    words = ConstantNCOCommand(100.0, 0.1)
+    nco_history = ConstantNCOCommand(100.0, 0.1)
     ratio = get_chip_rate_to_center_frequency_ratio(signal)
-    for landing in (NO_LANDING_SAMPLE, Int64(15000))
+    for application_sample_index in (NO_LANDING_SAMPLE, Int64(15000))
         commands = map((cis(0.0), cis(0.2), -cis(0.1))) do prompt
-            _, carrier, code = step_satellite(tracking_loop, state, prompt_record(signal, prompt, 5000, fs), words, landing)
+            _, carrier, code = step_satellite(tracking_loop, state, prompt_record(signal, prompt, 5000, fs), nco_history, application_sample_index)
             carrier, code
         end
         @test allequal(commands)
         carrier, code = first(commands)
-        middle = ((landing == NO_LANDING_SAMPLE ? 5000 : 15000) + 2500) / 5e6
+        middle = ((application_sample_index == NO_LANDING_SAMPLE ? 5000 : 15000) + 2500) / 5e6
         @test carrier ≈ (110.0 + 4.0 * middle) * Hz
         @test code ≈ 0.1Hz - 0.25Hz + (carrier - 100.0Hz) * ratio
     end
     # The inner loop's filters are frozen.
-    stepped, = step_satellite(tracking_loop, state, prompt_record(signal, cis(0.2), 5000, fs), words, NO_LANDING_SAMPLE)
+    stepped, = step_satellite(tracking_loop, state, prompt_record(signal, cis(0.2), 5000, fs), nco_history, NO_LANDING_SAMPLE)
     @test stepped.inner.carrier_loop_filter == state.inner.carrier_loop_filter
     @test stepped.inner.code_loop_filter == state.inner.code_loop_filter
     @test get_carrier_loop_stage(stepped) == VECTOR_LOOP
@@ -154,9 +154,9 @@ end
         TL.CarrierRamp(120.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(100.0, 0.0), 0)
     inner_state = init_loop_state(inner, signal, 100.0Hz, 0.1Hz)
     integration = vector_integration(signal, (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im), 5000, fs; previous_prompt = cis(0.1))
-    words = ConstantNCOCommand(100.0, 0.1)
-    new_vector_state, vector_carrier, vector_code = step_satellite(vector, vector_state, integration, words, NO_LANDING_SAMPLE)
-    new_inner_state, inner_carrier, inner_code = step_satellite(inner, inner_state, integration, words, NO_LANDING_SAMPLE)
+    nco_history = ConstantNCOCommand(100.0, 0.1)
+    new_vector_state, vector_carrier, vector_code = step_satellite(vector, vector_state, integration, nco_history, NO_LANDING_SAMPLE)
+    new_inner_state, inner_carrier, inner_code = step_satellite(inner, inner_state, integration, nco_history, NO_LANDING_SAMPLE)
     @test vector_carrier == inner_carrier
     @test vector_code == inner_code
     @test new_vector_state.inner == new_inner_state
@@ -183,8 +183,8 @@ end
     state = init_loop_state(tracking_loop, gpsl1, carrier_doppler, initial_code_doppler)
     state = commanded(state, TL.CarrierRamp(100.0, 0.0, 0.0); code_update = -0.25Hz)
     integration = vector_integration(gpsl1, correlator_outputs, num_samples, sampling_frequency)
-    words = ConstantNCOCommand(ustrip(Hz, carrier_doppler), ustrip(Hz, initial_code_doppler))
-    state, = step_satellite(tracking_loop, state, integration, words, NO_LANDING_SAMPLE)
+    nco_history = ConstantNCOCommand(ustrip(Hz, carrier_doppler), ustrip(Hz, initial_code_doppler))
+    state, = step_satellite(tracking_loop, state, integration, nco_history, NO_LANDING_SAMPLE)
     normalized_correlator_bank = set_correlator_outputs(
         get_default_correlator_bank(gpsl1),
         SVector(correlator_outputs...) ./ num_samples,
@@ -266,7 +266,7 @@ end
     # filter commands the carrier, the residual PLL measures it.
     signal = GPSL1CA()
     fs = 4e6Hz
-    function run(inner, landing_offset)
+    function run(inner, application_offset)
         tracking_loop = VectorTrackingLoop(GPSL1CA(); inner)
         state = init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz)
         state = commanded(state, TL.CarrierRamp(100.5, 1.0, 0.0); code_update = 0.1Hz, scalar_doppler = 100.0)
@@ -278,18 +278,18 @@ end
             p = cis(0.3 + 0.01k)
             output = CorrelatorBankOutput(loop_epl(0.5p, p, 0.5p), 4000, 4000k)
             integration = LoopRecord(signal, output.correlator_bank, previous, output, 1, fs)
-            landing = landing_offset == 0 ? NO_LANDING_SAMPLE : Int64(4000k + landing_offset)
-            state, carrier, code = step_satellite(tracking_loop, state, integration, timeline, landing)
-            schedule_command!(timeline, 4000k + landing_offset, ustrip(Hz, carrier), ustrip(Hz, code))
+            application_sample_index = application_offset == 0 ? NO_LANDING_SAMPLE : Int64(4000k + application_offset)
+            state, carrier, code = step_satellite(tracking_loop, state, integration, timeline, application_sample_index)
+            schedule_command!(timeline, 4000k + application_offset, ustrip(Hz, carrier), ustrip(Hz, code))
             advance_timeline!(timeline, 4000k - 4000)
             push!(carriers, carrier)
             previous = p
         end
         carriers, state
     end
-    for landing_offset in (0, 12000)
-        referenced, referenced_state = run(DelayCompensatedTrackingLoop(), landing_offset)
-        conventional, conventional_state = run(ConventionalAssistedPLLAndDLL(), landing_offset)
+    for application_offset in (0, 12000)
+        referenced, referenced_state = run(DelayCompensatedTrackingLoop(), application_offset)
+        conventional, conventional_state = run(ConventionalAssistedPLLAndDLL(), application_offset)
         @test referenced == conventional
         @test referenced_state.code_disc_sum == conventional_state.code_disc_sum
         @test referenced_state.fll_disc_sum == conventional_state.fll_disc_sum
@@ -417,7 +417,7 @@ end
     @test released.inner.carrier_loop_filter.x2 == 2.0Hz^2
     @test released.inner.initial_carrier_doppler == 150.0Hz
     @test released.inner.initial_code_doppler == 0.2Hz
-    # A residual PLL in lock hands over its estimate where the release lands: the ramp plus
+    # A residual PLL in lock hands over its estimate where the release takes effect: the ramp plus
     # its residual Doppler, moved on by its rate, and the Doppler rate of both.
     residual_pll = state.residual_pll
     residual_pll = TL.ResidualPLL(residual_pll.bandwidth, 1.5, TL._residual_pll_loop_filter(1.5, 0.5), residual_pll.prompt_center,

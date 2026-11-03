@@ -27,18 +27,18 @@ producer (e.g. an FPGA) can build them and feed [`process_correlator_bank_output
 
 Fields:
 
-  - `correlator`: the raw (un-normalized) sum of products, as `normalize` expects;
-    an external producer gets it by reusing `update_accumulator` on an
-    [`EarlyPromptLateCorrelator`](@ref).
-  - `integrated_samples`: samples integrated (for `normalize`, the integration time
-    and the bit-buffer block count).
-  - `sample_index`: where the integration ended; the record covers
-    `[sample_index - integrated_samples, sample_index)` (numerically Tracking.jl's
-    1-based index of the record's last sample). Used to look up the words the
+  - `correlator_bank`: the raw (un-normalized) sums of products, as `normalize` expects;
+    an external producer gets it by reusing `set_correlator_outputs` on an
+    [`EarlyPromptLateCorrelatorBank`](@ref).
+  - `num_integrated_samples`: samples integrated (for `normalize`, the integration time
+    and the bit synchronizer's period count).
+  - `sample_index`: where the integration ended; the integration covers
+    `[sample_index - num_integrated_samples, sample_index)` (numerically Tracking.jl's
+    1-based index of the integration's last sample). Used to look up the commands the
     replica ran on ([`calc_mean_nco_command`](@ref)) and, for
-    [`NCOReferencedPLLAndDLL`](@ref), to place the record against the landing
-    sample, so it must share the time grid of the `words` passed to
-    [`step_loop`](@ref): device samples for an [`NCOTimeline`](@ref). With a
+    [`DelayCompensatedTrackingLoop`](@ref), to place the integration against the application
+    sample, so it must share the time grid of the `nco_history` passed to
+    [`step_loop!`](@ref): device samples for an [`NCOTimeline`](@ref). With a
     [`ConstantNCOCommand`](@ref) any origin works as long as all satellites share it
     (vector tracking); Tracking.jl uses the current `track!` measurement, so an
     external producer feeding it must map its counter onto that origin.

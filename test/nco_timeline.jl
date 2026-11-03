@@ -2,7 +2,7 @@
 scheduled_samples(timeline) =
     [c.sample_index for c in view(timeline.scheduled_commands, 1:timeline.num_scheduled_commands)]
 
-@testset "An NCO timeline averages the words that ran over a span" begin
+@testset "An NCO timeline averages the commands that ran over a span" begin
     tl = NCOTimeline()
     reset_timeline!(tl, 100.0, 0.1)
     @test calc_mean_nco_command(tl, 0, 4000) == NCOCommand(100.0, 0.1)
@@ -110,7 +110,7 @@ end
     @test scheduled_samples(tl) == [200, 300]
     @test get_nco_command(tl, 250) == NCOCommand(1.0, 0.0)
     @test get_nco_command(tl, 300) == NCOCommand(2.0, 0.0)
-    # Two writes landing on one sample: the later confirmed is in effect.
+    # Two writes taking effect at one sample: the later confirmed is in effect.
     schedule_command!(tl, 400, 4.0, 0.0)
     schedule_command!(tl, 500, 5.0, 0.0)
     confirm_command!(tl, 400, 600)

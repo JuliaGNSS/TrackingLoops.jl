@@ -297,7 +297,7 @@ mutable struct VTBuffers{SB<:Tuple}
     ξ_model::Vector{Float64}
     ξ_landing::Vector{Float64}
     x_landing::Vector{Float64}
-    landing_position::Vector{SVector{3,Float64}}
+    application_position::Vector{SVector{3,Float64}}
     landing_columns::BiasColumns
     landing_range::Vector{Float64}
     # The cycle's bias-layout decision, and its constraints over the filter's clocks.
@@ -848,7 +848,7 @@ function _predict_members!(nav::VectorNavigation)
 end
 
 # Point every member above the horizon at this cycle's commands; the satellite
-# evaluates them where its command lands, on its next integration (`_commands_at_landing`).
+# evaluates them where its command takes effect, on its next integration (`_commands_at_application`).
 function _assign_commands!(acc, group, g, buffer, nav)
     buffers = nav.buffers
     for (j, member) in enumerate(buffers.members)
@@ -860,7 +860,7 @@ function _assign_commands!(acc, group, g, buffer, nav)
     acc
 end
 
-# The NCO commands (Hz) of member `j`, `τ` after the epoch: where its command lands,
+# The NCO commands (Hz) of member `j`, `τ` after the epoch: where its command takes effect,
 # and one cycle later for the carrier ramp's end (see `_predict_after_epoch`). The code
 # correction removes the range error (TOW-based, atmosphere-corrected, no
 # discriminator term); the carrier is the predicted Doppler itself.
@@ -886,19 +886,19 @@ end
 function _predict_after_epoch(nav::VectorNavigation, slot::VTSlot, member::VTMember, j, reference_system, reference_tow, τ, chips)
     buffers = nav.buffers
     idxs = nav.model.idxs
-    landing_time = member.time + chips / member.code_frequency
+    application_transmit_tow = member.time + chips / member.code_frequency
     ephemeris = something(get_broadcast_ephemeris(slot.decoder))
-    landing_orbit = calc_satellite_position_and_velocity(ephemeris, landing_time)
-    landing_position = landing_orbit.position
-    landing_velocity = landing_orbit.velocity
+    application_orbit = calc_satellite_position_and_velocity(ephemeris, application_transmit_tow)
+    application_position = application_orbit.position
+    landing_velocity = application_orbit.velocity
     propagate_state!(buffers.x_landing, nav.x, idxs, τ)
     position_and_bias_vector!(buffers.ξ_landing, buffers.x_landing, idxs)
-    buffers.landing_position[1] = landing_position
+    buffers.application_position[1] = application_position
     buffers.landing_columns.clock_columns[1] = member.clock_bias_index
     buffers.landing_columns.ifb_columns[1] = member.ifb_index
     predict_pseudoranges!(
         buffers.landing_range,
-        buffers.landing_position,
+        buffers.application_position,
         buffers.ξ_landing,
         buffers.landing_columns,
     )
@@ -909,14 +909,14 @@ function _predict_after_epoch(nav::VectorNavigation, slot::VTSlot, member::VTMem
         user_pos,
         user_vel,
         user_clock_drift,
-        landing_position,
+        application_position,
         landing_velocity,
-        calc_satellite_clock_drift(ephemeris, landing_time),
+        calc_satellite_clock_drift(ephemeris, application_transmit_tow),
     )
     measured_pseudorange =
         calc_pseudorange(
             reference_tow + τ,
-            landing_time,
+            application_transmit_tow,
             get_time_system_offset(buffers.measurements[j].time_system, reference_system),
         ) -
         buffers.delays[j]

@@ -32,7 +32,7 @@ function simulate_delayed_loop(tracking_loop, d; f_true = 130.0, handover = 100.
     dt = LOOP_N / ustrip(Hz, LOOP_FS)
     phase = phi0
     phases = Float64[]
-    words = Float64[]
+    nco_history = Float64[]
     previous_prompt = complex(0.0, 0.0)
     for k = 0:steps-1
         a = k * LOOP_N
@@ -42,17 +42,17 @@ function simulate_delayed_loop(tracking_loop, d; f_true = 130.0, handover = 100.
         phase += 2π * (f_true - w) * dt
         # In radians, folded as the Costas discriminator reads it.
         push!(phases, 2π * TrackingLoops.wrap_phase_error(mean_phase / 2π))
-        push!(words, w)
+        push!(nco_history, w)
         p = cis(mean_phase)
         output = CorrelatorBankOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, b)
-        landing = Int64(b + d * LOOP_N)
+        application_sample_index = Int64(b + d * LOOP_N)
         integration = LoopRecord(LOOP_SIGNAL, output.correlator_bank, previous_prompt, output, 1, LOOP_FS; prn = 1)
-        state, carrier, code = step_loop!(tracking_loop, state, integration, timeline, landing)
+        state, carrier, code = step_loop!(tracking_loop, state, integration, timeline, application_sample_index)
         previous_prompt = p
-        schedule_command!(timeline, landing, ustrip(Hz, carrier), ustrip(Hz, code))
+        schedule_command!(timeline, application_sample_index, ustrip(Hz, carrier), ustrip(Hz, code))
         advance_timeline!(timeline, b - LOOP_N)
     end
-    phases, words
+    phases, nco_history
 end
 
 @testset "With no delay the delay-compensated loop is the conventional loop" begin
@@ -68,18 +68,18 @@ end
 end
 
 @testset "The delay-compensated loop holds lock through $d integrations of delay" for d in 1:5
-    phases, words = simulate_delayed_loop(DelayCompensatedTrackingLoop(; WIDE_LOOP...), d; steps = 2000)
+    phases, nco_history = simulate_delayed_loop(DelayCompensatedTrackingLoop(; WIDE_LOOP...), d; steps = 2000)
     @test all(abs.(phases[1800:end]) .< 0.05)
-    @test all(abs.(words[1800:end] .- 130.0) .< 0.3)
+    @test all(abs.(nco_history[1800:end] .- 130.0) .< 0.3)
     # The pull-in transient stays clear of the ±π/2 edge where the BPSK
     # discriminator slips.
     @test maximum(abs.(phases[100:end])) < 1.4
 end
 
 @testset "The default loop holds lock through three integrations of delay" begin
-    phases, words = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(), 3; steps = 1200)
+    phases, nco_history = simulate_delayed_loop(ConventionalAssistedPLLAndDLL(), 3; steps = 1200)
     @test all(abs.(phases[1100:end]) .< 0.05)
-    @test all(abs.(words[1100:end] .- 130.0) .< 0.3)
+    @test all(abs.(nco_history[1100:end] .- 130.0) .< 0.3)
 end
 
 @testset "The conventional loop and the negative control limit-cycle at five integrations of delay" begin
@@ -87,8 +87,8 @@ end
         ConventionalAssistedPLLAndDLL(; WIDE_LOOP...),
         DelayCompensatedTrackingLoop(; compensate_delay = false, WIDE_LOOP...),
     )
-        phases, words = simulate_delayed_loop(tracking_loop, 5; steps = 1200)
-        tail = words[600:end] .- 130.0
+        phases, nco_history = simulate_delayed_loop(tracking_loop, 5; steps = 1200)
+        tail = nco_history[600:end] .- 130.0
         @test sqrt(sum(abs2, tail) / length(tail)) > 20
         @test maximum(abs.(phases[600:end])) > 1.0
     end
@@ -136,7 +136,7 @@ end
     @test ScalarLoopState(; initial_carrier_doppler = 0.0Hz, initial_code_doppler = 0.0Hz).driver == 0
 end
 
-@testset "Without a landing sample the delay-compensated loop is the conventional loop" begin
+@testset "Without an application sample index the delay-compensated loop is the conventional loop" begin
     # The software receiver's path: one fixed command per chunk and no application sample
     # sample, so the prediction branch is never entered.
     signal = LOOP_SIGNAL
@@ -150,9 +150,9 @@ end
         p = cis(0.3 + 0.002k)
         output = CorrelatorBankOutput(loop_epl(0.45p, p, 0.55p), LOOP_N, LOOP_N * k)
         integration = LoopRecord(signal, output.correlator_bank, previous_prompt, output, 1, LOOP_FS)
-        words = ConstantNCOCommand(carrier, code)
-        conv_state, conv_carrier, conv_code = step_loop!(conventional, conv_state, integration, words, NO_LANDING_SAMPLE)
-        ref_state, ref_carrier, ref_code = step_loop!(referenced, ref_state, integration, words, NO_LANDING_SAMPLE)
+        nco_history = ConstantNCOCommand(carrier, code)
+        conv_state, conv_carrier, conv_code = step_loop!(conventional, conv_state, integration, nco_history, NO_LANDING_SAMPLE)
+        ref_state, ref_carrier, ref_code = step_loop!(referenced, ref_state, integration, nco_history, NO_LANDING_SAMPLE)
         @test ref_carrier == conv_carrier
         @test ref_code == conv_code
         carrier, code = ustrip(Hz, conv_carrier), ustrip(Hz, conv_code)
@@ -234,7 +234,7 @@ end
     stepped, carrier, code = step_loop!(tracking_loop, state, integration, ConstantNCOCommand(123.0, 0.12), NO_LANDING_SAMPLE)
     @test stepped === state
     @test (carrier, code) == (123.0Hz, 0.12Hz)
-    # …at the landing sample.
+    # …at the application sample.
     timeline = NCOTimeline()
     reset_timeline!(timeline, 100.0, 0.1)
     schedule_command!(timeline, 2n, 130.0, 0.13)

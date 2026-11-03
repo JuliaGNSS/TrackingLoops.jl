@@ -16,12 +16,12 @@ created with [`init_loop_state`](@ref), and every tracking loop is stepped with
 the same call,
 
 ```julia
-loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, words, landing_sample)
+loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, nco_history, application_sample_index)
 ```
 
-where `record` is a [`LoopRecord`](@ref), `words` is the replica frequency the
-record was produced under (a [`ConstantNCOCommand`](@ref) for a software correlator,
-the channel's [`NCOTimeline`](@ref) for a hardware one) and `landing_sample` is
+where `integration` is a [`LoopRecord`](@ref), `nco_history` describes the replica frequency
+that was applied while the integration was produced (a [`ConstantNCOCommand`](@ref) for a software correlator,
+the channel's [`NCOTimeline`](@ref) for a hardware one) and `application_sample_index` is
 the sample the new command takes effect at, or [`NO_LANDING_SAMPLE`](@ref) for
 "at the end of each integration".
 
@@ -35,9 +35,9 @@ unchanged and the command in force.
 - [`ConventionalAssistedPLLAndDLL`](@ref): the same with an FLL assisting the
   PLL until phase lock (see [Carrier-loop staging](@ref)), to pull in larger
   initial frequency errors. The default in Tracking.jl.
-- [`NCOReferencedPLLAndDLL`](@ref): stays stable when its correction takes
-  effect only several records later, as with a hardware NCO. With a fixed word
-  and no landing sample it is the FLL-assisted conventional loop at the same
+- [`DelayCompensatedTrackingLoop`](@ref): stays stable when its correction takes
+  effect only several integrations later, as with a hardware NCO. With a fixed command
+  and no application sample it is the FLL-assisted conventional loop at the same
   bandwidths.
 
 The bandwidth rules ([`default_wide_carrier_loop_bandwidth`](@ref),
@@ -131,8 +131,8 @@ has read lock ([`is_phase_locked`](@ref TrackingLoops.is_phase_locked): at least
 loop](@ref vector-carrier).
 
 A wider loop tolerates less command delay: at 50 Hz the conventional loop holds
-through three records of delay. The [`NCOReferencedPLLAndDLL`](@ref), meant for
-hardware correlators whose commands land records later, therefore pulls in at
+through three integrations of delay. The [`DelayCompensatedTrackingLoop`](@ref), meant for
+hardware correlators whose commands take effect integrations later, therefore pulls in at
 the narrow 18 Hz by default.
 
 ```@docs

@@ -189,12 +189,12 @@ lives with the satellite. Hosts drive every tracking loop through one interface:
 
   - [`init_loop_state`](@ref)`(tracking_loop, driver_signal, carrier_doppler,
     code_doppler)` builds a satellite's state, which records the driver: the
-    signal whose records close the loops;
-  - [`step_loop`](@ref)`(estimator, state, record, words, landing_sample)`
-    folds one record into it and returns `(state, carrier_doppler,
-    code_doppler)`. The host calls it on every record of every signal of the
-    satellite (each built from that signal's [`SignalLoopState`](@ref)); the
-    estimator picks out the ones it uses and, for the rest, returns the state
+    signal whose integrations close the loops;
+  - [`step_loop!`](@ref)`(tracking_loop, state, integration, nco_history, application_sample_index)`
+    advances it by one integration and returns `(state, carrier_doppler,
+    code_doppler)`. The host calls it on every integration of every signal of the
+    satellite (each built from that signal's [`PostCorrelationState`](@ref)); the
+    tracking loop picks out the ones it uses and, for the rest, returns the state
     unchanged and the command in force;
   - [`reinit_loop_state`](@ref)`(tracking_loop, state, carrier_doppler,
     code_doppler)` re-seeds it from converged Dopplers, keeping what the

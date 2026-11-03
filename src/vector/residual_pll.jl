@@ -1,6 +1,6 @@
 # The carrier in the vector loop (see the manual's "The carrier in the vector loop"):
 # the filter's carrier ramp and each member's residual PLL. The residual PLL propagates
-# over the NCO's exact words (`calc_mean_nco_command`), so what the NCO is commanded never
+# over the NCO's exact commands (`calc_mean_nco_command`), so what the NCO is commanded never
 # changes its estimates while the residual stays inside the discriminator's range. Its
 # phase rotates the decoding signal's prompts for the engine's soft bits
 # (`_advance_decoding!`).
@@ -9,8 +9,8 @@
     CarrierRamp
 
 The carrier Doppler the navigation filter commands a member with: `doppler` (Hz) at
-`time` (s, records' grid) and its `rate` (Hz/s). Each record is commanded the ramp at
-the middle of the record it lands on.
+`time` (s, integrations' grid) and its `rate` (Hz/s). Each integration is commanded the ramp at
+the middle of the integration it takes effect on.
 """
 struct CarrierRamp
     doppler::Float64
@@ -123,7 +123,7 @@ ResidualPLL(
 )
 
 # A residual PLL taking over from the phase-locked scalar loop as the satellite is added:
-# at its word `scalar_doppler` (Hz) against the ramp at `time`, in lock, with the
+# at its command `scalar_doppler` (Hz) against the ramp at `time`, in lock, with the
 # averages of the scalar loop's `staging`.
 _initialized_residual_pll(
     residual_pll::ResidualPLL,
@@ -210,12 +210,12 @@ end
 # by the words it ran on from that record's end, at `fs` (Hz). `NaN` while that half is
 # unknown. Exact from the record's end on; within the half it takes the later words to have
 # run there.
-@inline function _residual_phase_after(residual_pll::ResidualPLL, ramp::CarrierRamp, previous_replica_half, time, fs, words)
+@inline function _residual_phase_after(residual_pll::ResidualPLL, ramp::CarrierRamp, previous_replica_half, time, fs, nco_history)
     previous_cycles, previous_duration = previous_replica_half
     isnan(previous_cycles) && return NaN
     previous_end = residual_pll.prompt_center + Float64(ustrip(s, previous_duration))
-    word = calc_mean_nco_command(words, previous_end * fs, time * fs).carrier_doppler
-    _predicted_phase(residual_pll, ramp, time, previous_cycles + word * (time - previous_end))
+    command = calc_mean_nco_command(nco_history, previous_end * fs, time * fs).carrier_doppler
+    _predicted_phase(residual_pll, ramp, time, previous_cycles + command * (time - previous_end))
 end
 
 # One integration through the residual PLL: predict the phase to the prompt, wipe it, and run
@@ -309,7 +309,7 @@ function _bit_prompt_phase(
     previous_replica_half,
     history::PromptHistory,
     integration::LoopRecord,
-    words,
+    nco_history,
     driver::Bool,
 )
     isnan(residual_pll.prompt_center) && return NaN
@@ -317,7 +317,7 @@ function _bit_prompt_phase(
     fs = _sampling_frequency_hz(integration)
     center = (integration.sample_index - integration.integrated_samples / 2) / fs
     center > residual_pll.prompt_center + 0.5 / fs &&
-        return _residual_phase_after(residual_pll, ramp, previous_replica_half, center, fs, words)
+        return _residual_phase_after(residual_pll, ramp, previous_replica_half, center, fs, nco_history)
     history.count == 0 && return NaN
     n = Base.length(history.centers)
     nearest = history.newest
