@@ -140,7 +140,7 @@ end
     ConventionalAssistedPLLAndDLL(),
     NCOReferencedPLLAndDLL(),
 )
-    # Under an NCO delay too: the delayed simulation of `estimators.jl`.
+    # Under an NCO delay too: the delayed simulation of `tracking_loops.jl`.
     for d in (0, 3)
         @test simulate_delayed_loop(VectorPLLAndDLL(GPSL1CA(); inner), d; steps = 300) ==
               simulate_delayed_loop(inner, d; steps = 300)
