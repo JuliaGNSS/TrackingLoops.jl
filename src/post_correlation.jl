@@ -228,17 +228,17 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
 )
     bit_buffer_before = bit_buffer
     synced_before = has_bit_or_secondary_code_been_found(bit_buffer)
-    normalized_correlator =
-        normalize(output.correlator, output.integrated_samples, get_code_amplitude(signal))
-    post_corr_filter = update(post_corr_filter, get_prompt(normalized_correlator))
+    normalized_correlator_bank =
+        normalize(output.correlator_bank, output.num_integrated_samples, get_code_amplitude(signal))
+    post_corr_filter = update(post_corr_filter, get_prompt(normalized_correlator_bank))
     # Used twice: to combine the antennas and to reduce the shared noise covariance
     # to this satellite's density.
-    weights = get_weights(post_corr_filter, NumAnts(normalized_correlator))
-    filtered_correlator = _combine_correlator(normalized_correlator, weights)
-    prompt = get_prompt(filtered_correlator)
+    weights = get_weights(post_corr_filter, NumAnts(normalized_correlator_bank))
+    filtered_correlator_bank = _filter_correlator_bank(normalized_correlator_bank, weights)
+    prompt = get_prompt(filtered_correlator_bank)
     bit_block_count = calc_num_code_blocks_for_bit_buffer(
         signal,
-        output.integrated_samples,
+        output.num_integrated_samples,
         sampling_frequency,
         synced_before,
     )
@@ -257,7 +257,7 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
         !drop_prompt,
         scalar_noise_density,
         noise_density_ready,
-        output.integrated_samples / sampling_frequency,
+        output.num_integrated_samples / sampling_frequency,
     )
     bit_buffer = buffer(
         signal,
@@ -277,7 +277,7 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
     cn0_estimator,
     post_corr_filter,
     prompt,
-    filtered_correlator,
+    filtered_correlator_bank,
     bit_block_count,
     integrated_code_blocks,
     overshoot,
@@ -334,7 +334,7 @@ and its polarity is `0`.
     cn0_estimator,
     post_corr_filter,
     prompt,
-    filtered_correlator,
+    filtered_correlator_bank,
     _,
     integrated_code_blocks,
     overshoot,
@@ -368,7 +368,7 @@ and its polarity is `0`.
         state.last_filtered_prompt,
         carrier_phase_polarity,
     )
-    new_state, prompt, filtered_correlator, integrated_code_blocks, overshoot
+    new_state, prompt, filtered_correlator_bank, integrated_code_blocks, overshoot
 end
 
 """

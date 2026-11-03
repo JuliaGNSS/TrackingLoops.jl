@@ -49,7 +49,7 @@ FPGA a noise channel is a subset of a tracking channel.
 At a fixed code phase and zero Doppler, the relative phase against an untracked but
 present signal (spoofed, or visible and not acquired) is frozen, since it drifts
 only at the code Doppler `f_d/1540`. Such a signal has a `3 × 1.5 / 1023 ≈ 0.44 %`
-chance per PRN of sitting in one of the three taps and then adds
+chance per PRN of sitting in one of the three correlators and then adds
 `T·(C/N₀)/3 ≈ 10.5·N₀` (45 dB-Hz) to every observation on that PRN indefinitely
 (≈ +1.5 dB on `N̂₀` after the rotation's dilution). Fresh draws per despread
 turn that into independent per-observation trials (a hit needs both draws to land,
@@ -313,7 +313,7 @@ code for `prn`, starting at `code_phase` chips at the first sample despread, at 
 nominal `code_frequency` and at `carrier_frequency`, the band's intermediate frequency
 plus the dither, with no carrier phase. [`draw_noise_probe`](@ref) draws one;
 [`noise_despreads`](@ref) draws one per despread of a slice. A hardware host
-programs a noise channel with it and hands each dump's taps to
+programs a noise channel with it and hands each dump's correlator outputs to
 [`append_noise_correlator_outputs!`](@ref).
 """
 struct NoiseProbe{S<:AbstractGNSSSignal,K,C}
@@ -330,7 +330,7 @@ end
 One despread of a [`CorrelatorNoiseEstimator`](@ref)'s reference, as
 [`noise_despreads`](@ref) plans it: the [`NoiseProbe`](@ref) `probe` over samples
 `sample_range`, sampled at `sampling_frequency`. A software host runs it on its kernel
-and hands the taps to [`append_despread_noise!`](@ref).
+and hands the correlator outputs to [`append_despread_noise!`](@ref).
 """
 struct NoiseDespread{P<:NoiseProbe,F}
     probe::P
@@ -459,25 +459,25 @@ The correlator a [`NoiseProbe`](@ref) runs through: three taps `tap_code_shift` 
 apart, one column per antenna. At that spacing the taps are independent looks, which
 [`append_noise_correlator_outputs!`](@ref) pools.
 """
-get_noise_correlator_bank(estimator::CorrelatorNoiseEstimator) = EarlyPromptLateCorrelator(;
+get_noise_correlator_bank(estimator::CorrelatorNoiseEstimator) = EarlyPromptLateCorrelatorBank(;
     num_ants = NumAnts(estimator),
-    preferred_early_late_to_prompt_code_shift = estimator.tap_code_shift,
+    preferred_early_late_to_prompt_spacing = estimator.tap_code_shift,
 )
 
 # Pool the taps of one despread (independent looks at ≥ 1 chip spacing): the scalar
 # power for one antenna, the spatial covariance for an array.
-@inline function _pool_taps(accumulators, ::NumAnts{1})
+@inline function _pool_taps(correlator_outputs, ::NumAnts{1})
     power = 0.0
-    for tap in accumulators
-        power += abs2(tap)
+    for correlator_output in correlator_outputs
+        power += abs2(correlator_output)
     end
     power
 end
 
-@inline function _pool_taps(accumulators, ::NumAnts{M}) where {M}
+@inline function _pool_taps(correlator_outputs, ::NumAnts{M}) where {M}
     covariance = zero(SMatrix{M,M,ComplexF64,M * M})
-    for tap in accumulators
-        covariance += tap * tap'
+    for correlator_output in correlator_outputs
+        covariance += correlator_output * correlator_output'
     end
     covariance
 end
@@ -512,15 +512,15 @@ A hardware host passes each dump's own sample count. Allocates nothing.
 @inline function append_noise_correlator_outputs!(
     estimator::CorrelatorNoiseEstimator,
     probe::NoiseProbe,
-    accumulators,
+    correlator_outputs,
     num_samples::Integer,
     sampling_frequency,
 )
-    num_correlators = length(accumulators)
+    num_correlators = length(correlator_outputs)
     append_noise_observation!(
         estimator,
         _noise_observation(
-            _pool_taps(accumulators, NumAnts(estimator)),
+            _pool_taps(correlator_outputs, NumAnts(estimator)),
             num_correlators,
             num_correlators * num_samples,
             sampling_frequency,
@@ -541,11 +541,11 @@ over its planned samples.
 @inline append_despread_noise!(
     estimator::CorrelatorNoiseEstimator,
     despread::NoiseDespread,
-    accumulators,
+    correlator_outputs,
 ) = append_noise_correlator_outputs!(
     estimator,
     despread.probe,
-    accumulators,
+    correlator_outputs,
     length(despread.sample_range),
     despread.sampling_frequency,
 )

@@ -9,7 +9,7 @@
 The arithmetic of a GNSS tracking loop, one correlator record at a time.
 
 A tracking loop takes the correlator outputs of one integration — early, prompt
-and late accumulators for one satellite — and turns them into what the next
+and late correlator outputs for one satellite — and turns them into what the next
 integration should run with: a carrier Doppler, a code Doppler, a navigation bit
 when one has completed, and a C/N₀ estimate. This package is that step, and
 nothing around it. It does not correlate, it does not read samples, and it does
@@ -31,9 +31,9 @@ behaves identically on the others.
 
 ## What is in it
 
-- **Correlators** — `EarlyPromptLateCorrelator`, `VeryEarlyPromptLateCorrelator`
-  for one or several antennas, with their accumulator accessors and the sample
-  shifts each tap is placed at.
+- **Correlator banks** — `EarlyPromptLateCorrelatorBank`, `VeryEarlyPromptLateCorrelatorBank`
+  for one or several antennas, with their correlator output accessors and the sample
+  shifts each correlator is placed at.
 - **Discriminators and loop filters** — `TrackingLoops.pll_disc`, `TrackingLoops.fll_disc`
   and `TrackingLoops.dll_disc`, the bandwidth rules that keep a loop stable for a given integration time, and the
   code-Doppler aiding from the carrier.
@@ -77,7 +77,7 @@ estimator = ConventionalAssistedPLLAndDLL()
 state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  # one per satellite
 loop = SignalLoopState(signal)              # bit buffer, C/N₀ estimator, prompt filter
 
-# For every correlator record `output::CorrelatorOutput` the correlator produced:
+# For every coherent record `output::CorrelatorOutput` the correlator produced:
 previous_prompt = loop.last_filtered_prompt   # read before `apply_record` replaces it
 loop, prompt, filtered, blocks, overshoot =
     apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready)

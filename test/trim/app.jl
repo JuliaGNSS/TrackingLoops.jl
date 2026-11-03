@@ -39,18 +39,18 @@ function report(io, cycle, pvt, status)
 end
 
 # The noise reference as a hardware host fills it: one probe per arm from the estimator's
-# own `Xoshiro`, each dump's taps appended over its own sample count.
+# own `Xoshiro`, each dump's correlator outputs appended over its own sample count.
 function report_noise(io)
     signal = GPSL1CA()
     estimator = CorrelatorNoiseEstimator()
     for k = 1:20
         probe = TrackingLoops.draw_noise_probe(estimator, signal, 0.0Hz)
-        taps = SVector(
+        correlator_outputs = SVector(
             complex(probe.code_phase / 1023, 1.0),
             complex(1.0, ustrip(Hz, probe.carrier_frequency) / 5000),
             complex(0.5, 0.5),
         )
-        TrackingLoops.append_noise_correlator_outputs!(estimator, probe, taps, 3990 + k, 4e6Hz)
+        TrackingLoops.append_noise_correlator_outputs!(estimator, probe, correlator_outputs, 3990 + k, 4e6Hz)
         print(io, "noise ", k)
         print(io, " ", probe.prn)
         print(io, " ", probe.code_phase)

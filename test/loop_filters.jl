@@ -97,9 +97,9 @@ end
     settle = 1_000
     for i = 1:n
         prompt = cis(φ + σ_n * randn(rng))
-        correlator = EarlyPromptLateCorrelator(SVector(prompt, prompt, prompt), 0.5)
+        correlator_bank = EarlyPromptLateCorrelatorBank(SVector(prompt, prompt, prompt), 0.5)
         freq_update, loop_filter =
-            filter_loop(loop_filter, pll_disc(gpsl1, correlator), T, bandwidth)
+            filter_loop(loop_filter, pll_disc(gpsl1, correlator_bank), T, bandwidth)
         φ -= 2π * Float64(freq_update * T)
         i > settle && (acc += φ^2)
     end
@@ -107,10 +107,10 @@ end
     @test 0.85 < effective_bandwidth / ustrip(Hz, bandwidth) < 1.15
 end
 
-# A GPS L1 C/A record of `num_code_blocks` blocks whose taps all sit at the prompt `p`.
+# A GPS L1 C/A record of `num_code_blocks` blocks whose correlators all sit at the prompt `p`.
 staging_record(p, num_code_blocks = 1) = LoopRecord(
     GPSL1CA(),
-    EarlyPromptLateCorrelator(SVector(p / 2, p, p / 2), 0.5),
+    EarlyPromptLateCorrelatorBank(SVector(p / 2, p, p / 2), 0.5),
     complex(0.0),
     4000num_code_blocks,
     4000num_code_blocks,

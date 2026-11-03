@@ -319,10 +319,10 @@ end
     @test ustrip(Hz^-1, get_noise_density(estimator)) ≈ 2 / 4e6
 end
 
-@testset "The noise reference pools a despread's taps" begin
-    # Single antenna: the scalar power of the taps.
-    taps = SVector(1.0 + 1.0im, 2.0 + 0.0im, 0.0 - 3.0im)
-    @test TrackingLoops._pool_taps(taps, NumAnts(1)) == 2.0 + 4.0 + 9.0
+@testset "The noise reference pools a despread's correlator outputs" begin
+    # Single antenna: the scalar power of the correlator outputs.
+    correlator_outputs = SVector(1.0 + 1.0im, 2.0 + 0.0im, 0.0 - 3.0im)
+    @test TrackingLoops._pool_taps(correlator_outputs, NumAnts(1)) == 2.0 + 4.0 + 9.0
     # An array: the summed outer products, one dimension up.
     array_taps = SVector(
         SVector(1.0 + 0.0im, 0.0 + 1.0im),
@@ -334,12 +334,12 @@ end
     @test pooled ≈ sum(t * t' for t in array_taps)
     @test pooled ≈ pooled'
 
-    # One despread of 4000 samples with three taps: the pooled power over all the taps'
+    # One despread of 4000 samples with three correlators: the pooled power over all their
     # samples, spanning the despread's duration, under the PRN it used.
     signal = GPSL1CA()
     despread = NoiseDespread(NoiseProbe(signal, 7, 0.0, 1.023e6Hz, 0.0Hz), 1:4000, 4e6Hz)
     estimator = CorrelatorNoiseEstimator()
-    @test append_despread_noise!(estimator, despread, taps) === estimator
+    @test append_despread_noise!(estimator, despread, correlator_outputs) === estimator
     observation = only(estimator.buffered)
     @test observation.noise_density ≈ (2.0 + 4.0 + 9.0) / (3 * 4000 * 4e6Hz)
     @test observation.num_sub_integrations == 3
@@ -349,11 +349,11 @@ end
     append_despread_noise!(array, despread, array_taps)
     @test only(array.buffered).noise_density ≈ pooled / (3 * 4000 * 4e6Hz)
 
-    # Three taps `tap_code_shift` apart, one column per antenna.
-    correlator = get_noise_correlator_bank(CorrelatorNoiseEstimator(; tap_code_shift = 2.0))
-    @test correlator isa EarlyPromptLateCorrelator
-    @test NumAnts(correlator) === NumAnts(1)
-    @test correlator.preferred_early_late_to_prompt_code_shift == 2.0
+    # Three correlators `tap_code_shift` apart, one column per antenna.
+    correlator_bank = get_noise_correlator_bank(CorrelatorNoiseEstimator(; tap_code_shift = 2.0))
+    @test correlator_bank isa EarlyPromptLateCorrelatorBank
+    @test NumAnts(correlator_bank) === NumAnts(1)
+    @test correlator_bank.preferred_early_late_to_prompt_spacing == 2.0
     @test NumAnts(get_noise_correlator_bank(array)) === NumAnts(2)
 end
 
@@ -436,8 +436,8 @@ end
     @test probe.code_phase == rand(rng) * 1023
     @test probe.carrier_frequency == f_if + (2 * rand(rng) - 1) * 5000.0Hz
     @test probe.code_frequency == get_chip_rate(signal)
-    taps = SVector(1.0 + 0im, 2.0 + 0im, 3.0 + 0im)
-    @test append_noise_correlator_outputs!(estimator, probe, taps, 3999, fs) === estimator
+    correlator_outputs = SVector(1.0 + 0im, 2.0 + 0im, 3.0 + 0im)
+    @test append_noise_correlator_outputs!(estimator, probe, correlator_outputs, 3999, fs) === estimator
     observation = last(estimator.buffered)
     @test observation.prn == 1
     @test observation.duration ≈ 3999 / fs
@@ -497,8 +497,8 @@ end
     fs = 4e6Hz
     function observation(M, seed)
         rng = Xoshiro(seed)
-        taps = [SVector{M}(randn(rng, ComplexF64, M)) for _ = 1:3]
-        covariance = sum(t * t' for t in taps)
+        correlator_outputs = [SVector{M}(randn(rng, ComplexF64, M)) for _ = 1:3]
+        covariance = sum(t * t' for t in correlator_outputs)
         noise_observation_from_correlator(covariance, 3, 3 * 4000, fs; duration = 1ms)
     end
     for (M, expected_observations) in ((1, 1), (3, 1), (4, 2), (8, 3))

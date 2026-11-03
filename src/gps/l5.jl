@@ -37,9 +37,9 @@ the soft one ([`uses_soft_secondary_code_detection`](@ref)).
     _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
 end
 
-# BPSK: EarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(::Union{GPSL5I,GPSL5Q}, num_ants::NumAnts = NumAnts(1))
-    EarlyPromptLateCorrelator(; num_ants)
+# BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(::Union{GPSL5I,GPSL5Q}, num_ants::NumAnts = NumAnts(1))
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
 # Holds one NH10 / NH20 period (see `get_code_block_buffer_type`).

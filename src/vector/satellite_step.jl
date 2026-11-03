@@ -707,7 +707,7 @@ function _advance_driver!(group::VTSlotGroup, slot::VTSlot, record::LoopRecord, 
     slot.last_integration_time =
         uconvert(s, record.integrated_samples / record.sampling_frequency)
     slot.last_early_late_spacing =
-        get_early_late_sample_spacing(
+        calc_early_late_sample_spacing(
             record.filtered_correlator,
             record.sampling_frequency,
             get_chip_rate(signal),
