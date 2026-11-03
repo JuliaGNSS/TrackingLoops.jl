@@ -206,7 +206,7 @@ and [`VectorPLLAndDLL`](@ref), whose navigation engine also runs inside `step_lo
 """
 abstract type AbstractDopplerEstimator end
 
-include("bit_buffer.jl")
+include("bit_synchronizer.jl")
 include("cn0_estimators/cn0_estimator.jl")
 include("cn0_estimators/moments.jl")
 include("cn0_estimators/no_cn0.jl")
@@ -235,16 +235,16 @@ include("beidou/b3i.jl")
 include("beidou/b2a.jl")
 include("beidou/b2b.jl")
 include("beidou/b1c.jl")
-include("sample_parameters.jl")
+include("integration_length.jl")
 include("loop_filters.jl")
 include("carrier_loop_staging.jl")
-include("record.jl")
+include("post_correlation.jl")
 include("nco_timeline.jl")
-include("estimators.jl")
+include("tracking_loops.jl")
 include("vector/residual_pll.jl")
-include("vector/estimator.jl")
+include("vector/tracking_loop.jl")
 include("vector/model.jl")
-include("vector/tracking.jl")
-include("vector/engine.jl")
+include("vector/navigation_processor.jl")
+include("vector/satellite_step.jl")
 
 end # module

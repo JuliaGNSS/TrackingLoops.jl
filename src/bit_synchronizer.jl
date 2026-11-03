@@ -41,7 +41,7 @@ Comm. ACM 13(10), 619–620) on the two-tailed probability: closed forms at
 probability. Accuracy ≲ 2e-4 relative (worst at `dof ≈ 3–10`). Used instead of
 `SpecialFunctions.beta_inc_inv`, which allocates over part of the `dof` range and
 is 10–170× slower: it runs every pre-sync block, which must not allocate (checked
-in `test/bit_buffer.jl`).
+in `test/bit_synchronizer.jl`).
 """
 function _t_quantile(probability::Float64, dof::Real)
     probability == 0.5 && return 0.0

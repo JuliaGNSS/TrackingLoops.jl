@@ -21,7 +21,7 @@ end
 const PAGES = [
     "index.md",
     "correlators.md",
-    "doppler_estimators.md",
+    "tracking_loops.md",
     "nco_timeline.md",
     "bit_sync.md",
     "cn0_estimators.md",
