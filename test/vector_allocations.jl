@@ -112,9 +112,9 @@ end
     sat = rx.sats[1]
     slot = group.slots[1]
     integration = feedback_integration(sat, sample)
-    words = sim_nco_history(sat, NO_LANDING_SAMPLE)
+    nco_history = sim_nco_history(sat, NO_LANDING_SAMPLE)
     state = sat.state
-    take_up(state) = @allocated TL._take_up_cycle(rx.vt, group, slot, state, integration, words, Int64(sample))
+    take_up(state) = @allocated TL._take_up_cycle(rx.vt, group, slot, state, integration, nco_history, Int64(sample))
     take_up(state)
     @test take_up(state) == 0
 end

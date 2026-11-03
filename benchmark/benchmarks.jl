@@ -26,8 +26,8 @@ const SUITE = BenchmarkGroup()
 # the signals' tuple.
 step_members(tracking_loop, ::Tuple{}) = nothing
 function step_members(tracking_loop, steps::Tuple)
-    for (state, integration, words) in first(steps)
-        TrackingLoops._step_satellite(tracking_loop, state, integration, words, NO_LANDING_SAMPLE)
+    for (state, integration, nco_history) in first(steps)
+        TrackingLoops._step_satellite(tracking_loop, state, integration, nco_history, NO_LANDING_SAMPLE)
     end
     step_members(tracking_loop, Base.tail(steps))
 end
@@ -55,12 +55,12 @@ for (name, signals) in (("GPS L1 C/A", (GPSL1CA(),)), ("GPS L1 C/A and L2C", (GP
         map(channels) do sat
             num_samples = integration_ms(sat.signal) * SAMPLES_PER_MS
             integration_end_sample_index = sample + num_samples
-            words = sim_nco_history(sat, NO_LANDING_SAMPLE)
+            nco_history = sim_nco_history(sat, NO_LANDING_SAMPLE)
             correlator_bank, = simulate_correlator(sat, rx.truth, sim_time(rx, integration_end_sample_index), num_samples,
-                integration_end_sample_index, words)
+                integration_end_sample_index, nco_history)
             integration = with_cn0(LoopRecord(sat.signal, correlator_bank, sat.previous_prompt, num_samples,
                 integration_end_sample_index, integration_end_sample_index, 1, SIM_FS), 45.0)
-            (sat.state, integration, words)
+            (sat.state, integration, nco_history)
         end
     end
     SUITE["member step"]["$num_satellites members, $name"] =

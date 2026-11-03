@@ -2,12 +2,12 @@
 # The scalar tracking loops: configuration, per-satellite state, and the
 # per-integration `step_loop!`, called by Tracking and by a hardware correlator's loop:
 #
-#     step_loop(estimator, state, record, words, landing_sample)
+#     step_loop!(tracking_loop, state, integration, nco_history, application_sample_index)
 #         -> (state, carrier_doppler, code_doppler)
 #
-# `words` answers `calc_mean_nco_command(words, a, b)` (a `ConstantNCOCommand` in software, the
-# channel's `NCOTimeline` in hardware); `landing_sample` is the device sample the
-# fold's command takes effect at, `NO_LANDING_SAMPLE` for each record's end.
+# `nco_history` answers `calc_mean_nco_command(nco_history, a, b)` (a `ConstantNCOCommand` in software, the
+# channel's `NCOTimeline` in hardware); `application_sample_index` is the device sample the
+# batch's command takes effect at, `NO_LANDING_SAMPLE` for each integration's end.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # The soft bits an integration appended: a contiguous view of the bit synchronizer's vector.
@@ -21,11 +21,17 @@ const _NO_SOFT_BITS = Float32[]
 """
 $(SIGNATURES)
 
-One completed record as the loop-filter step sees it: the signal, the filtered
-(antenna-combined, normalised) correlator, the previous filtered prompt the FLL
-compares with, the record's span and block count, the band's sampling frequency,
-and `fold_end`, the end sample of the fold's last record, against which a landing
-sample is measured.
+The output of one coherent integration of one signal after post-correlation processing,
+ahead of the discriminators: one integrate-and-dump interval (Kaplan and Hegarty's
+predetection integration), its filtered correlator bank from one hardware dump or a sum
+of dumps, with the bookkeeping the loop needs.
+
+One completed integration as the loop-filter step sees it: the signal, the filtered
+(antenna-combined, normalised) correlator bank, the previous filtered prompt the FLL
+compares with, the integration's span and period count, the band's sampling frequency,
+and `fold_end`, where the loop issues its command: the `sample_index` of
+the last integration of its batch (the integrations a host steps before its next command
+takes effect), from which the command's delay to its application sample is measured.
 
 `integrated_code_blocks` must be at least 1: the carrier-loop staging sizes its
 phase-lock indicator's averages in integrations of that length and divides by it. A
@@ -405,31 +411,31 @@ function reinit_loop_state(
 end
 
 """
-    step_loop(estimator::ConventionalPLLAndDLL, state, record::LoopRecord, words,
-              landing_sample)
-        -> (state, carrier_doppler, code_doppler)
+    step_loop!(estimator::ScalarTrackingLoop, loop_state, integration::LoopRecord, nco_history,
+              application_sample_index)
+        -> (loop_state, carrier_doppler, code_doppler)
 
-One record through the conventional loop at the bandwidths of its
-[`CarrierLoopStage`](@ref), capped against the record's integration time; the DLL
-is normalised with the code word the record ran on, and the Dopplers are aided
-([`aid_dopplers`](@ref)). `landing_sample` is ignored:
-the command is assumed to act before the next record.
+One integration through the conventional loop at the bandwidths of its
+[`CarrierLoopStage`](@ref), capped against the coherent integration time; the DLL
+is normalised with the code command the integration ran on, and the Dopplers are aided
+([`calc_carrier_aided_dopplers`](@ref)). `application_sample_index` is ignored:
+the command is assumed to act before the next integration.
 
-A host hands every record of a satellite to `step_loop`, the driver's and its
-passengers' alike; only the driver's step the loop. A passenger record leaves the
-state as it is and returns the command in force at the landing sample (the
-record's end under `NO_LANDING_SAMPLE`), so applying it changes nothing.
+A host hands every integration of a satellite to `step_loop!`, the driver's and its
+passengers' alike; only the driver's step the loop. A passenger integration leaves the
+state as it is and returns the command in force at the application sample (the
+integration's end under `NO_LANDING_SAMPLE`), so applying it changes nothing.
 """
 @inline step_loop!(
     estimator::ScalarTrackingLoop,
     loop_state::ScalarLoopState,
     integration::LoopRecord,
-    words,
-    landing_sample::Int64,
+    nco_history,
+    application_sample_index::Int64,
 ) =
     _is_driver_integration(loop_state, integration) ?
-    _step_scalar_loop(estimator, loop_state, integration, words, landing_sample) :
-    _step_passenger(loop_state, integration, words, landing_sample)
+    _step_scalar_loop(estimator, loop_state, integration, nco_history, application_sample_index) :
+    _step_passenger(loop_state, integration, nco_history, application_sample_index)
 
 # Whether `integration` belongs to the signal the scalar state was initialised with.
 @inline _is_driver_integration(loop_state, integration::LoopRecord) = _is_driven_by(loop_state, integration.signal)
@@ -440,34 +446,34 @@ record's end under `NO_LANDING_SAMPLE`), so applying it changes nothing.
     loop_state.driver == 0 || _signal_key(signal) == loop_state.driver
 
 # A passenger integration through a loop it does not close: the state unchanged and the
-# command in force where this integration's command would land.
-@inline function _step_passenger(loop_state, integration::LoopRecord, words, landing_sample::Int64)
-    carrier_doppler, code_doppler = _command_in_force(integration, words, landing_sample)
+# command in force where this integration's command would take effect.
+@inline function _step_passenger(loop_state, integration::LoopRecord, nco_history, application_sample_index::Int64)
+    carrier_doppler, code_doppler = _command_in_force(integration, nco_history, application_sample_index)
     loop_state, carrier_doppler, code_doppler
 end
 
-@inline function _command_in_force(integration::LoopRecord, words, landing_sample::Int64)
-    landing = landing_sample == NO_LANDING_SAMPLE ? integration.sample_index : landing_sample
-    (; carrier_doppler, code_doppler) = get_nco_command(words, landing)
+@inline function _command_in_force(integration::LoopRecord, nco_history, application_sample_index::Int64)
+    application_sample_index = application_sample_index == NO_LANDING_SAMPLE ? integration.sample_index : application_sample_index
+    (; carrier_doppler, code_doppler) = get_nco_command(nco_history, application_sample_index)
     carrier_doppler * Hz, code_doppler * Hz
 end
 
 # One integration's discriminators plus its integration time and centre sample.
 # `phase_error` (cycles) and `frequency_error` (Hz) feed the scalar carrier filter;
 # the frequency error is formed only if `form_fll` (while FLL-assisted), else zero.
-# The DLL's `code_error` is normalised with the code word the integration ran on.
+# The DLL's `code_error` is normalised with the code command the integration ran on.
 @inline function _discriminators(
     ::ScalarTrackingLoop,
     loop_state::ScalarLoopState,
     integration::LoopRecord,
-    words,
-    landing_sample::Int64;
+    nco_history,
+    application_sample_index::Int64;
     form_fll::Bool,
 )
     signal = integration.signal
     coherent_integration_time = integration.integrated_samples / integration.sampling_frequency
     integration_start_sample_index = integration.sample_index - integration.integrated_samples
-    applied_code = calc_mean_nco_command(words, integration_start_sample_index, integration.sample_index).code_doppler
+    applied_code = calc_mean_nco_command(nco_history, integration_start_sample_index, integration.sample_index).code_doppler
     filtered_correlator_bank = integration.filtered_correlator
     frequency_error =
         form_fll ?
@@ -525,13 +531,13 @@ end
 ) = ScalarLoopState(loop_state; carrier_loop_filter, code_loop_filter, staging)
 
 # One integration through a scalar loop (see `step_loop!`).
-@inline function _step_scalar_loop(estimator, loop_state, integration::LoopRecord, words, landing_sample::Int64)
+@inline function _step_scalar_loop(estimator, loop_state, integration::LoopRecord, nco_history, application_sample_index::Int64)
     discriminators = _discriminators(
         estimator,
         loop_state,
         integration,
-        words,
-        landing_sample;
+        nco_history,
+        application_sample_index;
         form_fll = loop_state.staging.stage == FLL_ASSISTED_PLL,
     )
     coherent_integration_time = discriminators.coherent_integration_time
@@ -580,7 +586,7 @@ end
                              code_loop_bandwidth = nothing,
                              compensate_delay = true)
 
-FLL-assisted PLL and DLL Doppler estimator for a replica whose NCO words are
+FLL-assisted PLL and DLL Doppler estimator for a replica whose NCO commands are
 applied with a known delay; the hardware-correlator receiver's default.
 
 It is the [`ConventionalAssistedPLLAndDLL`](@ref) (same filters, gains,
@@ -589,14 +595,14 @@ referenced to the device NCO. The one different default is the wide PLL bandwidt
 the narrow one ([`default_narrow_carrier_loop_bandwidth`](@ref)), as a wider
 loop tolerates less command delay.
 
- 1. **Every record is attributed to the word that ran under it.** Both
-    discriminators are measured against the applied replica, so `applied word +
+ 1. **Every integration is attributed to the command that ran under it.** Both
+    discriminators are measured against the applied replica, so `applied command +
     FLL discriminator` is an *absolute* Doppler measurement; the DLL is
-    normalised with the applied code word. The conventional loop does this too.
- 2. **The correction is sized for the moment it lands.** The filter is fed the
-    discriminators *predicted at the new command's landing sample*: the phase
-    error (cycles) advanced by `∫ (f̂ − w(τ)) dτ` over the words already
-    scheduled, and the frequency measurement re-based onto the word running
+    normalised with the applied code command. The conventional loop does this too.
+ 2. **The correction is sized for the moment it takes effect.** The filter is fed the
+    discriminators *predicted at the new command's application sample*: the phase
+    error (cycles) advanced by `∫ (f̂ − w(τ)) dτ` over the commands already
+    scheduled, and the frequency measurement re-based onto the command running
     there.
 
 With zero delay step 2 is the identity and the estimator *is* the conventional
@@ -635,9 +641,9 @@ end
 
 Per-satellite state of an [`DelayCompensatedTrackingLoop`](@ref): handover Dopplers
 (the filters output offsets from them), both filters, their bandwidths, the centre
-sample of the last record (`NaN` before the first; the FLL measures between two
-prompts' centres, so its replica word is averaged over that span), and the driver key
-and staging as in [`SatConventionalPLLAndDLL`](@ref).
+sample of the last integration (`NaN` before the first; the FLL measures between two
+prompts' centres, so its replica command is averaged over that span), and the driver key
+and staging as in [`ScalarLoopState`](@ref).
 """
 struct SatNCOReferencedPLLAndDLL{CA<:ThirdOrderAssistedBilinearLF,CO<:AbstractLoopFilter}
     initial_carrier_doppler::typeof(1.0Hz)
@@ -726,13 +732,13 @@ wrap_phase_error(phase_error; polarity::Real = 0) =
     rem(phase_error, iszero(polarity) ? 0.5 : 1.0, RoundNearest)
 
 # The phase error (cycles) the integration would show `shift` samples later under the
-# scheduled words, integrated from the integration's centre with the filter's Doppler
+# scheduled commands, integrated from the integration's centre with the filter's Doppler
 # estimate before this integration's update, folded as by `wrap_phase_error`.
 @inline function _predict_application_phase_error(
     phase_error,
     polarity,
     loop_state::SatNCOReferencedPLLAndDLL,
-    words,
+    nco_history,
     center,
     shift,
     coherent_integration_time,
@@ -749,44 +755,44 @@ wrap_phase_error(phase_error; polarity::Real = 0) =
             coherent_integration_time / 2 * carrier_loop_filter.x2,
         ),
     )
-    ramp_command = calc_mean_nco_command(words, center, center + shift).carrier_doppler
+    ramp_command = calc_mean_nco_command(nco_history, center, center + shift).carrier_doppler
     wrap_phase_error(phase_error + shift * (f_hat - ramp_command) / sampling_freq_hz; polarity)
 end
 
 """
-    step_loop(estimator::NCOReferencedPLLAndDLL, state, record::LoopRecord, words,
-              landing_sample)
-        -> (state, carrier_doppler, code_doppler)
+    step_loop!(estimator::DelayCompensatedTrackingLoop, loop_state, integration::LoopRecord, nco_history,
+              application_sample_index)
+        -> (loop_state, carrier_doppler, code_doppler)
 
-One record through the delay-compensated loop. `words` are the replica words the
-record ran on; `landing_sample` is where this fold's command lands
-(`NO_LANDING_SAMPLE`: at the record's end). See [`NCOReferencedPLLAndDLL`](@ref).
-Passenger records are handled as by the conventional loop.
+One integration through the delay-compensated loop. `nco_history` describes the replica commands the
+integration ran on; `application_sample_index` is where this batch's command takes effect
+(`NO_LANDING_SAMPLE`: at the integration's end). See [`DelayCompensatedTrackingLoop`](@ref).
+Passenger integrations are handled as by the conventional loop.
 """
 @inline step_loop!(
     estimator::DelayCompensatedTrackingLoop,
     loop_state::SatNCOReferencedPLLAndDLL,
     integration::LoopRecord,
-    words,
-    landing_sample::Int64,
+    nco_history,
+    application_sample_index::Int64,
 ) =
     _is_driver_integration(loop_state, integration) ?
-    _step_scalar_loop(estimator, loop_state, integration, words, landing_sample) :
-    _step_passenger(loop_state, integration, words, landing_sample)
+    _step_scalar_loop(estimator, loop_state, integration, nco_history, application_sample_index) :
+    _step_passenger(loop_state, integration, nco_history, application_sample_index)
 
 @inline function _discriminators(
     estimator::DelayCompensatedTrackingLoop,
     loop_state::SatNCOReferencedPLLAndDLL,
     integration::LoopRecord,
-    words,
-    landing_sample::Int64;
+    nco_history,
+    application_sample_index::Int64;
     form_fll::Bool,
 )
     signal = integration.signal
     sampling_frequency = integration.sampling_frequency
     previous_center = loop_state.previous_record_center
     # Every integration of the batch maps onto the delay-free loop's integration this far ahead.
-    shift = landing_sample == NO_LANDING_SAMPLE ? 0 : landing_sample - integration.fold_end
+    shift = application_sample_index == NO_LANDING_SAMPLE ? 0 : application_sample_index - integration.fold_end
     integration_end_sample_index = integration.sample_index
     integration_samples = integration.integrated_samples
     integration_start_sample_index = integration_end_sample_index - integration_samples
@@ -794,7 +800,7 @@ Passenger records are handled as by the conventional loop.
     coherent_integration_time = integration_samples / sampling_frequency
     filtered_correlator_bank = integration.filtered_correlator
 
-    nco_command = calc_mean_nco_command(words, integration_start_sample_index, integration_end_sample_index)
+    nco_command = calc_mean_nco_command(nco_history, integration_start_sample_index, integration_end_sample_index)
     applied_carrier, applied_code = nco_command.carrier_doppler, nco_command.code_doppler
     # Discriminators against the applied replica; the FLL's only if `form_fll`.
     phase_error = pll_disc(signal, filtered_correlator_bank; polarity = integration.carrier_phase_polarity)
@@ -813,20 +819,20 @@ Passenger records are handled as by the conventional loop.
             phase_error,
             integration.carrier_phase_polarity,
             loop_state,
-            words,
+            nco_history,
             center,
             shift,
             coherent_integration_time,
             sampling_frequency,
         )
-        # Re-base the FLL reading from the word between the prompts' centres onto
-        # the word running `shift` samples ahead.
+        # Re-base the FLL reading from the command between the prompts' centres onto
+        # the command running `shift` samples ahead.
         fll_command =
             isnan(previous_center) ? applied_carrier :
-            calc_mean_nco_command(words, previous_center, center).carrier_doppler
-        landing_command =
-            calc_mean_nco_command(words, integration_start_sample_index + shift, integration_end_sample_index + shift).carrier_doppler
-        form_fll && (frequency_error += (fll_command - landing_command) * Hz)
+            calc_mean_nco_command(nco_history, previous_center, center).carrier_doppler
+        application_command =
+            calc_mean_nco_command(nco_history, integration_start_sample_index + shift, integration_end_sample_index + shift).carrier_doppler
+        form_fll && (frequency_error += (fll_command - application_command) * Hz)
     end
 
     (;
@@ -893,11 +899,11 @@ is_phase_locked(loop_state::Union{ScalarLoopState,SatNCOReferencedPLLAndDLL}) =
     get_phase_lock_indicator(loop_state) >= _PHASE_LOCK_THRESHOLD
 
 """
-    carrier_phase_correction(state, words, sample, sampling_frequency) -> Float64
+    calc_carrier_phase_correction(loop_state, nco_history, sample_index, sampling_frequency) -> Float64
 
 The carrier phase (cycles) the loop estimates the incoming carrier to lead the
-replica by at `sample` (of the records' grid at `sampling_frequency`), with
-`words` the words the replica ran on up to there, an [`NCOTimeline`](@ref) or
+replica by at `sample_index` (of the integrations' grid at `sampling_frequency`), with
+`nco_history` describing the commands the replica ran on up to there, an [`NCOTimeline`](@ref) or
 a [`ConstantNCOCommand`](@ref). The replica's carrier phase plus this is the loop's
 estimate of the incoming carrier phase, the carrier-phase measurement a host
 reports (RINEX `L`).
@@ -930,7 +936,7 @@ at zero on the phase-locked scalar loop's replica.
 """
 calc_carrier_phase_correction(
     ::Union{ScalarLoopState,SatNCOReferencedPLLAndDLL},
-    words,
+    nco_history,
     sample_index,
     sampling_frequency,
 ) = 0.0

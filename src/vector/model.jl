@@ -325,7 +325,7 @@ function ensure_nav_filter_cycle_time!(
 end
 
 # The state propagated kinematically by `τ` seconds into `x_τ` (a plain copy for
-# `τ = 0`); sizes commands that land `τ` after the cycle epoch.
+# `τ = 0`); sizes commands that take effect `τ` after the cycle epoch.
 function propagate_state!(x_τ, x, idxs::NavFilterIndices, τ)
     copyto!(x_τ, x)
     has_vel = !isempty(idxs.vel)
@@ -413,7 +413,7 @@ end
 # epoch. The ramp is the filter's prediction alone, so no loop's jitter enters the
 # replica's command; with the PLL on the NCO, one integration's jitter
 # (`f_NCO,end − mean(f_NCO)`) would make the integrated rate error walk. A command
-# landing inside the cycle (an NCO delay) leaves a share of the filter's own correction
+# applied inside the cycle (an NCO delay) leaves a share of the filter's own correction
 # in the measurement: on the simulator the residuals stay at `√R` and the integrated
 # rate error at a centimetre, but the lag-1 autocorrelation shortens from −1/2 (−0.3 at
 # 20 ms of delay, −0.1 at 50 ms).
@@ -599,7 +599,7 @@ end
 
 # Commands of one member: the predicted minus the replica's pseudorange as a code
 # frequency offset removing it over the next interval `T`; the carrier NCO is set to the
-# predicted Doppler itself (`_commands_at_landing`), formed where it lands rather than
+# predicted Doppler itself (`_commands_at_application`), formed where it takes effect rather than
 # from the measured rate, which reaches the NCO only through the updated state. Predict
 # from the *updated* state only: adding the update's projected state correction too
 # would double-count it (loop gain 2, oscillation).

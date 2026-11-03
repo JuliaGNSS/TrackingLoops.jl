@@ -269,12 +269,12 @@ triangle(x) = max(0.0, 1.0 - abs(x))
 # error, rotated by the carrier phase error, signed by the navigation bit and with the
 # noise of the channel. Returns the correlator, the prompt, the code error and the true
 # Doppler and the commands.
-function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_index, words)
+function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_index, nco_history)
     fs = ustrip(Hz, SIM_FS)
     dt = num_samples / fs
     t_mid = t_end - dt / 2
     integration_start_sample_index = sample_index - num_samples
-    nco_command = calc_mean_nco_command(words, integration_start_sample_index, sample_index)
+    nco_command = calc_mean_nco_command(nco_history, integration_start_sample_index, sample_index)
     carrier, code = nco_command.carrier_doppler, nco_command.code_doppler
     t_t, = true_transmit(sat, truth, t_mid)
     f_true = true_doppler(sat, truth, t_mid)
@@ -303,40 +303,40 @@ end
 
 # The replica moved on by an integration, and the new commands commanded.
 function advance_replica!(sat::SimSat, f_true, carrier, code, dt, new_carrier, new_code,
-        integration_start_sample_index, sample_index, landing_sample)
+        integration_start_sample_index, sample_index, application_sample_index)
     sat.phase_error += (f_true - carrier) * dt
     sat.replica_time += dt * (1 + code / sat.code_frequency)
-    if landing_sample == NO_LANDING_SAMPLE
+    if application_sample_index == NO_LANDING_SAMPLE
         sat.carrier_doppler = ustrip(Hz, new_carrier)
         sat.code_doppler = ustrip(Hz, new_code)
     else
-        schedule_command!(sat.timeline, landing_sample, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
+        schedule_command!(sat.timeline, application_sample_index, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
         advance_timeline!(sat.timeline, integration_start_sample_index)
         (; carrier_doppler, code_doppler) = get_nco_command(sat.timeline, sample_index)
         sat.carrier_doppler, sat.code_doppler = carrier_doppler, code_doppler
     end
 end
 
-sim_nco_history(sat::SimSat, landing_sample) =
-    landing_sample == NO_LANDING_SAMPLE ? ConstantNCOCommand(sat.carrier_doppler, sat.code_doppler) : sat.timeline
+sim_nco_history(sat::SimSat, application_sample_index) =
+    application_sample_index == NO_LANDING_SAMPLE ? ConstantNCOCommand(sat.carrier_doppler, sat.code_doppler) : sat.timeline
 
 # One record of `num_samples` samples ending at device sample `sample_index` (receiver
 # time `t_end`), through the satellite's own loop alone — the per-record step of the
 # vector loop, with the navigation engine filled by hand at the epochs
 # (`fill_slot!`). Returns the code error.
-function simulate_record!(sat::SimSat, tracking_loop, truth, t_end, num_samples, sample_index, landing_sample;
+function simulate_record!(sat::SimSat, tracking_loop, truth, t_end, num_samples, sample_index, application_sample_index;
         polarity = 0)
-    words = sim_nco_history(sat, landing_sample)
+    nco_history = sim_nco_history(sat, application_sample_index)
     correlator_bank, prompt, code_error, f_true, carrier, code =
-        simulate_correlator(sat, truth, t_end, num_samples, sample_index, words)
+        simulate_correlator(sat, truth, t_end, num_samples, sample_index, nco_history)
     # The host reads the C/N₀ `fill_slot!` reports, and no signal during an outage.
     integration = with_cn0(LoopRecord(sat.signal, correlator_bank, sat.previous_prompt, num_samples,
         sample_index, sample_index, 1, SIM_FS; carrier_phase_polarity = polarity), sat.in_view ? 45.0 : -Inf)
     sat.state, new_carrier, new_code =
-        TrackingLoops._step_satellite(tracking_loop, sat.state, integration, words, landing_sample)
+        TrackingLoops._step_satellite(tracking_loop, sat.state, integration, nco_history, application_sample_index)
     sat.previous_prompt = prompt
     advance_replica!(sat, f_true, carrier, code, num_samples / ustrip(Hz, SIM_FS),
-        new_carrier, new_code, sample_index - num_samples, sample_index, landing_sample)
+        new_carrier, new_code, sample_index - num_samples, sample_index, application_sample_index)
     code_error
 end
 
@@ -348,7 +348,7 @@ end
 
 # Fill the slot of a channel at the cycle epoch (device sample `epoch_sample`), as the
 # satellite's snapshot would: the replica at the epoch, from the fixture decoder.
-function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_lock = sat.in_view)
+function fill_slot!(slot, sat::SimSat, epoch_sample, application_sample_index, nav; in_lock = sat.in_view)
     fs = ustrip(Hz, SIM_FS)
     epoch_state = replica_satellite_state(sat, sat.replica_time)
     slot.occupied = true
@@ -356,7 +356,7 @@ function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_loc
     slot.loop_state = sat.state
     sat.state = TrackingLoops._reset_discriminator_accumulators(sat.state)
     slot.code_phase = epoch_state.code_phase
-    nco_command = calc_mean_nco_command(sim_nco_history(sat, landing_sample), epoch_sample, epoch_sample)
+    nco_command = calc_mean_nco_command(sim_nco_history(sat, application_sample_index), epoch_sample, epoch_sample)
     carrier, code = nco_command.carrier_doppler, nco_command.code_doppler
     slot.carrier_doppler = carrier * Hz
     slot.code_doppler = code * Hz
@@ -470,21 +470,21 @@ feedback_integration(sat::SimSat, sample) =
         complex(0.0), SAMPLES_PER_MS, sample, sample, 1, SIM_FS)
 
 # The cycle at device sample `sample` (an epoch), and every satellite taking it up, the
-# corrections sized for where its command lands — or, with `ignore_delay`, as if it
-# landed at the epoch.
+# corrections sized for where its command takes effect — or, with `ignore_delay`, as if it
+# took effect at the epoch.
 function run_cycle!(receiver::SimReceiver, sample, fill!; ignore_delay = false)
     nav = receiver.vt
-    landing = receiver.delay_ms == 0 ? Int64(sample) : Int64(sample + receiver.delay_ms * SAMPLES_PER_MS)
-    sized_for = ignore_delay ? Int64(sample) : landing
+    application_sample_index = receiver.delay_ms == 0 ? Int64(sample) : Int64(sample + receiver.delay_ms * SAMPLES_PER_MS)
+    sized_for = ignore_delay ? Int64(sample) : application_sample_index
     nav.pending_epoch = round(Int, sample / (receiver.nominal_ms * SAMPLES_PER_MS))
     for (channels, group) in zip(receiver.channels, receiver.groups), (i, sat) in enumerate(channels)
-        fill!(group.slots[i], sat, sample, receiver.delay_ms == 0 ? NO_LANDING_SAMPLE : landing, nav)
+        fill!(group.slots[i], sat, sample, receiver.delay_ms == 0 ? NO_LANDING_SAMPLE : application_sample_index, nav)
     end
     TrackingLoops._navigation_cycle!(nav, sample / ustrip(Hz, SIM_FS))
     for (channels, group) in zip(receiver.channels, receiver.groups), (i, sat) in enumerate(channels)
-        words = receiver.delay_ms == 0 ? sim_nco_history(sat, NO_LANDING_SAMPLE) : sat.timeline
+        nco_history = receiver.delay_ms == 0 ? sim_nco_history(sat, NO_LANDING_SAMPLE) : sat.timeline
         sat.state = TrackingLoops._take_up_cycle(nav, group, group.slots[i], sat.state,
-            feedback_integration(sat, sample), words, sized_for)
+            feedback_integration(sat, sample), nco_history, sized_for)
     end
     nav.pvt, nav.status
 end
@@ -515,7 +515,7 @@ function run_simulation!(
         end
         for k = 1:receiver.cycle_ms
             sample_index = sample + k * SAMPLES_PER_MS
-            landing = receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
+            application_sample_index = receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
                 Int64(sample_index + receiver.delay_ms * SAMPLES_PER_MS)
             c = 0
             for channels in receiver.channels, sat in channels
@@ -523,7 +523,7 @@ function run_simulation!(
                 n = integration_ms(sat.signal)
                 k % n == 0 || continue
                 code_errors[c] = simulate_record!(sat, receiver.tracking_loop, receiver.truth,
-                    sim_time(receiver, sample_index), n * SAMPLES_PER_MS, sample_index, landing;
+                    sim_time(receiver, sample_index), n * SAMPLES_PER_MS, sample_index, application_sample_index;
                     receiver.polarity)
             end
             # A diverged loop ends the run: the replica has left the signal.
@@ -664,11 +664,11 @@ function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample,
         passenger::Union{Nothing,SimSat} = nothing)
     sample_index = sat.next_end_sample
     num_samples = sample_index - start_sample
-    landing = receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
+    application_sample_index = receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
         Int64(sample_index + receiver.delay_ms * SAMPLES_PER_MS)
-    words = sim_nco_history(sat, landing)
+    nco_history = sim_nco_history(sat, application_sample_index)
     correlator_bank, _, code_error, f_true, carrier, code =
-        simulate_correlator(sat, receiver.truth, sim_time(receiver, sample_index), num_samples, sample_index, words)
+        simulate_correlator(sat, receiver.truth, sim_time(receiver, sample_index), num_samples, sample_index, nco_history)
     dt = num_samples / ustrip(Hz, SIM_FS)
     code_phase = mod((sat.replica_time + dt * (1 + code / sat.code_frequency)) * sat.code_frequency,
         get_code_length(sat.signal))
@@ -686,21 +686,21 @@ function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample,
     integration = LoopRecord(sat.signal, filtered, output, sat.loop, SIM_FS;
         prn = sat.decoder.prn)
     owner.state, new_carrier, new_code = if receiver.measuring[]
-        step_measured!(receiver.allocated, receiver.tracking_loop, owner.state, integration, words, landing)
+        step_measured!(receiver.allocated, receiver.tracking_loop, owner.state, integration, nco_history, application_sample_index)
     else
-        step_loop!(receiver.tracking_loop, owner.state, integration, words, landing)
+        step_loop!(receiver.tracking_loop, owner.state, integration, nco_history, application_sample_index)
     end
     receiver.drain_per_integration && empty!(sat.loop.bit_synchronizer.soft_bits)
     if sat === owner
         advance_replica!(sat, f_true, carrier, code, dt, new_carrier, new_code,
-            start_sample, sample_index, landing)
-        isnothing(passenger) || follow_driver!(passenger, new_carrier, new_code, landing)
+            start_sample, sample_index, application_sample_index)
+        isnothing(passenger) || follow_driver!(passenger, new_carrier, new_code, application_sample_index)
     else
         # A passenger's command is the one in force: nothing to schedule.
         sat.phase_error += (f_true - carrier) * dt
         sat.replica_time += dt * (1 + code / sat.code_frequency)
-        landing == NO_LANDING_SAMPLE || advance_timeline!(sat.timeline, start_sample)
-        if landing != NO_LANDING_SAMPLE
+        application_sample_index == NO_LANDING_SAMPLE || advance_timeline!(sat.timeline, start_sample)
+        if application_sample_index != NO_LANDING_SAMPLE
             (; carrier_doppler, code_doppler) = get_nco_command(sat.timeline, sample_index)
             sat.carrier_doppler, sat.code_doppler = carrier_doppler, code_doppler
         end
@@ -710,19 +710,19 @@ function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample,
 end
 
 # A passenger's replica takes the driver's command.
-function follow_driver!(passenger::SimSat, new_carrier, new_code, landing)
-    if landing == NO_LANDING_SAMPLE
+function follow_driver!(passenger::SimSat, new_carrier, new_code, application_sample_index)
+    if application_sample_index == NO_LANDING_SAMPLE
         passenger.carrier_doppler = ustrip(Hz, new_carrier)
         passenger.code_doppler = ustrip(Hz, new_code)
     else
-        schedule_command!(passenger.timeline, landing, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
+        schedule_command!(passenger.timeline, application_sample_index, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
     end
     nothing
 end
 
 # `step_loop!`, adding the bytes it allocated to `allocated`.
-function step_measured!(allocated, tracking_loop, state, integration, words, landing)
-    bytes = @allocated result = step_loop!(tracking_loop, state, integration, words, landing)
+function step_measured!(allocated, tracking_loop, state, integration, nco_history, application_sample_index)
+    bytes = @allocated result = step_loop!(tracking_loop, state, integration, nco_history, application_sample_index)
     allocated[] += bytes
     result
 end

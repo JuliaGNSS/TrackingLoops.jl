@@ -184,7 +184,7 @@ end
     calc_mean_nco_command(commands, a, b) -> NCOCommand
 
 Time-weighted physical Doppler offsets in effect over device samples `[a, b)`.
-A command landing at `s` is in effect from `s` onwards. For `b <= a`, return the
+A command applied at `s` is in effect from `s` onwards. For `b <= a`, return the
 command at `a`. Accepts an [`NCOTimeline`](@ref) or [`ConstantNCOCommand`](@ref).
 """
 function calc_mean_nco_command(timeline::NCOTimeline, a::Real, b::Real)

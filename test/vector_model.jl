@@ -339,7 +339,7 @@ end
     end
 end
 
-@testset "The state propagated to a landing" begin
+@testset "The state propagated to an application sample index" begin
     idxs = TL.NavFilterIndices(3, 2, 2, 1)
     x = collect(1.0:13.0)
     x_τ = similar(x)
@@ -793,8 +793,8 @@ end
         @test TL.mean_code_disc_at_epoch(state, T) === -0.05 + c_new * T / 2
     end
     # Under an NCO delay the second half-cycle ran on the corrections in effect before
-    # the newest landed: on `c₁` while the newest lands inside it or after the epoch, and
-    # on `c₂` while `c₁` itself lands only after mid-cycle (`L > 1.5T`).
+    # the newest took effect: on `c₁` while the newest takes effect inside it or after the epoch, and
+    # on `c₂` while `c₁` itself takes effect only after mid-cycle (`L > 1.5T`).
     c₂, c₁, c₀ = 0.5, 1.0, 2.0
     older = TL._set_vector_commands(TL._set_vector_commands(base, c₂ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c₁ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
     for (L, expected) in (

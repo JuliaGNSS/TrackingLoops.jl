@@ -1,8 +1,8 @@
 # Vector tracking closed over many cycles on the synthetic satellites of
 # `vector_simulation.jl`, with the engine filled by hand from the fixture decoders:
 # convergence, an outage, the fallback after the starvation timeout, several
-# constellations and bands, and an NCO delay whose landing the corrections are sized
-# for. `vector_pipeline.jl` closes the loop on records alone.
+# constellations and bands, and an NCO delay whose application the corrections are sized
+# for. `vector_pipeline.jl` closes the loop on integrations alone.
 
 using Accessors: @set
 using Statistics: mean, std
@@ -88,8 +88,8 @@ end
     _, sample, _ = run_simulation!(rx, 19)
     # The receiver flags every satellite out of lock (and so not ready for a scalar
     # solve), while the signals stay: nothing can be measured.
-    unlocked!(slot, sat, epoch, landing, nav) =
-        (fill_slot!(slot, sat, epoch, landing, nav; in_lock = false); slot.pvt_ready = false)
+    unlocked!(slot, sat, epoch, application_sample_index, nav) =
+        (fill_slot!(slot, sat, epoch, application_sample_index, nav; in_lock = false); slot.pvt_ready = false)
     results, sample, diverged = run_simulation!(rx, 105; start_sample = sample, fill! = unlocked!)
     @test !diverged
     timers = [r.status.time_with_insufficient_meas for r in results]
@@ -166,9 +166,9 @@ end
     @test tail_errors(rx, results[601:end]) < 0.5
 end
 
-@testset "Corrections sized for their landing match the loop without a delay" begin
-    # A 20 ms navigation cycle and the delay-compensated inner loop, whose landing
-    # prediction keeps the carrier loop locked under the delay. A 15 ms delay lands the
+@testset "Corrections sized for their application_sample_index match the loop without a delay" begin
+    # A 20 ms navigation cycle and the delay-compensated inner loop, whose application
+    # prediction keeps the carrier loop locked under the delay. A 15 ms delay applies the
     # code correction inside the second half of the cycle, a 25 ms one after the next
     # epoch: both branches of the mid-cycle advance.
     run(delay; kw...) = begin
