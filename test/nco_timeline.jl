@@ -20,7 +20,7 @@ scheduled_samples(timeline) =
     straddling = calc_mean_nco_command(tl, 999.5, 1000.5)
     @test straddling.carrier_doppler ≈ 105.0
     @test straddling.code_doppler ≈ 0.105
-    # Back-to-back records meeting where a command takes effect ran on different commands.
+    # Back-to-back integrations meeting where a command takes effect ran on different commands.
     @test calc_mean_nco_command(tl, 0, 1000) != calc_mean_nco_command(tl, 1000, 2000)
 
     # A newer command for the same or an earlier sample supersedes.

@@ -12,7 +12,7 @@ function synced_l1ca_state(; kwargs...)
     state
 end
 
-@testset "A record that crosses the bit boundary is reported, not logged" begin
+@testset "A integration that crosses the bit boundary is reported, not logged" begin
     signal = GPSL1CA()
     state = synced_l1ca_state()
     # Three-block records walk the bit accumulator past the 20-block boundary
@@ -33,7 +33,7 @@ end
 
 @testset "A secondary code is found through apply_record" begin
     # Galileo E1C: a 4 ms primary code under a 25-chip secondary code, one
-    # record per primary code period at 4.092 MHz.
+    # integration per primary code period at 4.092 MHz.
     signal = GalileoE1C()
     code = get_secondary_code(signal).code
     n = 16_368

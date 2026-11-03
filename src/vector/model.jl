@@ -12,7 +12,7 @@
 # Saastamoinen troposphere. Which biases an epoch can determine is decided per cycle by
 # `decide_bias_layout!` (see `clock_constraints!`).
 #
-# The per-record `VectorPLLAndDLL` accumulates discriminators and applies the filter's
+# The per-integration `VectorTrackingLoop` accumulates discriminators and applies the filter's
 # commands; this file holds the model above it (the cycle is in `vector/navigation_processor.jl`):
 # plain functions that allocate nothing once their buffers exist.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@
                            ifb_noise_density = 0.01m/sqrt(1.0s),
                            insufficient_meas_timeout = 10.0s)
 
-Configuration of the vector-tracking navigation filter of a [`VectorPLLAndDLL`](@ref).
+Configuration of the vector-tracking navigation filter of a [`VectorTrackingLoop`](@ref).
 The defaults suit a vehicle with a consumer-grade front end.
 
 # Fields
@@ -376,7 +376,7 @@ struct VTMember
     pseudorange_rate::Float64 # measured −λ·(replica Doppler + mean FLL) at the epoch (m/s)
     cn0_lin::Float64         # C/N₀, linear (Hz); C/N₀ without `_lin` is in dB-Hz
     early_late_spacing::Float64 # chips
-    coherent_integration_time::Float64 # s, per coherent correlator dump (sets DLL/FLL noise)
+    coherent_integration_time::Float64 # s, per coherent integration (sets DLL/FLL noise)
 end
 
 # Code phase (chips) the code correction steered out over the cycle's second half,
@@ -384,9 +384,9 @@ end
 # `c₀, c₁, c₂` are the last three corrections, newest first, each reaching the replica
 # `L` after its cycle's epoch; `L = 0` gives `c₀·T/2`. Valid for `L ≤ 2.5T`
 # (`MAX_LANDING_LEAD_CYCLES`).
-function code_phase_advance(state::SatVectorPLLAndDLL, T)
-    c₀, c₁, c₂ = map(c -> ustrip(Hz, c), state.code_freq_update_history)
-    L = ustrip(s, state.code_update_landing_lead)
+function code_phase_advance(loop_state::VectorLoopState, T)
+    c₀, c₁, c₂ = map(c -> ustrip(Hz, c), loop_state.code_freq_update_history)
+    L = ustrip(s, loop_state.code_update_landing_lead)
     c₀ * T / 2 - (c₀ - c₁) * clamp(L - T / 2, 0.0, T / 2) -
     (c₁ - c₂) * clamp(L - 3T / 2, 0.0, T / 2)
 end
@@ -397,9 +397,9 @@ const MAX_LANDING_LEAD_CYCLES = 2.5
 # Mean DLL discriminator (chips), advanced to the epoch by `code_phase_advance`; negated
 # because `dll_disc`'s sense is reversed. Zero when nothing was accumulated (see
 # `has_disc_sums`).
-function mean_code_disc_at_epoch(state::SatVectorPLLAndDLL, T)
-    mean = _disc_mean(state.code_disc_sum)
-    isnothing(mean) ? 0.0 : -mean + code_phase_advance(state, T)
+function mean_code_disc_at_epoch(loop_state::VectorLoopState, T)
+    mean = _disc_mean(loop_state.code_disc_sum)
+    isnothing(mean) ? 0.0 : -mean + code_phase_advance(loop_state, T)
 end
 
 # Mean FLL discriminator (Hz), `f_incoming − f_replica`, so it enters with its own sign:
@@ -411,25 +411,25 @@ end
 # `f_replica(epoch) − mean(f_replica)` is the predicted Doppler's rise over half the
 # cycle, the incoming carrier's to first order: the sum is the incoming Doppler at the
 # epoch. The ramp is the filter's prediction alone, so no loop's jitter enters the
-# replica's command; with the PLL on the NCO, one record's jitter
+# replica's command; with the PLL on the NCO, one integration's jitter
 # (`f_NCO,end − mean(f_NCO)`) would make the integrated rate error walk. A command
 # landing inside the cycle (an NCO delay) leaves a share of the filter's own correction
 # in the measurement: on the simulator the residuals stay at `√R` and the integrated
 # rate error at a centimetre, but the lag-1 autocorrelation shortens from −1/2 (−0.3 at
 # 20 ms of delay, −0.1 at 50 ms).
-function mean_fll_disc(state::SatVectorPLLAndDLL)
-    mean = _disc_mean(state.fll_disc_sum)
+function mean_fll_disc(loop_state::VectorLoopState)
+    mean = _disc_mean(loop_state.fll_disc_sum)
     isnothing(mean) ? 0.0 : ustrip(Hz, mean)
 end
 
 # Whether a member accumulated both a code and a carrier measurement this cycle (none
-# without a full dump, e.g. admitted at the cycle's end or starved of samples). The zero
+# without a full coherent integration, e.g. admitted at the cycle's end or starved of samples). The zero
 # `mean_code_disc_at_epoch` and `mean_fll_disc` substitute would be a confidently zero
 # residual at full `R` weight, pulling the state toward the NCO, so such members are
 # withheld from the measurements (still commanded, like a member out of code lock). The
-# carrier sum counts only records with a previous prompt, so it can be empty alone (a
-# cycle whose only record is the first after a (re)start); that member is withheld too.
-has_disc_sums(state::SatVectorPLLAndDLL) = first(state.code_disc_sum) > 0 && first(state.fll_disc_sum) > 0
+# carrier sum counts only integrations with a previous prompt, so it can be empty alone (a
+# cycle whose only integration is the first after a (re)start); that member is withheld too.
+has_disc_sums(loop_state::VectorLoopState) = first(loop_state.code_disc_sum) > 0 && first(loop_state.fll_disc_sum) > 0
 
 # Linear C/N₀ (Hz) from dB-Hz, floored to 1 against a degenerate weight; a NaN estimate
 # (empty correlator) maps to 1 so it cannot corrupt the Kalman update.
@@ -508,8 +508,8 @@ end
 # "Understanding GPS: Principles and Applications", 2nd ed., Artech House 2006, §5.5.2;
 # Betz & Kolodziejski, "Generalized Theory of Code Tracking with an Early-Late
 # Discriminator, Part II", IEEE Trans. AES 45(4), 2009, pp. 1557-1564), with their loop
-# bandwidth `B_n` set to one dump's open-loop `1/(2·T_coh)`. Dumps share no samples,
-# so their noise is white and
+# bandwidth `B_n` set to one integration's open-loop `1/(2·T_coh)`. Integrations share no
+# samples, so their noise is white and
 #     var(mean) = d/(4·C/N0·T) · (1 + 2/((2 − d)·C/N0·T_coh))   [chips²]:
 # the thermal term averages down over `T`, the squaring loss stays pinned to `T_coh`.
 # Times `chip_length²` for metres. For VEML `d` is the inner pair's spacing, making this
@@ -522,9 +522,9 @@ function pseudorange_noise_variance(member::VTMember, T)
     d / (4 * T * member.cn0_lin) * squaring_loss * member.chip_length^2
 end
 
-# Rate: the ATAN FLL (`fll_disc`) phase jitter per dump is
+# Rate: the ATAN FLL (`fll_disc`) phase jitter per coherent integration is
 #     σ_φ² = 1/(2·C/N0·T_coh)·(1 + 1/(2·C/N0·T_coh))   [rad²].
-# Each dump is `(θ_k − θ_{k-1})/(2π·T_coh)`, so the mean telescopes to
+# Each integration's reading is `(θ_k − θ_{k-1})/(2π·T_coh)`, so the mean telescopes to
 # `(θ_N − θ_0)/(2π·T)`:
 #     var(mean) = 2·σ_φ² / (2π·T)²   [Hz²],   times λ² for (m/s)².
 # Consecutive cycles share a boundary phase (`previous_prompt` chains across them) with

@@ -456,7 +456,7 @@ end
     @test next_bit_buffer.prompt_accumulator == 0 + 0im
     @test next_bit_buffer.prompt_accumulator_integrated_code_blocks == 0
 
-    # A multi-block record completes the bit as well.
+    # A multi-block integration completes the bit as well.
     bit_buffer = BitBuffer(
         code_blocks_buffer,
         code_blocks_buffer_length,
@@ -477,7 +477,7 @@ end
     @test last(get_soft_bits(bit_buffer)) == 20.0f0
 end
 
-@testset "A record that carries the accumulator past the bit boundary drops sync" begin
+@testset "A integration that carries the accumulator past the bit boundary drops sync" begin
     signal = GPSL1CA()
     soft_bits = Float32[1.0, -1.0]
     bit_buffer = BitBuffer(UInt64(0xff), 40, true, complex(18.0, 0.0), 18, soft_bits)
@@ -488,7 +488,7 @@ end
     @test resynced.polarity == 0
     @test resynced.prompt_accumulator == 0
     @test resynced.prompt_accumulator_integrated_code_blocks == 0
-    # The bits completed before the bad record are kept, in the same vector.
+    # The bits completed before the bad integration are kept, in the same vector.
     @test get_soft_bits(resynced) === soft_bits
     @test soft_bits == Float32[1.0, -1.0]
 
@@ -503,8 +503,8 @@ end
     @test all(iszero, resynced.phase_acc.last_bin_polarity)
 end
 
-@testset "A record that lands exactly on the bit boundary commits the bit" begin
-    # GPS L1 C/A, synced at 17 of the bit's 20 blocks: a 3-block record ends it.
+@testset "A integration that lands exactly on the bit boundary commits the bit" begin
+    # GPS L1 C/A, synced at 17 of the bit's 20 blocks: a 3-block integration ends it.
     signal = GPSL1CA()
     bit_buffer = BitBuffer(UInt64(0), 0, true, complex(10.0, 0.0), 17)
     committed = TrackingLoops.buffer(signal, 1, bit_buffer, 3, 3.0 + 0.0im)
@@ -541,7 +541,7 @@ end
 
 @testset "After an overshoot the buffer locks again and its bits stay whole" begin
     # GPS L1 C/A, 80 random data bits fed one block at a time. Once synced, the three
-    # blocks from 18 accumulated on arrive as one record, which overshoots the bit.
+    # blocks from 18 accumulated on arrive as one integration, which overshoots the bit.
     signal = GPSL1CA()
     prompts = _bb_bitstream(rand(MersenneTwister(2026), 0:1, 80))
     bit_buffer = BitBuffer{get_code_block_buffer_type(signal)}()

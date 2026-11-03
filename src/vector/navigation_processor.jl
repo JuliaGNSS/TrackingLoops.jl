@@ -8,7 +8,7 @@
 # every satellite has completed the epoch's snapshot the cycle runs: a scalar PVT solve
 # until its first fix seeds the filter, one filter iteration after. The cycle leaves its
 # decisions (admission, release, commands) in the slots for each satellite to take up
-# on its next record. Nothing here knows a correlator, so software and hardware loops
+# on its next integration. Nothing here knows a correlator, so software and hardware loops
 # step the same estimator.
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -19,7 +19,7 @@ Why the latest navigation cycle handed a satellite back to its scalar loop
 (a [`satellite_report`](@ref)'s `release_reason`):
 
   - `VT_NOT_RELEASED`: it was not;
-  - `VT_INELIGIBLE`: no longer tracked (no record for two navigation cycles),
+  - `VT_INELIGIBLE`: no longer tracked (no integration for two navigation cycles),
     decoded for positioning, or healthy;
   - `VT_BELOW_HORIZON`: below the horizon at the solution the cycle starts
     from, so not measured in that cycle; re-admitted only `ADMISSION_ELEVATION`
@@ -39,12 +39,12 @@ What a [`VectorPLLAndDLL`](@ref) knows of one satellite (see
 [`satellite_report`](@ref)), so a consumer need not decode or estimate C/N₀ again:
 
   - `prn`, and `tracked`: whether it is stepped now (`false` after two cycles
-    without a record; the rest then describes it as it was);
-  - `decoder`: its navigation-message decoder up to the last record of its
+    without an integration; the rest then describes it as it was);
+  - `decoder`: its navigation-message decoder up to the last integration of its
     decoding signal. It is the estimator's, to read only: resetting or decoding
     into it (e.g. `reset_decoder_state!`, `decode!`) changes the estimator's
     decoder. It shares buffers with the running decoder, so `copy` it to keep it
-    past the next record; once the slot is freed they go to the next satellite on
+    past the next integration; once the slot is freed they go to the next satellite on
     it, so a consumer that needs a decoder of its own builds a fresh one;
   - `bit_synced`: whether the decoding signal's bit clock held the bit sync at
     that signal's last record;
@@ -76,31 +76,31 @@ SatelliteReport(decoder) =
 
 # One satellite of the navigation engine. A slot is never deleted: a dropped satellite
 # leaves it, with its storage, for the next one to reuse.
-mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
+mutable struct VTSlot{D,E<:VectorLoopState}
     prn::Int
     occupied::Bool
     # The registration holding the slot; a state of an older one registers again.
     registration::Int
     # Whether the slot snapshotted the running cycle's epoch.
     in_cycle::Bool
-    # Advanced by every record of the decoding signal.
+    # Advanced by every integration of the decoding signal.
     running_decoder::D
-    # The driver's last record end.
+    # The driver's last integration end.
     driver_last_end_sample::Int
     driver_last_end_time::Float64 # s
-    last_code_phase::Float64 # chips, as the record reported it; `NaN` if it did not
+    last_code_phase::Float64 # chips, as the integration reported it; `NaN` if it did not
     last_integration_time::typeof(1.0s)
     last_early_late_spacing::Float64 # chips
-    # Replica chips from the epoch of the latest snapshot to the driver's last record end.
+    # Replica chips from the epoch of the latest snapshot to the driver's last integration end.
     chips_since_epoch::Float64
-    # The decoding signal's last record end, and its bit clock there.
+    # The decoding signal's last integration end, and its bit clock there.
     decoding_last_end_sample::Int
     decoding_last_end_time::Float64 # s
     decoding_bit_synced::Bool
     decoding_num_code_periods_into_bit::Int
     decoding_code_phase_fraction::Float64 # chips past the nearest code-block boundary
-    # The fold the decoding signal's bit sync was found in: its later records were
-    # correlated before the sync.
+    # The fold the decoding signal's bit sync was found in: its later integrations were correlated before
+    # the sync.
     sync_fold_end::Int
     # The data bit in the making while the filter steers the carrier: the decoding
     # signal's prompts rotated onto the incoming carrier by the residual PLL, whether
@@ -117,18 +117,18 @@ mutable struct VTSlot{D,E<:SatVectorPLLAndDLL}
     decoding_epoch::Int
     snapshot_epoch::Int
     # The decoding signal's half of the snapshot in the making: the decoder at its last
-    # record end before the epoch, whether its bit clock held the sync there, and the
+    # integration end before the epoch, whether its bit clock held the sync there, and the
     # code phase at the epoch from the decoder's last bit edge (chips).
     epoch_decoder::D
     epoch_bit_synced::Bool
     epoch_code_phase::Float64
     # The driver's replica code phase at the epoch (chips; `NaN` if not reported).
     epoch_driver_code_phase::Float64
-    # The snapshot the cycle reads and partly writes: the decoder at the last record
+    # The snapshot the cycle reads and partly writes: the decoder at the last integration
     # end before the epoch, the replica moved on to the epoch, and the state there
     # with the discriminators accumulated up to it, carrying the cycle's decisions.
     decoder::D
-    estimator_state::E
+    loop_state::E
     code_phase::Float64 # chips since the last decoded data bit
     carrier_doppler::typeof(1.0Hz)
     code_doppler::typeof(1.0Hz)
@@ -148,7 +148,7 @@ end
 function VTSlot(
     decoding_signal::AbstractGNSSSignal,
     prn::Integer,
-    state::SatVectorPLLAndDLL,
+    loop_state::VectorLoopState,
     prompt_history_length::Int,
 )
     decoder = GNSSDecoderState(decoding_signal, prn)
@@ -183,7 +183,7 @@ function VTSlot(
         0.0,
         NaN,
         decoder,
-        state,
+        loop_state,
         0.0,
         0.0Hz,
         0.0Hz,
@@ -202,7 +202,7 @@ end
 # The slots of one ranging signal: the driver, the signal whose navigation data they
 # decode (the driver itself for a plain signal), the `prototype` state a new slot starts
 # from and the length of a slot's prompt history (`_prompt_history_length`).
-struct VTSlotGroup{S<:AbstractGNSSSignal,DS<:AbstractGNSSSignal,V<:VTSlot,E<:SatVectorPLLAndDLL}
+struct VTSlotGroup{S<:AbstractGNSSSignal,DS<:AbstractGNSSSignal,V<:VTSlot,E<:VectorLoopState}
     driver_signal::S
     decoding_signal::DS
     slots::Vector{V}
@@ -213,7 +213,7 @@ end
 function VTSlotGroup(
     driver_signal::AbstractGNSSSignal,
     decoding_signal::AbstractGNSSSignal,
-    prototype::SatVectorPLLAndDLL,
+    prototype::VectorLoopState,
     capacity,
     vt_update_interval,
 )
@@ -389,7 +389,7 @@ mutable struct VectorNavigation{G<:Tuple,SB<:Tuple}
     const groups::G
     const vt_update_interval::typeof(1.0s)
     const lock_cn0_threshold_dbhz::Float64
-    # The epoch (in `vt_update_interval`s on the records' time grid) the slots snapshot
+    # The epoch (in `vt_update_interval`s on the integrations' time grid) the slots snapshot
     # next, and how many have.
     pending_epoch::Int
     num_snapshots::Int
@@ -402,7 +402,7 @@ end
 function VectorNavigation(
     filter_config::Union{NavigationFilterConfig,Nothing},
     pairs::Tuple,
-    inner::AbstractDopplerEstimator;
+    inner::AbstractTrackingLoop;
     vt_update_interval,
     lock_cn0_threshold_dbhz::Float64,
     max_satellites_per_signal::Int,
@@ -416,7 +416,7 @@ function VectorNavigation(
     model = NavFilterModel(config, layout, uconvert(s, vt_update_interval))
     n = num_nav_states(config, layout)
     groups = map(pairs) do (signal, decoding_signal)
-        prototype = SatVectorPLLAndDLL(init_estimator_state(inner, signal, 0.0Hz, 0.0Hz), false)
+        prototype = VectorLoopState(init_loop_state(inner, signal, 0.0Hz, 0.0Hz), false)
         VTSlotGroup(signal, decoding_signal, prototype, max_satellites_per_signal, vt_update_interval)
     end
     max_members = max_satellites_per_signal * length(signals)
@@ -459,7 +459,7 @@ _signal_observation_buffer(group::VTSlotGroup{S,DS,<:VTSlot{D}}) where {S,DS,D} 
 
 The navigation filter's 1σ 3-D position uncertainty (m), once seeded.
 """
-position_uncertainty(estimator::VectorPLLAndDLL) = position_uncertainty(estimator.navigation)
+position_uncertainty(estimator::VectorTrackingLoop) = position_uncertainty(estimator.navigation)
 
 """
     clock_uncertainty(estimator::VectorPLLAndDLL)
@@ -467,7 +467,7 @@ position_uncertainty(estimator::VectorPLLAndDLL) = position_uncertainty(estimato
 The navigation filter's 1σ uncertainty (m) of the solution's reference clock
 bias, once seeded.
 """
-clock_uncertainty(estimator::VectorPLLAndDLL) = clock_uncertainty(estimator.navigation)
+clock_uncertainty(estimator::VectorTrackingLoop) = clock_uncertainty(estimator.navigation)
 
 position_uncertainty(nav::VectorNavigation) = position_uncertainty(nav.P, nav.model.idxs)
 
@@ -482,23 +482,23 @@ end
 The latest navigation solution: the scalar PVT's until the filter is seeded, the
 filter's after. The next cycle reuses its containers; copy out what is needed.
 """
-navigation_solution(estimator::VectorPLLAndDLL) = estimator.navigation.pvt
+navigation_solution(estimator::VectorTrackingLoop) = estimator.navigation.pvt
 
 """
     navigation_status(estimator::VectorPLLAndDLL) -> NavigationStatus
 
 What the latest navigation cycle did (see [`NavigationStatus`](@ref)).
 """
-navigation_status(estimator::VectorPLLAndDLL) = estimator.navigation.status
+navigation_status(estimator::VectorTrackingLoop) = estimator.navigation.status
 
-navigation_cycle(estimator::VectorPLLAndDLL) = estimator.navigation.cycle_id
+navigation_cycle(estimator::VectorTrackingLoop) = estimator.navigation.cycle_id
 
-function navigation_epoch(estimator::VectorPLLAndDLL)
+function navigation_epoch(estimator::VectorTrackingLoop)
     nav = estimator.navigation
     nav.cycle_epoch == typemin(Int) ? nothing : nav.cycle_epoch * nav.vt_update_interval
 end
 
-function satellite_report(estimator::VectorPLLAndDLL, signal::AbstractGNSSSignal, prn::Integer)
+function satellite_report(estimator::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
     nav = estimator.navigation
     _satellite_report(nav, nav.groups, signal, Int(prn))
 end
@@ -519,7 +519,7 @@ function _satellite_report(nav, groups::Tuple, signal::S, prn) where {S}
         report.cn0_dbhz = slot.cn0_dbhz
         report.in_lock = slot.in_lock
         report.pvt_ready = slot.pvt_ready
-        report.in_vector_loop = slot.estimator_state.in_vector_loop
+        report.in_vector_loop = slot.loop_state.in_vector_loop
         report.release_reason = slot.release_reason
         return report
     end
@@ -534,7 +534,7 @@ The latest cycle's per-member report: every member of the vector loop, measured
 satellite position, transmit time and post-fit residuals. Empty while the scalar
 solve is in control.
 """
-vector_loop_members(estimator::VectorPLLAndDLL) = estimator.navigation.vector_loop_members
+vector_loop_members(estimator::VectorTrackingLoop) = estimator.navigation.vector_loop_members
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Walking the groups
@@ -575,15 +575,15 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Membership
 
-# Hand `slot` back to its scalar loop; taken up on its next record (`_take_up_cycle`).
+# Hand `slot` back to its scalar loop; taken up on its next integration (`_take_up_cycle`).
 function _mark_release!(slot::VTSlot, reason::VTReleaseReason)
-    slot.estimator_state = _release_from_vector_loop(slot.estimator_state)
+    slot.loop_state = _release_from_vector_loop(slot.loop_state)
     slot.release_reason = reason
     nothing
 end
 
 # A member that missed the epoch sits the cycle out.
-_is_member(slot::VTSlot) = slot.in_cycle && slot.estimator_state.in_vector_loop
+_is_member(slot::VTSlot) = slot.in_cycle && slot.loop_state.in_vector_loop
 
 _is_eligible(slot::VTSlot) =
     slot.in_cycle &&
@@ -614,12 +614,12 @@ function _update_membership!(released, group, g, buffer, enu_from_ecef)
     for slot in group.slots
         slot.in_cycle || continue
         eligible = _is_eligible(slot)
-        state = slot.estimator_state
+        loop_state = slot.loop_state
         if eligible && slot.in_lock
-            if state.in_vector_loop || _is_above_admission_mask(group.driver_signal, slot, enu_from_ecef)
-                slot.estimator_state = _add_to_vector_loop(state)
+            if loop_state.in_vector_loop || _is_above_admission_mask(group.driver_signal, slot, enu_from_ecef)
+                slot.loop_state = _add_to_vector_loop(loop_state)
             end
-        elseif !eligible && state.in_vector_loop
+        elseif !eligible && loop_state.in_vector_loop
             _mark_release!(slot, VT_INELIGIBLE)
             released = true
         end
@@ -650,7 +650,7 @@ function _collect_members!(j, group, g, buffer, nav, T)
     ifb_index = layout.ifb_index_by_group[g]
     for (slot_index, slot) in enumerate(group.slots)
         _is_member(slot) || continue
-        state = slot.estimator_state
+        loop_state = slot.loop_state
         j += 1
         measurement = buffers.measurements[j]
         push!(
@@ -664,14 +664,14 @@ function _collect_members!(j, group, g, buffer, nav, T)
                 chip_length,
                 wavelength,
                 code_frequency,
-                slot.in_lock && has_disc_sums(state),
+                slot.in_lock && has_disc_sums(loop_state),
                 measurement.transmit_time,
                 measurement.position,
                 measurement.velocity,
                 measurement.satellite_clock_drift,
-                mean_code_disc_at_epoch(state, T),
+                mean_code_disc_at_epoch(loop_state, T),
                 -wavelength *
-                (ustrip(Hz, slot.carrier_doppler) + mean_fll_disc(state)),
+                (ustrip(Hz, slot.carrier_doppler) + mean_fll_disc(loop_state)),
                 linear_cn0_floor(slot.cn0_dbhz),
                 slot.early_late_spacing,
                 ustrip(s, slot.coherent_integration_time),
@@ -847,7 +847,7 @@ function _predict_members!(nav::VectorNavigation)
 end
 
 # Point every member above the horizon at this cycle's commands; the satellite
-# evaluates them where its command lands, on its next record (`_commands_at_landing`).
+# evaluates them where its command lands, on its next integration (`_commands_at_landing`).
 function _assign_commands!(acc, group, g, buffer, nav)
     buffers = nav.buffers
     for (j, member) in enumerate(buffers.members)
@@ -937,7 +937,7 @@ end
 # missed the epoch alike, for `reason`; returns whether any was.
 function _release_all!(released, group, g, buffer, reason::VTReleaseReason)
     for slot in group.slots
-        slot.estimator_state.in_vector_loop || continue
+        slot.loop_state.in_vector_loop || continue
         _mark_release!(slot, reason)
         released = true
     end
@@ -959,7 +959,7 @@ function _add_fix_satellites!(num_added, group, g, buffer, nav)
     sats = nav.pvt.observations
     for slot in group.slots
         slot.in_cycle && haskey(sats, (signal_id, slot.prn)) || continue
-        slot.estimator_state = _add_to_vector_loop(slot.estimator_state)
+        slot.loop_state = _add_to_vector_loop(slot.loop_state)
         num_added += 1
     end
     num_added

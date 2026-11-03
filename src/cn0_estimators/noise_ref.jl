@@ -1,7 +1,7 @@
 """
 $(SIGNATURES)
 
-C/N₀ against a **measured noise reference**: per record,
+C/N₀ against a **measured noise reference**: per integration,
 
 ```
 Ĉ/N₀ = ⟨|P|²⟩ / N̂₀ − 1/T
@@ -30,9 +30,9 @@ update (Tracking.jl warns once per signal) and [`estimate_cn0`](@ref) reports
 
 # Deliberate properties
 
-  - **No `fallback`.** One record plus a density is a valid, if noisy, estimate
+  - **No `fallback`.** One integration plus a density is a valid, if noisy, estimate
     on every signal.
-  - **Only the average is floored, never the per-record term.** Negative terms
+  - **Only the average is floored, never the per-integration term.** Negative terms
     at low C/N₀ keep the mean unbiased; clamping them would reintroduce a floor
     like [`MomentsCN0Estimator`](@ref)'s.
 
@@ -50,7 +50,7 @@ Below 40 dB-Hz, where lock and loss are decided, it sits under NWPR's own
 
   - `num_records` — how many records the estimate averages over, i.e. the memory
     of the estimator (100 by default, ~100 ms at GPS L1 C/A).
-  - `buffered_cn0`, `current_index`, `filled_length` — the ring of per-record
+  - `buffered_cn0`, `current_index`, `filled_length` — the ring of per-integration
     C/N₀ terms in **linear Hz**, written in place, plus its position and fill.
 """
 struct NoiseRefCN0Estimator <: AbstractCN0Estimator
@@ -107,7 +107,7 @@ function update(estimator::NoiseRefCN0Estimator, prompt, context::CN0UpdateConte
 end
 
 # A missing density or integration time is `Nothing` in the context's type, so
-# both are caught by dispatch on the first record. The third method resolves the
+# both are caught by dispatch on the first integration. The third method resolves the
 # ambiguity of `{…,Nothing,Nothing}` and reports the missing source, the root
 # cause.
 @noinline update(
@@ -140,11 +140,11 @@ end
 @noinline _throw_noise_ref_needs_integration_time() = throw(
     ArgumentError(
         "NoiseRefCN0Estimator has this signal's noise density but no integration " *
-        "time: it applies `T` per record (`|P|²/N̂₀ - 1/T`), so it cannot fold one " *
+        "time: it applies `T` per integration (`|P|²/N̂₀ - 1/T`), so it cannot fold one " *
         "without it. Build the context with both — " *
         "`CN0UpdateContext(signal, bit_buffer, num_code_blocks; noise_density, " *
         "integration_time)` — which is what the tracking loop does; " *
-        "`integration_time` is that record's own " *
+        "`integration_time` is that integration's own " *
         "`num_integrated_samples / sampling_frequency`.",
     ),
 )
@@ -161,7 +161,7 @@ what the tracking loop calls, or [`MomentsCN0Estimator`](@ref) /
 @noinline update(::NoiseRefCN0Estimator, prompt) = throw(
     ArgumentError(
         "NoiseRefCN0Estimator cannot be updated from a bare prompt: it needs the " *
-        "signal's noise density and the record's integration time, both of which " *
+        "signal's noise density and the integration's integration time, both of which " *
         "live in the CN0UpdateContext. Call the three-argument `update`.",
     ),
 )
@@ -169,7 +169,7 @@ what the tracking loop calls, or [`MomentsCN0Estimator`](@ref) /
 """
 $(SIGNATURES)
 
-Mean of the buffered per-record terms, converted once with `dBHz`.
+Mean of the buffered per-integration terms, converted once with `dBHz`.
 
 `integration_time` is **ignored**: `T` was applied per record in `update`, so a
 record lengthened by `Tracking.set_preferred_num_code_blocks_to_integrate!` is

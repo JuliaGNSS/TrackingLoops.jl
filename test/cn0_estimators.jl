@@ -15,7 +15,7 @@ const CN0_T = 1.0ms
 # `E|P|² = N₀/T`, so a unit-noise-power prompt stream is measured against `N₀ = T`.
 const CN0_N₀ = uconvert(Hz^-1, CN0_T)
 
-# Post-correlation prompt model: `λ = (C/N₀)·T` is the per-record SNR, noise is
+# Post-correlation prompt model: `λ = (C/N₀)·T` is the per-integration SNR, noise is
 # CN(0,1), the phase is perfect.
 cn0_prompts(λ, n, rng) = sqrt(λ) .+ (randn(rng, n) .+ im .* randn(rng, n)) ./ sqrt(2)
 
@@ -145,8 +145,8 @@ end
 end
 
 @testset "Moments CN0 estimation" begin
-    # Tracking ran this through its correlator; here the prompts are drawn from
-    # the post-correlation model directly: a true 45 dB-Hz over 1 ms records.
+    # Tracking ran this through its correlator bank; here the prompts are drawn from
+    # the post-correlation model directly: a true 45 dB-Hz over 1 ms integrations.
     rng = Xoshiro(1234)
     λ = 10^(45 / 10) * 1e-3
     estimator = cn0_fold(MomentsCN0Estimator(100), cn0_prompts(λ, 100, rng))
@@ -156,9 +156,9 @@ end
     @test cn0_estimate ≈ 45dBHz atol = 1.0dBHz
 end
 
-@testset "Moments CN0 estimate divides by the record's integration time" begin
-    # A record spanning N code blocks arrives with N times the SNR of a one-block
-    # record, so the same shape at two block counts must report the same C/N₀
+@testset "Moments CN0 estimate divides by the coherent integration time" begin
+    # A integration spanning N code blocks arrives with N times the SNR of a one-block
+    # integration, so the same shape at two block counts must report the same C/N₀
     # once the divisor is N × the code period.
     rng = Xoshiro(4321)
     one_block = [1.0 + 0.2 * randn(rng, ComplexF64) for _ = 1:100]
@@ -202,7 +202,7 @@ end
     @test estimate_cn0(honest, 1ms) == Inf * dBHz      # first window closed
 end
 
-@testset "NoiseRef: one record plus a density is already an estimate" begin
+@testset "NoiseRef: one integration plus a density is already an estimate" begin
     @test_throws ArgumentError NoiseRefCN0Estimator(; num_records = 0)
     estimator = NoiseRefCN0Estimator(; num_records = 4)
     @test @inferred(Base.length(estimator)) == 0
@@ -210,7 +210,7 @@ end
     # Empty ring: `-Inf dB-Hz`, the house convention for "not measured".
     @test @inferred(estimate_cn0(estimator, CN0_T)) == -Inf * dBHz
 
-    # No warm-up, no window, no `M`: the very first record reports. A noiseless
+    # No warm-up, no window, no `M`: the very first integration reports. A noiseless
     # prompt of power `p` against `N₀ = T` reads `(p − 1)/T`.
     one = @inferred update(estimator, complex(2.0, 0.0), cn0_context())
     @test Base.length(one) == 1
@@ -237,9 +237,9 @@ end
     @test !requires_noise_density(NoCN0Estimator())
 end
 
-@testset "NoiseRef: records of different length are each divided by their own T" begin
-    # Against a fixed `N₀` the sample-normalised prompt power of a record at
-    # C/N₀ = γ is `N₀·(γ + 1/T)`, so a 20 ms record carrying the *same* γ has a
+@testset "NoiseRef: integrations of different length are each divided by their own T" begin
+    # Against a fixed `N₀` the sample-normalised prompt power of a integration at
+    # C/N₀ = γ is `N₀·(γ + 1/T)`, so a 20 ms integration carrying the *same* γ has a
     # visibly different power.
     γ = 3000.0                                   # ≈34.8 dB-Hz
     power(t_ms) = 1e-3 * (γ + 1 / (t_ms * 1e-3))
@@ -261,7 +261,7 @@ end
     @test cn0_db(estimate_cn0(both, CN0_T)) ≈ 10log10(γ) atol = 1e-9
 end
 
-@testset "NoiseRef: per-record terms are not clamped, so the mean is unbiased" begin
+@testset "NoiseRef: per-integration terms are not clamped, so the mean is unbiased" begin
     rng = Xoshiro(20260806)
     noise_only = cn0_fold(
         NoiseRefCN0Estimator(; num_records = 2000),
@@ -340,7 +340,7 @@ end
         complex(0.0, 0.0),
         cn0_context(; noise_density = 0.0 * CN0_N₀),
     )
-    @test isnan(poisoned.buffered_cn0[1])                # the per-record term is NaN ...
+    @test isnan(poisoned.buffered_cn0[1])                # the per-integration term is NaN ...
     @test estimate_cn0(poisoned, CN0_T) == -Inf * dBHz   # ... and the estimate is not
     @test !(estimate_cn0(poisoned, CN0_T) >= 30dBHz)
 
@@ -374,7 +374,7 @@ end
 @testset "The signals NWPR cannot serve, the noise reference can (issue #217)" begin
     # One bit per code block, or a secondary code before sync: NWPR admits no
     # coherent window ever and reports its fallback; the noise reference has no
-    # window, so these are ordinary records to it.
+    # window, so these are ordinary integrations to it.
     bit_buffer = BitBuffer{UInt64}()
     cases = (
         ("GPS L1C-D, synced", GPSL1C_D(), 1, 0),
@@ -440,7 +440,7 @@ end
         estimator = @inferred update(estimator, 1.0 + 0.0im)
     end
     @test Base.length(estimator) == 0            # window still open
-    estimator = update(estimator, 1.0 + 0.0im)   # 20th record closes it
+    estimator = update(estimator, 1.0 + 0.0im)   # 20th integration closes it
     @test Base.length(estimator) == 1
     @test get_current_index(estimator) == 1
     @test estimator.num_records_per_ratio == 20
@@ -475,7 +475,7 @@ end
     @test Base.length(zeros_only) == 0
     @test estimate_cn0(zeros_only, 1ms) == -Inf * dBHz
 
-    # A window of one record carries no information (NBP == WBP by construction),
+    # A window of one integration carries no information (NBP == WBP by construction),
     # so nothing is ever buffered and the fallback keeps reporting.
     single = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 1)
     for _ = 1:50
@@ -615,7 +615,7 @@ end
     @test Base.length(estimator) == 1
 
     # A grid that jumps to the start of a new window mid-window restarts it
-    # there rather than dropping the record.
+    # there rather than dropping the integration.
     restarted = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 5)
     for bit_block_index = 0:2
         restarted = update(restarted, 1.0 + 0.0im, context(GPSL1CA(), 20, bit_block_index))
@@ -657,13 +657,13 @@ end
     @test estimator.num_records_per_ratio == 5
 end
 
-@testset "NWPR CN0 estimator when a record outgrows its own window" begin
+@testset "NWPR CN0 estimator when a integration outgrows its own window" begin
     bit_buffer = BitBuffer{UInt64}()
     context(num_code_blocks, bit_block_index) =
         CN0UpdateContext(GPSL1CA(), num_code_blocks, 20, bit_block_index, bit_buffer)
 
-    # Records as long as a whole navigation bit close every window on a single
-    # record; the windows buffered before the switch have to go with it.
+    # Integrations as long as a whole navigation bit close every window on a single
+    # integration; the windows buffered before the switch have to go with it.
     rng = Xoshiro(1)
     noisy() = sqrt(10^3.5 * 1e-3) + randn(rng, ComplexF64)   # a true ~35 dB-Hz
     estimator = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 5)
@@ -681,8 +681,8 @@ end
           estimate_cn0(estimator.fallback, 20ms)
 end
 
-@testset "NWPR CN0 estimator skips a record spanning no whole code block" begin
-    # The fractional record right after a sync phase-snap leaves the open
+@testset "NWPR CN0 estimator skips a integration spanning no whole code block" begin
+    # The fractional integration right after a sync phase-snap leaves the open
     # window untouched; its prompt still reaches the fallback.
     bit_buffer = BitBuffer{UInt64}()
     context(num_code_blocks, bit_block_index) =
@@ -723,7 +723,7 @@ function cn0_comparison_sweep(cn0, trials)
         nwpr[t] = 10^(cn0_db(estimate_cn0(nwpr_estimator, CN0_T)) / 10) * 1e-3
         ref_estimator = cn0_fold(NoiseRefCN0Estimator(; num_records = 100), prompts, context)
         noise_ref[t] = mean(ref_estimator.buffered_cn0) * 1e-3
-        # Coherent reference: `M` records summed is one `M`-times-longer record.
+        # Coherent reference: `M` integrations summed is one `M`-times-longer integration.
         coherent[t] = mean((abs2(sum(@view prompts[(w-1)*M+1:w*M])) - M) / M^2 for w = 1:div(100, M))
     end
     stats(estimates) = begin

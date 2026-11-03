@@ -31,7 +31,7 @@ the common oscillator drift. `acceleration_noise_std` describes platform
 manoeuvres at every order; `h0` and `hm2` retain the oscillator's Allan-variance
 coefficients.
 
-## One estimator does it all
+## One tracking loop does it all
 
 [`VectorPLLAndDLL`](@ref) is a Doppler estimator like any other: a host builds
 each satellite's state with [`init_estimator_state`](@ref) and steps it with
@@ -44,19 +44,20 @@ satellites stepped with one estimator share its navigation engine, which
 - snapshots each satellite at every navigation epoch (every `vt_update_interval`
   on the records' time grid): code phase from the last data-bit edge, decoder,
   Dopplers, C/N₀ and the discriminators accumulated since the last epoch;
-- runs the epoch's navigation cycle on the record that completes the last
+- runs the epoch's navigation cycle on the integration that completes the last
   satellite's snapshot: the scalar PVT until the filter is seeded, a filter
   iteration after that;
 - leaves the cycle's decisions (admission, release, commands) for each
   satellite to take up on its next record, sized for where its command lands.
 
 ```julia
-estimator = VectorPLLAndDLL(GPSL1CA(), GalileoE1C() => GalileoE1B())   # owns decoders, filter and PVT
-ts = TrackState(; signal = GPSL1CA(), doppler_estimator = estimator)
+signal = GPSL1CA()
+tracking_loop = VectorTrackingLoop(signal, GalileoE1C() => GalileoE1B())   # owns decoders, filter and PVT
+loop_state = init_loop_state(tracking_loop, signal = GPSL1CA(), doppler_estimator code_doppler)
 for chunk in chunks
-    track!(chunk, ts, fs)              # decodes, solves, steers
+    track!(tracking_loop)  # decodes, solves, steers
 end
-navigation_solution(estimator)         # the PVTSolution; navigation_status(estimator)
+navigation_solution(estimator)         # the PVTSolution; navigation_status(tracking_loop)
 ```
 
 Several constellations or bands share one filter: list every ranging signal at
@@ -74,11 +75,11 @@ transitions, and decodes the data component (Galileo `GalileoE1C() =>
 GalileoE1B()`, GPS `GPSL5Q() => GPSL5I()`, `GPSL1C_P() => GPSL1C_D()`,
 `GPSL2CL() => GPSL2CM()`, BeiDou `BeiDouB1C_P() => BeiDouB1C_D()`).
 
-- The **driver** closes the loops: its records carry the discriminators, the
+- The **driver** closes the loops: its integrations carry the discriminators, the
   replica's code phase and the C/N₀ the measurements are weighted by.
-- The **decoding signal** feeds the decoder: its records carry its prompts and
+- The **decoding signal** feeds the decoder: its integrations carry its prompts and
   where its bit clock stands. For a plain signal these are the driver's own
-  records.
+  integrations.
 
 At an epoch the transmit time is the data bits the decoding signal has
 counted plus the driver's code phase within the current bit, as
@@ -90,11 +91,11 @@ component too weak to decode never completes its decoder, so the satellite never
 becomes ready for the PVT. The solution, the reports and the release reasons
 are keyed by the driver.
 
-The records of the two arrive independently and in any order: a satellite's
-snapshot of an epoch is complete once a record of each has crossed it, and the
+The integrations of the two arrive independently and in any order: a satellite's
+snapshot of an epoch is complete once an integration of each has crossed it, and the
 cycle waits for that as for a late satellite.
 
-## What the records must carry
+## What the integrations must carry
 
 The engine runs no bit clock and no C/N₀ estimator of its own. The host holds a
 [`SignalLoopState`](@ref) per signal of every satellite (bit clock, C/N₀
@@ -103,9 +104,9 @@ record, and builds the record from it:
 
 ```julia
 loop, prompt, filtered, blocks, overshoot =
-    apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready, driver_phase_offset)
-record = LoopRecord(signal, filtered, output, loop, fs; prn)
-state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words, landing_sample)
+    apply_record(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready, driver_phase_offset)
+integration = LoopRecord(signal, filtered, output, loop, fs; prn)
+loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, words, landing_sample)
 ```
 
 The record summarises that state: whether the bit clock holds the sync and
@@ -113,7 +114,7 @@ whether this record found or lost it, the code blocks into the current bit,
 exactly the soft bits this record added (so the host may drain the bit buffer
 whenever it likes), and the host's C/N₀ estimator (noise-referenced by default,
 which reads `-Inf` dB-Hz, out of lock, until the host has a noise density).
-Beyond that, every [`LoopRecord`](@ref) handed to the estimator must carry what
+Beyond that, every [`LoopRecord`](@ref) handed to the tracking loop must carry what
 only the correlator knows:
 
 - `prn`: the satellite;
@@ -124,7 +125,7 @@ only the correlator knows:
   is taken to end on a block boundary;
 - a common time grid: `sample_index / sampling_frequency` must be the time since
   one origin shared by all satellites. A host whose correlator restarts its
-  sample count passes the offset as `sample_offset` when it builds the record.
+  sample count passes the offset as `sample_offset` when it builds the integration.
 
 `NO_LANDING_SAMPLE` still means the command computed from a record acts from the
 record's end; a hardware host passes the landing sample (see
@@ -143,7 +144,7 @@ every satellite starts on its scalar loop:
    covariance its geometry gives them, so a fix of poor geometry (high DOP)
    starts the filter as uncertain as it is. The fix's satellites are added to the
    vector loop and take their first commands, computed at the seeded state, on
-   their next record. In the loop the filter sets a satellite's carrier NCO and
+   their next integration. In the loop the filter sets a satellite's carrier NCO and
    its residual PLL follows the carrier, whatever [Carrier-loop staging](@ref)
    stage its scalar loop had reached.
 3. While it runs, a satellite is admitted once it is decoded, healthy, in lock
@@ -170,7 +171,7 @@ found the bit edges again.
 ## Stepping the satellites
 
 A cycle runs once every satellite that can still complete its epoch's snapshot
-has, and a satellite that has gone two cycles without a record of one of its
+has, and a satellite that has gone two cycles without an integration of one of its
 signals is dropped, so a host should step every signal of every satellite at
 least once per half cycle (Tracking.jl's `track!` does, for any chunk shorter
 than that). A satellite that falls behind holds a cycle up only until the others
@@ -178,7 +179,7 @@ reach the next epoch; then the cycle runs without it. A satellite already past
 an epoch when it becomes pending (stepped earlier in the chunk than the record
 that ran the previous cycle, as after a re-registration) sits that epoch's cycle
 out; the next pending epoch is the first no satellite is past. A host never has
-to hold a record back or order its channels: each record is stepped as it
+to hold an integration back or order its channels: each integration is stepped as it
 arrives.
 
 ## [The carrier in the vector loop](@id vector-carrier)
@@ -233,7 +234,7 @@ the carrier on the prompts the NCO leaves, for the data.
   itself.
 - **Carrier phase.** The replica's carrier phase is the NCO's, which the
   filter sets, so it is not the incoming carrier's: a host that measures the
-  carrier phase (RINEX `L`) adds [`carrier_phase_correction`](@ref TrackingLoops.carrier_phase_correction), the
+  carrier phase (RINEX `L`) adds [`calc_carrier_phase_correction`](@ref TrackingLoops.calc_carrier_phase_correction), the
   residual PLL's predicted residual at the sample it reads the replica at,
   whole cycles included (zero out of the vector loop and for the scalar
   loops). It steps by half a cycle where a pilot turns the discriminator
@@ -245,10 +246,10 @@ the carrier on the prompts the NCO leaves, for the data.
   residual PLL's), which the third-order carrier filter starts from; out of lock,
   at the Doppler and rate the filter last commanded. Its staging restarts.
 
-The residual PLL's bandwidth is [`VectorPLLAndDLL`](@ref)'s
-`residual_pll_loop_filter_bandwidth`, 10 Hz by default
-([`default_residual_pll_loop_filter_bandwidth`](@ref TrackingLoops.default_residual_pll_loop_filter_bandwidth)), capped like the scalar
-PLL's against the record's integration time. At 10 Hz its thermal jitter is
+The residual PLL's bandwidth is [`VectorTrackingLoop`](@ref)'s
+`residual_pll_loop_bandwidth`, 10 Hz by default
+([`default_residual_pll_loop_bandwidth`](@ref TrackingLoops.default_residual_pll_loop_bandwidth)), capped like the scalar
+PLL's against the coherent integration time. At 10 Hz its thermal jitter is
 `√(10/18) = 0.75` times the 18 Hz PLL's.
 
 In the simulation of `test/vector_residual_pll.jl` (synthetic GPS L1 C/A and
@@ -265,7 +266,7 @@ integrators in charge of the replica's frequency, gave 1.47 (L1 C/A) and 1.08 (E
 times the scalar PLL's prompt-phase jitter.
 
 Not done yet: a receiver-clock phase common to all satellites, estimated at the
-record rate (vector phase lock), and a carrier-phase output for RTK.
+integration rate (vector phase lock), and a carrier-phase output for RTK.
 
 ## Under a hardware NCO delay
 
@@ -292,15 +293,15 @@ records' time grid.
 (decoder, bit sync, C/N₀, lock, PVT readiness, membership), so a receiver need
 not decode or estimate the C/N₀ a second time.
 
-Scalar loops answer these with `nothing`, so a host can ask whichever estimator
-it was given:
+Scalar loops answer these with `nothing`, so a host can ask whichever tracking
+loop it was given:
 
 ```julia
-cycle = navigation_cycle(estimator)
+cycle = navigation_cycle(tracking_loop)
 if cycle != last_cycle            # `nothing` for a scalar loop: never a new solution
     last_cycle = cycle
-    pvt = navigation_solution(estimator)       # position, velocity, time, DOP, …
-    report = satellite_report(estimator, GPSL1CA(), prn)
+    pvt = navigation_solution(tracking_loop)       # position, velocity, time, DOP, …
+    report = satellite_report(tracking_loop, GPSL1CA(), prn)
 end
 ```
 
@@ -312,16 +313,16 @@ call: copy out what is needed later.
 All storage (decoders and the filter's buffers) is allocated at construction for
 `max_satellites_per_signal` satellites per ranging signal; a dropped satellite
 leaves its slot to the next one, and only past that capacity does a group grow.
-Once warm, records and cycles allocate nothing, and the estimator compiles with
+Once warm, integrations and cycles allocate nothing, and the tracking loop compiles with
 `juliac --trim=safe`.
 
 ## Known limits
 
 - A pair ranges on the driver alone: the data component's discriminators are
   not combined with the pilot's.
-- The residual PLL is capped like the scalar PLL against the record's
-  integration time: at 20 ms records its 10 Hz runs at 4.5 Hz.
-- On 1 ms records (GPS L1 C/A) the FLL's rate measurement breaks down below
+- The residual PLL is capped like the scalar PLL against the integration's
+  integration time: at 20 ms integrations its 10 Hz runs at 4.5 Hz.
+- On 1 ms integrations (GPS L1 C/A) the FLL's rate measurement breaks down below
   about 40 dB-Hz: a phase difference between two prompts wraps at the Costas
   discriminator's ±90° often enough to break the telescoping, and the residuals
   reach three times `√R`.
@@ -330,15 +331,15 @@ Once warm, records and cycles allocate nothing, and the estimator compiles with
   discriminators.
 - HardwareLoopCore does not yet report the records' `prn` and `code_phase`.
 
-## The estimator
+## The tracking loop
 
 ```@docs
-TrackingLoops.SatVectorPLLAndDLL
-VectorPLLAndDLL
-init_estimator_state(::VectorPLLAndDLL, ::AbstractGNSSSignal, ::Any, ::Any)
-reset_estimator_state(::VectorPLLAndDLL, ::SatVectorPLLAndDLL, ::Any, ::Any)
-step_loop(::VectorPLLAndDLL, ::SatVectorPLLAndDLL, ::LoopRecord, ::Any, ::Int)
-TrackingLoops.default_residual_pll_loop_filter_bandwidth()
+TrackingLoops.VectorLoopState
+VectorTrackingLoop
+init_loop_state(::VectorTrackingLoop, ::AbstractGNSSSignal, ::Any, ::Any)
+reinit_loop_state(::VectorTrackingLoop, ::VectorLoopState, ::Any, ::Any)
+step_loop!(::VectorTrackingLoop, ::VectorLoopState, ::LoopRecord, ::Any, ::Int)
+TrackingLoops.default_residual_pll_loop_bandwidth()
 ```
 
 ## The navigation cycle
@@ -347,10 +348,10 @@ TrackingLoops.default_residual_pll_loop_filter_bandwidth()
 TrackingLoops.NavigationStatus
 TrackingLoops.SatelliteReport
 TrackingLoops.VTReleaseReason
-TrackingLoops.clock_uncertainty(::VectorPLLAndDLL)
-navigation_solution(::VectorPLLAndDLL)
-navigation_status(::VectorPLLAndDLL)
-TrackingLoops.position_uncertainty(::VectorPLLAndDLL)
-vector_loop_members(::VectorPLLAndDLL)
+TrackingLoops.clock_uncertainty(::VectorTrackingLoop)
+navigation_solution(::VectorTrackingLoop)
+navigation_status(::VectorTrackingLoop)
+TrackingLoops.position_uncertainty(::VectorTrackingLoop)
+vector_loop_members(::VectorTrackingLoop)
 NavigationFilterConfig
 ```

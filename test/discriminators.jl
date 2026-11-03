@@ -3,53 +3,53 @@
 using Unitful: ms, MHz
 using TrackingLoops: _boc11_envelope, _boc11_envelope_slope, _veml_discriminator_slope
 
-# A correlator whose correlators all sit at the prompt `p`.
-_prompt_correlator(p) = EarlyPromptLateCorrelatorBank(SVector(p / 2, p, p / 2), 0.5)
+# A correlator bank whose correlators all sit at the prompt `p`.
+_prompt_correlator_bank(p) = EarlyPromptLateCorrelatorBank(SVector(p / 2, p, p / 2), 0.5)
 
 @testset "PLL discriminator" begin
-    correlator_minus60off = EarlyPromptLateCorrelatorBank(
+    correlator_bank_minus60off = EarlyPromptLateCorrelatorBank(
         SVector(-0.5 + sqrt(3) / 2im, -1 + sqrt(3) * 1im, -0.5 + sqrt(3) / 2im),
         0.5,
     )
-    correlator_0off =
+    correlator_bank_0off =
         EarlyPromptLateCorrelatorBank(SVector(0.5 + 0.0im, 1 + 0.0im, 0.5 + 0.0im), 0.5)
     correlator_plus60off = EarlyPromptLateCorrelatorBank(
         SVector(0.5 + sqrt(3) / 2im, 1 + sqrt(3) * 1im, 0.5 + sqrt(3) / 2im),
         0.5,
     )
     gpsl1 = GPSL1CA()
-    @test @inferred(pll_disc(gpsl1, correlator_minus60off)) ≈ -1 / 6  #-60°
-    @test @inferred(pll_disc(gpsl1, correlator_0off)) == 0
+    @test @inferred(pll_disc(gpsl1, correlator_bank_minus60off)) ≈ -1 / 6  #-60°
+    @test @inferred(pll_disc(gpsl1, correlator_bank_0off)) == 0
     @test @inferred(pll_disc(gpsl1, correlator_plus60off)) ≈ 1 / 6  #+60°
 
     # With the prompt's sign given, the four-quadrant discriminator agrees with
     # the Costas one within ±1/4 cycle; beyond, the Costas one folds the error by
     # half a cycle while it does not.
-    for correlator_bank in (correlator_0off, correlator_plus60off)
+    for correlator_bank in (correlator_bank_0off, correlator_plus60off)
         @test @inferred(pll_disc(gpsl1, correlator_bank; polarity = 1)) ≈
               pll_disc(gpsl1, correlator_bank)
     end
     # An unknown sign (0) reads with the Costas discriminator.
-    @test @inferred(pll_disc(gpsl1, correlator_minus60off; polarity = 0)) ==
-          pll_disc(gpsl1, correlator_minus60off)
-    # `correlator_minus60off`'s prompt sits at +120°, which Costas reads as -60°.
-    @test @inferred(pll_disc(gpsl1, correlator_minus60off; polarity = 1)) ≈ 1 / 3
-    @test pll_disc(gpsl1, _prompt_correlator(cis(-2π / 3)); polarity = 1) ≈ -1 / 3
-    @test pll_disc(gpsl1, _prompt_correlator(-1.0 + 0.0im)) == 0
-    @test pll_disc(gpsl1, _prompt_correlator(-1.0 + 0.0im); polarity = 1) ≈ 1 / 2
+    @test @inferred(pll_disc(gpsl1, correlator_bank_minus60off; polarity = 0)) ==
+          pll_disc(gpsl1, correlator_bank_minus60off)
+    # `correlator_bank_minus60off`'s prompt sits at +120°, which Costas reads as -60°.
+    @test @inferred(pll_disc(gpsl1, correlator_bank_minus60off; polarity = 1)) ≈ 1 / 3
+    @test pll_disc(gpsl1, _prompt_correlator_bank(cis(-2π / 3)); polarity = 1) ≈ -1 / 3
+    @test pll_disc(gpsl1, _prompt_correlator_bank(-1.0 + 0.0im)) == 0
+    @test pll_disc(gpsl1, _prompt_correlator_bank(-1.0 + 0.0im); polarity = 1) ≈ 1 / 2
     # A negative polarity reads the error around the inverted prompt.
-    @test @inferred(pll_disc(gpsl1, _prompt_correlator(-cis(0.2)); polarity = -1)) ≈
+    @test @inferred(pll_disc(gpsl1, _prompt_correlator_bank(-cis(0.2)); polarity = -1)) ≈
           0.2 / 2π
-    @test pll_disc(gpsl1, _prompt_correlator(-cis(2.5)); polarity = -1) ≈ 2.5 / 2π
-    @test pll_disc(gpsl1, _prompt_correlator(-cis(0.2)); polarity = 1.0) ≈ (0.2 - π) / 2π
+    @test pll_disc(gpsl1, _prompt_correlator_bank(-cis(2.5)); polarity = -1) ≈ 2.5 / 2π
+    @test pll_disc(gpsl1, _prompt_correlator_bank(-cis(0.2)); polarity = 1.0) ≈ (0.2 - π) / 2π
 end
 
 @testset "FLL discriminator" begin
-    correlator_minus60off = EarlyPromptLateCorrelatorBank(
+    correlator_bank_minus60off = EarlyPromptLateCorrelatorBank(
         SVector(-0.5 + sqrt(3) / 2im, -1 + sqrt(3) * 1im, -0.5 + sqrt(3) / 2im),
         0.5,
     )
-    correlator_0off =
+    correlator_bank_0off =
         EarlyPromptLateCorrelatorBank(SVector(0.5 + 0.0im, 1 + 0.0im, 0.5 + 0.0im), 0.5)
     correlator_plus60off = EarlyPromptLateCorrelatorBank(
         SVector(0.5 + sqrt(3) / 2im, 1 + sqrt(3) * 1im, 0.5 + sqrt(3) / 2im),
@@ -57,73 +57,73 @@ end
     )
     correlator_plus90off =
         EarlyPromptLateCorrelatorBank(SVector(0.0 + 0.5im, 0.0 + 1.0im, 0.0 + 0.5im), 0.5)
-    correlator_empty = EarlyPromptLateCorrelatorBank()
+    empty_correlator_bank = EarlyPromptLateCorrelatorBank()
     gpsl1 = GPSL1CA()
     @test @inferred(
-        fll_disc(gpsl1, correlator_0off, get_prompt(correlator_minus60off), 1ms)
+        fll_disc(gpsl1, correlator_bank_0off, get_prompt(correlator_bank_minus60off), 1ms)
     ) == (166 + 2 / 3) * 1Hz
-    @test @inferred(fll_disc(gpsl1, correlator_0off, get_prompt(correlator_0off), 1ms)) ==
+    @test @inferred(fll_disc(gpsl1, correlator_bank_0off, get_prompt(correlator_bank_0off), 1ms)) ==
           0.0Hz
     @test @inferred(
-        fll_disc(gpsl1, correlator_0off, get_prompt(correlator_plus60off), 1ms)
+        fll_disc(gpsl1, correlator_bank_0off, get_prompt(correlator_plus60off), 1ms)
     ) == -(166 + 2 / 3) * 1Hz
     @test @inferred(
-        fll_disc(gpsl1, correlator_0off, get_prompt(correlator_plus90off), 1ms)
+        fll_disc(gpsl1, correlator_bank_0off, get_prompt(correlator_plus90off), 1ms)
     ) == -250Hz
     # No previous prompt yet: no frequency error.
-    @test @inferred(fll_disc(gpsl1, correlator_0off, get_prompt(correlator_empty), 1ms)) ==
+    @test @inferred(fll_disc(gpsl1, correlator_bank_0off, get_prompt(empty_correlator_bank), 1ms)) ==
           0Hz
     # An integration time from a sampling frequency in MHz still yields Hz.
     in_mhz = @inferred fll_disc(
         gpsl1,
-        correlator_0off,
-        get_prompt(correlator_minus60off),
+        correlator_bank_0off,
+        get_prompt(correlator_bank_minus60off),
         5000 / 5.0MHz,
     )
     @test in_mhz isa typeof(1.0Hz)
     @test in_mhz ≈ (166 + 2 / 3) * 1Hz
-    @test fll_disc(gpsl1, correlator_0off, get_prompt(correlator_empty), 5000 / 5.0MHz) isa
+    @test fll_disc(gpsl1, correlator_bank_0off, get_prompt(empty_correlator_bank), 5000 / 5.0MHz) isa
           typeof(1.0Hz)
 
     # The four-quadrant discriminator pulls in over ±1 / (2T) = ±500 Hz instead
-    # of ±250 Hz; within ±250 Hz the two agree. `correlator_minus60off`'s prompt
-    # sits at +120°, an advance of -120° to `correlator_0off`'s.
+    # of ±250 Hz; within ±250 Hz the two agree. `correlator_bank_minus60off`'s prompt
+    # sits at +120°, an advance of -120° to `correlator_bank_0off`'s.
     @test @inferred(
         fll_disc(
             gpsl1,
-            correlator_0off,
-            get_prompt(correlator_minus60off),
+            correlator_bank_0off,
+            get_prompt(correlator_bank_minus60off),
             1ms;
             polarity = 1,
         )
     ) ≈ -(333 + 1 / 3) * 1Hz
-    @test fll_disc(gpsl1, correlator_0off, cis(-2π / 3), 1ms) ≈ -(166 + 2 / 3) * 1Hz
-    @test fll_disc(gpsl1, correlator_0off, cis(-2π / 3), 1ms; polarity = 1) ≈
+    @test fll_disc(gpsl1, correlator_bank_0off, cis(-2π / 3), 1ms) ≈ -(166 + 2 / 3) * 1Hz
+    @test fll_disc(gpsl1, correlator_bank_0off, cis(-2π / 3), 1ms; polarity = 1) ≈
           (333 + 1 / 3) * 1Hz
-    @test fll_disc(gpsl1, correlator_0off, cis(2π / 3), 1ms; polarity = 1) ≈
+    @test fll_disc(gpsl1, correlator_bank_0off, cis(2π / 3), 1ms; polarity = 1) ≈
           -(333 + 1 / 3) * 1Hz
-    @test abs(fll_disc(gpsl1, correlator_0off, -1.0 + 0.0im, 1ms; polarity = 1)) ≈
+    @test abs(fll_disc(gpsl1, correlator_bank_0off, -1.0 + 0.0im, 1ms; polarity = 1)) ≈
           500Hz
     # Which sign the two prompts share cancels: only whether it is known counts.
     @test fll_disc(
         gpsl1,
-        _prompt_correlator(-1.0 + 0.0im),
+        _prompt_correlator_bank(-1.0 + 0.0im),
         -cis(-2π / 3),
         1ms;
         polarity = -1,
     ) ≈ (333 + 1 / 3) * 1Hz
-    @test fll_disc(gpsl1, correlator_0off, cis(-2π / 3), 1ms; polarity = -1) ==
-          fll_disc(gpsl1, correlator_0off, cis(-2π / 3), 1ms; polarity = 1)
+    @test fll_disc(gpsl1, correlator_bank_0off, cis(-2π / 3), 1ms; polarity = -1) ==
+          fll_disc(gpsl1, correlator_bank_0off, cis(-2π / 3), 1ms; polarity = 1)
     @test fll_disc(
         gpsl1,
-        correlator_0off,
-        get_prompt(correlator_empty),
+        correlator_bank_0off,
+        get_prompt(empty_correlator_bank),
         1ms;
         polarity = 1,
     ) == 0Hz
     # In Hz whatever the unit of the integration time, like `fll_disc`.
     @test @inferred(
-        fll_disc(gpsl1, correlator_0off, cis(-2π / 3), 1e-3 / Hz; polarity = 1)
+        fll_disc(gpsl1, correlator_bank_0off, cis(-2π / 3), 1e-3 / Hz; polarity = 1)
     ) isa typeof(1.0Hz)
 end
 
@@ -135,7 +135,7 @@ end
         EarlyPromptLateCorrelatorBank(SVector(1.0 + 0.0im, 0.5 + 0.0im, 0.0 + 0.0im), 0.5)
     early_correlator =
         EarlyPromptLateCorrelatorBank(SVector(0.75 + 0.0im, 0.75 + 0.0im, 0.25 + 0.0im), 0.5)
-    prompt_correlator =
+    prompt_correlator_bank =
         EarlyPromptLateCorrelatorBank(SVector(0.5 + 0.0im, 1 + 0.0im, 0.5 + 0.0im), 0.5)
     late_correlator =
         EarlyPromptLateCorrelatorBank(SVector(0.25 + 0.0im, 0.75 + 0.0im, 0.75 + 0.0im), 0.5)
@@ -144,7 +144,7 @@ end
 
     @test @inferred(
         calc_early_late_sample_spacing(
-            prompt_correlator,
+            prompt_correlator_bank,
             sampling_frequency,
             get_chip_rate(gpsl1),
         )
@@ -153,7 +153,7 @@ end
     @test @inferred(dll_disc(gpsl1, very_early_correlator, 0.0Hz, sampling_frequency)) ==
           -0.5
     @test @inferred(dll_disc(gpsl1, early_correlator, 0.0Hz, sampling_frequency)) == -0.25
-    @test @inferred(dll_disc(gpsl1, prompt_correlator, 0.0Hz, sampling_frequency)) == 0
+    @test @inferred(dll_disc(gpsl1, prompt_correlator_bank, 0.0Hz, sampling_frequency)) == 0
     @test @inferred(dll_disc(gpsl1, late_correlator, 0.0Hz, sampling_frequency)) == 0.25
     @test @inferred(dll_disc(gpsl1, very_late_correlator, 0.0Hz, sampling_frequency)) == 0.5
 end

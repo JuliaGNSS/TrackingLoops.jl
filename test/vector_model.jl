@@ -770,26 +770,26 @@ end
     # `fll_disc` measures f_incoming − f_replica, so a positive reading must ADD to the
     # replica Doppler the rate is measured from; the discriminator enters with its own
     # sign, not flipped. Pins the sign so a re-introduced negation is caught.
-    base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
-    pos = SatVectorPLLAndDLL(base; fll_disc_sum = (1, 3.0Hz))
-    neg = SatVectorPLLAndDLL(base; fll_disc_sum = (2, -8.0Hz))
-    empty_acc = SatVectorPLLAndDLL(base; fll_disc_sum = (0, 0.0Hz))
+    base = init_loop_state(VectorTrackingLoop(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
+    pos = VectorLoopState(base; fll_disc_sum = (1, 3.0Hz))
+    neg = VectorLoopState(base; fll_disc_sum = (2, -8.0Hz))
+    empty_acc = VectorLoopState(base; fll_disc_sum = (0, 0.0Hz))
     @test TL.mean_fll_disc(pos) ≈ 3.0
     @test TL.mean_fll_disc(neg) ≈ -4.0
     @test TL.mean_fll_disc(empty_acc) == 0.0
     # The DLL mean enters negated.
-    @test TL.mean_code_disc_at_epoch(SatVectorPLLAndDLL(base; code_disc_sum = (2, 0.1)), 0.1) ≈ -0.05
+    @test TL.mean_code_disc_at_epoch(VectorLoopState(base; code_disc_sum = (2, 0.1)), 0.1) ≈ -0.05
 end
 
 @testset "The code measurement is moved from mid-cycle to the epoch" begin
-    base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
+    base = init_loop_state(VectorTrackingLoop(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
     T = 0.1
     # Without an NCO delay the advance is the correction's `c·T/2`, bit for bit.
     for c_new in (0.37, -2.5, 1e-3), c_old in (0.0, 4.0, -1.1)
         state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c_new * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
         @test state.code_freq_update_history == (c_new * Hz, c_old * Hz, 0.0Hz)
         @test TL.code_phase_advance(state, T) === c_new * T / 2
-        state = SatVectorPLLAndDLL(state; code_disc_sum = (4, 0.2))
+        state = VectorLoopState(state; code_disc_sum = (4, 0.2))
         @test TL.mean_code_disc_at_epoch(state, T) === -0.05 + c_new * T / 2
     end
     # Under an NCO delay the second half-cycle ran on the corrections in effect before
@@ -816,16 +816,16 @@ end
     # accumulated, which the navigation filter cannot distinguish from a genuine zero
     # residual measured at full weight. `has_disc_sums` is the guard that keeps such a
     # member out of the measurement set.
-    base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
-    accumulated = SatVectorPLLAndDLL(base; code_disc_sum = (3, 0.06),
+    base = init_loop_state(VectorTrackingLoop(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
+    accumulated = VectorLoopState(base; code_disc_sum = (3, 0.06),
         fll_disc_sum = (3, 6.0Hz))
-    nothing_accumulated = SatVectorPLLAndDLL(base; code_disc_sum = (0, 0.0),
+    nothing_accumulated = VectorLoopState(base; code_disc_sum = (0, 0.0),
         fll_disc_sum = (0, 0.0Hz))
     @test TL.has_disc_sums(accumulated)
     @test !TL.has_disc_sums(nothing_accumulated)
-    # A cycle without a frequency measurement — its only record the first after a
+    # A cycle without a frequency measurement — its only integration the first after a
     # (re)start — has no rate to measure, and is withheld too.
-    no_fll = SatVectorPLLAndDLL(base; code_disc_sum = (1, 0.02),
+    no_fll = VectorLoopState(base; code_disc_sum = (1, 0.02),
         fll_disc_sum = (0, 0.0Hz))
     @test !TL.has_disc_sums(no_fll)
     # The zero the helpers would otherwise hand to the filter is indistinguishable from a
