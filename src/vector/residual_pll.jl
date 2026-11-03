@@ -26,22 +26,22 @@ CarrierRamp() = CarrierRamp(NaN, 0.0, NaN)
 $(SIGNATURES)
 
 Default noise bandwidth of the residual PLL that follows each satellite's carrier in
-the vector loop (10 Hz, [`VectorPLLAndDLL`](@ref)'s
-`residual_pll_loop_filter_bandwidth`), capped like the scalar PLL's by
-[`effective_carrier_loop_filter_bandwidth`](@ref).
+the vector loop (10 Hz, [`VectorTrackingLoop`](@ref)'s
+`residual_pll_loop_bandwidth`), capped like the scalar PLL's by
+[`calc_effective_carrier_loop_bandwidth`](@ref).
 """
-default_residual_pll_loop_filter_bandwidth() = 10.0Hz
+default_residual_pll_loop_bandwidth() = 10.0Hz
 
 # The residual PLL's loop filter: the scalar PLL's third-order filter without its FLL
 # assist.
 const ResidualPLLLoopFilter = ThirdOrderBilinearLF{typeof(1.0Hz),typeof(1.0Hz^2)}
 
 # The residual PLL's lock (`_with_lock_test`): a `PhaseLockDetector` on the prompts it
-# rotated, whether it is in lock, and for how many records in a row the test has held.
+# rotated, whether it is in lock, and for how many integrations in a row the test has held.
 struct ResidualPLLLock
     lock_detector::PhaseLockDetector
     locked::Bool
-    num_locked_records::Int
+    num_locked_integrations::Int
 end
 
 # Out of lock with a fresh detector; or taking over the scalar loop's detector, locked.
@@ -51,7 +51,7 @@ ResidualPLLLock(staging::CarrierLoopStaging) = ResidualPLLLock(staging.lock_dete
 """
     ResidualPLL
 
-The residual PLL of a satellite in the vector loop (see [`VectorPLLAndDLL`](@ref)).
+The residual PLL of a satellite in the vector loop (see [`VectorTrackingLoop`](@ref)).
 Its fields are internal.
 
 A PLL in software: it wipes each prompt with its own prediction of the incoming
@@ -74,7 +74,7 @@ struct ResidualPLL
     bandwidth::typeof(1.0Hz)
     carrier_freq_update::Float64
     loop_filter::ResidualPLLLoopFilter
-    # The latest prompt's centre (s, on the records' grid; `NaN` until the first record)
+    # The latest prompt's centre (s, on the integrations' grid; `NaN` until the first integration)
     # and the carrier phase polarity its discriminator ran with.
     prompt_center::Float64
     carrier_phase_polarity::Int8
@@ -163,8 +163,8 @@ end
 # indicator at least the scalar loop's threshold and the C/N₀ of the same moments at most
 # `RESIDUAL_PLL_CN0_MARGIN` below `lock_cn0_threshold` (on noise alone the indicator's
 # signal power comes out near zero now and then, and the ratio reads lock). It drops
-# lock on the first failing record and regains it after `time_constant` (0.1 s, at
-# least 25 records) consecutive passing ones.
+# lock on the first failing integration and regains it after `time_constant` (0.1 s, at
+# least 25 integrations) consecutive passing ones.
 #
 # Without `signal_present` (the host's C/N₀ below the threshold) its frequency and rate
 # are held at the ramp. The host's estimate decides that because on bare noise these
@@ -185,9 +185,9 @@ function _with_lock_test(
     noise_power = max(lock_detector.power - signal_power, eps(lock_detector.power))
     cn0_dbhz = 10 * log10(max(signal_power / (noise_power * integration_time), 1e-3))
     good = lock_detector.indicator >= _PHASE_LOCK_THRESHOLD && cn0_dbhz >= lock_cn0_threshold_dbhz - RESIDUAL_PLL_CN0_MARGIN
-    num_locked_records = good ? lock.num_locked_records + 1 : 0
-    locked = lock.locked ? good : num_locked_records >= time_constant
-    lock = ResidualPLLLock(lock_detector, locked, num_locked_records)
+    num_locked_integrations = good ? lock.num_locked_integrations + 1 : 0
+    locked = lock.locked ? good : num_locked_integrations >= time_constant
+    lock = ResidualPLLLock(lock_detector, locked, num_locked_integrations)
     signal_present ? ResidualPLL(residual_pll; lock) : _reset_to_ramp(residual_pll, lock)
 end
 
@@ -218,32 +218,32 @@ end
     _predicted_phase(residual_pll, ramp, time, previous_cycles + word * (time - previous_end))
 end
 
-# One record through the residual PLL: predict the phase to the prompt, wipe it, and run
+# One integration through the residual PLL: predict the phase to the prompt, wipe it, and run
 # the loop filter on the discriminator. `replica_cycles` is the replica's advance from the
 # previous prompt's centre to this one's. Returns the residual PLL and the wiped prompt.
-function _step_residual_pll(residual_pll::ResidualPLL, ramp::CarrierRamp, record::LoopRecord, replica_cycles)
-    fs = _sampling_frequency_hz(record)
-    num_samples = record.integrated_samples
+function _step_residual_pll(residual_pll::ResidualPLL, ramp::CarrierRamp, integration::LoopRecord, replica_cycles)
+    fs = _sampling_frequency_hz(integration)
+    num_samples = integration.integrated_samples
     integration_time = num_samples / fs
-    center = (record.sample_index - num_samples / 2) / fs
-    polarity = record.carrier_phase_polarity
+    center = (integration.sample_index - num_samples / 2) / fs
+    polarity = integration.carrier_phase_polarity
 
     # The scalar loop hands over phase-locked: the first prompt is read as is.
     first_record = isnan(residual_pll.prompt_center) || isnan(replica_cycles)
     predicted_phase = first_record ? 0.0 : _predicted_phase(residual_pll, ramp, center, replica_cycles)
 
-    wiped = _rotated(record.filtered_correlator, cis(-2π * predicted_phase))
-    phase_error = pll_disc(record.signal, wiped; polarity)
+    wiped = _rotated(integration.filtered_correlator, cis(-2π * predicted_phase))
+    phase_error = pll_disc(integration.signal, wiped; polarity)
     polarity_changed = polarity != residual_pll.carrier_phase_polarity
     if polarity_changed && !iszero(polarity) && abs(phase_error) > 0.25
         # A four-quadrant discriminator taking over from a two-quadrant one may find the
         # residual PLL half a cycle off the polarity's frame.
         predicted_phase += 0.5
         wiped = _rotated(wiped, -1)
-        phase_error = pll_disc(record.signal, wiped; polarity)
+        phase_error = pll_disc(integration.signal, wiped; polarity)
     end
 
-    bandwidth = effective_carrier_loop_filter_bandwidth(residual_pll.bandwidth, integration_time * s)
+    bandwidth = calc_effective_carrier_loop_bandwidth(residual_pll.bandwidth, integration_time * s)
     carrier_freq_update, loop_filter = filter_loop(residual_pll.loop_filter, phase_error, integration_time * s, bandwidth)
     ResidualPLL(
         residual_pll;
@@ -261,8 +261,8 @@ _rotated(correlator_bank, phasor) = set_correlator_outputs(correlator_bank, get_
 
 # A slot's ring of the residual phases (cycles) predicted at the driver's latest prompts
 # and their centres (s), newest at `newest`, `count` valid. A pair's decoding signal reads
-# its records' phase from it (`_bit_prompt_phase`), since a host may step the data's
-# records after the pilot's of the same span. Allocated once at `_prompt_history_length`;
+# its integrations' phase from it (`_bit_prompt_phase`), since a host may step the data's
+# integrations after the pilot's of the same span. Allocated once at `_prompt_history_length`;
 # cleared while the filter does not command the satellite, so it never mixes two
 # residual PLLs' prompts.
 mutable struct PromptHistory
@@ -297,8 +297,8 @@ end
 _clear_prompts!(history::PromptHistory) = (history.count = 0; history)
 
 # The residual PLL's phase (cycles) at a decoding signal's prompt. A plain signal's
-# (driver) record: the phase it was wiped with, a prediction that prompt did not correct.
-# A passenger record at or before the latest prompt: the nearest prompt's phase in
+# (driver) integration: the phase it was wiped with, a prediction that prompt did not correct.
+# A passenger integration at or before the latest prompt: the nearest prompt's phase in
 # `history`, moved on at the loop filter's output. One after it: the prediction, the
 # replica advancing by `previous_replica_half` and the words from there. `NaN` before
 # the first prompt, and for a record more than a driver record older than the oldest
@@ -308,14 +308,14 @@ function _bit_prompt_phase(
     ramp::CarrierRamp,
     previous_replica_half,
     history::PromptHistory,
-    record::LoopRecord,
+    integration::LoopRecord,
     words,
     driver::Bool,
 )
     isnan(residual_pll.prompt_center) && return NaN
     driver && return residual_pll.prompt_phase
-    fs = _sampling_frequency_hz(record)
-    center = (record.sample_index - record.integrated_samples / 2) / fs
+    fs = _sampling_frequency_hz(integration)
+    center = (integration.sample_index - integration.integrated_samples / 2) / fs
     center > residual_pll.prompt_center + 0.5 / fs &&
         return _residual_phase_after(residual_pll, ramp, previous_replica_half, center, fs, words)
     history.count == 0 && return NaN
@@ -327,6 +327,6 @@ function _bit_prompt_phase(
     end
     oldest = history.centers[mod1(history.newest - history.count + 1, n)]
     driver_duration = 2 * Float64(ustrip(s, last(previous_replica_half)))
-    oldest - center > max(driver_duration, record.integrated_samples / fs) && return NaN
+    oldest - center > max(driver_duration, integration.integrated_samples / fs) && return NaN
     history.phases[nearest] + residual_pll.carrier_freq_update * (center - history.centers[nearest])
 end

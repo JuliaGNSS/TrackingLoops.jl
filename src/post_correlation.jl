@@ -58,7 +58,7 @@ function SignalLoopState(
     bit_buffer = BitBuffer{get_code_block_buffer_type(signal)}()
     # So the first soft bits after sync do not grow the vector.
     sizehint!(bit_buffer.soft_bits, 64)
-    # Seed the sync accumulators at the detector's length so no later record,
+    # Seed the sync accumulators at the detector's length so no later integration,
     # re-arm or bit-clock restart (they zero in place) allocates.
     if uses_soft_bit_edge_detection(signal)
         _seed_phase_accumulators!(bit_buffer.phase_acc, get_code_periods_per_bit(signal))
@@ -122,7 +122,7 @@ get_soft_bits(state::SignalLoopState) = get_soft_bits(state.bit_buffer)
 estimate_cn0(state::SignalLoopState, integration_time) =
     estimate_cn0(state.cn0_estimator, integration_time)
 
-# Fold the record into the C/N₀ estimator, or skip it while a required noise density
+# Add the integration to the C/N₀ estimator, or skip it while a required noise density
 # is not measured yet. Both branches return the same type; `requires_noise_density`
 # folds away at compile time.
 @inline function _update_cn0_estimator(
@@ -139,7 +139,7 @@ estimate_cn0(state::SignalLoopState, integration_time) =
     if !noise_density_ready && requires_noise_density(estimator)
         return estimator
     end
-    # Positional, not keyword: this is the per-record site.
+    # Positional, not keyword: this is the per-integration site.
     update(
         estimator,
         prompt,
@@ -154,7 +154,7 @@ estimate_cn0(state::SignalLoopState, integration_time) =
     )
 end
 
-# Whether a record's prompt is kept out of a secondary-coded signal's coherent sum:
+# Whether an integration's prompt is kept out of a secondary-coded signal's coherent sum:
 # one after the sync whose replica has not wiped the overlay yet (the sync changed
 # the replica under it). Its blocks are credited all the same.
 @inline _drops_unwiped_prompt(
@@ -170,7 +170,7 @@ Whether `signal` is dataless with a secondary code: GPS L1C-P and L5Q, Galileo E
 E5a-Q, E5b-Q and E6-C, BeiDou B1C-P and B2a-Q. Synced and correlated with the overlay
 wiped, such a signal's prompt keeps the sign the sync read, so the four-quadrant
 carrier discriminators apply. Its pre-sync prompts must be primary-only: a host
-whose pre-sync replica carries a secondary chip uses this to pick the records to
+whose pre-sync replica carries a secondary chip uses this to pick the integrations to
 multiply by that chip.
 """
 is_dataless_with_secondary_code(signal::AbstractGNSSSignal) =
@@ -219,7 +219,7 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
     bit_buffer::BitBuffer,
     cn0_estimator::AbstractCN0Estimator,
     post_corr_filter::AbstractPostCorrFilter,
-    output::CorrelatorOutput,
+    correlator_bank_output::CorrelatorOutput,
     sampling_frequency,
     noise_density,
     noise_density_ready::Bool,
@@ -229,7 +229,7 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
     bit_buffer_before = bit_buffer
     synced_before = has_bit_or_secondary_code_been_found(bit_buffer)
     normalized_correlator_bank =
-        normalize(output.correlator_bank, output.num_integrated_samples, get_code_amplitude(signal))
+        normalize(correlator_bank_output.correlator_bank, correlator_bank_output.num_integrated_samples, get_code_amplitude(signal))
     post_corr_filter = update(post_corr_filter, get_prompt(normalized_correlator_bank))
     # Used twice: to combine the antennas and to reduce the shared noise covariance
     # to this satellite's density.
@@ -238,11 +238,11 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
     prompt = get_prompt(filtered_correlator_bank)
     bit_block_count = calc_num_code_blocks_for_bit_buffer(
         signal,
-        output.num_integrated_samples,
+        correlator_bank_output.num_integrated_samples,
         sampling_frequency,
         synced_before,
     )
-    # Floor at 1 for the fractional-block record right after a sync phase snap.
+    # Floor at 1 for the fractional-block integration right after a sync phase snap.
     integrated_code_blocks = max(1, bit_block_count)
     # Onto the driver's (real) phase frame for sync search and bit accumulation.
     bit_prompt = prompt * _carrier_phase_derotation(driver_carrier_phase_offset, signal)
@@ -257,7 +257,7 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
         !drop_prompt,
         scalar_noise_density,
         noise_density_ready,
-        output.num_integrated_samples / sampling_frequency,
+        correlator_bank_output.num_integrated_samples / sampling_frequency,
     )
     bit_buffer = buffer(
         signal,
@@ -266,7 +266,7 @@ wiped), else `0`; a [`LoopRecord`](@ref) carries it to the carrier discriminator
         bit_block_count,
         drop_prompt ? zero(bit_prompt) : bit_prompt,
     )
-    # An unwiped post-sync record moves the secondary-code anchor: the code-phase
+    # An unwiped post-sync integration moves the secondary-code anchor: the code-phase
     # snap after this fold aligns the *upcoming* integration to `bit_buffer.secondary_phase`.
     if synced_before && !overlay_wiped
         bit_buffer = _advance_secondary_phase(signal, bit_buffer, bit_block_count)
@@ -296,7 +296,7 @@ the filtered correlator the discriminators read, the blocks the record covered a
 `overshoot`: whether a post-sync record carried the bit accumulator past the bit
 boundary, so the buffer dropped sync and restarted its search (`SYNC_LOST`;
 JuliaGNSS/Tracking.jl#238). The new state keeps the filtered prompt and what the
-record did, for a [`LoopRecord`](@ref) built from it. Nothing here logs; the caller
+integration did, for a [`LoopRecord`](@ref) built from it. Nothing here logs; the caller
 reports `overshoot` (Tracking.jl warns once per satellite).
 
 `driver_carrier_phase_offset` is the carrier-phase offset (cycles, `get_carrier_phase_offset`) of
@@ -321,7 +321,7 @@ and its polarity is `0`.
     state::SignalLoopState,
     signal::AbstractGNSSSignal,
     prn::Integer,
-    output::CorrelatorOutput,
+    correlator_bank_output::CorrelatorOutput,
     sampling_frequency,
     noise_density,
     noise_density_ready::Bool,
@@ -344,7 +344,7 @@ and its polarity is `0`.
         state.bit_buffer,
         state.cn0_estimator,
         state.post_corr_filter,
-        output,
+        correlator_bank_output,
         sampling_frequency,
         noise_density,
         noise_density_ready,

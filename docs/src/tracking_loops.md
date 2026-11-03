@@ -2,7 +2,7 @@
 CurrentModule = TrackingLoops
 ```
 
-# Doppler estimators and loop filters
+# Tracking loops and loop filters
 
 A Doppler estimator closes the carrier and code loops. Its configuration (loop
 filter types and bandwidths) is a plain value, a subtype of
@@ -11,22 +11,22 @@ created with [`init_estimator_state`](@ref). Every estimator is stepped with the
 same call,
 
 ```julia
-state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words, landing_sample)
+loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, words, landing_sample)
 ```
 
 where `record` is a [`LoopRecord`](@ref), `words` is the replica frequency the
 record was produced under (a [`ConstantNCOCommand`](@ref) for a software correlator,
 the channel's [`NCOTimeline`](@ref) for a hardware one) and `landing_sample` is
 the sample the new command takes effect at, or [`NO_LANDING_SAMPLE`](@ref) for
-"at the end of each record".
+"at the end of each integration".
 
-A host steps every record of a satellite, of every signal it tracks. The state
-remembers the driver it was initialised with: the driver's records close the
-loops, and the scalar loops leave any other record (a passenger, such as the
+A host steps every integration of a satellite, of every signal it tracks. The state
+remembers the driver it was initialised with: the driver's integrations close the
+loops, and the scalar loops leave any other integration (a passenger, such as the
 data component of a pilot + data pair) to the host, returning the state
 unchanged and the command in force.
 
-- [`ConventionalPLLAndDLL`](@ref): a PLL and a carrier-aided DLL.
+- [`ScalarTrackingLoop`](@ref): a PLL and a carrier-aided DLL.
 - [`ConventionalAssistedPLLAndDLL`](@ref): the same with an FLL assisting the
   PLL until phase lock (see [Carrier-loop staging](@ref)), to pull in larger
   initial frequency errors. The default in Tracking.jl.
@@ -35,8 +35,8 @@ unchanged and the command in force.
   and no landing sample it is the FLL-assisted conventional loop at the same
   bandwidths.
 
-The bandwidth rules ([`default_wide_carrier_loop_filter_bandwidth`](@ref),
-[`effective_carrier_loop_filter_bandwidth`](@ref), …) keep the loops stable for a
+The bandwidth rules ([`default_wide_carrier_loop_bandwidth`](@ref),
+[`calc_effective_carrier_loop_bandwidth`](@ref), …) keep the loops stable for a
 given integration time; the integration-length rules
 ([`calc_num_code_blocks_to_integrate`](@ref TrackingLoops.calc_num_code_blocks_to_integrate), …) say how long a signal may be
 integrated coherently once its bit or secondary code has been found.
@@ -78,49 +78,49 @@ half a cycle between the sync and the switch, the four-quadrant PLL pulls the
 carrier phase over by half a cycle, after which the prompt agrees with the sign
 again. Data signals never switch, nor, for now, do the pilots without a
 secondary code (GPS L2 CL, Galileo E5a-QP), whose sync reads no sign.
-The NCO-referenced loop folds its predicted phase error into whichever range the
-record's PLL reads.
+The delay-compensated loop folds its predicted phase error into whichever range the
+integration's PLL reads.
 
-The sign rests on a contract with whoever correlates the records, a hardware
-correlator as much as Tracking.jl: until the sync, these signals' records
+The sign rests on a contract with whoever correlates the integrations, a hardware
+correlator as much as Tracking.jl: until the sync, these signals' integrations
 ([`is_dataless_with_secondary_code`](@ref)) are primary-only. A replica carrying
 the same secondary chip on every block is fine once the host multiplies the records
 by that chip (Tracking.jl's carries chip 0 and multiplies by it). A negative chip
 left in makes the sync read the wrong sign, and on the switch the four-quadrant PLL
 pulls the carrier phase over by half a cycle.
 
-## Estimators
+## Tracking loops
 
 ```@docs
-ConventionalPLLAndDLL
+ScalarTrackingLoop
 LoopRecord
 LoopRecord(::Any, ::Any, ::CorrelatorOutput, ::SignalLoopState, ::Any)
-NCOReferencedPLLAndDLL
-TrackingLoops.SatConventionalPLLAndDLL
+DelayCompensatedTrackingLoop
+TrackingLoops.ScalarLoopState
 TrackingLoops.SatNCOReferencedPLLAndDLL
 ConventionalAssistedPLLAndDLL(::Type{CO} = SecondOrderBilinearLF) where {CO<:AbstractLoopFilter}
-carrier_loop_stage(::Union{SatConventionalPLLAndDLL, SatNCOReferencedPLLAndDLL})
-TrackingLoops.carrier_phase_correction(::Union{SatConventionalPLLAndDLL, SatNCOReferencedPLLAndDLL}, ::Any, ::Any, ::Any)
-TrackingLoops.estimator_state_type(::AbstractDopplerEstimator, ::AbstractGNSSSignal)
-init_estimator_state(::ConventionalPLLAndDLL{CA, CO}, ::AbstractGNSSSignal, ::Any, ::Any) where {CA<:AbstractLoopFilter, CO<:AbstractLoopFilter}
-navigation_cycle(::AbstractDopplerEstimator)
-navigation_epoch(::AbstractDopplerEstimator)
-navigation_solution(::AbstractDopplerEstimator)
-navigation_status(::AbstractDopplerEstimator)
-TrackingLoops.phase_lock_indicator(::Union{SatConventionalPLLAndDLL, SatNCOReferencedPLLAndDLL})
-TrackingLoops.phase_locked(::Union{SatConventionalPLLAndDLL, SatNCOReferencedPLLAndDLL})
-reset_estimator_state(::ConventionalPLLAndDLL, ::SatConventionalPLLAndDLL, ::Any, ::Any)
-satellite_report(::AbstractDopplerEstimator, ::AbstractGNSSSignal, ::Integer)
-step_loop(::ConventionalPLLAndDLL, ::SatConventionalPLLAndDLL, ::LoopRecord, ::Any, ::Int)
-step_loop(::NCOReferencedPLLAndDLL, ::SatNCOReferencedPLLAndDLL, ::LoopRecord, ::Any, ::Int)
+get_carrier_loop_stage(::Union{ScalarLoopState, SatNCOReferencedPLLAndDLL})
+TrackingLoops.calc_carrier_phase_correction(::Union{ScalarLoopState, SatNCOReferencedPLLAndDLL}, ::Any, ::Any, ::Any)
+TrackingLoops.loop_state_type(::AbstractTrackingLoop, ::AbstractGNSSSignal)
+init_loop_state(::ScalarTrackingLoop{CA, CO}, ::AbstractGNSSSignal, ::Any, ::Any) where {CA<:AbstractLoopFilter, CO<:AbstractLoopFilter}
+navigation_cycle(::AbstractTrackingLoop)
+navigation_epoch(::AbstractTrackingLoop)
+navigation_solution(::AbstractTrackingLoop)
+navigation_status(::AbstractTrackingLoop)
+TrackingLoops.get_phase_lock_indicator(::Union{ScalarLoopState, SatNCOReferencedPLLAndDLL})
+TrackingLoops.is_phase_locked(::Union{ScalarLoopState, SatNCOReferencedPLLAndDLL})
+reinit_loop_state(::ScalarTrackingLoop, ::ScalarLoopState, ::Any, ::Any)
+satellite_report(::AbstractTrackingLoop, ::AbstractGNSSSignal, ::Integer)
+step_loop!(::ScalarTrackingLoop, ::ScalarLoopState, ::LoopRecord, ::Any, ::Int)
+step_loop!(::DelayCompensatedTrackingLoop, ::SatNCOReferencedPLLAndDLL, ::LoopRecord, ::Any, ::Int)
 ```
 
 ## Carrier-loop staging
 
 The scalar loops stage their carrier loop on phase lock: FLL-assisted at the
 wide PLL bandwidth, then a pure PLL at the wide bandwidth, then narrow, each
-stage moving on once the phase-lock indicator ([`phase_lock_indicator`](@ref TrackingLoops.phase_lock_indicator))
-has read lock ([`phase_locked`](@ref TrackingLoops.phase_locked): at least 0.5, an RMS phase error of about
+stage moving on once the phase-lock indicator ([`get_phase_lock_indicator`](@ref TrackingLoops.get_phase_lock_indicator))
+has read lock ([`is_phase_locked`](@ref TrackingLoops.is_phase_locked): at least 0.5, an RMS phase error of about
 30°) long enough. The stages and when they advance are given under
 [`CarrierLoopStage`](@ref TrackingLoops.CarrierLoopStage); in the vector loop, see [The carrier in the vector
 loop](@ref vector-carrier).
@@ -134,7 +134,7 @@ the narrow 18 Hz by default.
 TrackingLoops.CarrierLoopStage
 ```
 
-## Loop-filter bandwidths
+## Loop bandwidths
 
 The PLL pulls in at a wide 50 Hz and narrows to 18 Hz once phase lock has held;
 the FLL path of the FLL-assisted filter runs at 5 Hz while it is in use, and the
@@ -149,10 +149,10 @@ the bandwidth, do not depend on it.
 ### Stability cap
 
 Stability does depend on the loop update interval `Δt`, so at filter time every
-bandwidth, default or explicit, is capped against the record's integration time
-([`effective_carrier_loop_filter_bandwidth`](@ref),
-[`effective_fll_assist_loop_filter_bandwidth`](@ref TrackingLoops.effective_fll_assist_loop_filter_bandwidth),
-[`effective_code_loop_filter_bandwidth`](@ref TrackingLoops.effective_code_loop_filter_bandwidth)). The cap only ever narrows a
+bandwidth, default or explicit, is capped against the coherent integration time
+([`calc_effective_carrier_loop_bandwidth`](@ref),
+[`calc_effective_fll_assist_loop_bandwidth`](@ref TrackingLoops.calc_effective_fll_assist_loop_bandwidth),
+[`calc_effective_code_loop_bandwidth`](@ref TrackingLoops.calc_effective_code_loop_bandwidth)). The cap only ever narrows a
 loop.
 
 ```julia
@@ -180,14 +180,14 @@ is about 4° at 4.5 Hz and 2.6° at 2 Hz, while a TCXO's jitter (Allan deviation
 with `BL³`. From 10 ms on, the cap sets wide and narrow alike. The resulting
 defaults, `BL` in Hz:
 
-| Records | Signals                                  |  Wide | Narrow | FLL-assist |  Code |
-|---------|------------------------------------------|------:|-------:|-----------:|------:|
-| 1 ms    | GPS L1 C/A, GPS L5, Galileo E5a, …       |    50 |     18 |          5 |     1 |
-| 2 ms    | Galileo E5a-QP                           |    45 |     18 |          5 |     1 |
-| 4 ms    | Galileo E1B / E1C                        |  22.5 |     18 |          5 |     1 |
-| 10 ms   | GPS L1C, BeiDou B1C; L5I synced at 10 ms |     9 |      9 |          2 |     1 |
-| 20 ms   | GPS L2 CM; L1 C/A, L5Q, E5a-I synced     |   4.5 |    4.5 |          1 |   0.9 |
-| 1.5 s   | GPS L2 CL                                |  0.06 |   0.06 |      0.013 | 0.012 |
+| Integration time | Signals                                  |  Wide | Narrow | FLL-assist |  Code |
+|------------------|------------------------------------------|------:|-------:|-----------:|------:|
+| 1 ms             | GPS L1 C/A, GPS L5, Galileo E5a, …       |    50 |     18 |          5 |     1 |
+| 2 ms             | Galileo E5a-QP                           |    45 |     18 |          5 |     1 |
+| 4 ms             | Galileo E1B / E1C                        |  22.5 |     18 |          5 |     1 |
+| 10 ms            | GPS L1C, BeiDou B1C; L5I synced at 10 ms |     9 |      9 |          2 |     1 |
+| 20 ms            | GPS L2 CM; L1 C/A, L5Q, E5a-I synced     |   4.5 |    4.5 |          1 |   0.9 |
+| 1.5 s            | GPS L2 CL                                |  0.06 |   0.06 |      0.013 | 0.012 |
 
 The code cap of 0.018 is conservative (see
 [`MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT`](@ref TrackingLoops.MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT)); the default 1 Hz applies in full
@@ -198,14 +198,14 @@ TrackingLoops.MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT
 TrackingLoops.MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT
 TrackingLoops.MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT
 TrackingLoops.LoopBandwidths
-TrackingLoops.aid_dopplers(::AbstractGNSSSignal, ::Any, ::Any, ::Any, ::Any)
-TrackingLoops.default_code_loop_filter_bandwidth(::AbstractGNSSSignal)
-TrackingLoops.default_fll_assist_loop_filter_bandwidth(::AbstractGNSSSignal)
-TrackingLoops.default_narrow_carrier_loop_filter_bandwidth(::AbstractGNSSSignal)
-default_wide_carrier_loop_filter_bandwidth(::AbstractGNSSSignal)
-effective_carrier_loop_filter_bandwidth(::Any, ::Any)
-TrackingLoops.effective_code_loop_filter_bandwidth(::Any, ::Any)
-TrackingLoops.effective_fll_assist_loop_filter_bandwidth(::Any, ::Any)
+TrackingLoops.calc_carrier_aided_dopplers(::AbstractGNSSSignal, ::Any, ::Any, ::Any, ::Any)
+TrackingLoops.default_code_loop_bandwidth(::AbstractGNSSSignal)
+TrackingLoops.default_fll_assist_loop_bandwidth(::AbstractGNSSSignal)
+TrackingLoops.default_narrow_carrier_loop_bandwidth(::AbstractGNSSSignal)
+default_wide_carrier_loop_bandwidth(::AbstractGNSSSignal)
+calc_effective_carrier_loop_bandwidth(::Any, ::Any)
+TrackingLoops.calc_effective_code_loop_bandwidth(::Any, ::Any)
+TrackingLoops.calc_effective_fll_assist_loop_bandwidth(::Any, ::Any)
 ```
 
 ## Integration length

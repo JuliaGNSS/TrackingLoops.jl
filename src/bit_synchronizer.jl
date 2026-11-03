@@ -781,7 +781,7 @@ function buffer(
         bit_buffer.prompt_accumulator_integrated_code_blocks + integrated_code_blocks
 
     if prompt_accumulator_integrated_code_blocks > num_code_periods_per_bit
-        # Overshoot (e.g. 18 + a 3-block record for L1 C/A): resync rather than
+        # Overshoot (e.g. 18 + a 3-block integration for L1 C/A): resync rather than
         # emit at `>=`, see the docstring. Must not allocate or format a string.
         return _resync_bit_buffer(bit_buffer)
     elseif prompt_accumulator_integrated_code_blocks == num_code_periods_per_bit

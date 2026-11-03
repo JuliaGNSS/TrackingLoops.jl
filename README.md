@@ -6,25 +6,25 @@
 
 # TrackingLoops.jl
 
-The arithmetic of a GNSS tracking loop, one correlator record at a time.
+The arithmetic of a GNSS tracking loop, one coherent integration at a time.
 
 A tracking loop takes the correlator outputs of one integration — early, prompt
 and late correlator outputs for one satellite — and turns them into what the next
 integration should run with: a carrier Doppler, a code Doppler, a navigation bit
 when one has completed, and a C/N₀ estimate. This package is that step, and
 nothing around it. It does not correlate, it does not read samples, and it does
-not know where its records come from or where its Doppler commands go.
+not know where its integrations come from or where its Doppler commands go.
 
-That makes it usable from anywhere a record shows up:
+That makes it usable from anywhere an integration shows up:
 
 - in a software receiver, where the same process correlates and closes the loop
   ([Tracking.jl](https://github.com/JuliaGNSS/Tracking.jl) is built on it);
-- in a dedicated loop process next to an FPGA correlator, where records arrive
+- in a dedicated loop process next to an FPGA correlator, where integrations arrive
   over DMA and the corrections are written to NCO registers
   ([HardwareLoopCore.jl](https://github.com/JuliaGNSS/HardwareLoopCore.jl) is
   built on it, and compiles it with `juliac --trim` into a small, allocation-free
   executable);
-- in an analysis script that replays logged records.
+- in an analysis script that replays logged integrations.
 
 Because all of these run the same code, a loop tuned or debugged on one of them
 behaves identically on the others.
@@ -37,9 +37,9 @@ behaves identically on the others.
 - **Discriminators and loop filters** — `TrackingLoops.pll_disc`, `TrackingLoops.fll_disc`
   and `TrackingLoops.dll_disc`, the bandwidth rules that keep a loop stable for a given integration time, and the
   code-Doppler aiding from the carrier.
-- **Doppler estimators** — `ConventionalPLLAndDLL`, the FLL-assisted
-  `ConventionalAssistedPLLAndDLL`, and `NCOReferencedPLLAndDLL`, which stays
-  stable when the correction it computes only takes effect several records
+- **Tracking loops** — `ScalarTrackingLoop`, the FLL-assisted
+  `ConventionalAssistedPLLAndDLL`, and `DelayCompensatedTrackingLoop`, which stays
+  stable when the correction it computes only takes effect several integrations
   later, as it does with a hardware NCO. All three are stepped with one call,
   `step_loop(estimator, state, record, words, landing_sample)`.
 - **NCO timelines** — `NCOTimeline` records which replica frequency ran over
@@ -73,18 +73,18 @@ using TrackingLoops, GNSSSignals, Unitful
 
 signal = GPSL1CA()
 fs = 4e6u"Hz"
-estimator = ConventionalAssistedPLLAndDLL()
-state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  # one per satellite
+tracking_loop = ConventionalAssistedPLLAndDLL()
+loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
 loop = SignalLoopState(signal)              # bit buffer, C/N₀ estimator, prompt filter
 
-# For every coherent record `output::CorrelatorOutput` the correlator produced:
+# For every coherent integration's `correlator_bank_output::CorrelatorOutput` the correlator bank produced:
 previous_prompt = loop.last_filtered_prompt   # read before `apply_record` replaces it
 loop, prompt, filtered, blocks, overshoot =
-    apply_record(loop, signal, prn, output, fs, noise_density, noise_density_ready)
-overshoot && @warn "record crossed a navigation-bit boundary; bit sync restarted"
-record = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs)
-state, carrier_doppler, code_doppler =
-    step_loop(estimator, state, record, ConstantNCOCommand(carrier_hz, code_hz), NO_LANDING_SAMPLE)
+    apply_record(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready)
+overshoot && @warn "integration crossed a navigation-bit boundary; bit sync restarted"
+integration = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs)
+loop_state, carrier_doppler, code_doppler =
+    step_loop!(tracking_loop, loop_state, integration, ConstantNCOCommand(carrier_hz, code_hz), NO_LANDING_SAMPLE)
 # program the next replica with carrier_doppler and code_doppler
 ```
 
@@ -93,21 +93,21 @@ for the full API reference.
 
 ## Vector tracking
 
-Build one `VectorPLLAndDLL` for all the ranging signals the receiver tracks, and
-step every satellite with it like any other loop. The records must name their
+Build one `VectorTrackingLoop` for all the ranging signals the receiver tracks, and
+step every satellite with it like any other loop. The integrations must name their
 satellite (`prn`), report the replica's code phase at their end (`code_phase`
 on the `CorrelatorOutput`) and share one time grid (`sample_offset`):
 
 ```julia
-estimator = VectorPLLAndDLL(GPSL1CA(), GalileoE1B())   # inner = ConventionalAssistedPLLAndDLL()
-state = init_estimator_state(estimator, signal, carrier_doppler, code_doppler)  # one per satellite
+tracking_loop = VectorTrackingLoop(GPSL1CA(), GalileoE1B())   # inner = ConventionalAssistedPLLAndDLL()
+loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
 
-# For every record, as above, but naming the satellite:
-record = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs; prn, sample_offset)
-state, carrier_doppler, code_doppler = step_loop(estimator, state, record, words, landing_sample)
+# For every integration, as above, but naming the satellite:
+integration = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs; prn, sample_offset)
+loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, words, landing_sample)
 
-navigation_solution(estimator)   # the latest PVTSolution
-navigation_status(estimator)     # what the latest navigation cycle did
+navigation_solution(tracking_loop)   # the latest `PVTSolution`
+navigation_status(tracking_loop)     # what the latest navigation cycle did
 ```
 
 Each satellite runs its scalar loop until the filter takes it over. Inside

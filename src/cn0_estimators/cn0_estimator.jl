@@ -15,8 +15,8 @@ abstract type AbstractCN0Estimator end
 """
 $(SIGNATURES)
 
-Per-record side information handed to `update` alongside the prompt:
-what the tracking loop knows about the record that an estimator cannot recover
+Per-integration side information handed to `update` alongside the prompt:
+what the tracking loop knows about the integration that an estimator cannot recover
 from the prompt stream alone — chiefly the **navigation-bit grid**, which lets an
 estimator sum prompts coherently without straddling a bit flip
 ([`NWPRCN0Estimator`](@ref) does).
@@ -140,7 +140,7 @@ A trait, so a custom estimator can opt in. Two things key off it:
   - **The warm-up skip.** While a configured source's window is still empty, the
     fold skips the C/N₀ update for the requiring signal *only*. Skipping its
     neighbours too would make an `NWPRCN0Estimator` beside it drop its open
-    window on every skipped record (see `_update_nwpr`).
+    window on every skipped integration (see `_update_nwpr`).
 
 The trait's home is the **type** and the instance method forwards to it, so
 provisioning folds out of `Tracking.TrackState`'s type parameters. A custom
@@ -153,7 +153,7 @@ requires_noise_density(estimator::AbstractCN0Estimator) =
 """
 $(SIGNATURES)
 
-Fold one completed record's `prompt` into `estimator` and return the updated
+Add one completed integration's `prompt` to `estimator` and return the updated
 estimator (immutable update). This three-argument form is the one the tracking
 loop calls and the **extension point** for custom
 [`AbstractCN0Estimator`](@ref)s that profit from the navigation-bit information
@@ -193,7 +193,7 @@ in brackets:
 | 45   | 44.7 ± 0.30           | 44.9 ± 0.13 | 32.9 ± 2.00            | 44.7 ± 0.30 |
 
 At **25 dB-Hz**, where lock decisions are made, NWPR's ratio leaves
-`1 < μ̂ < M` in over half the runs. At **long coherent records** a record as long
+`1 < μ̂ < M` in over half the runs. At **long coherent integrations** an integration as long
 as its window has `NBP ≡ WBP` and NWPR falls back, while the non-coherent
 reference is immune to phase noise. On GPS L1C-D, Galileo E1B and secondary-coded
 signals before sync NWPR never gets a window at all (JuliaGNSS/Tracking.jl#217).

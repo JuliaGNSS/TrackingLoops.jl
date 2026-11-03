@@ -16,11 +16,11 @@ function measure_navigation(rx::SimReceiver, sample; fill! = fill_slot!)
     @allocated TL._navigation_cycle!(nav, now)
 end
 
-# The satellites take the latest cycle up, as they would on their next record.
+# The satellites take the latest cycle up, as they would on their next integration.
 function take_up!(rx::SimReceiver, sample)
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
         sat.state = TL._take_up_cycle(rx.vt, group, group.slots[i], sat.state,
-            take_up_record(sat, sample), sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(sample))
+            feedback_integration(sat, sample), sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(sample))
     end
 end
 
@@ -69,7 +69,7 @@ end
     sample += cycle
     @test measure_navigation(rx, sample) == 0
     @test rx.vt.running
-    @test navigation_status(rx.estimator).seeded
+    @test navigation_status(rx.tracking_loop).seeded
 end
 
 @testset "Navigation cycles are allocation-free with $name" for (name, kw) in (
@@ -111,10 +111,10 @@ end
     group = rx.group
     sat = rx.sats[1]
     slot = group.slots[1]
-    record = take_up_record(sat, sample)
+    integration = feedback_integration(sat, sample)
     words = sim_nco_history(sat, NO_LANDING_SAMPLE)
     state = sat.state
-    take_up(state) = @allocated TL._take_up_cycle(rx.vt, group, slot, state, record, words, Int64(sample))
+    take_up(state) = @allocated TL._take_up_cycle(rx.vt, group, slot, state, integration, words, Int64(sample))
     take_up(state)
     @test take_up(state) == 0
 end

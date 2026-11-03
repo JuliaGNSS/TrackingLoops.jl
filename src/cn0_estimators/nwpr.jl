@@ -6,7 +6,7 @@ Van Dierendonck's **narrowband/wideband power ratio** (NWPR) CN0 estimator.
 The estimator for a **correlator-ingest path with no noise observation** (see
 [`default_cn0_estimator`](@ref));
 [`NWPRCN0Estimator(::AbstractGNSSSignal)`](@ref) sizes the window for the signal.
-Over a window of `M` consecutive records it forms
+Over a window of `M` consecutive integrations it forms
 
 ```
 NBP = |Σ_M prompt|²          (coherent — narrowband)
@@ -20,7 +20,8 @@ and over the windows that fit in `num_records` records reports
 Ĉ/N₀ = (1 / T) · (μ̂ − 1) / (M − μ̂)
 ```
 
-with `T` the record's integration time. Reference: A. J. Van Dierendonck,
+with `T` the coherent integration time. Reference:
+A. J. Van Dierendonck,
 "GPS Receivers", ch. 8 in *Global Positioning System: Theory and Applications*,
 Vol. I, ed. B. W. Parkinson & J. J. Spilker Jr.; the formulas above are reproduced on
 [ESA Navipedia](https://gssc.esa.int/navipedia/index.php/Lock_Detectors).
@@ -72,27 +73,27 @@ below ~30 dB-Hz; it straddles a flip with probability `(M−1)/L` (~0.6 dB below
 
 # The window is capped by the loop's coherence time, not by the bit period
 
-A longer window buys little spread (the same records are only partitioned
+A longer window buys little spread (the same integrations are only partitioned
 differently), while residual phase noise costs a *bias* averaging cannot remove.
-GPS L1 C/A at 1 ms records, locked at 45 dB-Hz and faded to a true 25 dB-Hz, median /
+GPS L1 C/A at 1 ms integrations, locked at 45 dB-Hz and faded to a true 25 dB-Hz, median /
 10th percentile over 96 runs:
 
-| PLL                        | 2 records   | 5           | 10          | 20 (one bit) |
+| PLL                        | 2 integrations   | 5           | 10          | 20 (one bit) |
 |:-------------------------- | -----------:| -----------:| -----------:| ------------:|
 | default, narrowed to 18 Hz | 24.8 / 21.1 | 24.7 / 22.7 | 24.7 / 22.8 | 24.7 / 22.6  |
 | 40 Hz                      | 24.8 / 18.3 | 24.0 / 19.0 | 22.7 / -Inf | 18.2 / -Inf  |
 
 The default loop (see [`CarrierLoopStage`](@ref)) has narrowed by the fade and holds
-phase over a whole bit: past five records the window changes neither the bias nor
-the spread (standard deviation 1.6 dB at 5 records, 1.4 at 20). A wider PLL does
+phase over a whole bit: past five integrations the window changes neither the bias nor
+the spread (standard deviation 1.6 dB at 5 integrations, 1.4 at 20). A wider PLL does
 not, and the whole-bit window reads `-Inf` ("no signal") in 30 of the 96 runs. The
 default (~5 ms, see [`default_cn0_estimator`](@ref)) therefore stays short, for a
 loop that has not narrowed or runs wider; raise it where the PLL is narrow, for a
 pilot or for a signal that is never weak.
 
 Where no window is admissible the `fallback` is reported (by default
-[`MomentsCN0Estimator`](@ref), with its noise floor), e.g. for records integrated
-over a whole navigation bit.
+[`MomentsCN0Estimator`](@ref), with its noise floor), e.g. for integrations spanning
+a whole navigation bit.
 
 # Fields / configuration
 
@@ -254,10 +255,10 @@ end
 """
 $(SIGNATURES)
 
-Accumulate one record's `prompt` into the open window, with length and alignment
+Accumulate one integration's `prompt` into the open window, with length and alignment
 from the bit grid in `context` (see [`NWPRCN0Estimator`](@ref)). An open window is
 dropped once no longer admissible (e.g. the grid moved under it at sync); a window
-closing on one record (`NBP == WBP`) empties the rings, handing over to the
+closing on one integration (`NBP == WBP`) empties the rings, handing over to the
 `fallback`.
 """
 function update(estimator::NWPRCN0Estimator, prompt, context::CN0UpdateContext)
@@ -299,8 +300,8 @@ update(estimator::NWPRCN0Estimator, prompt) = _update_nwpr(
 )
     # No admissible window: drop whatever was open.
     window_code_blocks < 1 && return _with_window_state(estimator, fallback)
-    # A fractional-block record (after a sync phase snap) would break the
-    # inversion's `M` equal records: skip it, window untouched.
+    # A fractional-block integration (after a sync phase snap) would break the
+    # inversion's `M` equal integrations: skip it, window untouched.
     num_code_blocks < 1 && return _with_open_window(estimator, fallback)
     # A grid-following window holding `k` blocks must sit `k` blocks in; otherwise
     # the grid moved (sync just found): drop it, and only a window start reopens.
@@ -321,7 +322,7 @@ update(estimator::NWPRCN0Estimator, prompt) = _update_nwpr(
         num_accumulated_records = num_records,
         num_accumulated_code_blocks = num_code_blocks_accumulated,
     )
-    # Window complete. With one record (records grew to the window length, a
+    # Window complete. With one integration (integrations grew to the window length, a
     # lasting change) also empty the ring, or the estimate would freeze on old
     # windows: `estimate_cn0` consults the `fallback` only while it is empty.
     num_records < 2 && return _with_window_state(

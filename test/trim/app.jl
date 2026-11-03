@@ -1,5 +1,5 @@
 # Entry point of the `juliac --trim=safe` check (see `check.jl`): vector tracking from
-# records alone, on the synthetic GPS L1 C/A satellites of `../vector_simulation.jl`
+# integrations alone, on the synthetic GPS L1 C/A satellites of `../vector_simulation.jl`
 # that broadcast real navigation bits — bit sync, decoding, the scalar fix, the seed
 # and a steady state through a partial outage — printed so the trimmed executable's
 # output can be compared against a regular Julia session. It is the loop process's
@@ -11,7 +11,7 @@ using Unitful: Hz, s, ms
 
 include(joinpath(@__DIR__, "..", "vector_simulation.jl"))
 
-# Every channel's records that end within the millisecond ending at `sample`.
+# Every channel's integrations that end within the millisecond ending at `sample`.
 function step_channels!(rx, sample, outage::Bool)
     for (i, sat) in enumerate(rx.sats)
         sat.in_view = !(outage && i <= 2)
@@ -64,7 +64,7 @@ end
 function (@main)(args::Vector{String})::Cint
     io = Core.stdout
     rx = PipelineReceiver(Val(false))
-    nav = rx.estimator.navigation
+    nav = rx.tracking_loop.navigation
     last_cycle = nav.cycle_id
     sample = 0
     # 33 s: the first fix comes 26.2 s in; a two-second outage of two satellites late on.
