@@ -89,7 +89,7 @@ mutable struct VTSlot{D,E<:VectorLoopState}
     driver_last_end_sample::Int
     driver_last_end_time::Float64 # s
     last_code_phase::Float64 # chips, as the integration reported it; `NaN` if it did not
-    last_integration_time::typeof(1.0s)
+    last_coherent_integration_time::typeof(1.0s)
     last_early_late_spacing::Float64 # chips
     # Replica chips from the epoch of the latest snapshot to the driver's last integration end.
     chips_since_epoch::Float64
@@ -98,8 +98,9 @@ mutable struct VTSlot{D,E<:VectorLoopState}
     decoding_last_end_time::Float64 # s
     decoding_bit_synced::Bool
     decoding_num_code_periods_into_bit::Int
-    decoding_code_phase_fraction::Float64 # chips past the nearest code-block boundary
-    # The fold the decoding signal's bit sync was found in: its later integrations were correlated before
+    decoding_code_phase_fraction::Float64 # chips past the nearest code-period boundary
+    # The `command_issue_sample_index` of the batch the decoding signal's bit sync was
+    # found in: its later integrations were correlated before
     # the sync.
     sync_fold_end::Int
     # The data bit in the making while the filter steers the carrier: the decoding

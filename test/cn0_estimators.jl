@@ -23,8 +23,8 @@ cn0_db(x) = ustrip(uconvert(dBHz, x))
 
 cn0_median(xs) = (v = sort(collect(xs)); v[div(length(v) + 1, 2)])
 
-cn0_context(; noise_density = CN0_N₀, integration_time = CN0_T) =
-    CN0UpdateContext(GPSL1CA(), BitBuffer{UInt64}(), 1; noise_density, integration_time)
+cn0_context(; noise_density = CN0_N₀, coherent_integration_time = CN0_T) =
+    CN0UpdateContext(GPSL1CA(), BitSynchronizer{UInt64}(), 1; noise_density, coherent_integration_time)
 
 cn0_fold(estimator, prompts) = foldl(update, prompts; init = estimator)
 cn0_fold(estimator, prompts, context) =
@@ -51,7 +51,7 @@ struct CountingCN0Estimator <: AbstractCN0Estimator
 end
 TrackingLoops.update(estimator::CountingCN0Estimator, prompt) =
     CountingCN0Estimator(estimator.num_prompts + 1)
-TrackingLoops.estimate_cn0(estimator::CountingCN0Estimator, integration_time) =
+TrackingLoops.estimate_cn0(estimator::CountingCN0Estimator, coherent_integration_time) =
     estimator.num_prompts * dBHz
 
 @testset "A custom CN0 estimator plugs into the interface" begin
@@ -77,21 +77,21 @@ end
 end
 
 @testset "CN0UpdateContext derives the bit grid" begin
-    bit_buffer = BitBuffer{UInt64}()
+    bit_synchronizer = BitSynchronizer{UInt64}()
     # Positional form: noise density and integration time default to `nothing`.
-    positional = @inferred CN0UpdateContext(GPSL1CA(), 2, 20, 3, bit_buffer)
-    @test positional.num_code_blocks == 2
+    positional = @inferred CN0UpdateContext(GPSL1CA(), 2, 20, 3, bit_synchronizer)
+    @test positional.num_code_periods == 2
     @test positional.num_code_periods_per_bit == 20
     @test positional.bit_code_block_index == 3
     @test positional.noise_density === nothing
-    @test positional.integration_time === nothing
+    @test positional.coherent_integration_time === nothing
 
-    # Derived form: the grid comes from the signal and the bit buffer, and is
+    # Derived form: the grid comes from the signal and the bit synchronizer, and is
     # marked unknown while sync has not been found.
-    context_l1ca = @inferred CN0UpdateContext(GPSL1CA(), bit_buffer, 1)
+    context_l1ca = @inferred CN0UpdateContext(GPSL1CA(), bit_synchronizer, 1)
     @test context_l1ca.num_code_periods_per_bit == 20
     @test context_l1ca.bit_code_block_index == -1
-    synced_buffer = BitBuffer{UInt64}(
+    synced_buffer = BitSynchronizer{UInt64}(
         zero(UInt64),
         40,
         true,
@@ -100,10 +100,10 @@ end
         complex(0.0, 0.0),
         3,
         Float32[],
-        PhaseAccumulators(),
+        SyncHypothesisAccumulators(),
     )
     @test CN0UpdateContext(GPSL1CA(), synced_buffer, 1).bit_code_block_index == 3
-    # Records of a fold that follow a sync detected in that same fold were
+    # Records of a chunk that follow a sync detected in that same chunk were
     # correlated with pre-sync replicas — their alignment is not trustworthy.
     @test CN0UpdateContext(GPSL1CA(), synced_buffer, 1, false).bit_code_block_index == -1
     # The keywords land in the context.
@@ -112,10 +112,10 @@ end
         synced_buffer,
         1;
         noise_density = CN0_N₀,
-        integration_time = CN0_T,
+        coherent_integration_time = CN0_T,
     )
     @test with_density.noise_density == CN0_N₀
-    @test with_density.integration_time == CN0_T
+    @test with_density.coherent_integration_time == CN0_T
 end
 
 @testset "Moments CN0 estimator" begin
@@ -157,8 +157,8 @@ end
 end
 
 @testset "Moments CN0 estimate divides by the coherent integration time" begin
-    # A integration spanning N code blocks arrives with N times the SNR of a one-block
-    # integration, so the same shape at two block counts must report the same C/N₀
+    # A integration spanning N code periods arrives with N times the SNR of a one-period
+    # integration, so the same shape at two period counts must report the same C/N₀
     # once the divisor is N × the code period.
     rng = Xoshiro(4321)
     one_block = [1.0 + 0.2 * randn(rng, ComplexF64) for _ = 1:100]
@@ -177,7 +177,7 @@ end
     estimator = NoCN0Estimator()
     # Stateless: the same instance comes back, whichever `update` form is used.
     @test @inferred(update(estimator, 1.0 + 0.0im)) === estimator
-    context = CN0UpdateContext(GPSL1CA(), BitBuffer{UInt64}(), 1)
+    context = CN0UpdateContext(GPSL1CA(), BitSynchronizer{UInt64}(), 1)
     @test @inferred(update(estimator, 1.0 + 0.0im, context)) === estimator
     cn0_fold_many(estimator, 1.0 + 0.0im, 10)
     @test @allocated(cn0_fold_many(estimator, 1.0 + 0.0im, 1000)) == 0
@@ -217,8 +217,8 @@ end
     @test get_current_index(one) == 1
     @test cn0_db(estimate_cn0(one, CN0_T)) ≈ 10log10((4.0 - 1.0) / 1e-3)
 
-    # `estimate_cn0`'s `integration_time` argument is ignored — `T` was applied
-    # per record, where each record's own value was known.
+    # `estimate_cn0`'s `coherent_integration_time` argument is ignored — `T` was applied
+    # per integration, where each integration's own value was known.
     @test estimate_cn0(one, 20ms) == estimate_cn0(one, CN0_T)
 
     # The ring wraps at `num_records` and keeps only the newest.
@@ -247,7 +247,7 @@ end
     long = update(
         NoiseRefCN0Estimator(),
         complex(sqrt(power(20)), 0.0),
-        cn0_context(; integration_time = 20.0ms),
+        cn0_context(; coherent_integration_time = 20.0ms),
     )
     @test cn0_db(estimate_cn0(short, CN0_T)) ≈ 10log10(γ) atol = 1e-9
     @test cn0_db(estimate_cn0(long, 20ms)) ≈ 10log10(γ) atol = 1e-9
@@ -256,7 +256,7 @@ end
     both = update(
         short,
         complex(sqrt(power(20)), 0.0),
-        cn0_context(; integration_time = 20.0ms),
+        cn0_context(; coherent_integration_time = 20.0ms),
     )
     @test cn0_db(estimate_cn0(both, CN0_T)) ≈ 10log10(γ) atol = 1e-9
 end
@@ -301,7 +301,7 @@ end
     estimator = NoiseRefCN0Estimator()
     # No density and no T: named as the missing *source*, the root cause.
     err_both = try
-        update(estimator, complex(1.0, 0.0), CN0UpdateContext(GPSL1CA(), BitBuffer{UInt64}(), 1))
+        update(estimator, complex(1.0, 0.0), CN0UpdateContext(GPSL1CA(), BitSynchronizer{UInt64}(), 1))
         nothing
     catch e
         e
@@ -321,7 +321,7 @@ end
 
     # A density without a T is the same kind of error, not a MethodError.
     err_time = try
-        update(estimator, complex(1.0, 0.0), cn0_context(; integration_time = nothing))
+        update(estimator, complex(1.0, 0.0), cn0_context(; coherent_integration_time = nothing))
         nothing
     catch e
         e
@@ -361,8 +361,8 @@ end
     context = cn0_context()
     prompt = complex(2.0, 0.0)
     cn0_fold_many(estimator, prompt, context, 200)          # warm up
-    # A genuine per-fold allocation would grow a hundredfold between the two
-    # fold counts; a fixed per-call harness cost (Julia 1.10) does not move.
+    # A genuine per-update allocation would grow a hundredfold between the two
+    # update counts; a fixed per-call harness cost (Julia 1.10) does not move.
     few = @allocated cn0_fold_many(estimator, prompt, context, 10_000)
     many = @allocated cn0_fold_many(estimator, prompt, context, 1_000_000)
     @test many == few
@@ -372,23 +372,23 @@ end
 end
 
 @testset "The signals NWPR cannot serve, the noise reference can (issue #217)" begin
-    # One bit per code block, or a secondary code before sync: NWPR admits no
+    # One bit per code period, or a secondary code before sync: NWPR admits no
     # coherent window ever and reports its fallback; the noise reference has no
     # window, so these are ordinary integrations to it.
-    bit_buffer = BitBuffer{UInt64}()
+    bit_synchronizer = BitSynchronizer{UInt64}()
     cases = (
         ("GPS L1C-D, synced", GPSL1C_D(), 1, 0),
         ("Galileo E1B, synced", GalileoE1B(), 1, 0),
         ("GPS L5I, pre-sync", GPSL5I(), 10, -1),
     )
-    for (name, signal, blocks_per_bit, block_index) in cases
+    for (name, signal, code_periods_per_bit, code_period_index) in cases
         @testset "$name" begin
             context = CN0UpdateContext(
                 signal,
                 1,
-                blocks_per_bit,
-                block_index,
-                bit_buffer,
+                code_periods_per_bit,
+                code_period_index,
+                bit_synchronizer,
                 CN0_N₀,
                 CN0_T,
             )
@@ -520,12 +520,12 @@ end
 @testset "NWPR CN0 estimator follows the navigation-bit grid" begin
     # Feed a constant prompt and walk the bit grid by hand, so only the window
     # logic is under test.
-    bit_buffer = BitBuffer{UInt64}()
-    context(signal, blocks_per_bit, bit_block_index) =
-        CN0UpdateContext(signal, 1, blocks_per_bit, bit_block_index, bit_buffer)
+    bit_synchronizer = BitSynchronizer{UInt64}()
+    context(signal, code_periods_per_bit, bit_block_index) =
+        CN0UpdateContext(signal, 1, code_periods_per_bit, bit_block_index, bit_synchronizer)
     fresh() = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 20)
 
-    # GPS L1 C/A, synced: one window per 20-block navigation bit, and it only
+    # GPS L1 C/A, synced: one window per 20-period navigation bit, and it only
     # starts on a bit boundary.
     estimator = fresh()
     for bit_block_index in [10:19; repeat(0:19, 2)]
@@ -557,7 +557,7 @@ end
     @test Base.length(wide) == 2
     @test wide.num_records_per_ratio == 20
 
-    # Not synced yet: a short unaligned window, five blocks by default.
+    # Not synced yet: a short unaligned window, five code periods by default.
     estimator = fresh()
     for _ = 1:20
         estimator = update(estimator, 1.0 + 0.0im, context(GPSL1CA(), 20, -1))
@@ -634,14 +634,14 @@ end
     @test Base.length(estimator) == 0
     @test estimate_cn0(estimator, 1ms) ==
           estimate_cn0(estimator.fallback, 1ms)
-    # Once synced its bit is 10 blocks long, and the replica wipes the overlay.
+    # Once synced its bit is 10 code periods long, and the replica wipes the overlay.
     for bit_block_index in repeat(0:9, 3)
         estimator = update(estimator, 1.0 + 0.0im, context(GPSL5I(), 10, bit_block_index))
     end
     @test Base.length(estimator) == 3
     @test estimator.num_records_per_ratio == 10
 
-    # One bit per code block (GPS L1C-D, Galileo E1B): no coherent window.
+    # One bit per code period (GPS L1C-D, Galileo E1B): no coherent window.
     estimator = fresh()
     for _ = 1:40
         estimator = update(estimator, 1.0 + 0.0im, context(GPSL1C_D(), 1, 0))
@@ -658,9 +658,9 @@ end
 end
 
 @testset "NWPR CN0 estimator when a integration outgrows its own window" begin
-    bit_buffer = BitBuffer{UInt64}()
-    context(num_code_blocks, bit_block_index) =
-        CN0UpdateContext(GPSL1CA(), num_code_blocks, 20, bit_block_index, bit_buffer)
+    bit_synchronizer = BitSynchronizer{UInt64}()
+    context(num_code_periods, bit_block_index) =
+        CN0UpdateContext(GPSL1CA(), num_code_periods, 20, bit_block_index, bit_synchronizer)
 
     # Integrations as long as a whole navigation bit close every window on a single
     # integration; the windows buffered before the switch have to go with it.
@@ -681,12 +681,12 @@ end
           estimate_cn0(estimator.fallback, 20ms)
 end
 
-@testset "NWPR CN0 estimator skips a integration spanning no whole code block" begin
+@testset "NWPR CN0 estimator skips a integration spanning no whole code period" begin
     # The fractional integration right after a sync phase-snap leaves the open
     # window untouched; its prompt still reaches the fallback.
-    bit_buffer = BitBuffer{UInt64}()
-    context(num_code_blocks, bit_block_index) =
-        CN0UpdateContext(GPSL1CA(), num_code_blocks, 20, bit_block_index, bit_buffer)
+    bit_synchronizer = BitSynchronizer{UInt64}()
+    context(num_code_periods, bit_block_index) =
+        CN0UpdateContext(GPSL1CA(), num_code_periods, 20, bit_block_index, bit_synchronizer)
 
     estimator = NWPRCN0Estimator(; num_records = 100, num_narrowband_code_blocks = 5)
     for bit_block_index = 0:2

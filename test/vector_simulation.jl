@@ -240,7 +240,7 @@ function SimSat(signal, decoder, tracking_loop, truth::SimTruth, t; range_bias =
     sat = SimSat(signal, decoder, base_tow, code_frequency, center_frequency, state,
         t_t, 0.0, doppler, doppler * ratio, complex(0.0), t_t, true, 1.0, NCOTimeline(),
         range_bias, atmosphere, stream, noise_std, Xoshiro(seed), 0,
-        SignalLoopState(signal; cn0_estimator), noise_density)
+        PostCorrelationState(signal; cn0_estimator), noise_density)
     sat.replica_time = uncorrected_time(sat, t_t)
     reset_timeline!(sat.timeline, doppler, doppler * ratio)
     sat
@@ -548,11 +548,11 @@ position_error(receiver, result) =
 
 # ─────────────────────────────────────────────────────────────────────────────
 # The pipeline: GPS L1 C/A satellites broadcasting their fixture ephemerides as real
-# LNAV bits, driven as a host drives any estimator: per signal a `SignalLoopState`
-# advanced by `apply_record`, a record built from it, and `step_loop` on every record
-# of every signal. The vector estimator finds nothing but those records, and decodes
+# LNAV bits, driven as a host drives any tracking_loop: per signal a `PostCorrelationState`
+# advanced by `process_correlator_bank_output!`, an integration built from it, and `step_loop!` on every integration
+# of every signal. The vector tracking_loop finds nothing but those integrations, and decodes
 # the bits, solves the scalar PVT, seeds its filter and takes the satellites over by
-# itself. Each record spans one code period of the replica, so it ends on a code-block
+# itself. Each integration spans one code period of the replica, so it ends on a code-period
 # boundary to within a sample, and reports the replica's code phase there.
 #
 # With `pilot = true` every satellite is a pilot + data pair: the tracking_loop ranges on
@@ -655,9 +655,9 @@ function next_block_end(sat::SimSat, sample)
     sample + max(1, round(Int, chips / rate * ustrip(Hz, SIM_FS)))
 end
 
-# One record of a pipeline signal, ending at its `next_end_sample`, through the host's
-# steps: `apply_record` on the signal's state, the record built from it, `step_loop`
-# with the satellite's estimator state — `owner`'s, the driver's — and the returned
+# One integration of a pipeline signal, ending at its `next_end_sample`, through the host's
+# steps: `process_correlator_bank_output!` on the signal's state, the integration built from it, `step_loop!`
+# with the satellite's tracking_loop state — `owner`'s, the driver's — and the returned
 # Dopplers applied. A driver's commands are applied to its `passenger` too, whose
 # replica follows them; a passenger's own integration returns the command in force.
 function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample, owner::SimSat = sat,
@@ -672,16 +672,16 @@ function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample,
     dt = num_samples / ustrip(Hz, SIM_FS)
     code_phase = mod((sat.replica_time + dt * (1 + code / sat.code_frequency)) * sat.code_frequency,
         get_code_length(sat.signal))
-    # The correlator as a device reports it: summed over the record's samples, and a
-    # passenger's prompt in its own carrier-phase frame, which `apply_record` turns
+    # The correlator bank as a device reports it: summed over the integration's samples, and a
+    # passenger's prompt in its own carrier-phase frame, which `process_correlator_bank_output!` turns
     # back onto the driver's.
     driver_phase_offset = get_carrier_phase_offset(owner.signal)
     rotation = cispi(2 * (get_carrier_phase_offset(sat.signal) - driver_phase_offset))
     raw = EarlyPromptLateCorrelatorBank(
         get_correlator_outputs(correlator_bank) .* (rotation * num_samples * get_code_amplitude(sat.signal)), 0.5)
-    output = CorrelatorOutput(raw, num_samples, sample_index, code_phase)
+    output = CorrelatorBankOutput(raw, num_samples, sample_index, code_phase)
     noise_ready = sim_time(receiver, sample_index) - receiver.truth.t0 >= receiver.noise_ready_after
-    sat.loop, _, filtered, _, _ = apply_record(sat.loop, sat.signal, sat.decoder.prn, output, SIM_FS,
+    sat.loop, _, filtered, _, _ = process_correlator_bank_output!(sat.loop, sat.signal, sat.decoder.prn, output, SIM_FS,
         sat.noise_density / Hz, noise_ready, driver_phase_offset)
     integration = LoopRecord(sat.signal, filtered, output, sat.loop, SIM_FS;
         prn = sat.decoder.prn)
@@ -690,7 +690,7 @@ function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample,
     else
         step_loop!(receiver.tracking_loop, owner.state, integration, words, landing)
     end
-    receiver.drain_per_integration && empty!(sat.loop.bit_buffer.soft_bits)
+    receiver.drain_per_integration && empty!(sat.loop.bit_synchronizer.soft_bits)
     if sat === owner
         advance_replica!(sat, f_true, carrier, code, dt, new_carrier, new_code,
             start_sample, sample_index, landing)
@@ -782,7 +782,7 @@ function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
         end
         if !receiver.drain_per_integration
             for s in Iterators.flatten((receiver.sats, receiver.passengers))
-                empty!(s.loop.bit_buffer.soft_bits)
+                empty!(s.loop.bit_synchronizer.soft_bits)
             end
         end
         on_tick(sample)

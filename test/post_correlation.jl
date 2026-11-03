@@ -1,67 +1,67 @@
 using Random: MersenneTwister
 
-@testset "apply_record advances the bit buffer, C/N0 and prompt filter" begin
+@testset "process_correlator_bank_output! advances the bit synchronizer, C/N0 and post-correlation filter" begin
     signal = GPSL1CA()
     fs = 4e6Hz
-    state = SignalLoopState(signal)
-    @test !has_bit_or_secondary_code_been_found(state)
+    state = PostCorrelationState(signal)
+    @test !is_bit_or_secondary_code_synced(state)
     @test isempty(get_soft_bits(state))
     density = 1.0e-6 / Hz
     for k = 1:200
         sgn = isodd(div(k - 1, 20)) ? -1.0 : 1.0
         p = 2000.0 * sgn
-        output = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
-        state, prompt, filtered, blocks = apply_record(state, signal, 7, output, fs, density, true)
+        output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
+        state, prompt, filtered, blocks = process_correlator_bank_output!(state, signal, 7, output, fs, density, true)
         @test prompt == p / 4000
         @test get_prompt(filtered) == prompt
         @test blocks == 1
     end
-    @test has_bit_or_secondary_code_been_found(state)
+    @test is_bit_or_secondary_code_synced(state)
     @test length(get_soft_bits(state)) >= 8
     @test all(abs.(get_soft_bits(state)) .> 0)
     # C/N0: |P|²/N0 − 1/T with |P| = 0.5 and N0 = 1e-6/Hz over 1 ms integrations.
     cn0 = estimate_cn0(state, 1023 / get_chip_rate(signal))
     @test 10 * log10(ustrip(Hz, Unitful.linear(cn0))) ≈ 10 * log10(0.25 / 1e-6 - 1000) atol = 1e-6
     # A restarted bit clock forgets sync and keeps the rest.
-    restarted = restart_bit_clock(state)
-    @test !has_bit_or_secondary_code_been_found(restarted)
+    restarted = reset_sync!(state)
+    @test !is_bit_or_secondary_code_synced(restarted)
     @test restarted.cn0_estimator === state.cn0_estimator
     @test restarted.last_filtered_prompt == state.last_filtered_prompt
 end
 
 @testset "A signal's state is updated by keyword, the other fields kept" begin
-    state = SignalLoopState(GPSL1CA())
+    state = PostCorrelationState(GPSL1CA())
     cn0_estimator = MomentsCN0Estimator(50)
-    updated = @inferred SignalLoopState(state; cn0_estimator, last_num_code_blocks = 2)
+    updated = @inferred PostCorrelationState(state; cn0_estimator, last_num_code_periods = 2)
     @test updated.cn0_estimator === cn0_estimator
-    @test updated.last_num_code_blocks == 2
-    for field in fieldnames(SignalLoopState)
-        field in (:cn0_estimator, :last_num_code_blocks) && continue
+    @test updated.last_num_code_periods == 2
+    for field in fieldnames(PostCorrelationState)
+        field in (:cn0_estimator, :last_num_code_periods) && continue
         @test getfield(updated, field) === getfield(state, field)
     end
     # A prompt and a polarity of another number type are converted.
-    updated = SignalLoopState(state; last_previous_prompt = 1 + 2im, last_carrier_phase_polarity = 1)
+    updated = PostCorrelationState(state; last_previous_prompt = 1 + 2im, last_carrier_phase_polarity = 1)
     @test updated.last_previous_prompt === complex(1.0, 2.0)
     @test updated.last_carrier_phase_polarity === Int8(1)
 end
 
 @testset "A passenger component is de-rotated onto the driver's phase" begin
     # GPS L5Q (pilot, driver) and L5I (data) are in quadrature; the data prompt
-    # is rotated onto the real axis before it reaches the bit buffer.
+    # is rotated onto the real axis before it reaches the bit synchronizer.
     driver, data = GPSL5Q(), GPSL5I()
     fs = 25e6Hz
-    state = SignalLoopState(data)
+    state = PostCorrelationState(data)
     p = 2000.0im   # the data component sits on the imaginary axis of the driver's frame
-    output = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 25_000, 25_000)
-    state, prompt, _, _ = apply_record(state, data, 3, output, fs, 1e-6 / Hz, true, get_carrier_phase_offset(driver))
+    output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 25_000, 25_000)
+    state, prompt, _, _ = process_correlator_bank_output!(state, data, 3, output, fs, 1e-6 / Hz, true, get_carrier_phase_offset(driver))
     @test prompt == p / 25_000
-    # The recorded prompt is the un-rotated one; the rotation only reaches the bit buffer.
+    # The recorded prompt is the un-rotated one; the rotation only reaches the bit synchronizer.
     @test state.last_filtered_prompt == prompt
 end
 
 @testset "A loop integration identifies its satellite and replica phase" begin
     correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
-    output = CorrelatorOutput(correlator_bank, 4000, 8000, 3.25)
+    output = CorrelatorBankOutput(correlator_bank, 4000, 8000, 3.25)
     integration = LoopRecord(GPSL1CA(), correlator_bank, cis(0.1), output, 1, 4e6Hz)
     @test integration.prn == 0
     @test integration.code_phase == 3.25
@@ -84,27 +84,27 @@ end
 @testset "A integration built from the signal's state carries its bit clock and C/N₀" begin
     signal = GPSL1CA()
     fs = 4e6Hz
-    state = SignalLoopState(signal)
+    state = PostCorrelationState(signal)
     epl(p) = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
     integrations = LoopRecord[]
-    changes = SyncChange[]
+    changes = SyncEvent[]
     for k = 1:200
         p = 2000.0 * (isodd(div(k - 1, 20)) ? -1.0 : 1.0)
-        output = CorrelatorOutput(epl(p), 4000, 4000k, 0.0)
+        output = CorrelatorBankOutput(epl(p), 4000, 4000k, 0.0)
         previous_prompt = state.last_filtered_prompt
-        state, _, filtered, = apply_record(state, signal, 7, output, fs, 1e-6 / Hz, true)
+        state, _, filtered, = process_correlator_bank_output!(state, signal, 7, output, fs, 1e-6 / Hz, true)
         integration = LoopRecord(signal, filtered, output, state, fs; prn = 7)
         @test integration.previous_prompt == previous_prompt
-        @test integration.integrated_code_blocks == state.last_num_code_blocks
+        @test integration.integrated_code_blocks == state.last_num_code_periods
         @test integration.cn0_estimator === state.cn0_estimator
-        @test integration.bit_synced == has_bit_or_secondary_code_been_found(state)
-        # Exactly the bits this integration added, however many the buffer holds.
+        @test integration.bit_synced == is_bit_or_secondary_code_synced(state)
+        # Exactly the bits this integration added, however many the soft-bit vector holds.
         @test integration.new_soft_bits == get_soft_bits(state)[end-state.last_num_new_soft_bits+1:end]
         push!(changes, integration.sync_change)
         if integration.bit_synced
-            @test integration.blocks_into_symbol == state.bit_buffer.prompt_accumulator_integrated_code_blocks
+            @test integration.blocks_into_symbol == state.bit_synchronizer.num_code_periods_into_bit
             # The sign the sync found the soft bits at.
-            @test integration.bit_polarity == state.bit_buffer.polarity != 0
+            @test integration.bit_polarity == state.bit_synchronizer.polarity != 0
             # Drained after every other integration: the next integration's bits are still its own.
             iseven(k) && empty!(get_soft_bits(state))
         else
@@ -120,24 +120,24 @@ end
     @test !plain.bit_synced && plain.sync_change == SYNC_UNCHANGED && plain.bit_polarity == 0
     @test isempty(plain.new_soft_bits) && plain.cn0_estimator isa NoCN0Estimator
     # A restarted bit clock reports no new bits.
-    @test restart_bit_clock(state).last_num_new_soft_bits == 0
+    @test reset_sync!(state).last_num_new_soft_bits == 0
 end
 
 @testset "A lost sync is reported on the integration" begin
     signal = GPSL1CA()
-    state = SignalLoopState(signal)
+    state = PostCorrelationState(signal)
     epl(p) = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
     for k = 1:200
         p = 2000.0 * (isodd(div(k - 1, 20)) ? -1.0 : 1.0)
-        state, = apply_record(state, signal, 7, CorrelatorOutput(epl(p), 4000, 4000k), 4e6Hz, 1e-6 / Hz, true)
+        state, = process_correlator_bank_output!(state, signal, 7, CorrelatorBankOutput(epl(p), 4000, 4000k), 4e6Hz, 1e-6 / Hz, true)
     end
-    @test has_bit_or_secondary_code_been_found(state)
-    # Three-block integrations step the bit accumulator past the boundary.
+    @test is_bit_or_secondary_code_synced(state)
+    # Three-period integrations step the bit accumulator past the boundary.
     for k = 1:7
-        output = CorrelatorOutput(epl(6000.0), 12_000, 800_000 + 12_000k, 0.0)
-        state, _, filtered, = apply_record(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true)
+        output = CorrelatorBankOutput(epl(6000.0), 12_000, 800_000 + 12_000k, 0.0)
+        state, _, filtered, = process_correlator_bank_output!(state, signal, 7, output, 4e6Hz, 1e-6 / Hz, true)
         integration = LoopRecord(signal, filtered, output, state, 4e6Hz)
-        if !has_bit_or_secondary_code_been_found(state)
+        if !is_bit_or_secondary_code_synced(state)
             @test integration.sync_change == SYNC_LOST && !integration.bit_synced
             break
         end
@@ -157,17 +157,17 @@ end
     for prn in (1, 3), sign in (1.0, -1.0)
         chip(k) = GNSSSignals.secondary_value(code, prn, mod(k, 25))
         @test chip(0) == -1
-        state = SignalLoopState(signal)
-        synced_records = 0
+        state = PostCorrelationState(signal)
+        synced_integrations = 0
         for k = 0:300
-            synced = has_bit_or_secondary_code_been_found(state)
+            synced = is_bit_or_secondary_code_synced(state)
             p = (synced ? sign : sign * chip(k)) * 4000.0 * cis(0.05) +
                 200 * randn(rng, ComplexF64)
-            output = CorrelatorOutput(epl(p), 16_000, 16_000 * (k + 1))
-            state, _, filtered, = apply_record(state, signal, prn, output, fs, 1e-6 / Hz, true)
+            output = CorrelatorBankOutput(epl(p), 16_000, 16_000 * (k + 1))
+            state, _, filtered, = process_correlator_bank_output!(state, signal, prn, output, fs, 1e-6 / Hz, true)
             integration = LoopRecord(signal, filtered, output, state, fs; prn)
             if synced
-                synced_records += 1
+                synced_integrations += 1
                 # The prompt's sign, so the four-quadrant PLL reads the small error,
                 # not one half a cycle off. The noise spreads it by ~0.006 cycles RMS,
                 # so the bound is about 9σ over the few hundred integrations per run.
@@ -176,22 +176,22 @@ end
                       0.05 / 2π atol = 0.05
                 # The first wiped-off integration does not chain from a prompt correlated
                 # before the sync.
-                @test iszero(integration.previous_prompt) == (synced_records == 1)
+                @test iszero(integration.previous_prompt) == (synced_integrations == 1)
             else
                 @test integration.carrier_phase_polarity == 0
             end
         end
-        @test synced_records > 100
+        @test synced_integrations > 100
         # A host whose replica has not wiped the overlay under a integration says so.
-        output = CorrelatorOutput(epl(sign * 4000.0), 16_000, 16_000 * 302)
-        unwiped, = apply_record(state, signal, prn, output, fs, 1e-6 / Hz, true; overlay_wiped = false)
+        output = CorrelatorBankOutput(epl(sign * 4000.0), 16_000, 16_000 * 302)
+        unwiped, = process_correlator_bank_output!(state, signal, prn, output, fs, 1e-6 / Hz, true; secondary_code_wiped = false)
         @test unwiped.last_carrier_phase_polarity == 0
     end
 end
 
 @testset "The prompt's sign is known only for a dataless signal synced to its secondary code" begin
-    synced(signal, polarity) = TrackingLoops.BitBuffer{get_code_block_buffer_type(signal)}(
-        zero(get_code_block_buffer_type(signal)),
+    synced(signal, polarity) = TrackingLoops.BitSynchronizer{prompt_sign_history_type(signal)}(
+        zero(prompt_sign_history_type(signal)),
         0,
         true,
         0,
@@ -199,10 +199,10 @@ end
         complex(0.0),
         0,
         Float32[],
-        TrackingLoops.PhaseAccumulators(),
+        TrackingLoops.SyncHypothesisAccumulators(),
     )
-    polarity(signal, bit_buffer, overlay_wiped = true) =
-        TrackingLoops._carrier_phase_polarity(signal, bit_buffer, overlay_wiped)
+    polarity(signal, bit_synchronizer, secondary_code_wiped = true) =
+        TrackingLoops._carrier_phase_polarity(signal, bit_synchronizer, secondary_code_wiped)
     # The sync polarity, whatever the overlay's chip 0 (positive for GPS L5Q,
     # negative for Galileo E1C).
     @test polarity(GPSL5Q(), synced(GPSL5Q(), -1)) == -1
@@ -210,7 +210,7 @@ end
     @test polarity(GalileoE1C(), synced(GalileoE1C(), 1)) == 1
     @test polarity(GalileoE1C(), synced(GalileoE1C(), -1)) == -1
     # Not yet synced, or the overlay not wiped under the integration.
-    @test polarity(GPSL5Q(), TrackingLoops.BitBuffer{get_code_block_buffer_type(GPSL5Q())}()) == 0
+    @test polarity(GPSL5Q(), TrackingLoops.BitSynchronizer{prompt_sign_history_type(GPSL5Q())}()) == 0
     @test polarity(GPSL5Q(), synced(GPSL5Q(), 1), false) == 0
     # Data signals, and (for now) a pilot without a secondary code.
     @test polarity(GPSL5I(), synced(GPSL5I(), 1)) == 0
@@ -222,8 +222,8 @@ end
 @testset "A integration whose replica has not wiped the overlay yet stays out of the bit sum" begin
     # GPS L5I, synced to its NH10 secondary code, 1 ms integrations at 10.23 MHz.
     signal = GPSL5I()
-    B = get_code_block_buffer_type(signal)
-    synced = TrackingLoops.BitBuffer{B}(
+    B = prompt_sign_history_type(signal)
+    synced = TrackingLoops.BitSynchronizer{B}(
         zero(B),
         0,
         true,
@@ -232,14 +232,14 @@ end
         complex(0.0),
         0,
         Float32[],
-        TrackingLoops.PhaseAccumulators(),
+        TrackingLoops.SyncHypothesisAccumulators(),
     )
-    output = CorrelatorOutput(
+    output = CorrelatorBankOutput(
         EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5) .* 10230, 0.5),
         10230,
         10230,
     )
-    fold(overlay_wiped) = TrackingLoops.fold_record(
+    process(secondary_code_wiped) = TrackingLoops._process_correlator_bank_output!(
         signal,
         1,
         synced,
@@ -250,20 +250,20 @@ end
         1.0 / Hz,
         true,
         get_carrier_phase_offset(signal);
-        overlay_wiped,
+        secondary_code_wiped,
     )
-    wiped = first(fold(true))
-    unwiped = first(fold(false))
+    wiped = first(process(true))
+    unwiped = first(process(false))
     # Wiped, the prompt joins the bit's coherent sum; not yet wiped, only its
-    # block counts, and the secondary-code anchor moves along.
-    @test wiped.prompt_accumulator != 0
-    @test unwiped.prompt_accumulator == 0
-    @test wiped.prompt_accumulator_integrated_code_blocks ==
-          unwiped.prompt_accumulator_integrated_code_blocks == 1
-    @test wiped.secondary_phase == 3
-    @test unwiped.secondary_phase == 4
+    # period counts, and the secondary-code anchor moves along.
+    @test wiped.bit_prompt_sum != 0
+    @test unwiped.bit_prompt_sum == 0
+    @test wiped.num_code_periods_into_bit ==
+          unwiped.num_code_periods_into_bit == 1
+    @test wiped.secondary_code_phase == 3
+    @test unwiped.secondary_code_phase == 4
     # By default the integration follows the sync with its overlay wiped.
-    @test first(TrackingLoops.fold_record(
+    @test first(TrackingLoops._process_correlator_bank_output!(
         signal,
         1,
         synced,
@@ -274,7 +274,7 @@ end
         1.0 / Hz,
         true,
         get_carrier_phase_offset(signal),
-    )).prompt_accumulator == wiped.prompt_accumulator
+    )).bit_prompt_sum == wiped.bit_prompt_sum
 end
 
 @testset "The dataless signals with a secondary code" begin

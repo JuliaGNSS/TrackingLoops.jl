@@ -95,7 +95,7 @@ end
 # the decoding signal's last integrations having ended at `end_sample` (the decoding one at
 # `decoding_end`), and take both halves and the snapshot. Returns the decoder's bit
 # count and the code phase from its last bit edge.
-function take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fraction, end_sample,
+function take_snapshot!(nav, group, slot, decoder, epoch_sample; code_periods, fraction, end_sample,
         driver_phase = fraction, decoding_end = end_sample, code_doppler = 0.0, synced = true)
     fs = 4e6
     nav.pending_epoch = 1
@@ -105,7 +105,7 @@ function take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fractio
     slot.driver_epoch = slot.decoding_epoch = slot.snapshot_epoch = typemin(Int)
     slot.running_decoder = decoder
     slot.decoding_bit_synced = synced
-    slot.decoding_num_code_periods_into_bit = blocks
+    slot.decoding_num_code_periods_into_bit = code_periods
     slot.decoding_code_phase_fraction = fraction
     slot.decoding_last_end_sample = decoding_end
     slot.decoding_last_end_time = decoding_end / fs
@@ -128,10 +128,10 @@ end
     decoder = GNSSDecoderState(GNSSDecoderState(signal, 3); num_bits_since_time_reference = 10)
     code_frequency = 1.023e6
     fs = 4e6
-    snapshot(blocks, fraction, end_sample, epoch_sample; kw...) =
-        take_snapshot!(nav, group, slot, decoder, epoch_sample; blocks, fraction, end_sample, kw...)
+    snapshot(code_periods, fraction, end_sample, epoch_sample; kw...) =
+        take_snapshot!(nav, group, slot, decoder, epoch_sample; code_periods, fraction, end_sample, kw...)
     # The epoch (sample 400 000) lies 1000 samples past the last integration end: five
-    # blocks into the bit, 0.2 chips past the block boundary, and the chips the
+    # code periods into the bit, 0.2 chips past the code period boundary, and the chips the
     # replica runs on to the epoch.
     num_bits, code_phase = snapshot(5, 0.2, 399_000, 400_000)
     @test num_bits == 10
@@ -153,7 +153,7 @@ end
     num_bits, code_phase = snapshot(19, 0.5, 400_000 - 4000, 400_000)
     @test num_bits == 11
     @test code_phase ≈ 19 * 1023 + 0.5 + 4000 / fs * code_frequency - 20460
-    # Without the replica's code phase the record is taken to end on a block boundary.
+    # Without the replica's code phase the integration is taken to end on a code period boundary.
     num_bits, code_phase = snapshot(5, NaN, 399_000, 400_000)
     @test code_phase ≈ 5 * 1023 + 1000 / fs * code_frequency
     # Out of sync there is no lock, and no bit edge to count from.
@@ -186,7 +186,7 @@ end
     fs = 4e6
     chips = 1000 / fs * code_frequency
     snapshot(fraction, driver_phase; kw...) = take_snapshot!(nav, group, slot, decoder, 400_000;
-        blocks = 0, fraction, driver_phase, end_sample = 399_000, kw...)
+        code_periods = 0, fraction, driver_phase, end_sample = 399_000, kw...)
     # The data integration ended 0.2 chips past a CM code boundary, the pilot's replica
     # 0.25 chips past one, 3 CM codes into the CL code: the pilot's phase is taken.
     num_bits, code_phase = snapshot(0.2, 3 * 10230 + 0.25)
@@ -197,7 +197,7 @@ end
     # it: one bit fewer, read up to the edge.
     one_sample = code_frequency / fs
     num_bits, code_phase = take_snapshot!(nav, group, slot, decoder, 400_000;
-        blocks = 0, fraction = 0.1, driver_phase = 767_250 - 0.3, end_sample = 399_999)
+        code_periods = 0, fraction = 0.1, driver_phase = 767_250 - 0.3, end_sample = 399_999)
     @test num_bits == 9
     @test code_phase ≈ 10230 - 0.3 + one_sample
     # The data integration behind the pilot's: its last integration ended 4000 samples before the
@@ -471,16 +471,16 @@ struct FixedCN0Estimator <: AbstractCN0Estimator
     dbhz::Float64
 end
 TL.update(estimator::FixedCN0Estimator, prompt, context::CN0UpdateContext) = estimator
-TL.estimate_cn0(estimator::FixedCN0Estimator, integration_time) = estimator.dbhz * dBHz
+TL.estimate_cn0(estimator::FixedCN0Estimator, coherent_integration_time) = estimator.dbhz * dBHz
 
 @testset "The C/N₀ is the driver's, from the tracking_loop the host configured" begin
     for (configured, read) in ((42.0, 42.0), (95.0, 80.0))
         tracking_loop = VectorTrackingLoop(GPSL1CA())
         nav = tracking_loop.navigation
-        loop = SignalLoopState(GPSL1CA(); cn0_estimator = FixedCN0Estimator(configured))
+        loop = PostCorrelationState(GPSL1CA(); cn0_estimator = FixedCN0Estimator(configured))
         state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
         for k = 1:101
-            output = CorrelatorOutput(engine_correlator(4000.0), 4000, 4000k, 0.0)
+            output = CorrelatorBankOutput(engine_correlator(4000.0), 4000, 4000k, 0.0)
             integration = LoopRecord(GPSL1CA(), engine_correlator(), output, loop, 4e6Hz; prn = 7)
             state, = step_loop!(tracking_loop, state, integration, ConstantNCOCommand(100.0, 0.1), NO_LANDING_SAMPLE)
         end

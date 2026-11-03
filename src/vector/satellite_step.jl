@@ -285,7 +285,7 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, loop_state,
     slot.driver_last_end_sample = start
     slot.driver_last_end_time = start / fs
     slot.last_code_phase = NaN
-    slot.last_integration_time = uconvert(s, integration.integrated_samples / integration.sampling_frequency)
+    slot.last_coherent_integration_time = uconvert(s, integration.integrated_samples / integration.sampling_frequency)
     slot.chips_since_epoch = 0.0
     slot.decoding_last_end_sample = start
     slot.decoding_last_end_time = start / fs
@@ -432,14 +432,14 @@ function _snapshot_driver!(
     code_command = calc_mean_nco_command(words, slot.driver_last_end_sample, epoch_sample).code_doppler
     chips_to_epoch = (epoch_time - slot.driver_last_end_time) * (code_frequency + code_command)
     (; carrier_doppler, code_doppler) = get_nco_command(words, epoch_sample)
-    integration_time = uconvert(s, integration.integrated_samples / integration.sampling_frequency)
+    coherent_integration_time = uconvert(s, integration.integrated_samples / integration.sampling_frequency)
     slot.cn0_dbhz =
-        min(Float64(ustrip(estimate_cn0(integration.cn0_estimator, integration_time))), MAX_CN0_DBHZ)
+        min(Float64(ustrip(estimate_cn0(integration.cn0_estimator, coherent_integration_time))), MAX_CN0_DBHZ)
     slot.loop_state = loop_state
     slot.epoch_driver_code_phase = slot.last_code_phase + chips_to_epoch
     slot.carrier_doppler = carrier_doppler * Hz
     slot.code_doppler = code_doppler * Hz
-    slot.coherent_integration_time = slot.last_integration_time
+    slot.coherent_integration_time = slot.last_coherent_integration_time
     slot.early_late_spacing = slot.last_early_late_spacing
     slot.chips_since_epoch = -chips_to_epoch
     slot.driver_epoch = nav.pending_epoch
@@ -525,13 +525,13 @@ function _can_reach_epoch(acc, group::VTSlotGroup, nav::VectorNavigation, epoch_
     false
 end
 
-# The decoding signal's code phase (chips) at its last record end from the last
-# data-bit edge: the bit clock's whole code blocks plus the phase past the block
+# The decoding signal's code phase (chips) at its last integration end from the last
+# data-bit edge: the bit clock's whole code periods plus the phase past the code period
 # boundary. Meaningless (and unread) before bit sync.
 function _code_phase_from_bit_edge(signal::AbstractGNSSSignal, slot::VTSlot)
-    blocks = slot.decoding_bit_synced ? slot.decoding_num_code_periods_into_bit : 0
+    code_periods = slot.decoding_bit_synced ? slot.decoding_num_code_periods_into_bit : 0
     fraction = slot.decoding_code_phase_fraction
-    blocks * get_code_length(signal) + (isnan(fraction) ? 0.0 : fraction)
+    code_periods * get_code_length(signal) + (isnan(fraction) ? 0.0 : fraction)
 end
 
 # Normalise `code_phase` into the current bit: a phase outside it (just short of the
@@ -704,7 +704,7 @@ function _advance_driver!(group::VTSlotGroup, slot::VTSlot, integration::LoopRec
     slot.driver_last_end_sample = integration.sample_index
     slot.driver_last_end_time = integration.sample_index / fs
     slot.last_code_phase = integration.code_phase
-    slot.last_integration_time =
+    slot.last_coherent_integration_time =
         uconvert(s, integration.integrated_samples / integration.sampling_frequency)
     slot.last_early_late_spacing =
         calc_early_late_sample_spacing(
@@ -715,11 +715,11 @@ function _advance_driver!(group::VTSlotGroup, slot::VTSlot, integration::LoopRec
     nothing
 end
 
-# A decoding-signal record: decode exactly the soft bits it added (so the host may
-# drain its bit buffer whenever it likes) and note the bit clock at its end. Records
-# later in the fold a sync was found in still have the pre-sync replica (see
-# `fold_record`'s `overlay_wiped`): they leave the bit count unanchored until the
-# next fold.
+# A decoding-signal integration: decode exactly the soft bits it added (so the host may
+# drain its bit synchronizer whenever it likes) and note the bit clock at its end. Integrations
+# later in the batch a sync was found in still have the pre-sync replica (see
+# `_process_correlator_bank_output!`'s `secondary_code_wiped`): they leave the bit count unanchored until the
+# next batch.
 function _advance_decoding!(
     group::VTSlotGroup,
     slot::VTSlot,
@@ -753,9 +753,9 @@ end
 # error: each prompt is rotated onto the incoming carrier by the residual PLL's estimate
 # (`_bit_prompt_phase`) and the decoding signal's carrier-phase offset from the
 # driver, summed over the bit, and the sum's real part decoded (signed as the host's
-# bit clock signs its own) on the record where the host's bit clock ends the bit. A
-# bit not covered from its first block (the one the satellite joins in, or one after
-# an `unwiped_after_sync` record), and a record ending more than one, take the host's
+# bit clock signs its own) on the integration where the host's bit clock ends the bit. A
+# bit not covered from its first code period (the one the satellite joins in, or one after
+# an `unwiped_after_sync` integration), and an integration ending more than one, take the host's
 # soft bits.
 function _decode_record!(
     group::VTSlotGroup,

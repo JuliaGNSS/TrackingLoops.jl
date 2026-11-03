@@ -10,7 +10,7 @@ step_satellite(tracking_loop, args...) = step_loop!(tracking_loop, args...)
 struct ReportedCN0 <: TrackingLoops.AbstractCN0Estimator
     cn0_dbhz::Float64
 end
-TrackingLoops.estimate_cn0(estimator::ReportedCN0, integration_time) = estimator.cn0_dbhz * dBHz
+TrackingLoops.estimate_cn0(estimator::ReportedCN0, coherent_integration_time) = estimator.cn0_dbhz * dBHz
 
 # `integration` as read by a host whose C/N₀ estimator reads `cn0_dbhz`.
 with_cn0(integration::LoopRecord, cn0_dbhz) = LoopRecord(
@@ -18,12 +18,12 @@ with_cn0(integration::LoopRecord, cn0_dbhz) = LoopRecord(
 )
 
 # One integration at `sample_index` with the given raw correlator outputs, normalised the
-# way `apply_record` does before the loop filters see it (the post-correlation
+# way `process_correlator_bank_output!` does before the loop filters see it (the post-correlation
 # filter is the identity for the first prompt), its host reading `cn0_dbhz`.
 function vector_integration(signal, correlator_outputs, num_samples, fs; previous_prompt = complex(0.0, 0.0),
         sample_index = num_samples, cn0_dbhz = 45.0)
     correlator_bank = set_correlator_outputs(get_default_correlator_bank(signal), SVector(correlator_outputs...))
-    output = CorrelatorOutput(correlator_bank, num_samples, sample_index)
+    output = CorrelatorBankOutput(correlator_bank, num_samples, sample_index)
     normalized = normalize(correlator_bank, num_samples, get_code_amplitude(signal))
     with_cn0(LoopRecord(signal, normalized, previous_prompt, output, 1, fs), cn0_dbhz)
 end
@@ -276,7 +276,7 @@ end
         carriers = typeof(1.0Hz)[]
         for k = 1:50
             p = cis(0.3 + 0.01k)
-            output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), 4000, 4000k)
+            output = CorrelatorBankOutput(loop_epl(0.5p, p, 0.5p), 4000, 4000k)
             integration = LoopRecord(signal, output.correlator_bank, previous, output, 1, fs)
             landing = landing_offset == 0 ? NO_LANDING_SAMPLE : Int64(4000k + landing_offset)
             state, carrier, code = step_satellite(tracking_loop, state, integration, timeline, landing)
@@ -491,7 +491,7 @@ function track_carrier(phase, doppler0, rate; offset = 0.5, integration_samples 
         prompt = sum(cis(2π * (phase(t0 + (i - 0.5) / n * (t1 - t0)) -
                                 replica_phase - carrier * (i - 0.5) / n * (t1 - t0))) for i = 1:n) / n
         prompt += noise_std * complex(randn(rng), randn(rng))
-        output = CorrelatorOutput(loop_epl(0.5prompt, prompt, 0.5prompt), integration_end_sample_index - integration_start_sample_index, integration_end_sample_index)
+        output = CorrelatorBankOutput(loop_epl(0.5prompt, prompt, 0.5prompt), integration_end_sample_index - integration_start_sample_index, integration_end_sample_index)
         integration = LoopRecord(RATE_SIGNAL, output.correlator_bank, previous_prompt, output, 1, RATE_FS * Hz)
         state, new_carrier, = TL._step_satellite(tracking_loop, state, integration,
             ConstantNCOCommand(carrier, 0.0), NO_LANDING_SAMPLE)

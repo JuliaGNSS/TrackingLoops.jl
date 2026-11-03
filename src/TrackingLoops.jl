@@ -5,14 +5,14 @@ The device-independent core of a GNSS tracking loop, shared by the software
 receiver (Tracking.jl) and the allocation-free *loop process* of a hardware
 correlator (HardwareLoopCore.jl):
 
-  - correlator record types, discriminators and the post-correlation filter;
-  - the navigation-bit buffer with per-signal bit-edge and secondary-code sync;
+  - coherent integration types, discriminators and the post-correlation filter;
+  - the navigation-bit synchronizer with per-signal bit-edge and secondary-code sync;
   - the C/N₀ estimators and the noise-density window they read;
-  - loop bandwidth rules and the Doppler estimators (conventional
-    FLL-assisted PLL/DLL, delay-compensated loop) behind one per-record
-    [`step_loop`](@ref);
-  - [`apply_record`](@ref), the per-record fold of a signal component (prompt
-    filter, C/N₀ estimator, bit buffer);
+  - loop bandwidth rules and the tracking loops (conventional
+    FLL-assisted PLL/DLL, delay-compensated loop) behind one per-integration
+    [`step_loop!`](@ref);
+  - [`process_correlator_bank_output!`](@ref), the post-correlation processing of a signal component (prompt
+    filter, C/N₀ estimator, bit synchronizer);
   - the [`NCOTimeline`](@ref): what a hardware NCO ran and will run;
   - vector tracking: [`VectorTrackingLoop`](@ref) decodes every satellite's bits (a
     pilot + data pair's from the data component, ranging on the pilot), solves the
@@ -86,7 +86,7 @@ BitIntegers.@define_integers 1800
 export NumAnts,
     EarlyPromptLateCorrelatorBank,
     VeryEarlyPromptLateCorrelatorBank,
-    CorrelatorOutput,
+    CorrelatorBankOutput,
     get_early,
     get_prompt,
     get_late,
@@ -94,7 +94,7 @@ export NumAnts,
     get_num_ants,
     get_default_correlator_bank,
     DefaultPostCorrFilter,
-    has_bit_or_secondary_code_been_found,
+    is_bit_or_secondary_code_synced,
     is_dataless_with_secondary_code,
     get_soft_bits,
     MomentsCN0Estimator,
@@ -127,10 +127,10 @@ export NumAnts,
     reinit_loop_state,
     LoopRecord,
     step_loop!,
-    SignalLoopState,
-    apply_record,
-    restart_bit_clock,
-    reset_signal_state,
+    PostCorrelationState,
+    process_correlator_bank_output!,
+    reset_sync!,
+    reset_post_correlation!,
     NCOTimeline,
     ConstantNCOCommand,
     NCOCommand,

@@ -13,7 +13,7 @@ using Unitful: Hz, dBHz, s, ms
 struct ReportedCN0 <: TrackingLoops.AbstractCN0Estimator
     cn0_dbhz::Float64
 end
-TrackingLoops.estimate_cn0(estimator::ReportedCN0, integration_time) = estimator.cn0_dbhz * dBHz
+TrackingLoops.estimate_cn0(estimator::ReportedCN0, coherent_integration_time) = estimator.cn0_dbhz * dBHz
 with_cn0(integration::LoopRecord, cn0_dbhz) = LoopRecord(
     (f === :cn0_estimator ? ReportedCN0(cn0_dbhz) : getfield(integration, f) for f in fieldnames(LoopRecord))...,
 )

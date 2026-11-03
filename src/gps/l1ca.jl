@@ -1,6 +1,6 @@
-# GPS L1 C/A (20 blocks per bit, no secondary code) uses the soft bit-edge
+# GPS L1 C/A (20 code periods per bit, no secondary code) uses the soft bit-edge
 # detector `_detect_bit_edge_cfar` via the `uses_soft_bit_edge_detection`
-# default, so it has no `detect_bit_or_secondary_code_sync` method.
+# default, so it has no `detect_sync` method.
 
 """
 $(SIGNATURES)
@@ -16,4 +16,4 @@ function get_default_correlator_bank(gpsl1::GPSL1CA, num_ants::NumAnts = NumAnts
 end
 
 # The soft detector does not search it; at sync it yields up to 3 pre-sync bits.
-@inline get_code_block_buffer_type(::GPSL1CA) = UInt64
+@inline prompt_sign_history_type(::GPSL1CA) = UInt64

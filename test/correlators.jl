@@ -247,13 +247,13 @@ end
     @test get_prompt(updated) == 3.0
 end
 
-@testset "CorrelatorOutput carries the raw correlator bank" begin
+@testset "CorrelatorBankOutput carries the raw correlator bank" begin
     correlator_bank = EarlyPromptLateCorrelatorBank(SVector(1.0 + 0.0im, 2.0 + 0.0im, 3.0 + 0.0im), 0.5)
-    output = CorrelatorOutput(correlator_bank, 4000, 8000)
+    output = CorrelatorBankOutput(correlator_bank, 4000, 8000)
     @test output.correlator_bank === correlator_bank
     @test output.num_integrated_samples == 4000
     @test output.sample_index == 8000
     # A producer that does not report the replica's code phase leaves it `NaN`.
     @test isnan(output.code_phase)
-    @test CorrelatorOutput(correlator_bank, 4000, 8000, 1022.75).code_phase == 1022.75
+    @test CorrelatorBankOutput(correlator_bank, 4000, 8000, 1022.75).code_phase == 1022.75
 end

@@ -44,7 +44,7 @@ function simulate_delayed_loop(tracking_loop, d; f_true = 130.0, handover = 100.
         push!(phases, 2π * TrackingLoops.wrap_phase_error(mean_phase / 2π))
         push!(words, w)
         p = cis(mean_phase)
-        output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, b)
+        output = CorrelatorBankOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, b)
         landing = Int64(b + d * LOOP_N)
         integration = LoopRecord(LOOP_SIGNAL, output.correlator_bank, previous_prompt, output, 1, LOOP_FS; prn = 1)
         state, carrier, code = step_loop!(tracking_loop, state, integration, timeline, landing)
@@ -148,7 +148,7 @@ end
     previous_prompt = complex(0.0, 0.0)
     for k = 1:300
         p = cis(0.3 + 0.002k)
-        output = CorrelatorOutput(loop_epl(0.45p, p, 0.55p), LOOP_N, LOOP_N * k)
+        output = CorrelatorBankOutput(loop_epl(0.45p, p, 0.55p), LOOP_N, LOOP_N * k)
         integration = LoopRecord(signal, output.correlator_bank, previous_prompt, output, 1, LOOP_FS)
         words = ConstantNCOCommand(carrier, code)
         conv_state, conv_carrier, conv_code = step_loop!(conventional, conv_state, integration, words, NO_LANDING_SAMPLE)
@@ -170,7 +170,7 @@ end
 @testset "Resetting the conventional loop keeps its bandwidths" begin
     tracking_loop = ConventionalAssistedPLLAndDLL(; code_loop_bandwidth = 0.5Hz)
     state = init_loop_state(tracking_loop, LOOP_SIGNAL, 0.0Hz, 0.0Hz)
-    output = CorrelatorOutput(loop_epl(0.4, cis(0.2), 0.6), LOOP_N, LOOP_N)
+    output = CorrelatorBankOutput(loop_epl(0.4, cis(0.2), 0.6), LOOP_N, LOOP_N)
     integration = LoopRecord(LOOP_SIGNAL, output.correlator_bank, cis(0.1), output, 1, LOOP_FS)
     state, = step_loop!(tracking_loop, state, integration, ConstantNCOCommand(0.0, 0.0), NO_LANDING_SAMPLE)
     @test state.carrier_loop_filter.x1 != 0.0Hz
@@ -195,7 +195,7 @@ end
     # What a host calls, and nothing else: build, step a integration, reset.
     state = init_loop_state(tracking_loop, LOOP_SIGNAL, 100.0Hz, 0.0Hz)
     @test state isa loop_state_type(tracking_loop, LOOP_SIGNAL)
-    output = CorrelatorOutput(loop_epl(0.5, 1.0, 0.5), LOOP_N, LOOP_N)
+    output = CorrelatorBankOutput(loop_epl(0.5, 1.0, 0.5), LOOP_N, LOOP_N)
     # The integration names its satellite, which the vector loop's navigation engine needs.
     integration = LoopRecord(LOOP_SIGNAL, output.correlator_bank, complex(0.0, 0.0), output, 1, LOOP_FS; prn = 5)
     stepped, carrier_doppler, code_doppler =
@@ -228,7 +228,7 @@ end
     fs = 25e6Hz
     n = 25_000
     state = init_loop_state(tracking_loop, driver, 100.0Hz, 0.1Hz)
-    output = CorrelatorOutput(loop_epl(0.5, 1.0, 0.5), n, n)
+    output = CorrelatorBankOutput(loop_epl(0.5, 1.0, 0.5), n, n)
     integration = LoopRecord(passenger, output.correlator_bank, complex(0.0), output, 1, fs; prn = 5)
     # The state unchanged, and the command in force…
     stepped, carrier, code = step_loop!(tracking_loop, state, integration, ConstantNCOCommand(123.0, 0.12), NO_LANDING_SAMPLE)
@@ -249,7 +249,7 @@ end
         sequence = Tuple{typeof(1.0Hz),typeof(1.0Hz)}[]
         for k = 1:200
             p = cis(0.3 + 0.002k)
-            output = CorrelatorOutput(loop_epl(0.45p, p, 0.55p), n, n * k)
+            output = CorrelatorBankOutput(loop_epl(0.45p, p, 0.55p), n, n * k)
             if with_passengers
                 passenger_integration = LoopRecord(passenger, output.correlator_bank, complex(0.0), output, 1, fs)
                 state, = step_loop!(tracking_loop, state, passenger_integration, ConstantNCOCommand(carrier, code), NO_LANDING_SAMPLE)
@@ -275,8 +275,8 @@ end
 )
     state = init_loop_state(tracking_loop, LOOP_SIGNAL, 0.0Hz, 0.0Hz)
     # The prompt 0.4 cycles ahead of the replica and of the previous prompt.
-    output = CorrelatorOutput(loop_epl(0.5, cis(0.8π), 0.5), LOOP_N, LOOP_N)
-    integration_time = LOOP_N / LOOP_FS
+    output = CorrelatorBankOutput(loop_epl(0.5, cis(0.8π), 0.5), LOOP_N, LOOP_N)
+    coherent_integration_time = LOOP_N / LOOP_FS
     discriminators(; kwargs...) = TrackingLoops._discriminators(
         tracking_loop,
         state,
@@ -287,10 +287,10 @@ end
     )
     costas = discriminators()
     @test costas.phase_error ≈ -0.1
-    @test costas.frequency_error ≈ -0.1 / integration_time
+    @test costas.frequency_error ≈ -0.1 / coherent_integration_time
     four_quadrant = discriminators(; carrier_phase_polarity = 1)
     @test four_quadrant.phase_error ≈ 0.4
-    @test four_quadrant.frequency_error ≈ 0.4 / integration_time
+    @test four_quadrant.frequency_error ≈ 0.4 / coherent_integration_time
     # The prompt's sign negative: the error read around the inverted prompt.
     @test discriminators(; carrier_phase_polarity = -1).phase_error ≈ -0.1
 end
@@ -319,7 +319,7 @@ end
         mean_phase = phase + π * (130.0 - carrier_command) * dt
         phase += 2π * (130.0 - carrier_command) * dt
         p = cis(mean_phase)
-        output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, LOOP_N * (k + 1))
+        output = CorrelatorBankOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, LOOP_N * (k + 1))
         integration = LoopRecord(LOOP_SIGNAL, output.correlator_bank, previous_prompt, output, 1, LOOP_FS)
         uses_fll = get_carrier_loop_stage(state) == FLL_ASSISTED_PLL
         # The FLL discriminator is formed only while the loop uses it.

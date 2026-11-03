@@ -24,7 +24,7 @@ end
 function warm_pipeline()
     rx = deepcopy(WARM_PIPELINE.rx)
     for sat in rx.sats
-        sizehint!(sat.loop.bit_buffer.soft_bits, 64)
+        sizehint!(sat.loop.bit_synchronizer.soft_bits, 64)
     end
     rx
 end
@@ -412,7 +412,7 @@ first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
     @test all(key -> first(key) == :GPSL1C_P, keys(navigation_solution(tracking_loop).observations))
     # Warm, a pair's integrations step without allocating.
     for sat in Iterators.flatten((rx.sats, rx.passengers))
-        sizehint!(sat.loop.bit_buffer.soft_bits, 64)
+        sizehint!(sat.loop.bit_synchronizer.soft_bits, 64)
     end
     rx.measuring[] = true
     _, _, diverged = run_pipeline!(rx, 2.0; start_sample = sample)

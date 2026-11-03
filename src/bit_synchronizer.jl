@@ -40,7 +40,7 @@ Comm. ACM 13(10), 619–620) on the two-tailed probability: closed forms at
 `dof = 1, 2`, otherwise a series in the normal deviate or (deep tail) in the
 probability. Accuracy ≲ 2e-4 relative (worst at `dof ≈ 3–10`). Used instead of
 `SpecialFunctions.beta_inc_inv`, which allocates over part of the `dof` range and
-is 10–170× slower: it runs every pre-sync block, which must not allocate (checked
+is 10–170× slower: it runs every pre-sync code period, which must not allocate (checked
 in `test/bit_synchronizer.jl`).
 """
 function _t_quantile(probability::Float64, dof::Real)
@@ -86,43 +86,43 @@ Per-hypothesis bin statistics for the soft CFAR sync detectors, one entry per
 timing hypothesis: bit-edge phase with one-bit bins (`_detect_bit_edge_cfar`,
 `_update_phase_accumulators!`) or overlay rotation with one overlay-wiped
 secondary period per bin (`_detect_secondary_code_cfar`,
-`_update_secondary_accumulators!`). O(hypotheses) per block, no growing history.
-`period` is `blocks_per_bit` or the secondary-code length `N`.
+`_update_secondary_accumulators!`). O(hypotheses) per code period, no growing history.
+`period` is `code_periods_per_bit` or the secondary-code length `N`.
 
-The vectors are mutated in place across [`BitBuffer`](@ref) rebuilds: an immutable
-form would be copied (~660 B) or boxed every block, allocating pre-sync.
+The vectors are mutated in place across [`BitSynchronizer`](@ref) rebuilds: an immutable
+form would be copied (~660 B) or boxed every code period, allocating pre-sync.
 
-Fields (all length `period` once seeded; empty before the first block):
+Fields (all length `period` once seeded; empty before the first code period):
 
   - `open_bin_sum`: coherent sum of the open bin (overlay-wiped for secondary).
   - `mean_bin_energy` / `bin_energy_sum_of_squared_deviations`: running mean and
     `M₂ = Σ(energyᵢ − mean)²` of the completed-bin energies (Welford; `M₂` forgets
     beyond `BIN_ENERGY_VARIANCE_MEMORY` bins). The bin count is
-    `div(num_blocks - hypothesis, period)`.
+    `div(num_code_periods - hypothesis, period)`.
   - `last_bin_polarity`: sign of the last completed bin's real part (`0` before).
 """
-struct PhaseAccumulators
+struct SyncHypothesisAccumulators
     open_bin_sum::Vector{ComplexF64}
     mean_bin_energy::Vector{Float64}
     bin_energy_sum_of_squared_deviations::Vector{Float64}
     last_bin_polarity::Vector{Int8}
 end
 
-PhaseAccumulators() = PhaseAccumulators(ComplexF64[], Float64[], Float64[], Int8[])
+SyncHypothesisAccumulators() = SyncHypothesisAccumulators(ComplexF64[], Float64[], Float64[], Int8[])
 
-# Are the accumulators seeded for a `blocks_per_bit`-phase search yet?
-@inline _is_seeded(accumulators::PhaseAccumulators, blocks_per_bit::Int) =
-    length(accumulators.mean_bin_energy) == blocks_per_bit
+# Are the accumulators seeded for a `code_periods_per_bit`-phase search yet?
+@inline _is_seeded(accumulators::SyncHypothesisAccumulators, code_periods_per_bit::Int) =
+    length(accumulators.mean_bin_energy) == code_periods_per_bit
 
-# Size the accumulator vectors to `blocks_per_bit` phases and zero them.
-function _seed_phase_accumulators!(accumulators::PhaseAccumulators, blocks_per_bit::Int)
+# Size the accumulator vectors to `code_periods_per_bit` phases and zero them.
+function _seed_phase_accumulators!(accumulators::SyncHypothesisAccumulators, code_periods_per_bit::Int)
     for vector in (
         accumulators.open_bin_sum,
         accumulators.mean_bin_energy,
         accumulators.bin_energy_sum_of_squared_deviations,
         accumulators.last_bin_polarity,
     )
-        resize!(vector, blocks_per_bit)
+        resize!(vector, code_periods_per_bit)
     end
     _reset_phase_accumulators!(accumulators)
 end
@@ -142,7 +142,7 @@ const BIN_ENERGY_VARIANCE_MEMORY = 50
 # `α = max(1 / (bin_count − 1), 1 / BIN_ENERGY_VARIANCE_MEMORY)`: exactly Welford's
 # update for the first `BIN_ENERGY_VARIANCE_MEMORY + 1` bins.
 @inline function _fold_bin_energy!(
-    accumulators::PhaseAccumulators,
+    accumulators::SyncHypothesisAccumulators,
     i::Int,
     bin_energy,
     bin_count::Int,
@@ -170,10 +170,10 @@ end
 @inline _bin_energy_variance_dof(bin_count::Int) =
     min(bin_count - 1, 2 * BIN_ENERGY_VARIANCE_MEMORY - 2)
 
-# Zero in place, keeping the length: on resync (`_resync_bit_buffer`) `_is_seeded` is
-# still true, so without this the next block would fold into the old statistics.
+# Zero in place, keeping the length: on resync (`_resync_bit_synchronizer`) `_is_seeded` is
+# still true, so without this the next code period would fold into the old statistics.
 # A no-op on the hard path, whose vectors stay empty.
-function _reset_phase_accumulators!(accumulators::PhaseAccumulators)
+function _reset_phase_accumulators!(accumulators::SyncHypothesisAccumulators)
     fill!(accumulators.open_bin_sum, zero(ComplexF64))
     fill!(accumulators.mean_bin_energy, 0.0)
     fill!(accumulators.bin_energy_sum_of_squared_deviations, 0.0)
@@ -184,28 +184,28 @@ end
 """
 $(SIGNATURES)
 
-Fold the `prompt` of the block at 0-based `block_index` into the
-[`PhaseAccumulators`](@ref) of a `blocks_per_bit`-phase bit-edge search. Phase
-`phase`'s bins start at block `phase`; the prompt joins every open bin, and the one
+Fold the `prompt` of the code period at 0-based `code_period_index` into the
+[`SyncHypothesisAccumulators`](@ref) of a `code_periods_per_bit`-phase bit-edge search. Phase
+`phase`'s bins start at code period `phase`; the prompt joins every open bin, and the one
 phase whose bin ends here folds `|bin_sum|²` into its Welford statistics and
 records its polarity.
 """
 function _update_phase_accumulators!(
-    accumulators::PhaseAccumulators,
+    accumulators::SyncHypothesisAccumulators,
     prompt::ComplexF64,
-    block_index::Int,
-    blocks_per_bit::Int,
+    code_period_index::Int,
+    code_periods_per_bit::Int,
 )
-    @inbounds for phase = 0:(blocks_per_bit-1)
-        block_index < phase && continue
+    @inbounds for phase = 0:(code_periods_per_bit-1)
+        code_period_index < phase && continue
         accumulators.open_bin_sum[phase+1] += prompt
-        if (block_index - phase) % blocks_per_bit == blocks_per_bit - 1
+        if (code_period_index - phase) % code_periods_per_bit == code_periods_per_bit - 1
             bin_sum = accumulators.open_bin_sum[phase+1]
             _fold_bin_energy!(
                 accumulators,
                 phase + 1,
                 abs2(bin_sum),
-                div(block_index + 1 - phase, blocks_per_bit),
+                div(code_period_index + 1 - phase, code_periods_per_bit),
             )
             accumulators.last_bin_polarity[phase+1] = real(bin_sum) < 0 ? Int8(-1) : Int8(1)
             accumulators.open_bin_sum[phase+1] = zero(ComplexF64)
@@ -219,8 +219,8 @@ $(SIGNATURES)
 
 Shared CFAR (constant-false-alarm-rate) decision of the soft sync detectors:
 find the maximum-energy hypothesis and its closest competitor in the
-[`PhaseAccumulators`](@ref) statistics and decide whether the peak is significant.
-`period` is both the blocks per bin and the number of hypotheses; `confidence` is
+[`SyncHypothesisAccumulators`](@ref) statistics and decide whether the peak is significant.
+`period` is both the code periods per bin and the number of hypotheses; `confidence` is
 the target `1 − P(false lock)`.
 
 Returns `(accepted, peak_index, peak_bin_count)`: whether the gap is significant
@@ -245,12 +245,12 @@ asymmetry stays bounded and never locks.
 @inline function _cfar_decide(
     mean_bin_energy::AbstractVector{Float64},
     bin_energy_sum_of_squared_deviations::AbstractVector{Float64},
-    num_blocks::Int,
+    num_code_periods::Int,
     period::Int,
     confidence::Float64,
 )
     # Need two complete bins on some hypothesis.
-    num_blocks < 2 * period && return (false, -1, 0)
+    num_code_periods < 2 * period && return (false, -1, 0)
 
     # One pass: the peak (highest energy with ≥ 2 bins) and the two highest
     # overall; the runner-up is the higher of those that isn't the peak.
@@ -263,7 +263,7 @@ asymmetry stays bounded and never locks.
     second_best_energy = -1.0
     second_best_bin_count = 0             # 2nd highest, ≥ 1 bin
     @inbounds for h = 0:(period-1)
-        bin_count = div(num_blocks - h, period)
+        bin_count = div(num_code_periods - h, period)
         bin_count < 1 && continue
         energy = mean_bin_energy[h+1]
         if energy > best_energy
@@ -321,29 +321,29 @@ end
 $(SIGNATURES)
 
 Soft CFAR bit-edge detector (see [`uses_soft_bit_edge_detection`](@ref); GPS L1 C/A)
-running `_cfar_decide` over the edge phases `0:blocks_per_bit-1`.
+running `_cfar_decide` over the edge phases `0:code_periods_per_bit-1`.
 
-Fires only when the latest block *ends* the winning phase's bit, so the upcoming
+Fires only when the latest code period *ends* the winning phase's bit, so the upcoming
 integration starts a fresh bit (rules out the off-by-one lock of
 JuliaGNSS/Tracking.jl#124).
 `polarity` is the sign of the last completed bin's sum.
 """
 function _detect_bit_edge_cfar(
-    accumulators::PhaseAccumulators,
-    blocks_per_bit::Int,
+    accumulators::SyncHypothesisAccumulators,
+    code_periods_per_bit::Int,
     confidence::Float64,
-    num_blocks::Int,
+    num_code_periods::Int,
 )
     accepted, peak_phase, _ = _cfar_decide(
         accumulators.mean_bin_energy,
         accumulators.bin_energy_sum_of_squared_deviations,
-        num_blocks,
-        blocks_per_bit,
+        num_code_periods,
+        code_periods_per_bit,
         confidence,
     )
     accepted || return SyncResult(false, 0, Int8(0))
 
-    num_blocks % blocks_per_bit != peak_phase && return SyncResult(false, 0, Int8(0))
+    num_code_periods % code_periods_per_bit != peak_phase && return SyncResult(false, 0, Int8(0))
 
     @inbounds polarity =
         accumulators.last_bin_polarity[peak_phase+1] < 0 ? Int8(-1) : Int8(+1)
@@ -354,16 +354,16 @@ end
 $(SIGNATURES)
 
 The secondary-code analog of `_update_phase_accumulators!`: rotation `d ∈ 0:N-1`
-has `N`-block bins starting at block `d`, and block `i` is multiplied by secondary
+has `N`-period bins starting at code period `d`, and code period `i` is multiplied by secondary
 chip `mod(i - d, N)` (the overlay the post-sync replica applies) before summing,
 so the correct rotation adds coherently. Chip 0 is thus the physical secondary chip
 0, the rotation the hard `_secondary_code_search` locks (up to a polarity the energy
 ignores).
 """
 function _update_secondary_accumulators!(
-    accumulators::PhaseAccumulators,
+    accumulators::SyncHypothesisAccumulators,
     prompt::ComplexF64,
-    block_index::Int,
+    code_period_index::Int,
     secondary_code_length::Int,
     signal::AbstractGNSSSignal,
     prn::Integer,
@@ -371,13 +371,13 @@ function _update_secondary_accumulators!(
     N = secondary_code_length
     secondary_code = get_secondary_code(signal)
     @inbounds for d = 0:(N-1)
-        block_index < d && continue
-        chip = (block_index - d) % N
+        code_period_index < d && continue
+        chip = (code_period_index - d) % N
         overlay = GNSSSignals.secondary_value(secondary_code, prn, chip)
         accumulators.open_bin_sum[d+1] += prompt * overlay
         if chip == N - 1
             bin_sum = accumulators.open_bin_sum[d+1]
-            _fold_bin_energy!(accumulators, d + 1, abs2(bin_sum), div(block_index + 1 - d, N))
+            _fold_bin_energy!(accumulators, d + 1, abs2(bin_sum), div(code_period_index + 1 - d, N))
             accumulators.last_bin_polarity[d+1] = real(bin_sum) < 0 ? Int8(-1) : Int8(1)
             accumulators.open_bin_sum[d+1] = zero(ComplexF64)
         end
@@ -393,26 +393,26 @@ overlays (see [`uses_soft_secondary_code_detection`](@ref)). Unlike the hard
 `_secondary_code_search` it rejects the noise-driven false locks a short template
 match is prone to.
 
-Fires only when the latest block ends the winning rotation's period, so the
+Fires only when the latest code period ends the winning rotation's period, so the
 upcoming integration starts at secondary chip 0 and `SyncResult.phase` is `0`.
 `polarity` is the sign of the winning period's overlay-wiped sum.
 """
 function _detect_secondary_code_cfar(
-    accumulators::PhaseAccumulators,
+    accumulators::SyncHypothesisAccumulators,
     secondary_code_length::Int,
     confidence::Float64,
-    num_blocks::Int,
+    num_code_periods::Int,
 )
     accepted, peak_rotation, _ = _cfar_decide(
         accumulators.mean_bin_energy,
         accumulators.bin_energy_sum_of_squared_deviations,
-        num_blocks,
+        num_code_periods,
         secondary_code_length,
         confidence,
     )
     accepted || return SyncResult(false, 0, Int8(0))
 
-    num_blocks % secondary_code_length != peak_rotation &&
+    num_code_periods % secondary_code_length != peak_rotation &&
         return SyncResult(false, 0, Int8(0))
 
     @inbounds polarity =
@@ -426,7 +426,7 @@ $(SIGNATURES)
 **Hard-decision** secondary-code rotation search (currently the 1800-chip overlay
 pilots GPS L1C-P and BeiDou B1C-P); locks within one secondary period.
 
-`received` is the prompt-sign window, newest block in bit 0; `reference` is packed
+`received` is the prompt-sign window, newest code period in bit 0; `reference` is packed
 newest-first (bit `i` = chip `N - 1 - i`). Rotating the low `N` bits left by `d`
 finds the best Hamming match of either polarity; the upcoming integration's chip is
 `mod(N - d, N)` (Tracking.jl's `_snap_code_phase_from_synced_signal` anchor). No
@@ -439,7 +439,7 @@ lock if the best distance exceeds `max_errors`.
     max_errors::Int,
 ) where {B<:Unsigned}
     N = secondary_code_length
-    # `one(B) << N` is undefined for an exact-width buffer (UInt1800).
+    # `one(B) << N` is undefined for an exact-width history (UInt1800).
     mask = N == 8 * sizeof(B) ? ~zero(B) : (one(B) << N) - one(B)
     masked = received & mask
     best_d = 0
@@ -468,7 +468,7 @@ end
 """
 $(SIGNATURES)
 
-Detector for signals with no sub-block boundary to find: `found = true` from the
+Detector for signals with no sub-period boundary to find: `found = true` from the
 first integration. Covers one bit per code period (GPS L1C-D, L2CM, Galileo
 E1B / E6-B, BeiDou B2b-I / B1C-D; GNSSDecoder.jl resolves the ±1 polarity from
 the preamble) and Galileo E5a-QP (no data, no overlay; the lock only gates
@@ -486,28 +486,28 @@ end
 """
 $(SIGNATURES)
 
-Hard-path detector for secondary-coded signals: once `N` blocks are buffered, run
+Hard-path detector for secondary-coded signals: once `N` code periods are buffered, run
 `_secondary_code_search` against `_packed_secondary_code` allowing
-`floor(tolerance × N)` errors ([`get_bit_edge_or_secondary_code_tolerance`](@ref));
+`floor(tolerance × N)` errors ([`get_secondary_code_error_tolerance`](@ref));
 at the default, an exact match for a code shorter than 40 chips.
 
 A new secondary-coded signal needs `get_secondary_code`, a
-`get_code_block_buffer_type` of at least `N` bits and a
-`detect_bit_or_secondary_code_sync` method delegating here (a soft-path signal
+`prompt_sign_history_type` of at least `N` bits and a
+`detect_sync` method delegating here (a soft-path signal
 reaches it only with its soft trait overridden).
 """
 @inline function _detect_secondary_code_sync(
     signal::AbstractGNSSSignal,
     prn::Integer,
-    code_block_bits::B,
-    num_code_blocks::Integer,
+    code_period_bits::B,
+    num_code_periods::Integer,
 ) where {B<:Unsigned}
     secondary_code_length = get_secondary_code_length(signal)
-    num_code_blocks < secondary_code_length && return SyncResult(false, 0, Int8(0))
+    num_code_periods < secondary_code_length && return SyncResult(false, 0, Int8(0))
     max_errors =
-        floor(Int, get_bit_edge_or_secondary_code_tolerance(signal) * secondary_code_length)
+        floor(Int, get_secondary_code_error_tolerance(signal) * secondary_code_length)
     _secondary_code_search(
-        code_block_bits,
+        code_period_bits,
         _packed_secondary_code(B, signal, prn),
         secondary_code_length,
         max_errors,
@@ -544,29 +544,29 @@ end
 """
 $(SIGNATURES)
 
-Bit sync state and decoded soft bits of one signal.
+Bit sync state and demodulated soft bits of one signal.
 
-`code_block_buffer` is the pre-sync window of prompt signs, `B` bits wide
-([`get_code_block_buffer_type`](@ref)), unused after sync. `soft_bits` collects
-the decoded bits (see [`get_soft_bits`](@ref)), unbounded between resets.
-`phase_acc` holds the soft CFAR detector's [`PhaseAccumulators`](@ref), empty on
+`prompt_sign_history` is the pre-sync window of prompt signs, `B` bits wide
+([`prompt_sign_history_type`](@ref)), unused after sync. `soft_bits` collects
+the demodulated soft bits (see [`get_soft_bits`](@ref)), unbounded between resets.
+`phase_accumulators` holds the soft CFAR detector's [`SyncHypothesisAccumulators`](@ref), empty on
 the hard path.
 """
-struct BitBuffer{B<:Unsigned}
-    code_block_buffer::B
-    code_block_buffer_length::Int
+struct BitSynchronizer{B<:Unsigned}
+    prompt_sign_history::B
+    num_prompt_signs::Int
     found::Bool
-    secondary_phase::Int      # 0 until found; secondary-chip offset post-sync
+    secondary_code_phase::Int      # 0 until found; secondary-chip offset post-sync
     polarity::Int8            # +1 or -1 once found; 0 before sync
-    prompt_accumulator::ComplexF64
-    prompt_accumulator_integrated_code_blocks::Int
+    bit_prompt_sum::ComplexF64
+    num_code_periods_into_bit::Int
     soft_bits::Vector{Float32}
-    phase_acc::PhaseAccumulators
+    phase_accumulators::SyncHypothesisAccumulators
 end
 
-# Untyped default: a `UInt128` search buffer.
-function BitBuffer()
-    BitBuffer{UInt128}(
+# Untyped default: a `UInt128` prompt-sign history.
+function BitSynchronizer()
+    BitSynchronizer{UInt128}(
         zero(UInt128),
         0,
         false,
@@ -575,12 +575,12 @@ function BitBuffer()
         complex(0.0, 0.0),
         0,
         Float32[],
-        PhaseAccumulators(),
+        SyncHypothesisAccumulators(),
     )
 end
 
-function BitBuffer{B}() where {B<:Unsigned}
-    BitBuffer{B}(
+function BitSynchronizer{B}() where {B<:Unsigned}
+    BitSynchronizer{B}(
         zero(B),
         0,
         false,
@@ -589,47 +589,47 @@ function BitBuffer{B}() where {B<:Unsigned}
         complex(0.0, 0.0),
         0,
         Float32[],
-        PhaseAccumulators(),
+        SyncHypothesisAccumulators(),
     )
 end
 
 # For tests and benchmarks: zero phase / polarity, empty accumulators; `soft_bits`
 # is aliased, not copied.
-function BitBuffer(
-    code_block_buffer::B,
-    code_block_buffer_length::Integer,
+function BitSynchronizer(
+    prompt_sign_history::B,
+    num_prompt_signs::Integer,
     found::Bool,
-    prompt_accumulator::Complex,
-    prompt_accumulator_integrated_code_blocks::Integer,
+    bit_prompt_sum::Complex,
+    num_code_periods_into_bit::Integer,
     soft_bits::Vector{Float32} = Float32[],
 ) where {B<:Unsigned}
-    BitBuffer{B}(
-        code_block_buffer,
-        Int(code_block_buffer_length),
+    BitSynchronizer{B}(
+        prompt_sign_history,
+        Int(num_prompt_signs),
         found,
         0,
         Int8(0),
-        ComplexF64(prompt_accumulator),
-        Int(prompt_accumulator_integrated_code_blocks),
+        ComplexF64(bit_prompt_sum),
+        Int(num_code_periods_into_bit),
         soft_bits,
-        PhaseAccumulators(),
+        SyncHypothesisAccumulators(),
     )
 end
 
-@inline length(bit_buffer::BitBuffer) = Base.length(bit_buffer.soft_bits)
+@inline length(bit_synchronizer::BitSynchronizer) = Base.length(bit_synchronizer.soft_bits)
 """
-    has_bit_or_secondary_code_been_found(bit_buffer::BitBuffer)
-    has_bit_or_secondary_code_been_found(state::SignalLoopState)
+    is_bit_or_secondary_code_synced(bit_synchronizer::BitSynchronizer)
+    is_bit_or_secondary_code_synced(state::PostCorrelationState)
 
 Whether the navigation-bit boundary or secondary-code phase has been found; from
 then on the signal may integrate over several code periods and bits are collected
 for [`get_soft_bits`](@ref).
 """
-@inline has_bit_or_secondary_code_been_found(bit_buffer::BitBuffer) = bit_buffer.found
+@inline is_bit_or_secondary_code_synced(bit_synchronizer::BitSynchronizer) = bit_synchronizer.found
 
 """
-    get_soft_bits(bit_buffer::BitBuffer)
-    get_soft_bits(state::SignalLoopState)
+    get_soft_bits(bit_synchronizer::BitSynchronizer)
+    get_soft_bits(state::PostCorrelationState)
 
 The soft bits collected so far: per navigation bit, the polarity-corrected real part
 of the summed de-rotated prompts. The sign is the hard decision, the magnitude the
@@ -642,23 +642,23 @@ error-correction decoding. On a signal with forward error correction (GPS L2C, L
 L1C-D, Galileo, the BeiDou B-CNAV family) the decoder recovers the message bits from
 them; elsewhere they are the message bits.
 
-The buffer's own vector, not a copy: drain it (`empty!`) after reading. A
-[`SignalLoopState`](@ref)'s holds 64 bits before it allocates.
+The bit synchronizer's own vector, not a copy: drain it (`empty!`) after reading. A
+[`PostCorrelationState`](@ref)'s holds 64 bits before it allocates.
 """
-@inline get_soft_bits(bit_buffer::BitBuffer) = bit_buffer.soft_bits
+@inline get_soft_bits(bit_synchronizer::BitSynchronizer) = bit_synchronizer.soft_bits
 
 """
 $(SIGNATURES)
 
-Concrete `Unsigned` width `B` of `BitBuffer.code_block_buffer` for `signal`
+Concrete `Unsigned` width `B` of `BitSynchronizer.prompt_sign_history` for `signal`
 (default `UInt64`), a type parameter so construction is type-stable.
 
 Hard-path signals need at least `N` bits (the 1800-chip overlay pilots use
 `UInt1800`); soft secondary-code signals keep one period so their hard path stays
 available; GPS L1 C/A's holds the pre-sync bits recovered at sync; signals with
-nothing to search use `UInt8`. Per-signal values: [Code-block buffer widths](@ref).
+nothing to search use `UInt8`. Per-signal values: [Prompt-sign history widths](@ref).
 """
-@inline get_code_block_buffer_type(::AbstractGNSSSignal) = UInt64
+@inline prompt_sign_history_type(::AbstractGNSSSignal) = UInt64
 
 """
 $(SIGNATURES)
@@ -666,25 +666,25 @@ $(SIGNATURES)
 Hamming tolerance of the **hard-decision** `_secondary_code_search`: the largest
 fraction of chip errors accepted, `max_errors = floor(Int, tolerance × N)`. Default
 `0.025` (45 of 1800 chips). Only hard-path signals (GPS L1C-P, BeiDou B1C-P) read
-it; the soft detectors use [`get_bit_edge_detection_confidence`](@ref).
+it; the soft detectors use [`get_sync_detection_confidence`](@ref).
 
 # Overriding
 
 E.g. to loosen it for low-C/N₀ work:
 
 ```julia
-TrackingLoops.get_bit_edge_or_secondary_code_tolerance(::GPSL1C_P) = 0.05
+TrackingLoops.get_secondary_code_error_tolerance(::GPSL1C_P) = 0.05
 ```
 
 Takes effect at the next detector call.
 """
-@inline get_bit_edge_or_secondary_code_tolerance(::AbstractGNSSSignal) = 0.025
+@inline get_secondary_code_error_tolerance(::AbstractGNSSSignal) = 0.025
 
 """
 $(SIGNATURES)
 
 Whether `signal`'s bit edge is found by the soft CFAR detector
-`_detect_bit_edge_cfar` instead of the hard `detect_bit_or_secondary_code_sync`.
+`_detect_bit_edge_cfar` instead of the hard `detect_sync`.
 
 By default true when a bit spans **more than one** code period **and** there is no
 secondary code (currently only GPS L1 C/A). BeiDou B1I/B3I do not qualify even on
@@ -732,91 +732,91 @@ at the cost of more false locks.
 # Overriding
 
 ```julia
-TrackingLoops.get_bit_edge_detection_confidence(::GPSL1CA) = 0.9999
+TrackingLoops.get_sync_detection_confidence(::GPSL1CA) = 0.9999
 ```
 
 Takes effect at the next detector call.
 """
-@inline get_bit_edge_detection_confidence(::AbstractGNSSSignal) = 0.999
+@inline get_sync_detection_confidence(::AbstractGNSSSignal) = 0.999
 
 
 """
 $(SIGNATURES)
 
-Advance the bit buffer by one record of `integrated_code_blocks` blocks.
+Advance the bit synchronizer by one integration of `num_code_periods` code periods.
 
-Post-sync, one soft bit is emitted each time the block count reaches a bit. A
-record carrying the count *past* the boundary (only from a non-bit-aligned external
+Post-sync, one soft bit is emitted each time the period count reaches a bit. A
+integration carrying the count *past* the boundary (only from a non-bit-aligned external
 producer) drops sync instead (JuliaGNSS/Tracking.jl#238): its energy belongs to two
 bits, and the equality test would never be met again. The detector then re-runs
-from clean accumulators and the caller falls back to single-block records; the
-decoded `soft_bits` are kept. Silent; [`apply_record`](@ref) reports it as
+from clean accumulators and the caller falls back to single-period integrations; the
+decoded `soft_bits` are kept. Silent; [`process_correlator_bank_output!`](@ref) reports it as
 `overshoot`.
 """
 function buffer(
     signal::AbstractGNSSSignal,
     prn::Integer,
-    bit_buffer::BitBuffer{B},
-    integrated_code_blocks,
+    bit_synchronizer::BitSynchronizer{B},
+    num_code_periods,
     prompt,
 ) where {B<:Unsigned}
     num_code_periods_per_bit = get_code_periods_per_bit(signal)
 
-    if (bit_buffer.found == false)
-        return _buffer_find_bit(
+    if (bit_synchronizer.found == false)
+        return _update_sync_search(
             signal,
             prn,
-            bit_buffer,
+            bit_synchronizer,
             num_code_periods_per_bit,
-            integrated_code_blocks,
+            num_code_periods,
             prompt,
         )
     end
 
     # Pilots: nothing to decode; the lock still anchors the code phase.
-    num_code_periods_per_bit == 0 && return bit_buffer
+    num_code_periods_per_bit == 0 && return bit_synchronizer
 
-    prompt_accumulator = bit_buffer.prompt_accumulator + prompt
-    prompt_accumulator_integrated_code_blocks =
-        bit_buffer.prompt_accumulator_integrated_code_blocks + integrated_code_blocks
+    bit_prompt_sum = bit_synchronizer.bit_prompt_sum + prompt
+    num_code_periods_into_bit =
+        bit_synchronizer.num_code_periods_into_bit + num_code_periods
 
-    if prompt_accumulator_integrated_code_blocks > num_code_periods_per_bit
-        # Overshoot (e.g. 18 + a 3-block integration for L1 C/A): resync rather than
+    if num_code_periods_into_bit > num_code_periods_per_bit
+        # Overshoot (e.g. 18 + a 3-period integration for L1 C/A): resync rather than
         # emit at `>=`, see the docstring. Must not allocate or format a string.
-        return _resync_bit_buffer(bit_buffer)
-    elseif prompt_accumulator_integrated_code_blocks == num_code_periods_per_bit
+        return _resync_bit_synchronizer(bit_synchronizer)
+    elseif num_code_periods_into_bit == num_code_periods_per_bit
         bit_acc =
-            bit_buffer.polarity < 0 ? -real(prompt_accumulator) : real(prompt_accumulator)
-        push!(bit_buffer.soft_bits, Float32(bit_acc))
-        return BitBuffer{B}(
-            bit_buffer.code_block_buffer,
-            bit_buffer.code_block_buffer_length,
+            bit_synchronizer.polarity < 0 ? -real(bit_prompt_sum) : real(bit_prompt_sum)
+        push!(bit_synchronizer.soft_bits, Float32(bit_acc))
+        return BitSynchronizer{B}(
+            bit_synchronizer.prompt_sign_history,
+            bit_synchronizer.num_prompt_signs,
             true,
-            bit_buffer.secondary_phase,
-            bit_buffer.polarity,
-            zero(prompt_accumulator),
+            bit_synchronizer.secondary_code_phase,
+            bit_synchronizer.polarity,
+            zero(bit_prompt_sum),
             0,
-            bit_buffer.soft_bits,
-            bit_buffer.phase_acc,
+            bit_synchronizer.soft_bits,
+            bit_synchronizer.phase_accumulators,
         )
     else
-        return BitBuffer{B}(
-            bit_buffer.code_block_buffer,
-            bit_buffer.code_block_buffer_length,
+        return BitSynchronizer{B}(
+            bit_synchronizer.prompt_sign_history,
+            bit_synchronizer.num_prompt_signs,
             true,
-            bit_buffer.secondary_phase,
-            bit_buffer.polarity,
-            prompt_accumulator,
-            prompt_accumulator_integrated_code_blocks,
-            bit_buffer.soft_bits,
-            bit_buffer.phase_acc,
+            bit_synchronizer.secondary_code_phase,
+            bit_synchronizer.polarity,
+            bit_prompt_sum,
+            num_code_periods_into_bit,
+            bit_synchronizer.soft_bits,
+            bit_synchronizer.phase_accumulators,
         )
     end
 end
 
 # Back to pre-sync after an overshoot; `soft_bits` is kept (same vector).
-@inline function _resync_bit_buffer(bit_buffer::BitBuffer{B}) where {B<:Unsigned}
-    BitBuffer{B}(
+@inline function _resync_bit_synchronizer(bit_synchronizer::BitSynchronizer{B}) where {B<:Unsigned}
+    BitSynchronizer{B}(
         zero(B),
         0,
         false,
@@ -824,195 +824,195 @@ end
         Int8(0),
         complex(0.0, 0.0),
         0,
-        bit_buffer.soft_bits,
-        _reset_phase_accumulators!(bit_buffer.phase_acc),
+        bit_synchronizer.soft_bits,
+        _reset_phase_accumulators!(bit_synchronizer.phase_accumulators),
     )
 end
 
-function _buffer_find_bit(
+function _update_sync_search(
     signal,
     prn::Integer,
-    bit_buffer::BitBuffer{B},
+    bit_synchronizer::BitSynchronizer{B},
     num_code_periods_per_bit,
-    integrated_code_blocks,
+    num_code_periods,
     prompt,
 ) where {B<:Unsigned}
-    if (integrated_code_blocks != 1)
+    if (num_code_periods != 1)
         error(
-            "The number code blocks must be equal to 1 if bit or secondary code hasn't been found yet.",
+            "The number of code periods must be equal to 1 if bit or secondary code hasn't been found yet.",
         )
     end
-    code_block_buffer = (bit_buffer.code_block_buffer << 1) + B(real(prompt) > 0)
-    code_block_buffer_length = bit_buffer.code_block_buffer_length + 1
+    prompt_sign_history = (bit_synchronizer.prompt_sign_history << 1) + B(real(prompt) > 0)
+    num_prompt_signs = bit_synchronizer.num_prompt_signs + 1
 
-    # Soft detectors share `phase_acc`; the rest take the hard path. Folds at
+    # Soft detectors share `phase_accumulators`; the rest take the hard path. Folds at
     # compile time.
-    phase_acc = bit_buffer.phase_acc
+    phase_accumulators = bit_synchronizer.phase_accumulators
     if uses_soft_bit_edge_detection(signal)
-        blocks_per_bit = num_code_periods_per_bit
-        _is_seeded(phase_acc, blocks_per_bit) ||
-            _seed_phase_accumulators!(phase_acc, blocks_per_bit)
+        code_periods_per_bit = num_code_periods_per_bit
+        _is_seeded(phase_accumulators, code_periods_per_bit) ||
+            _seed_phase_accumulators!(phase_accumulators, code_periods_per_bit)
         _update_phase_accumulators!(
-            phase_acc,
+            phase_accumulators,
             ComplexF64(prompt),
-            code_block_buffer_length - 1,
-            blocks_per_bit,
+            num_prompt_signs - 1,
+            code_periods_per_bit,
         )
         sync = _detect_bit_edge_cfar(
-            phase_acc,
-            blocks_per_bit,
-            get_bit_edge_detection_confidence(signal),
-            code_block_buffer_length,
+            phase_accumulators,
+            code_periods_per_bit,
+            get_sync_detection_confidence(signal),
+            num_prompt_signs,
         )
     elseif uses_soft_secondary_code_detection(signal)
         secondary_code_length = get_secondary_code_length(signal)
-        _is_seeded(phase_acc, secondary_code_length) ||
-            _seed_phase_accumulators!(phase_acc, secondary_code_length)
+        _is_seeded(phase_accumulators, secondary_code_length) ||
+            _seed_phase_accumulators!(phase_accumulators, secondary_code_length)
         _update_secondary_accumulators!(
-            phase_acc,
+            phase_accumulators,
             ComplexF64(prompt),
-            code_block_buffer_length - 1,
+            num_prompt_signs - 1,
             secondary_code_length,
             signal,
             prn,
         )
         sync = _detect_secondary_code_cfar(
-            phase_acc,
+            phase_accumulators,
             secondary_code_length,
-            get_bit_edge_detection_confidence(signal),
-            code_block_buffer_length,
+            get_sync_detection_confidence(signal),
+            num_prompt_signs,
         )
     else
-        sync = detect_bit_or_secondary_code_sync(
+        sync = detect_sync(
             signal,
             prn,
-            code_block_buffer,
-            code_block_buffer_length,
+            prompt_sign_history,
+            num_prompt_signs,
         )
     end
     if !sync.found
-        return BitBuffer{B}(
-            code_block_buffer,
-            code_block_buffer_length,
+        return BitSynchronizer{B}(
+            prompt_sign_history,
+            num_prompt_signs,
             false,
             0,
             Int8(0),
             complex(0.0, 0.0),
             0,
-            bit_buffer.soft_bits,
-            phase_acc,
+            bit_synchronizer.soft_bits,
+            phase_accumulators,
         )
     end
     if get_secondary_code_length(signal) > 1
         # Pre-sync signs carry the overlay, not data: no bits to recover. The hard
-        # search can lock `sync.phase` blocks into a bit, so seed the block count
+        # search can lock `sync.phase` code periods into a bit, so seed the period count
         # with it and the first bit ends on the boundary (JuliaGNSS/Tracking.jl#125).
-        return BitBuffer{B}(
-            code_block_buffer,
-            code_block_buffer_length,
+        return BitSynchronizer{B}(
+            prompt_sign_history,
+            num_prompt_signs,
             true,
             sync.phase,
             sync.polarity,
             complex(0.0, 0.0),
             sync.phase,
-            bit_buffer.soft_bits,
-            phase_acc,
+            bit_synchronizer.soft_bits,
+            phase_accumulators,
         )
     end
     if num_code_periods_per_bit == 0
         # Dataless, no overlay (Galileo E5a-QP): avoid dividing by zero below.
-        return BitBuffer{B}(
-            code_block_buffer,
-            code_block_buffer_length,
+        return BitSynchronizer{B}(
+            prompt_sign_history,
+            num_prompt_signs,
             true,
             0,
             sync.polarity,
             complex(0.0, 0.0),
             0,
-            bit_buffer.soft_bits,
-            phase_acc,
+            bit_synchronizer.soft_bits,
+            phase_accumulators,
         )
     end
     num_bits = min(
-        div(code_block_buffer_length, num_code_periods_per_bit),
-        div(sizeof(code_block_buffer) * 8, num_code_periods_per_bit),
+        div(num_prompt_signs, num_code_periods_per_bit),
+        div(sizeof(prompt_sign_history) * 8, num_code_periods_per_bit),
     )
     # Hoisted: capturing `sync` (assigned in several branches) would box it, ~80 B per
-    # pre-sync block.
+    # pre-sync code period.
     sync_polarity = Int(sync.polarity)
     for bit_index = num_bits:-1:1     # oldest recovered bit first
         # Lock polarity applies here too (JuliaGNSS/Tracking.jl#127).
         bit_sum =
-            sum(0:(num_code_periods_per_bit-1)) do code_block_index
-                buffer_code_block_index =
-                    (bit_index - 1) * num_code_periods_per_bit + code_block_index
-                ((code_block_buffer & (one(B) << buffer_code_block_index)) > 0) * 2 - 1
+            sum(0:(num_code_periods_per_bit-1)) do code_period_index
+                buffer_code_period_index =
+                    (bit_index - 1) * num_code_periods_per_bit + code_period_index
+                ((prompt_sign_history & (one(B) << buffer_code_period_index)) > 0) * 2 - 1
             end * sync_polarity
         # Sign votes scaled to soft-bit units (see `get_soft_bits`).
-        push!(bit_buffer.soft_bits, Float32(bit_sum * abs(prompt)))
+        push!(bit_synchronizer.soft_bits, Float32(bit_sum * abs(prompt)))
     end
-    return BitBuffer{B}(
-        code_block_buffer,
-        code_block_buffer_length,
+    return BitSynchronizer{B}(
+        prompt_sign_history,
+        num_prompt_signs,
         true,
         sync.phase,
         sync.polarity,
         complex(0, 0),
         0,
-        bit_buffer.soft_bits,
-        phase_acc,
+        bit_synchronizer.soft_bits,
+        phase_accumulators,
     )
 end
 
 """
 $(SIGNATURES)
 
-Advance a just-synced `bit_buffer`'s `secondary_phase` by `num_code_blocks`
+Advance a just-synced `bit_synchronizer`'s `secondary_code_phase` by `num_code_periods`
 (mod `N`); no-op without a secondary code.
 
-The detector reports the phase for the block after the syncing record, but
+The detector reports the phase for the code period after the syncing integration, but
 Tracking.jl's code-phase snap reads it only after the whole chunk, so every later
-record of the chunk (not `overlay_wiped`, see `fold_record`) must move it along, or
+integration of the chunk (not `secondary_code_wiped`, see `_process_correlator_bank_output!`) must move it along, or
 the replica applies the wrong overlay chip (cf. JuliaGNSS/Tracking.jl#219).
 """
 @inline function _advance_secondary_phase(
     signal::AbstractGNSSSignal,
-    bit_buffer::BitBuffer{B},
-    num_code_blocks::Integer,
+    bit_synchronizer::BitSynchronizer{B},
+    num_code_periods::Integer,
 ) where {B<:Unsigned}
     secondary_code_length = get_secondary_code_length(signal)
-    secondary_code_length > 1 || return bit_buffer
-    BitBuffer{B}(
-        bit_buffer.code_block_buffer,
-        bit_buffer.code_block_buffer_length,
-        bit_buffer.found,
-        mod(bit_buffer.secondary_phase + Int(num_code_blocks), secondary_code_length),
-        bit_buffer.polarity,
-        bit_buffer.prompt_accumulator,
-        bit_buffer.prompt_accumulator_integrated_code_blocks,
-        bit_buffer.soft_bits,
-        bit_buffer.phase_acc,
+    secondary_code_length > 1 || return bit_synchronizer
+    BitSynchronizer{B}(
+        bit_synchronizer.prompt_sign_history,
+        bit_synchronizer.num_prompt_signs,
+        bit_synchronizer.found,
+        mod(bit_synchronizer.secondary_code_phase + Int(num_code_periods), secondary_code_length),
+        bit_synchronizer.polarity,
+        bit_synchronizer.bit_prompt_sum,
+        bit_synchronizer.num_code_periods_into_bit,
+        bit_synchronizer.soft_bits,
+        bit_synchronizer.phase_accumulators,
     )
 end
 
 """
-    reset(bit_buffer::BitBuffer) -> BitBuffer
+    reset(bit_synchronizer::BitSynchronizer) -> BitSynchronizer
 
-A bit buffer with no sync and no soft bits, for a signal that is re-acquired: its
+A bit synchronizer with no sync and no soft bits, for a signal that is re-acquired: its
 storage is kept (the soft-bit vector is emptied in place), everything it detected
 is cleared.
 """
-function reset(bit_buffer::BitBuffer{B}) where {B<:Unsigned}
-    empty!(bit_buffer.soft_bits)
-    BitBuffer{B}(
-        bit_buffer.code_block_buffer,
-        bit_buffer.code_block_buffer_length,
-        bit_buffer.found,
-        bit_buffer.secondary_phase,
-        bit_buffer.polarity,
-        bit_buffer.prompt_accumulator,
-        bit_buffer.prompt_accumulator_integrated_code_blocks,
-        bit_buffer.soft_bits,
-        bit_buffer.phase_acc,
+function reset(bit_synchronizer::BitSynchronizer{B}) where {B<:Unsigned}
+    empty!(bit_synchronizer.soft_bits)
+    BitSynchronizer{B}(
+        bit_synchronizer.prompt_sign_history,
+        bit_synchronizer.num_prompt_signs,
+        bit_synchronizer.found,
+        bit_synchronizer.secondary_code_phase,
+        bit_synchronizer.polarity,
+        bit_synchronizer.bit_prompt_sum,
+        bit_synchronizer.num_code_periods_into_bit,
+        bit_synchronizer.soft_bits,
+        bit_synchronizer.phase_accumulators,
     )
 end

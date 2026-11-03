@@ -24,7 +24,7 @@ signal). On the sample-driven path `Tracking.TrackState` provisions a
 [`requires_noise_density`](@ref)); on a correlator-ingest path fill the same type
 with [`append_noise_observation!`](@ref). With **no** source configured, `update`
 throws: a silent substitution would hide a backend that never populates the
-reference. While a configured window is still **empty**, the fold skips the
+reference. While a configured window is still **empty**, post-correlation processing skips the
 update (Tracking.jl warns once per signal) and [`estimate_cn0`](@ref) reports
 `-Inf dB-Hz`.
 
@@ -93,7 +93,7 @@ density and the record's own integration time taken from `context`. The term is
 function update(estimator::NoiseRefCN0Estimator, prompt, context::CN0UpdateContext)
     cn0 = ustrip(
         Hz,
-        uconvert(Hz, abs2(prompt) / context.noise_density - 1 / context.integration_time),
+        uconvert(Hz, abs2(prompt) / context.noise_density - 1 / context.coherent_integration_time),
     )
     buffer_length = Base.length(estimator.buffered_cn0)
     next_index = mod(estimator.current_index, buffer_length) + 1
@@ -140,11 +140,11 @@ end
 @noinline _throw_noise_ref_needs_integration_time() = throw(
     ArgumentError(
         "NoiseRefCN0Estimator has this signal's noise density but no integration " *
-        "time: it applies `T` per integration (`|P|²/N̂₀ - 1/T`), so it cannot fold one " *
+        "time: it applies `T` per integration (`|P|²/N̂₀ - 1/T`), so it cannot add one " *
         "without it. Build the context with both — " *
-        "`CN0UpdateContext(signal, bit_buffer, num_code_blocks; noise_density, " *
-        "integration_time)` — which is what the tracking loop does; " *
-        "`integration_time` is that integration's own " *
+        "`CN0UpdateContext(signal, bit_synchronizer, num_code_periods; noise_density, " *
+        "coherent_integration_time)` — which is what the tracking loop does; " *
+        "`coherent_integration_time` is that integration's own " *
         "`num_integrated_samples / sampling_frequency`.",
     ),
 )
@@ -181,7 +181,7 @@ report `-Inf dB-Hz`, never `NaN` (see [`NoCN0Estimator`](@ref) for why). The
 explicit `isfinite` catches a `NaN` prompt, which passes `mean_cn0 <= 0` (a zero
 floor is already kept out of the ring by [`get_noise_density_and_ready`](@ref)).
 """
-function estimate_cn0(estimator::NoiseRefCN0Estimator, integration_time)
+function estimate_cn0(estimator::NoiseRefCN0Estimator, coherent_integration_time)
     filled = length(estimator)
     filled == 0 && return dBHz(0.0Hz)
     total = 0.0
@@ -192,3 +192,6 @@ function estimate_cn0(estimator::NoiseRefCN0Estimator, integration_time)
     isfinite(mean_cn0) && mean_cn0 > 0 || return dBHz(0.0Hz)
     dBHz(mean_cn0 * Hz)
 end
+
+reset_cn0_estimator!(e::NoiseRefCN0Estimator) =
+    (fill!(e.buffered_cn0, 0.0); NoiseRefCN0Estimator(e.num_records, e.buffered_cn0, 0, 0))

@@ -6,7 +6,7 @@
 # (BDS-SIS-ICD-B1C-1.0 §4.2.2), which is what `get_relative_power` reports.
 #
 # Both components are generated as BOC(1,1). The pilot's QMBOC(6,1,4/33) puts
-# its BOC(6,1) arm in quadrature, so a correlator on the pilot's carrier phase
+# its BOC(6,1) arm in quadrature, so a correlator bank on the pilot's carrier phase
 # sees only the 29/33-power BOC(1,1) arm.
 
 """
@@ -16,12 +16,12 @@ Bit-sync detector for the BeiDou B1C data component: one B-CNAV1 bit per
 10 ms primary code period (100 bit/s; BDS-SIS-ICD-B1C-1.0 Table 5-1), so it
 locks immediately — see `_detect_bit_is_code_period_sync`.
 """
-@inline detect_bit_or_secondary_code_sync(
+@inline detect_sync(
     signal::BeiDouB1C_D,
     prn::Integer,
-    code_block_bits::Unsigned,
-    num_code_blocks::Integer,
-) = _detect_bit_is_code_period_sync(signal, prn, code_block_bits, num_code_blocks)
+    code_period_bits::Unsigned,
+    num_code_periods::Integer,
+) = _detect_bit_is_code_period_sync(signal, prn, code_period_bits, num_code_periods)
 
 """
 $(SIGNATURES)
@@ -29,16 +29,16 @@ $(SIGNATURES)
 Secondary-code sync detector for the BeiDou B1C pilot: the hard
 `_detect_secondary_code_sync` over the per-PRN 1800-chip overlay
 (BDS-SIS-ICD-B1C-1.0 §5.2.2) on the 10 ms primary code, an 18 s cycle — the
-same shape as GPS L1C-P. Needs 1800 buffered blocks; accepts up to 45 errors
+same shape as GPS L1C-P. Needs 1800 buffered code periods; accepts up to 45 errors
 (2.5 %).
 """
-function detect_bit_or_secondary_code_sync(
+function detect_sync(
     signal::BeiDouB1C_P,
     prn::Integer,        # selects the PRN's 1800-chip overlay column
-    code_block_bits::UInt1800,
-    num_code_blocks::Integer,
+    code_period_bits::UInt1800,
+    num_code_periods::Integer,
 )
-    _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
+    _detect_secondary_code_sync(signal, prn, code_period_bits, num_code_periods)
 end
 
 # BOC(1,1)-class (see header): VeryEarlyPromptLate (see `get_default_correlator_bank`).
@@ -49,11 +49,11 @@ function get_default_correlator_bank(
     VeryEarlyPromptLateCorrelatorBank(; num_ants)
 end
 
-# One bit per code period: nothing to search (see `get_code_block_buffer_type`).
-@inline get_code_block_buffer_type(::BeiDouB1C_D) = UInt8
+# One bit per code period: nothing to search (see `prompt_sign_history_type`).
+@inline prompt_sign_history_type(::BeiDouB1C_D) = UInt8
 
 # Exact-width container for the 1800-chip overlay, shared with GPS L1C-P.
-@inline get_code_block_buffer_type(::BeiDouB1C_P) = UInt1800
+@inline prompt_sign_history_type(::BeiDouB1C_P) = UInt1800
 
 # Already the default; explicit so the pilot stays on the hard sweep even if
 # the 100-chip cap of `uses_soft_secondary_code_detection` is widened.

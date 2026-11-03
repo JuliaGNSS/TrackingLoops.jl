@@ -17,13 +17,13 @@ overlay (20 ms tiered code) — see `_detect_secondary_code_sync`. GEO PRNs neve
 sync (see [BeiDou GEO satellites](@ref)). The default detector is the soft one
 ([`uses_soft_secondary_code_detection`](@ref)).
 """
-@inline function detect_bit_or_secondary_code_sync(
+@inline function detect_sync(
     signal::BeiDouB1I,
     prn::Integer,        # selects the PRN's NH20 column (all-ones on GEO)
-    code_block_bits::Unsigned,
-    num_code_blocks::Integer,
+    code_period_bits::Unsigned,
+    num_code_periods::Integer,
 )
-    _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
+    _detect_secondary_code_sync(signal, prn, code_period_bits, num_code_periods)
 end
 
 # BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
@@ -31,5 +31,5 @@ function get_default_correlator_bank(::BeiDouB1I, num_ants::NumAnts = NumAnts(1)
     EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
-# Holds one NH20 period (see `get_code_block_buffer_type`).
-@inline get_code_block_buffer_type(::BeiDouB1I) = UInt32
+# Holds one NH20 period (see `prompt_sign_history_type`).
+@inline prompt_sign_history_type(::BeiDouB1I) = UInt32

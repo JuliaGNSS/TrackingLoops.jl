@@ -40,7 +40,7 @@ end
     tracking_loop = VectorTrackingLoop(GPSL1CA())
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
-    output = CorrelatorOutput(correlator_bank, 4000, 4000, 0.0)
+    output = CorrelatorBankOutput(correlator_bank, 4000, 4000, 0.0)
     words = ConstantNCOCommand(100.0, 0.1)
     @test_throws ArgumentError step_loop!(tracking_loop, state,
         LoopRecord(GPSL1CA(), correlator_bank, complex(0.0), output, 1, 4e6Hz), words, NO_LANDING_SAMPLE)

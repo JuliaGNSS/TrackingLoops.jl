@@ -10,7 +10,7 @@
 # fold's command takes effect at, `NO_LANDING_SAMPLE` for each record's end.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# The soft bits a record appended: a contiguous view of the bit buffer's vector.
+# The soft bits an integration appended: a contiguous view of the bit synchronizer's vector.
 const SoftBitsView = SubArray{Float32,1,Vector{Float32},Tuple{UnitRange{Int}},true}
 
 # The soft bits of an integration built without a signal state: none. Never written to.
@@ -28,14 +28,14 @@ and `fold_end`, the end sample of the fold's last record, against which a landin
 sample is measured.
 
 `integrated_code_blocks` must be at least 1: the carrier-loop staging sizes its
-phase-lock indicator's averages in records of that length and divides by it. A
-record built from a [`SignalLoopState`](@ref) always is ([`apply_record`](@ref)
-counts at least one block); a host building records otherwise must ensure it.
+phase-lock indicator's averages in integrations of that length and divides by it. A
+integration built from a [`PostCorrelationState`](@ref) always is ([`process_correlator_bank_output!`](@ref)
+counts at least one code period); a host building integrations otherwise must ensure it.
 
 The four-quadrant FLL reads a prompt sign flip as half a cycle of rotation, so a
-record whose `carrier_phase_polarity` differs from the previous record's comes with
-`previous_prompt = 0`, giving no FLL reading, as for the first record. The
-constructor that takes a `SignalLoopState` applies this; a host building records
+integration whose `carrier_phase_polarity` differs from the previous integration's comes with
+`previous_prompt = 0`, giving no FLL reading, as for the first integration. The
+constructor that takes a `PostCorrelationState` applies this; a host building integrations
 otherwise passes `0` itself.
 
 Fields used by a tracking loop with shared navigation state
@@ -43,23 +43,23 @@ Fields used by a tracking loop with shared navigation state
 
   - `prn`: the satellite (`0` if unknown);
   - `code_phase`: the replica's code phase (chips) at `sample_index`, from the
-    [`CorrelatorOutput`](@ref) (`NaN` if not reported).
+    [`CorrelatorBankOutput`](@ref) (`NaN` if not reported).
 
 For such a tracking loop `sample_index / sampling_frequency` must also be the time
 since an origin shared by every satellite of the band; a host whose correlator
 restarts its sample count passes the offset as `sample_offset` (added to
 `sample_index` and `fold_end`).
 
-The rest summarises the signal's [`SignalLoopState`](@ref) after
-[`apply_record`](@ref) folded this record, for an estimator that decodes or weights
+The rest summarises the signal's [`PostCorrelationState`](@ref) after
+[`process_correlator_bank_output!`](@ref) processed this integration, for a tracking loop that decodes or weights
 by C/N₀ (the vector loop; the scalar loops ignore it):
 
   - `bit_synced`: whether the bit clock holds bit or secondary-code sync;
-  - `sync_change`: whether this record found or lost it ([`SyncChange`](@ref));
-  - `blocks_into_symbol`: code blocks integrated into the current navigation bit
+  - `sync_change`: whether this integration found or lost it ([`SyncEvent`](@ref));
+  - `blocks_into_symbol`: code periods integrated into the current navigation bit
     (`0` before sync);
-  - `new_soft_bits`: exactly the soft bits *this record* appended, a view of the
-    bit buffer's vector valid for the call, so it does not matter when the host
+  - `new_soft_bits`: exactly the soft bits *this integration* appended, a view of the
+    bit synchronizer's vector valid for the call, so it does not matter when the host
     drains the buffer;
   - `cn0_estimator`: the signal's C/N₀ estimator, for [`estimate_cn0`](@ref);
   - `bit_polarity`: the sign the bit clock's sync found its soft bits at (`-1` if
@@ -71,10 +71,10 @@ modulation off it (a dataless signal synced to its secondary code), else `0`.
 Nonzero, the PLL and the FLL read the integration four-quadrant (`pll_disc(...;
 polarity)`, `fll_disc(...; polarity)`); `0`, two-quadrant.
 
-The constructor taking a `SignalLoopState` fills all of this in. The others leave
+The constructor taking a `PostCorrelationState` fills all of this in. The others leave
 the bit clock unsynchronised, add no soft bits, carry a [`NoCN0Estimator`](@ref)
 and take `carrier_phase_polarity` as a keyword (`0` by default): a host with its
-own per-signal state passes the one `fold_record` returned for the record.
+own per-signal state passes the one `_process_correlator_bank_output!` returned for the integration.
 """
 struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelatorBank,F,CN0<:AbstractCN0Estimator}
     signal::S
@@ -88,7 +88,7 @@ struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelatorBank,F,CN0<:Abstrac
     prn::Int
     code_phase::Float64
     bit_synced::Bool
-    sync_change::SyncChange
+    sync_change::SyncEvent
     blocks_into_symbol::Int
     new_soft_bits::SoftBitsView
     cn0_estimator::CN0
@@ -132,7 +132,7 @@ LoopRecord(
     signal,
     filtered_correlator,
     previous_prompt,
-    correlator_bank_output::CorrelatorOutput,
+    correlator_bank_output::CorrelatorBankOutput,
     integrated_code_blocks::Integer,
     sampling_frequency;
     fold_end = correlator_bank_output.sample_index,
@@ -160,28 +160,28 @@ LoopRecord(
 )
 
 """
-    LoopRecord(signal, filtered_correlator, output::CorrelatorOutput,
-               state::SignalLoopState, sampling_frequency;
-               fold_end = output.sample_index, prn = 0, sample_offset = 0)
+    LoopRecord(signal, filtered_correlator, correlator_bank_output::CorrelatorBankOutput,
+               state::PostCorrelationState, sampling_frequency;
+               fold_end = correlator_bank_output.sample_index, prn = 0, sample_offset = 0)
 
-The record of `output` with its block count, previous prompt, bit-clock summary,
+The integration of `correlator_bank_output` with its code-period count, previous prompt, bit-clock summary,
 C/N₀ estimator and carrier phase polarity taken from `state`, the
-[`SignalLoopState`](@ref) that [`apply_record`](@ref) just folded `output` into
+[`PostCorrelationState`](@ref) that [`process_correlator_bank_output!`](@ref) just folded `correlator_bank_output` into
 (see `LoopRecord` for the fields).
 """
 function LoopRecord(
     signal,
     filtered_correlator,
-    correlator_bank_output::CorrelatorOutput,
-    state::SignalLoopState,
+    correlator_bank_output::CorrelatorBankOutput,
+    state::PostCorrelationState,
     sampling_frequency;
     fold_end = correlator_bank_output.sample_index,
     prn::Integer = 0,
     sample_offset::Integer = 0,
 )
-    bit_buffer = state.bit_buffer
-    synced = has_bit_or_secondary_code_been_found(bit_buffer)
-    soft_bits = bit_buffer.soft_bits
+    bit_synchronizer = state.bit_synchronizer
+    synced = is_bit_or_secondary_code_synced(bit_synchronizer)
+    soft_bits = bit_synchronizer.soft_bits
     num_soft_bits = Base.length(soft_bits)
     first_new = max(1, num_soft_bits - state.last_num_new_soft_bits + 1)
     LoopRecord(
@@ -191,17 +191,17 @@ function LoopRecord(
         correlator_bank_output.num_integrated_samples,
         correlator_bank_output.sample_index + Int(sample_offset),
         Int(fold_end) + Int(sample_offset),
-        state.last_num_code_blocks,
+        state.last_num_code_periods,
         sampling_frequency,
         Int(prn),
         correlator_bank_output.code_phase,
         synced,
         state.last_sync_change,
-        synced ? bit_buffer.prompt_accumulator_integrated_code_blocks : 0,
+        synced ? bit_synchronizer.num_code_periods_into_bit : 0,
         view(soft_bits, first_new:num_soft_bits),
         state.cn0_estimator,
         state.last_carrier_phase_polarity,
-        synced ? bit_buffer.polarity : Int8(0),
+        synced ? bit_synchronizer.polarity : Int8(0),
     )
 end
 
@@ -465,7 +465,7 @@ end
     form_fll::Bool,
 )
     signal = integration.signal
-    integration_time = integration.integrated_samples / integration.sampling_frequency
+    coherent_integration_time = integration.integrated_samples / integration.sampling_frequency
     integration_start_sample_index = integration.sample_index - integration.integrated_samples
     applied_code = calc_mean_nco_command(words, integration_start_sample_index, integration.sample_index).code_doppler
     filtered_correlator_bank = integration.filtered_correlator
@@ -475,11 +475,11 @@ end
             signal,
             filtered_correlator_bank,
             integration.previous_prompt,
-            integration_time;
+            coherent_integration_time;
             polarity = integration.carrier_phase_polarity,
         ) : 0.0Hz
     (;
-        integration_time,
+        coherent_integration_time,
         phase_error = pll_disc(signal, filtered_correlator_bank; polarity = integration.carrier_phase_polarity),
         frequency_error,
         code_error = dll_disc(
@@ -499,19 +499,19 @@ end
 @inline _carrier_filter_input(::AbstractLoopFilter, phase_error, frequency_error) =
     phase_error
 
-# The scalar carrier filter's bandwidth for a record of `integration_time`: the
+# The scalar carrier filter's bandwidth for an integration of `coherent_integration_time`: the
 # stage's PLL bandwidth, paired with the FLL path's for an FLL-assisted filter.
-# Capped against the time the record actually integrated, not the intended length:
-# records folded after a mid-fold sync, and the truncated first post-sync
+# Capped against the time the integration actually integrated, not the intended length:
+# integrations stepped after a sync found mid-batch, and the truncated first post-sync
 # integration, are short.
-@inline function _carrier_loop_bandwidth(loop_state, integration_time)
+@inline function _carrier_loop_bandwidth(loop_state, coherent_integration_time)
     pll = calc_effective_carrier_loop_bandwidth(
         loop_state.staging.stage == NARROW_PLL ? loop_state.bandwidths.narrow_carrier :
         loop_state.bandwidths.wide_carrier,
-        integration_time,
+        coherent_integration_time,
     )
     _has_fll_path(typeof(loop_state.carrier_loop_filter)) || return pll
-    pll, calc_effective_fll_assist_loop_bandwidth(loop_state.bandwidths.fll_assist, integration_time)
+    pll, calc_effective_fll_assist_loop_bandwidth(loop_state.bandwidths.fll_assist, coherent_integration_time)
 end
 
 # The state after one integration, with both loop filters stepped and the staging
@@ -534,9 +534,9 @@ end
         landing_sample;
         form_fll = loop_state.staging.stage == FLL_ASSISTED_PLL,
     )
-    integration_time = discriminators.integration_time
+    coherent_integration_time = discriminators.coherent_integration_time
     code_loop_bandwidth =
-        calc_effective_code_loop_bandwidth(loop_state.bandwidths.code, integration_time)
+        calc_effective_code_loop_bandwidth(loop_state.bandwidths.code, coherent_integration_time)
     carrier_freq_update, carrier_loop_filter = filter_loop(
         loop_state.carrier_loop_filter,
         _carrier_filter_input(
@@ -544,13 +544,13 @@ end
             discriminators.phase_error,
             discriminators.frequency_error,
         ),
-        integration_time,
-        _carrier_loop_bandwidth(loop_state, integration_time),
+        coherent_integration_time,
+        _carrier_loop_bandwidth(loop_state, coherent_integration_time),
     )
     code_freq_update, code_loop_filter = filter_loop(
         loop_state.code_loop_filter,
         discriminators.code_error,
-        integration_time,
+        coherent_integration_time,
         code_loop_bandwidth,
     )
     carrier_doppler, code_doppler = calc_carrier_aided_dopplers(
@@ -735,7 +735,7 @@ wrap_phase_error(phase_error; polarity::Real = 0) =
     words,
     center,
     shift,
-    integration_time,
+    coherent_integration_time,
     sampling_frequency,
 )
     sampling_freq_hz = Float64(ustrip(Hz, uconvert(Hz, sampling_frequency)))
@@ -746,7 +746,7 @@ wrap_phase_error(phase_error; polarity::Real = 0) =
             Hz,
             loop_state.initial_carrier_doppler +
             carrier_loop_filter.x1 +
-            integration_time / 2 * carrier_loop_filter.x2,
+            coherent_integration_time / 2 * carrier_loop_filter.x2,
         ),
     )
     ramp_command = calc_mean_nco_command(words, center, center + shift).carrier_doppler
@@ -785,13 +785,13 @@ Passenger records are handled as by the conventional loop.
     signal = integration.signal
     sampling_frequency = integration.sampling_frequency
     previous_center = loop_state.previous_record_center
-    # Every integration of the fold maps onto the delay-free loop's integration this far ahead.
+    # Every integration of the batch maps onto the delay-free loop's integration this far ahead.
     shift = landing_sample == NO_LANDING_SAMPLE ? 0 : landing_sample - integration.fold_end
     integration_end_sample_index = integration.sample_index
     integration_samples = integration.integrated_samples
     integration_start_sample_index = integration_end_sample_index - integration_samples
     center = integration_end_sample_index - integration_samples / 2
-    integration_time = integration_samples / sampling_frequency
+    coherent_integration_time = integration_samples / sampling_frequency
     filtered_correlator_bank = integration.filtered_correlator
 
     nco_command = calc_mean_nco_command(words, integration_start_sample_index, integration_end_sample_index)
@@ -804,7 +804,7 @@ Passenger records are handled as by the conventional loop.
             signal,
             filtered_correlator_bank,
             integration.previous_prompt,
-            integration_time;
+            coherent_integration_time;
             polarity = integration.carrier_phase_polarity,
         ) : 0.0Hz
 
@@ -816,7 +816,7 @@ Passenger records are handled as by the conventional loop.
             words,
             center,
             shift,
-            integration_time,
+            coherent_integration_time,
             sampling_frequency,
         )
         # Re-base the FLL reading from the word between the prompts' centres onto
@@ -830,7 +830,7 @@ Passenger records are handled as by the conventional loop.
     end
 
     (;
-        integration_time,
+        coherent_integration_time,
         phase_error,
         frequency_error,
         code_error = dll_disc(signal, filtered_correlator_bank, applied_code * Hz, sampling_frequency),

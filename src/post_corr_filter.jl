@@ -7,7 +7,7 @@ discriminators and the C/N₀ estimator see.
 
 An implementation must provide two methods:
 
-  - [`get_weights`](@ref)`(filter, ::NumAnts{M})` — the combining weights `w` this
+  - [`get_weights`](@ref)`(post_corr_filter, ::NumAnts{M})` — the combining weights `w` this
     filter currently applies. A plain `ComplexF64` at `M == 1`, an
     `SVector{M,ComplexF64}` above.
   - [`update`](@ref)`(post_corr_filter, prompt)` — return the post-correlation filter to use for the next
@@ -27,7 +27,7 @@ abstract type AbstractPostCorrFilter end
 """
 $(SIGNATURES)
 
-This is the default post correlation filter. For a single antenna channel it
+This is the default post-correlation filter. For a single antenna channel it
 returns the prompt value as is. For multi antenna systems it selects the **last**
 antenna's value — the noise reference's covariance reduces to that antenna's own
 floor under these weights, so the two sides of the C/N₀ ratio agree.
@@ -38,7 +38,7 @@ struct DefaultPostCorrFilter <: AbstractPostCorrFilter end
 $(SIGNATURES)
 
 Update the post-correlation filter with the latest prompt and return the
-new filter (immutable update). This is the extension point for custom
+new post_corr_filter (immutable update). This is the extension point for custom
 [`AbstractPostCorrFilter`](@ref)s — e.g. a beamformer adapting its weights.
 """
 update(filter::DefaultPostCorrFilter, prompt) = filter
@@ -81,9 +81,9 @@ get_weights(::DefaultPostCorrFilter, ::NumAnts{M}) where {M} =
 @inline _filter_correlator_output(correlator_output::Number, w::Number) = conj(w) * correlator_output
 @inline _filter_correlator_output(correlator_output::StaticVector, w::StaticVector) = w'correlator_output
 
-# The same, for every tap of a correlator at once. A separate small function on
-# purpose: inline in the large `fold_record`, the weight-capturing closure is
-# heap-allocated per record, breaking the per-record allocation checks
+# The same, for every correlator output of a correlator bank at once. A separate small function on
+# purpose: inline in the large `_process_correlator_bank_output!`, the weight-capturing closure is
+# heap-allocated per integration, breaking the per-integration allocation checks
 # (`test/allocations.jl`).
 @inline _filter_correlator_bank(correlator_bank, weights) = set_correlator_outputs(
     correlator_bank,

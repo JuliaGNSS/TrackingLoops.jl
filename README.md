@@ -45,13 +45,13 @@ behaves identically on the others.
 - **NCO timelines** — `NCOTimeline` records which replica frequency ran over
   which samples, so a record can be attributed to the word it was really
   produced under rather than the one that was last requested.
-- **Bit and secondary-code synchronisation** — the `TrackingLoops.BitBuffer` with the
+- **Bit and secondary-code synchronisation** — the `TrackingLoops.BitSynchronizer` with the
   bit-edge and overlay-code detectors for every GPS, Galileo and BeiDou signal
   GNSSSignals.jl models.
 - **C/N₀ estimation** — moments, NWPR and noise-reference estimators, plus the
   noise-density window a noise-referenced estimator reads.
-- **The per-record fold** — `apply_record` advances a signal component's prompt
-  filter, C/N₀ estimator and bit buffer in one step, so every caller does it the
+- **Post-correlation processing** — `process_correlator_bank_output!` advances a signal component's prompt
+  filter, C/N₀ estimator and bit synchronizer in one step, so every caller does it the
   same way.
 - **Vector tracking** — `VectorPLLAndDLL` is a Doppler estimator like the
   others, stepped with the same `step_loop`, whose navigation engine does the
@@ -63,7 +63,7 @@ behaves identically on the others.
 
 Everything is a plain value or a small mutable state that is preallocated once,
 so a loop can be stepped for hours without allocating — provided the consumer
-drains the decoded soft bits (`get_soft_bits`) as they arrive; the bit buffer
+drains the demodulated soft bits (`get_soft_bits`) as they arrive; the bit synchronizer
 has room for 64 of them before its vector grows.
 
 ## Example
@@ -75,14 +75,14 @@ signal = GPSL1CA()
 fs = 4e6u"Hz"
 tracking_loop = ConventionalAssistedPLLAndDLL()
 loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
-loop = SignalLoopState(signal)              # bit buffer, C/N₀ estimator, prompt filter
+loop = PostCorrelationState(signal)      # bit synchronizer, C/N₀ estimator, post-correlation filter
 
-# For every coherent integration's `correlator_bank_output::CorrelatorOutput` the correlator bank produced:
-previous_prompt = loop.last_filtered_prompt   # read before `apply_record` replaces it
-loop, prompt, filtered, blocks, overshoot =
-    apply_record(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready)
+# For every coherent integration's `correlator_bank_output::CorrelatorBankOutput` the correlator bank produced:
+previous_prompt = loop.last_filtered_prompt   # read before `process_correlator_bank_output!` replaces it
+loop, prompt, filtered, code_periods, overshoot =
+    process_correlator_bank_output!(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready)
 overshoot && @warn "integration crossed a navigation-bit boundary; bit sync restarted"
-integration = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs)
+integration = LoopRecord(signal, filtered, previous_prompt, output, code_periods, fs)
 loop_state, carrier_doppler, code_doppler =
     step_loop!(tracking_loop, loop_state, integration, ConstantNCOCommand(carrier_hz, code_hz), NO_LANDING_SAMPLE)
 # program the next replica with carrier_doppler and code_doppler
@@ -96,23 +96,23 @@ for the full API reference.
 Build one `VectorTrackingLoop` for all the ranging signals the receiver tracks, and
 step every satellite with it like any other loop. The integrations must name their
 satellite (`prn`), report the replica's code phase at their end (`code_phase`
-on the `CorrelatorOutput`) and share one time grid (`sample_offset`):
+on the `CorrelatorBankOutput`) and share one time grid (`sample_offset`):
 
 ```julia
 tracking_loop = VectorTrackingLoop(GPSL1CA(), GalileoE1B())   # inner = ConventionalAssistedPLLAndDLL()
 loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
 
 # For every integration, as above, but naming the satellite:
-integration = LoopRecord(signal, filtered, previous_prompt, output, blocks, fs; prn, sample_offset)
+integration = LoopRecord(signal, filtered, previous_prompt, output, code_periods, fs; prn, sample_offset)
 loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, words, landing_sample)
 
 navigation_solution(tracking_loop)   # the latest `PVTSolution`
 navigation_status(tracking_loop)     # what the latest navigation cycle did
 ```
 
-Each satellite runs its scalar loop until the filter takes it over. Inside
-`step_loop` the estimator syncs to the satellite's bits, decodes them, estimates
-its C/N₀ and snapshots it at every navigation epoch; the record that brings the
+Each satellite runs its scalar loop until the filter takes it over. `process_correlator_bank_output!`
+handles bit synchronization, demodulation and C/N₀ estimation. `step_loop!` decodes
+the navigation data and snapshots host C/N₀ at every navigation epoch; the integration that brings the
 last satellite past an epoch runs that epoch's cycle — the scalar PVT until its
 first fix seeds the filter, a filter iteration after that — and each satellite
 takes the cycle's admission, release and corrections up on its next record,

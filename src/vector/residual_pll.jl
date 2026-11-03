@@ -158,8 +158,8 @@ function _residual_pll_on_new_ramp(residual_pll::ResidualPLL, old::CarrierRamp, 
     )
 end
 
-# The residual PLL with its lock tested on the prompt it wiped to `wiped`, a record of
-# `integration_time` (s), averaged over `time_constant` records: the phase-lock
+# The residual PLL with its lock tested on the prompt it wiped to `wiped`, an integration of
+# `coherent_integration_time` (s), averaged over `time_constant` integrations: the phase-lock
 # indicator at least the scalar loop's threshold and the C/N₀ of the same moments at most
 # `RESIDUAL_PLL_CN0_MARGIN` below `lock_cn0_threshold` (on noise alone the indicator's
 # signal power comes out near zero now and then, and the ratio reads lock). It drops
@@ -174,7 +174,7 @@ const RESIDUAL_PLL_CN0_MARGIN = 6.0 # dB
 function _with_lock_test(
     residual_pll::ResidualPLL,
     wiped,
-    integration_time,
+    coherent_integration_time,
     time_constant,
     lock_cn0_threshold_dbhz,
     signal_present::Bool,
@@ -183,7 +183,7 @@ function _with_lock_test(
     lock_detector = _advance_lock_detector(lock.lock_detector, wiped, time_constant)
     signal_power = _signal_power(lock_detector)
     noise_power = max(lock_detector.power - signal_power, eps(lock_detector.power))
-    cn0_dbhz = 10 * log10(max(signal_power / (noise_power * integration_time), 1e-3))
+    cn0_dbhz = 10 * log10(max(signal_power / (noise_power * coherent_integration_time), 1e-3))
     good = lock_detector.indicator >= _PHASE_LOCK_THRESHOLD && cn0_dbhz >= lock_cn0_threshold_dbhz - RESIDUAL_PLL_CN0_MARGIN
     num_locked_integrations = good ? lock.num_locked_integrations + 1 : 0
     locked = lock.locked ? good : num_locked_integrations >= time_constant
@@ -224,7 +224,7 @@ end
 function _step_residual_pll(residual_pll::ResidualPLL, ramp::CarrierRamp, integration::LoopRecord, replica_cycles)
     fs = _sampling_frequency_hz(integration)
     num_samples = integration.integrated_samples
-    integration_time = num_samples / fs
+    coherent_integration_time = num_samples / fs
     center = (integration.sample_index - num_samples / 2) / fs
     polarity = integration.carrier_phase_polarity
 
@@ -243,8 +243,8 @@ function _step_residual_pll(residual_pll::ResidualPLL, ramp::CarrierRamp, integr
         phase_error = pll_disc(integration.signal, wiped; polarity)
     end
 
-    bandwidth = calc_effective_carrier_loop_bandwidth(residual_pll.bandwidth, integration_time * s)
-    carrier_freq_update, loop_filter = filter_loop(residual_pll.loop_filter, phase_error, integration_time * s, bandwidth)
+    bandwidth = calc_effective_carrier_loop_bandwidth(residual_pll.bandwidth, coherent_integration_time * s)
+    carrier_freq_update, loop_filter = filter_loop(residual_pll.loop_filter, phase_error, coherent_integration_time * s, bandwidth)
     ResidualPLL(
         residual_pll;
         carrier_freq_update = ustrip(Hz, carrier_freq_update),

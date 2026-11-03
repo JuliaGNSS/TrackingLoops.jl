@@ -41,17 +41,17 @@ still.
 const _FLL_DROP_TIME_CONSTANTS = 1
 const _NARROWING_TIME_CONSTANTS = 4
 
-# Time constant of the phase-lock indicator's averages, in records of
-# `num_code_blocks` primary code blocks: 0.1 s but at least 25 records, so its
-# signal-power normaliser is averaged over enough records (100 of 1 ms, 25 of 4 ms
+# Time constant of the phase-lock indicator's averages, in integrations of
+# `num_code_periods` primary code periods: 0.1 s but at least 25 integrations, so its
+# signal-power normaliser is averaged over enough integrations (100 of 1 ms, 25 of 4 ms
 # or longer: 0.25 s at 10 ms, 0.5 s at 20 ms). Counted in chips from the nominal
 # integration length, so it does not move with an integration's sample jitter.
 const _PHASE_LOCK_TIME_CONSTANT = 0.1s
 const _MIN_PHASE_LOCK_INTEGRATIONS = 25
 
-@inline function _phase_lock_time_constant(signal::AbstractGNSSSignal, num_code_blocks)
+@inline function _phase_lock_time_constant(signal::AbstractGNSSSignal, num_code_periods)
     chips = round(Int, get_chip_rate(signal) * _PHASE_LOCK_TIME_CONSTANT)
-    max(cld(chips, num_code_blocks * get_code_length(signal)), _MIN_PHASE_LOCK_INTEGRATIONS)
+    max(cld(chips, num_code_periods * get_code_length(signal)), _MIN_PHASE_LOCK_INTEGRATIONS)
 end
 
 # The phase-lock indicator's lock threshold: an RMS phase error of about 30°.

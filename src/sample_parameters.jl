@@ -1,8 +1,8 @@
 """
 $(SIGNATURES)
 
-Longest coherent integration, in primary code blocks, that `signal`'s own
-structure allows — the ceiling `calc_num_code_blocks_to_integrate` clamps a
+Longest coherent integration, in primary code periods, that `signal`'s own
+structure allows — the ceiling `calc_num_code_periods_to_integrate` clamps a
 satellite's preferred integration length against.
 
 One full bit: the data-bit period for data-bearing signals, or the
@@ -10,58 +10,58 @@ secondary-code period for pilots (a bit rate of `0 Hz`, e.g. GPS L1C-P).
 Integrating past it would straddle a bit boundary and average two opposite
 signs away.
 
-The default degenerates to a single block for a signal that has neither a
-multi-block data bit nor an overlay; Galileo E5a-QP overrides it to a whole
-31-block code cycle (see `galileo/e5a_qp.jl`). GPS L2CL is the same shape and
+The default degenerates to a single code period for a signal that has neither a
+multi-period data bit nor an overlay; Galileo E5a-QP overrides it to a whole
+31-period code cycle (see `galileo/e5a_qp.jl`). GPS L2CL is the same shape and
 deliberately keeps the default: its 1.5 s primary period is already a whole
 coherent integration.
 """
-@inline max_num_code_blocks_to_integrate(signal::AbstractGNSSSignal) =
+@inline max_num_code_periods_to_integrate(signal::AbstractGNSSSignal) =
     max(get_secondary_code_length(signal), get_code_periods_per_bit(signal))
 
 """
 $(SIGNATURES)
 
-Coherent integration length, in primary code blocks, a freshly tracked signal
-starts at. One block for every signal but Galileo E5a-QP, whose 64.5 µs block is
-too short to run a loop on and which starts at a whole 31-block code cycle.
+Coherent integration length, in primary code periods, a freshly tracked signal
+starts at. One code period for every signal but Galileo E5a-QP, whose 64.5 µs code period is
+too short to run a loop on and which starts at a whole 31-period code cycle.
 """
-@inline default_num_code_blocks_to_integrate(::AbstractGNSSSignal) = 1
+@inline default_num_code_periods_to_integrate(::AbstractGNSSSignal) = 1
 
 """
 $(SIGNATURES)
 
-Returns the appropriate number of code blocks to integrate. It will be just a
-single code block as long as the secondary code or bit hasn't been found. Once
+Returns the appropriate number of code periods to integrate. It will be just a
+single code period as long as the secondary code or bit hasn't been found. Once
 found, the coherent integration is capped by
-[`max_num_code_blocks_to_integrate`](@ref) and clamped to the largest divisor
+[`max_num_code_periods_to_integrate`](@ref) and clamped to the largest divisor
 of that ceiling not exceeding the preferred value, so an integration never
 straddles a bit boundary.
 """
-function calc_num_code_blocks_to_integrate(
+function calc_num_code_periods_to_integrate(
     signal::AbstractGNSSSignal,
-    preferred_num_code_blocks::Int,
+    preferred_num_code_periods::Int,
     secondary_code_or_bit_found::Bool,
 )
     secondary_code_or_bit_found || return 1
-    num_code_blocks_that_form_a_bit = max_num_code_blocks_to_integrate(signal)
-    num_code_blocks =
-        clamp(preferred_num_code_blocks, 1, num_code_blocks_that_form_a_bit)
-    while num_code_blocks_that_form_a_bit % num_code_blocks != 0
-        num_code_blocks -= 1
+    num_code_periods_that_form_a_bit = max_num_code_periods_to_integrate(signal)
+    num_code_periods =
+        clamp(preferred_num_code_periods, 1, num_code_periods_that_form_a_bit)
+    while num_code_periods_that_form_a_bit % num_code_periods != 0
+        num_code_periods -= 1
     end
-    num_code_blocks
+    num_code_periods
 end
 
 """
 $(SIGNATURES)
 
-Number of primary code blocks to credit the bit-buffer accumulator with for a
+Number of primary code periods to credit the bit synchronizer's bit sum with for a
 just-completed integration: always 1 before bit/secondary sync (the detectors
-shift exactly one prompt sign per call), and afterwards the whole blocks the
-record actually covered, recovered from its sample count.
+shift exactly one prompt sign per call), and afterwards the whole code periods the
+integration actually covered, recovered from its sample count.
 """
-@inline function calc_num_code_blocks_for_bit_buffer(
+@inline function calc_num_code_periods_for_bit_sync(
     signal::AbstractGNSSSignal,
     num_integrated_samples::Integer,
     sampling_frequency,
