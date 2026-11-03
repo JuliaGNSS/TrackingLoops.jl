@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# The per-record side of the navigation engine (see `step_loop`).
+# The per-integration side of the navigation engine (see `step_loop!`).
 #
 # Times are `sample_index / sampling_frequency` seconds since an origin shared by every
 # satellite; the navigation epochs are the multiples of the update interval.
@@ -35,14 +35,14 @@ function _check_ranging_pair((driver, decoding))
 end
 
 # The estimator, built here, after the navigation engine it holds.
-function VectorPLLAndDLL(
+function VectorTrackingLoop(
     signals::Union{AbstractGNSSSignal,Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}}...;
-    inner::AbstractDopplerEstimator = ConventionalAssistedPLLAndDLL(),
+    inner::AbstractTrackingLoop = ConventionalAssistedPLLAndDLL(),
     filter_config::Union{NavigationFilterConfig,Nothing} = NavigationFilterConfig(),
-    vt_update_interval = 100.0ms,
-    lock_cn0_threshold = 30.0dBHz,
+    navigation_update_interval = 100.0ms,
+    min_tracking_cn0 = 30.0dBHz,
     residual_pll_loop_filter_bandwidth = default_residual_pll_loop_filter_bandwidth(),
-    max_satellites_per_signal::Integer = 16,
+    satellite_capacity_per_signal::Integer = 16,
     approximate_year::Integer = year(now(UTC)),
     enable_ionospheric_correction::Bool = true,
     enable_tropospheric_correction::Bool = true,
@@ -51,7 +51,7 @@ function VectorPLLAndDLL(
         ArgumentError(
             "a satellite the vector loop releases pulls in again through the FLL " *
             "path of an FLL-assisted carrier filter; use " *
-            "`ConventionalAssistedPLLAndDLL()` or `NCOReferencedPLLAndDLL()` as " *
+            "`ConventionalAssistedPLLAndDLL()` or `DelayCompensatedTrackingLoop()` as " *
             "the inner estimator",
         ),
     )
@@ -66,34 +66,34 @@ function VectorPLLAndDLL(
     allunique(signal_types) ||
         throw(ArgumentError("each signal can be given only once, as a driver or a decoding signal"))
     foreach(_check_ranging_pair, pairs)
-    max_satellites_per_signal >= 1 ||
-        throw(ArgumentError("`max_satellites_per_signal` must be at least 1"))
-    T = Float64(ustrip(s, vt_update_interval)) * s
+    satellite_capacity_per_signal >= 1 ||
+        throw(ArgumentError("`satellite_capacity_per_signal` must be at least 1"))
+    T = Float64(ustrip(s, navigation_update_interval)) * s
     0.0s < T < Inf * s ||
-        throw(ArgumentError("`vt_update_interval` must be positive and finite"))
+        throw(ArgumentError("`navigation_update_interval` must be positive and finite"))
     residual_pll_loop_filter_bandwidth > 0.0Hz ||
         throw(ArgumentError("`residual_pll_loop_filter_bandwidth` must be positive"))
-    navigation = VectorNavigation(
+    navigation = VectorNavState(
         filter_config,
         pairs,
         inner;
-        vt_update_interval = T,
-        lock_cn0_threshold_dbhz = Float64(ustrip(lock_cn0_threshold)),
-        max_satellites_per_signal = Int(max_satellites_per_signal),
+        navigation_update_interval = T,
+        min_tracking_cn0_dbhz = Float64(ustrip(min_tracking_cn0)),
+        satellite_capacity_per_signal = Int(satellite_capacity_per_signal),
         approximate_year,
         enable_ionospheric_correction,
         enable_tropospheric_correction,
     )
-    VectorPLLAndDLL(inner, navigation, Float64(ustrip(Hz, residual_pll_loop_filter_bandwidth)) * Hz)
+    VectorTrackingLoop(inner, navigation, Float64(ustrip(Hz, residual_pll_loop_filter_bandwidth)) * Hz)
 end
 
 """
-    step_loop(estimator::VectorPLLAndDLL, state, record::LoopRecord, words, landing_sample)
+    step_loop!(estimator::VectorTrackingLoop, state, integration::PredetectionIntegration, nco_history, application_sample_index)
         -> (state, carrier_doppler, code_doppler)
 
-One record of a satellite through the vector loop (see [`VectorPLLAndDLL`](@ref)).
-The satellite registers with the navigation engine on its first record, of either
-signal. A record of its
+One integration of a satellite through the vector loop (see [`VectorTrackingLoop`](@ref)).
+The satellite registers with the navigation engine on its first integration, of either
+signal. An integration of its
 
   - **driver** takes up the latest cycle's admission, release and commands,
     snapshots the replica, Dopplers, accumulated discriminators and C/N₀ when it
@@ -103,121 +103,121 @@ signal. A record of its
     the state unchanged;
   - plain signal does both; any other passenger does nothing, as in a scalar loop.
 
-A satellite's snapshot of an epoch is complete once a record of each signal has
-crossed it, in either order; the record completing the last satellite's snapshot
+A satellite's snapshot of an epoch is complete once an integration of each signal has
+crossed it, in either order; the integration completing the last satellite's snapshot
 runs that epoch's cycle. Out of the vector loop the driver's Dopplers equal
-`step_loop(estimator.inner, …)`'s.
+`step_loop!(estimator.inner, …)`'s.
 """
-@inline step_loop(
-    estimator::VectorPLLAndDLL,
-    state::SatVectorPLLAndDLL,
-    record::LoopRecord,
-    words,
-    landing_sample::Int64,
-) = _step_vector_record(
+@inline step_loop!(
+    estimator::VectorTrackingLoop,
+    state::VectorLoopState,
+    integration::PredetectionIntegration,
+    nco_history,
+    application_sample_index::Int64,
+) = _step_vector_integration(
     estimator,
     estimator.navigation,
     estimator.navigation.groups,
     1,
     state,
-    record,
-    words,
-    landing_sample,
+    integration,
+    nco_history,
+    application_sample_index,
 )
 
-# Find the group the record's signal drives or is decoded on, by type so the search
-# folds at compile time. A record of a signal the estimator was not built for is an
+# Find the group the integration's signal drives or is decoded on, by type so the search
+# folds at compile time. An integration of a signal the estimator was not built for is an
 # ignored passenger unless it is the satellite's driver.
-@inline function _step_vector_record(estimator, nav, ::Tuple{}, g, state, record::LoopRecord, words, landing_sample)
-    _is_driver_record(state, record) && _throw_unknown_driver(record)
-    _step_passenger(state, record, words, landing_sample)
+@inline function _step_vector_integration(estimator, nav, ::Tuple{}, g, state, integration::PredetectionIntegration, nco_history, application_sample_index)
+    _is_driver_integration(state, integration) && _throw_unknown_driver(integration)
+    _step_passenger(state, integration, nco_history, application_sample_index)
 end
-@inline function _step_vector_record(
+@inline function _step_vector_integration(
     estimator,
     nav,
     groups::Tuple,
     g,
     state,
-    record::LoopRecord{S},
-    words,
-    landing_sample,
+    integration::PredetectionIntegration{S},
+    nco_history,
+    application_sample_index,
 ) where {S}
     group = first(groups)
     if group.driver_signal isa S
-        _is_driver_record(state, record) || _throw_foreign_driver(state, record)
-        _step_vector_record(estimator, nav, group, g, state, record, words, landing_sample, true, group.decoding_signal isa S)
+        _is_driver_integration(state, integration) || _throw_foreign_driver(state, integration)
+        _step_vector_integration(estimator, nav, group, g, state, integration, nco_history, application_sample_index, true, group.decoding_signal isa S)
     elseif group.decoding_signal isa S
         # A satellite another group drives: a passenger of it this group must not take.
         _is_driven_by(state, group.driver_signal) ||
-            return _step_passenger(state, record, words, landing_sample)
-        _step_vector_record(estimator, nav, group, g, state, record, words, landing_sample, false, true)
+            return _step_passenger(state, integration, nco_history, application_sample_index)
+        _step_vector_integration(estimator, nav, group, g, state, integration, nco_history, application_sample_index, false, true)
     else
-        _step_vector_record(estimator, nav, Base.tail(groups), g + 1, state, record, words, landing_sample)
+        _step_vector_integration(estimator, nav, Base.tail(groups), g + 1, state, integration, nco_history, application_sample_index)
     end
 end
 
-@noinline _throw_unknown_driver(record) = throw(
+@noinline _throw_unknown_driver(integration) = throw(
     ArgumentError(
         "this vector-tracking estimator was not built for " *
-        "$(nameof(typeof(record.signal))); list it among its signals",
+        "$(nameof(typeof(integration.signal))); list it among its signals",
     ),
 )
 
-@noinline _throw_foreign_driver(state, record) = throw(
+@noinline _throw_foreign_driver(state, integration) = throw(
     ArgumentError(
-        "a satellite driven by another signal was stepped with a record of " *
-        "$(nameof(typeof(record.signal))), which this estimator ranges on as a driver",
+        "a satellite driven by another signal was stepped with an integration of " *
+        "$(nameof(typeof(integration.signal))), which this estimator ranges on as a driver",
     ),
 )
 
-# One record in its roles: `driver` (closes the loops) and `decoding` (feeds the
+# One integration in its roles: `driver` (closes the loops) and `decoding` (feeds the
 # decoder); both for a plain signal.
-function _step_vector_record(
-    estimator::VectorPLLAndDLL,
-    nav::VectorNavigation,
+function _step_vector_integration(
+    estimator::VectorTrackingLoop,
+    nav::VectorNavState,
     group::VTSlotGroup,
     g::Int,
-    state::SatVectorPLLAndDLL,
-    record::LoopRecord,
-    words,
-    landing_sample::Int64,
+    state::VectorLoopState,
+    integration::PredetectionIntegration,
+    nco_history,
+    application_sample_index::Int64,
     driver::Bool,
     decoding::Bool,
 )
-    state, slot = _register!(nav, group, g, state, record)
-    landing = landing_sample == NO_LANDING_SAMPLE ? record.sample_index : landing_sample
-    driver && (state = _take_up_cycle(nav, group, slot, state, record, words, landing))
-    if _run_overdue_cycle!(nav, slot, record) && driver
-        state = _take_up_cycle(nav, group, slot, state, record, words, landing)
+    state, slot = _register!(nav, group, g, state, integration)
+    application_sample_index = application_sample_index == NO_LANDING_SAMPLE ? integration.sample_index : application_sample_index
+    driver && (state = _take_up_cycle(nav, group, slot, state, integration, nco_history, application_sample_index))
+    if _run_overdue_cycle!(nav, slot, integration) && driver
+        state = _take_up_cycle(nav, group, slot, state, integration, nco_history, application_sample_index)
     end
-    _move_past_gap!(nav, driver ? slot.driver_last_end_time : slot.decoding_last_end_time, record)
-    driver && (state = _snapshot_driver!(nav, group, slot, state, record, words))
-    decoding && _snapshot_decoding!(nav, group, slot, record, words)
+    _move_past_gap!(nav, driver ? slot.driver_last_end_time : slot.decoding_last_end_time, integration)
+    driver && (state = _snapshot_driver!(nav, group, slot, state, integration, nco_history))
+    decoding && _snapshot_decoding!(nav, group, slot, integration, nco_history)
     _complete_snapshot!(nav, group, slot)
-    if _run_cycle_if_due!(nav, record) && driver
-        state = _take_up_cycle(nav, group, slot, state, record, words, landing)
+    if _run_cycle_if_due!(nav, integration) && driver
+        state = _take_up_cycle(nav, group, slot, state, integration, nco_history, application_sample_index)
     end
     if driver
-        state, carrier_doppler, code_doppler = _step_satellite(estimator, state, record, words, landing_sample)
-        _advance_driver!(group, slot, record, words)
+        state, carrier_doppler, code_doppler = _step_satellite(estimator, state, integration, nco_history, application_sample_index)
+        _advance_driver!(group, slot, integration, nco_history)
         # In the vector loop the residual PLL stepped on this prompt (`_measure_carrier`);
         # out of it, the history starts afresh when the satellite is added again.
-        state.in_vector_loop ? _push_prompt!(slot.prompt_history, state.residual_pll) :
+        state.vector_controlled ? _push_prompt!(slot.prompt_history, state.residual_pll) :
         _clear_prompts!(slot.prompt_history)
     else
-        carrier_doppler, code_doppler = _command_in_force(record, words, landing_sample)
+        carrier_doppler, code_doppler = _command_in_force(integration, nco_history, application_sample_index)
     end
-    decoding && _advance_decoding!(group, slot, record, state, words, driver)
+    decoding && _advance_decoding!(group, slot, integration, state, nco_history, driver)
     state, carrier_doppler, code_doppler
 end
 
-_update_interval_seconds(nav::VectorNavigation) = ustrip(s, nav.vt_update_interval)
-_sampling_frequency_hz(record::LoopRecord) = Float64(ustrip(Hz, record.sampling_frequency))
-_epoch_time(nav::VectorNavigation, epoch::Int) = epoch * _update_interval_seconds(nav)
+_update_interval_seconds(nav::VectorNavState) = ustrip(s, nav.navigation_update_interval)
+_sampling_frequency_hz(integration::PredetectionIntegration) = Float64(ustrip(Hz, integration.sampling_frequency))
+_epoch_time(nav::VectorNavState, epoch::Int) = epoch * _update_interval_seconds(nav)
 
 # The first epoch whose `_epoch_time` is not before `t`, compared exactly as
 # `_crosses_pending_epoch` does (`t / T` may round to either side).
-function _epoch_at_or_after(nav::VectorNavigation, t)
+function _epoch_at_or_after(nav::VectorNavState, t)
     T = _update_interval_seconds(nav)
     epoch = ceil(Int, t / T)
     (epoch - 1) * T >= t ? epoch - 1 : epoch * T < t ? epoch + 1 : epoch
@@ -231,19 +231,19 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Registration
 
-# The satellite's slot, registering it on the record's PRN if it has none or lost it.
+# The satellite's slot, registering it on the integration's PRN if it has none or lost it.
 # A re-acquired PRN gets its old slot back with its decoded data; any other takes a
 # free slot, and only when none is free does the group grow.
-function _register!(nav::VectorNavigation, group::VTSlotGroup, g::Int, state::SatVectorPLLAndDLL, record::LoopRecord)
+function _register!(nav::VectorNavState, group::VTSlotGroup, g::Int, state::VectorLoopState, integration::PredetectionIntegration)
     slots = group.slots
     index = state.slot_index
     if 1 <= index <= length(slots)
         slot = slots[index]
-        slot.occupied && slot.registration == state.registration && return state, slot
+        slot.occupied && slot.slot_generation == state.slot_generation && return state, slot
     end
-    prn = record.prn
+    prn = integration.prn
     prn > 0 || throw(
-        ArgumentError("vector tracking needs to know the satellite: set the record's `prn`"),
+        ArgumentError("vector tracking needs to know the satellite: set the integration's `prn`"),
     )
     index = _find_slot(slots, prn)
     if index == 0
@@ -251,9 +251,9 @@ function _register!(nav::VectorNavigation, group::VTSlotGroup, g::Int, state::Sa
         index = length(slots)
     end
     slot = slots[index]
-    nav.registrations += 1
-    state = _registered(state, index, nav.registrations)
-    _reset_slot!(nav, slot, prn, state, record)
+    nav.next_slot_generation += 1
+    state = _registered(state, index, nav.next_slot_generation)
+    _reset_slot!(nav, slot, prn, state, integration)
     state, slot
 end
 
@@ -261,7 +261,7 @@ end
 function _find_slot(slots, prn)
     free = 0
     for (index, slot) in enumerate(slots)
-        if slot.prn == prn && slot.registration > 0
+        if slot.prn == prn && slot.slot_generation > 0
             return index
         end
         !slot.occupied && free == 0 && (free = index)
@@ -270,29 +270,29 @@ function _find_slot(slots, prn)
 end
 
 # Reset `slot` in place for a registering satellite. The decoder restarts its sync,
-# keeping the decoded data only for the same PRN; both signals start at the record's
+# keeping the decoded data only for the same PRN; both signals start at the integration's
 # start.
-function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, record::LoopRecord)
+function _reset_slot!(nav::VectorNavState, slot::VTSlot, prn::Int, state, integration::PredetectionIntegration)
     slot.running_decoder =
-        slot.prn == prn && slot.registration > 0 ? reset_decoder_state!(slot.running_decoder) :
+        slot.prn == prn && slot.slot_generation > 0 ? reset_decoder_state!(slot.running_decoder) :
         reset_decoder_state!(slot.running_decoder, prn)
     slot.prn = prn
     slot.occupied = true
-    slot.registration = nav.registrations
+    slot.slot_generation = nav.next_slot_generation
     slot.in_cycle = false
-    fs = _sampling_frequency_hz(record)
-    start = record.sample_index - record.integrated_samples
-    slot.driver_last_end_sample = start
+    fs = _sampling_frequency_hz(integration)
+    start = integration.sample_index - integration.num_integrated_samples
+    slot.driver_last_end_sample_index = start
     slot.driver_last_end_time = start / fs
     slot.last_code_phase = NaN
-    slot.last_integration_time = uconvert(s, record.integrated_samples / record.sampling_frequency)
+    slot.last_coherent_integration_time = uconvert(s, integration.num_integrated_samples / integration.sampling_frequency)
     slot.chips_since_epoch = 0.0
-    slot.decoding_last_end_sample = start
+    slot.decoding_last_end_sample_index = start
     slot.decoding_last_end_time = start / fs
     slot.decoding_bit_synced = false
     slot.decoding_num_code_periods_into_bit = 0
     slot.decoding_code_phase_fraction = NaN
-    slot.sync_fold_end = typemin(Int)
+    slot.sync_batch_end_sample_index = typemin(Int)
     slot.bit_accumulator = zero(ComplexF64)
     slot.bit_from_edge = false
     _clear_prompts!(slot.prompt_history)
@@ -301,7 +301,7 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     end
     # A snapshot the slot held is gone with it.
     slot.snapshot_epoch == nav.pending_epoch && (nav.num_snapshots -= 1)
-    # A record starting exactly at an epoch crosses it, so that epoch is the first; if
+    # An integration starting exactly at an epoch crosses it, so that epoch is the first; if
     # it is not pending yet, the slot is past it by the time it is, and the cycle does
     # not wait for it (`_all_snapshotted`).
     slot.first_epoch = _epoch_at_or_after(nav, slot.driver_last_end_time)
@@ -313,11 +313,11 @@ function _reset_slot!(nav::VectorNavigation, slot::VTSlot, prn::Int, state, reco
     slot.epoch_bit_synced = false
     # Registered out of the vector loop; a state still in it takes up the release in
     # `_take_up_cycle`, re-seeding its scalar loop.
-    slot.estimator_state = _release_from_vector_loop(state)
-    slot.in_lock = false
-    slot.pvt_ready = false
+    slot.loop_state = _release_from_vector_loop(state)
+    slot.measurement_ready = false
+    slot.positioning_ready = false
     slot.release_reason = VT_NOT_RELEASED
-    slot.command_cycle = -1
+    slot.command_cycle_index = -1
     slot.member_index = 0
     nothing
 end
@@ -326,135 +326,135 @@ end
 # Taking up a cycle
 
 # Take up the latest cycle's decisions once: admission, release (re-seeding the scalar
-# loop at the landing) and commands sized for that landing.
+# loop at the application sample) and commands sized for it.
 function _take_up_cycle(
-    nav::VectorNavigation,
+    nav::VectorNavState,
     group::VTSlotGroup,
     slot::VTSlot,
-    state::SatVectorPLLAndDLL,
-    record::LoopRecord,
-    words,
-    landing::Int64,
+    state::VectorLoopState,
+    integration::PredetectionIntegration,
+    nco_history,
+    application_sample_index::Int64,
 )
-    id = nav.cycle_id
-    state.cycle_id == id && return state
-    slot_in_loop = slot.estimator_state.in_vector_loop
-    if slot_in_loop && !state.in_vector_loop
+    id = nav.cycle_index
+    state.cycle_index == id && return state
+    slot_in_loop = slot.loop_state.vector_controlled
+    if slot_in_loop && !state.vector_controlled
         state = _add_to_vector_loop(state)
-    elseif !slot_in_loop && state.in_vector_loop
-        state = _hand_over_to_scalar_loop(state, words, landing, _sampling_frequency_hz(record))
+    elseif !slot_in_loop && state.vector_controlled
+        state = _hand_over_to_scalar_loop(state, nco_history, application_sample_index, _sampling_frequency_hz(integration))
     end
-    if slot_in_loop && slot.command_cycle == id
+    if slot_in_loop && slot.command_cycle_index == id
         code_update, ramp, lead =
-            _commands_at_landing(nav, group, slot, record, words, landing)
-        state = _set_vector_commands(state, code_update * Hz, ramp, lead * s, words, landing)
+            _commands_at_application(nav, group, slot, integration, nco_history, application_sample_index)
+        state = _set_vector_commands(state, code_update * Hz, ramp, lead * s, nco_history, application_sample_index)
     end
-    SatVectorPLLAndDLL(state; cycle_id = id)
+    VectorLoopState(state; cycle_index = id)
 end
 
-# The slot's commands for a landing at sample `landing`: the code correction, the
+# The slot's commands applied at sample `application_sample_index`: the code correction, the
 # carrier Doppler ramp from the predicted Dopplers there and one cycle later (with the
-# replica's code moved on at its NCO word), and the lead (s) after the cycle's epoch.
-function _commands_at_landing(
-    nav::VectorNavigation,
+# replica's code moved on at its NCO command), and the lead (s) after the cycle's epoch.
+function _commands_at_application(
+    nav::VectorNavState,
     group::VTSlotGroup,
     slot::VTSlot,
-    record::LoopRecord,
-    words,
-    landing::Int64,
+    integration::PredetectionIntegration,
+    nco_history,
+    application_sample_index::Int64,
 )
-    fs = _sampling_frequency_hz(record)
-    # A command landing on the epoch itself may read a rounding error early.
-    lead = landing / fs - _epoch_time(nav, nav.cycle_epoch)
-    -1 / fs <= lead <= MAX_LANDING_LEAD_CYCLES * _update_interval_seconds(nav) || throw(
+    fs = _sampling_frequency_hz(integration)
+    # A command applied on the epoch itself may read a rounding error early.
+    lead = application_sample_index / fs - _epoch_time(nav, nav.cycle_epoch)
+    -1 / fs <= lead <= MAX_APPLICATION_LEAD_CYCLES * _update_interval_seconds(nav) || throw(
         ArgumentError(
-            "a command must land between zero and 2.5 navigation cycles after the " *
+            "a command must take effect between zero and 2.5 navigation cycles after the " *
             "epoch whose commands it carries",
         ),
     )
     lead = max(lead, 0.0)
     T = _update_interval_seconds(nav)
     code_frequency = ustrip(Hz, get_chip_rate(group.driver_signal))
-    _, code_command = calc_mean_nco_command(words, slot.driver_last_end_sample, landing)
+    _, code_command = calc_mean_nco_command(nco_history, slot.driver_last_end_sample_index, application_sample_index)
     chips =
-        slot.chips_since_epoch + (landing - slot.driver_last_end_sample) / fs * (code_frequency + code_command)
+        slot.chips_since_epoch + (application_sample_index - slot.driver_last_end_sample_index) / fs * (code_frequency + code_command)
     code_update, doppler = _member_commands(nav, slot, slot.member_index, lead, chips)
     _, next_doppler =
         _member_commands(nav, slot, slot.member_index, lead + T, chips + T * (code_frequency + code_command))
-    code_update, CarrierRamp(doppler, (next_doppler - doppler) / T, landing / fs), lead
+    code_update, CarrierDopplerRamp(doppler, (next_doppler - doppler) / T, application_sample_index / fs), lead
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
 # The epoch snapshot
 
-# Records resumed after a gap: a record starting past the pending epoch, while no
-# satellite can still snapshot it, moves the epochs on to where the records are.
-function _move_past_gap!(nav::VectorNavigation, start_time, record::LoopRecord)
+# Integrations resumed after a gap: an integration starting past the pending epoch, while no
+# satellite can still snapshot it, moves the epochs on to where the integrations are.
+function _move_past_gap!(nav::VectorNavState, start_time, integration::PredetectionIntegration)
     epoch_time = _epoch_time(nav, nav.pending_epoch)
     nav.num_snapshots == 0 && start_time > epoch_time || return nothing
-    end_time = record.sample_index / _sampling_frequency_hz(record)
+    end_time = integration.sample_index / _sampling_frequency_hz(integration)
     _fold_groups(_can_reach_epoch, false, nav.groups, nav, epoch_time, end_time) &&
         return nothing
     nav.pending_epoch = _epoch_at_or_after(nav, start_time)
     nothing
 end
 
-# Whether a record of one of the slot's signals (last record ended at
+# Whether an integration of one of the slot's signals (last integration ended at
 # `driver_last_end_time`, its snapshot half taken at `half_epoch`) crosses the pending
 # epoch still to snapshot.
-function _crosses_pending_epoch(nav::VectorNavigation, slot::VTSlot, half_epoch, driver_last_end_time, record::LoopRecord)
+function _crosses_pending_epoch(nav::VectorNavState, slot::VTSlot, half_epoch, driver_last_end_time, integration::PredetectionIntegration)
     epoch = nav.pending_epoch
     epoch_time = _epoch_time(nav, epoch)
-    end_time = record.sample_index / _sampling_frequency_hz(record)
+    end_time = integration.sample_index / _sampling_frequency_hz(integration)
     half_epoch < epoch && slot.first_epoch <= epoch && driver_last_end_time <= epoch_time < end_time
 end
 
-# The driver's half of the snapshot at the pending epoch if this record crosses it:
-# replica code phase, Dopplers, C/N₀ (from the record's estimator) and the state with
+# The driver's half of the snapshot at the pending epoch if this integration crosses it:
+# replica code phase, Dopplers, C/N₀ (from the integration's estimator) and the state with
 # its accumulated discriminators. Returns the state, its accumulators emptied if it
 # crossed.
 function _snapshot_driver!(
-    nav::VectorNavigation,
+    nav::VectorNavState,
     group::VTSlotGroup,
     slot::VTSlot,
-    state::SatVectorPLLAndDLL,
-    record::LoopRecord,
-    words,
+    state::VectorLoopState,
+    integration::PredetectionIntegration,
+    nco_history,
 )
-    _crosses_pending_epoch(nav, slot, slot.driver_epoch, slot.driver_last_end_time, record) ||
+    _crosses_pending_epoch(nav, slot, slot.driver_epoch, slot.driver_last_end_time, integration) ||
         return state
-    fs = _sampling_frequency_hz(record)
+    fs = _sampling_frequency_hz(integration)
     epoch_time = _epoch_time(nav, nav.pending_epoch)
     code_frequency = ustrip(Hz, get_chip_rate(group.driver_signal))
-    epoch_sample = epoch_time * fs
-    _, code_command = calc_mean_nco_command(words, slot.driver_last_end_sample, epoch_sample)
+    epoch_sample_index = epoch_time * fs
+    _, code_command = calc_mean_nco_command(nco_history, slot.driver_last_end_sample_index, epoch_sample_index)
     chips_to_epoch = (epoch_time - slot.driver_last_end_time) * (code_frequency + code_command)
-    carrier_doppler, code_doppler = calc_mean_nco_command(words, epoch_sample, epoch_sample)
-    integration_time = uconvert(s, record.integrated_samples / record.sampling_frequency)
+    carrier_doppler, code_doppler = calc_mean_nco_command(nco_history, epoch_sample_index, epoch_sample_index)
+    coherent_integration_time = uconvert(s, integration.num_integrated_samples / integration.sampling_frequency)
     slot.cn0_dbhz =
-        min(Float64(ustrip(estimate_cn0(record.cn0_estimator, integration_time))), MAX_CN0_DBHZ)
-    slot.estimator_state = state
+        min(Float64(ustrip(estimate_cn0(integration.cn0_estimator, coherent_integration_time))), MAX_CN0_DBHZ)
+    slot.loop_state = state
     slot.epoch_driver_code_phase = slot.last_code_phase + chips_to_epoch
     slot.carrier_doppler = carrier_doppler * Hz
     slot.code_doppler = code_doppler * Hz
-    slot.coherent_integration_time = slot.last_integration_time
+    slot.coherent_integration_time = slot.last_coherent_integration_time
     slot.early_late_spacing = slot.last_early_late_spacing
     slot.chips_since_epoch = -chips_to_epoch
     slot.driver_epoch = nav.pending_epoch
     _reset_discriminator_accumulators(state)
 end
 
-# The decoding signal's half of the snapshot at the pending epoch if this record
-# crosses it: the decoder and bit sync at its last record end, and the code phase at
+# The decoding signal's half of the snapshot at the pending epoch if this integration
+# crosses it: the decoder and bit sync at its last integration end, and the code phase at
 # the epoch from the last bit edge, in the decoding signal's own code.
-function _snapshot_decoding!(nav::VectorNavigation, group::VTSlotGroup, slot::VTSlot, record::LoopRecord, words)
-    _crosses_pending_epoch(nav, slot, slot.decoding_epoch, slot.decoding_last_end_time, record) ||
+function _snapshot_decoding!(nav::VectorNavState, group::VTSlotGroup, slot::VTSlot, integration::PredetectionIntegration, nco_history)
+    _crosses_pending_epoch(nav, slot, slot.decoding_epoch, slot.decoding_last_end_time, integration) ||
         return nothing
-    fs = _sampling_frequency_hz(record)
+    fs = _sampling_frequency_hz(integration)
     epoch_time = _epoch_time(nav, nav.pending_epoch)
     signal = group.decoding_signal
     code_frequency = ustrip(Hz, get_chip_rate(signal))
-    _, code_command = calc_mean_nco_command(words, slot.decoding_last_end_sample, epoch_time * fs)
+    _, code_command = calc_mean_nco_command(nco_history, slot.decoding_last_end_sample_index, epoch_time * fs)
     chips_to_epoch = (epoch_time - slot.decoding_last_end_time) * (code_frequency + code_command)
     slot.epoch_decoder = slot.running_decoder
     slot.epoch_bit_synced = slot.decoding_bit_synced
@@ -466,7 +466,7 @@ end
 # Complete the slot's snapshot once both halves are in: the decoder and code phase
 # from its last bit edge (see `_code_phase_on_driver`), and the lock (driver's
 # C/N₀ at least the threshold and decoding signal's bit sync).
-function _complete_snapshot!(nav::VectorNavigation, group::VTSlotGroup, slot::VTSlot)
+function _complete_snapshot!(nav::VectorNavState, group::VTSlotGroup, slot::VTSlot)
     epoch = nav.pending_epoch
     slot.snapshot_epoch < epoch && slot.driver_epoch == epoch && slot.decoding_epoch == epoch ||
         return nothing
@@ -476,12 +476,12 @@ function _complete_snapshot!(nav::VectorNavigation, group::VTSlotGroup, slot::VT
         _code_phase_on_driver(group, slot),
         code_frequency,
     )
-    in_lock = slot.epoch_bit_synced && slot.cn0_dbhz >= nav.lock_cn0_threshold_dbhz
+    measurement_ready = slot.epoch_bit_synced && slot.cn0_dbhz >= nav.min_tracking_cn0_dbhz
     slot.decoder = decoder
     slot.code_phase = code_phase
-    slot.in_lock = in_lock
-    slot.pvt_ready =
-        in_lock && has_positioning_data(decoder) && is_sat_healthy(decoder)
+    slot.measurement_ready = measurement_ready
+    slot.positioning_ready =
+        measurement_ready && has_positioning_data(decoder) && is_sat_healthy(decoder)
     slot.snapshot_epoch = epoch
     nav.num_snapshots += 1
     nothing
@@ -510,7 +510,7 @@ const MAX_CN0_DBHZ = 80.0
 # Whether some satellite of the group can still complete its snapshot of the pending
 # epoch: tracked, not stale, due, and with its missing halves' signals not yet past it
 # (`_crosses_pending_epoch`).
-function _can_reach_epoch(acc, group::VTSlotGroup, nav::VectorNavigation, epoch_time, now)
+function _can_reach_epoch(acc, group::VTSlotGroup, nav::VectorNavState, epoch_time, now)
     acc && return true
     epoch = nav.pending_epoch
     for slot in group.slots
@@ -523,13 +523,13 @@ function _can_reach_epoch(acc, group::VTSlotGroup, nav::VectorNavigation, epoch_
     false
 end
 
-# The decoding signal's code phase (chips) at its last record end from the last
-# data-bit edge: the bit clock's whole code blocks plus the phase past the block
+# The decoding signal's code phase (chips) at its last integration end from the last
+# data-bit edge: the bit clock's whole code periods plus the phase past the code period
 # boundary. Meaningless (and unread) before bit sync.
 function _code_phase_from_bit_edge(signal::AbstractGNSSSignal, slot::VTSlot)
-    blocks = slot.decoding_bit_synced ? slot.decoding_num_code_periods_into_bit : 0
+    code_periods = slot.decoding_bit_synced ? slot.decoding_num_code_periods_into_bit : 0
     fraction = slot.decoding_code_phase_fraction
-    blocks * get_code_length(signal) + (isnan(fraction) ? 0.0 : fraction)
+    code_periods * get_code_length(signal) + (isnan(fraction) ? 0.0 : fraction)
 end
 
 # Normalise `code_phase` into the current bit: a phase outside it (just short of the
@@ -557,11 +557,11 @@ end
 # pending epoch on to one no live satellite is past (`_next_pending_epoch`). The host
 # steps the satellites one after another through each chunk, so one stepped early in a
 # chunk can cross an epoch that becomes pending only when one stepped later runs the
-# cycle before it: after a re-registration on a record starting at the epoch, or after
+# cycle before it: after a re-registration on an integration starting at the epoch, or after
 # an overdue cycle. Neither locks it out for more than that epoch.
-function _run_cycle_if_due!(nav::VectorNavigation, record::LoopRecord)
+function _run_cycle_if_due!(nav::VectorNavState, integration::PredetectionIntegration)
     nav.num_snapshots == 0 && return false
-    now = record.sample_index / _sampling_frequency_hz(record)
+    now = integration.sample_index / _sampling_frequency_hz(integration)
     _fold_groups(_all_snapshotted, true, nav.groups, nav, now) || return false
     _navigation_cycle!(nav, now)
     true
@@ -572,9 +572,9 @@ end
 # made it. Returns whether it ran. Only a satellite behind by more than a cycle, yet
 # not stale, holds an epoch up; the cycle then moves the pending epoch past
 # the satellites stepped before (`_next_pending_epoch`), so the next one runs as due.
-function _run_overdue_cycle!(nav::VectorNavigation, slot::VTSlot, record::LoopRecord)
+function _run_overdue_cycle!(nav::VectorNavState, slot::VTSlot, integration::PredetectionIntegration)
     slot.snapshot_epoch == nav.pending_epoch || return false
-    now = record.sample_index / _sampling_frequency_hz(record)
+    now = integration.sample_index / _sampling_frequency_hz(integration)
     now > _epoch_time(nav, nav.pending_epoch + 1) || return false
     _navigation_cycle!(nav, now)
     true
@@ -582,7 +582,7 @@ end
 
 # Whether no satellite of the group can still complete its snapshot of the pending
 # epoch.
-_all_snapshotted(ready, group::VTSlotGroup, nav::VectorNavigation, now) =
+_all_snapshotted(ready, group::VTSlotGroup, nav::VectorNavState, now) =
     ready && !_can_reach_epoch(false, group, nav, _epoch_time(nav, nav.pending_epoch), now)
 
 # The epoch to snapshot after the cycle at `epoch`: the next one, or, if a satellite is
@@ -590,13 +590,13 @@ _all_snapshotted(ready, group::VTSlotGroup, nav::VectorNavigation, now) =
 # after skipped epochs is longer, as after a gap. The host steps every satellite through
 # each chunk, which is shorter than a cycle, so in step no satellite is past the next
 # epoch.
-function _next_pending_epoch(nav::VectorNavigation, epoch)
+function _next_pending_epoch(nav::VectorNavState, epoch)
     next = epoch + 1
-    latest = _fold_groups(_latest_record_end, -Inf, nav.groups)
+    latest = _fold_groups(_latest_integration_end, -Inf, nav.groups)
     latest > _epoch_time(nav, next) ? _epoch_at_or_after(nav, latest) : next
 end
 
-function _latest_record_end(latest, group::VTSlotGroup)
+function _latest_integration_end(latest, group::VTSlotGroup)
     for slot in group.slots
         slot.occupied || continue
         latest = max(latest, slot.driver_last_end_time, slot.decoding_last_end_time)
@@ -604,20 +604,20 @@ function _latest_record_end(latest, group::VTSlotGroup)
     latest
 end
 
-# Stale: no record of the driver, or of the decoding signal, for two cycles.
-_is_stale(nav::VectorNavigation, slot::VTSlot, now) =
+# Stale: no integration of the driver, or of the decoding signal, for two cycles.
+_is_stale(nav::VectorNavState, slot::VTSlot, now) =
     min(slot.driver_last_end_time, slot.decoding_last_end_time) <
     now - 2 * _update_interval_seconds(nav)
 
 # Before a cycle: mark the slots it reads, clear release reasons, and free stale slots
 # (storage kept, members released). Returns whether a member was dropped.
-function _prepare_slots!(released, group::VTSlotGroup, nav::VectorNavigation, now)
+function _prepare_slots!(released, group::VTSlotGroup, nav::VectorNavState, now)
     for slot in group.slots
         slot.release_reason = VT_NOT_RELEASED
         slot.in_cycle = slot.occupied && slot.snapshot_epoch == nav.pending_epoch
         if slot.occupied && !slot.in_cycle && _is_stale(nav, slot, now)
             slot.occupied = false
-            if slot.estimator_state.in_vector_loop
+            if slot.loop_state.vector_controlled
                 _mark_release!(slot, VT_INELIGIBLE)
                 released = true
             end
@@ -634,25 +634,25 @@ end
 #     accumulated discriminators fused, commands for every member. Admitted are
 #     satellites decoded, healthy, in lock and `ADMISSION_ELEVATION` above the
 #     horizon; members out of lock stay in the loop unmeasured. After
-#     `insufficient_meas_timeout` of unsolvable epochs, or with no member left, every
+#     `measurement_deficit_timeout` of unsolvable epochs, or with no member left, every
 #     satellite in the loop is released (those that missed the epoch too) and the next
 #     cycle solves the scalar PVT.
 #   - `filter_config = nothing`: the scalar PVT only.
-function _navigation_cycle!(nav::VectorNavigation, now)
+function _navigation_cycle!(nav::VectorNavState, now)
     groups = nav.groups
     buffers = nav.buffers
     epoch = nav.pending_epoch
     cycle_time =
-        nav.cycle_epoch == typemin(Int) ? nav.vt_update_interval :
-        (epoch - nav.cycle_epoch) * nav.vt_update_interval
-    nav.cycle_id += 1
+        nav.cycle_epoch == typemin(Int) ? nav.navigation_update_interval :
+        (epoch - nav.cycle_epoch) * nav.navigation_update_interval
+    nav.cycle_index += 1
     dropped = _fold_groups(_prepare_slots!, false, groups, nav, now)
     seeded = released = fell_back = false
     if nav.enabled && nav.running
         released, fell_back = _run_cycle!(nav, groups, cycle_time)
     else
         # Scalar solve: no per-member report.
-        empty_keeping_capacity!(nav.vector_loop_members)
+        empty_keeping_capacity!(nav.vector_tracking_members)
         _fold_groups_with_buffers(_collect_pvt_ready!, nothing, groups, buffers.signal_observations, 1)
         result = calc_pvt!(
             nav.pvt,
@@ -674,9 +674,9 @@ function _navigation_cycle!(nav::VectorNavigation, now)
     num_members = _fold_groups_with_buffers(_count_members, 0, groups, buffers.signal_observations, 1)
     nav.status = NavigationStatus(
         nav.running,
-        nav.running || fell_back ? position_uncertainty(nav) * m : NaN * m,
-        nav.running || fell_back ? clock_uncertainty(nav) * m : NaN * m,
-        nav.time_with_insufficient_meas,
+        nav.running || fell_back ? calc_position_std(nav) * m : NaN * m,
+        nav.running || fell_back ? calc_clock_bias_std(nav) * m : NaN * m,
+        nav.measurement_deficit_duration,
         num_members,
         seeded,
         fell_back,
@@ -689,90 +689,91 @@ function _navigation_cycle!(nav::VectorNavigation, now)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
-# After the record
+# After the integration
 
-# After the driver's loop step: move the replica to the record's end.
-function _advance_driver!(group::VTSlotGroup, slot::VTSlot, record::LoopRecord, words)
+# After the driver's loop step: move the replica to the integration's end.
+function _advance_driver!(group::VTSlotGroup, slot::VTSlot, integration::PredetectionIntegration, nco_history)
     signal = group.driver_signal
-    fs = _sampling_frequency_hz(record)
+    fs = _sampling_frequency_hz(integration)
     code_frequency = ustrip(Hz, get_chip_rate(signal))
-    _, code_command = calc_mean_nco_command(words, slot.driver_last_end_sample, record.sample_index)
+    _, code_command = calc_mean_nco_command(nco_history, slot.driver_last_end_sample_index, integration.sample_index)
     slot.chips_since_epoch +=
-        (record.sample_index - slot.driver_last_end_sample) / fs * (code_frequency + code_command)
-    slot.driver_last_end_sample = record.sample_index
-    slot.driver_last_end_time = record.sample_index / fs
-    slot.last_code_phase = record.code_phase
-    slot.last_integration_time =
-        uconvert(s, record.integrated_samples / record.sampling_frequency)
+        (integration.sample_index - slot.driver_last_end_sample_index) / fs * (code_frequency + code_command)
+    slot.driver_last_end_sample_index = integration.sample_index
+    slot.driver_last_end_time = integration.sample_index / fs
+    slot.last_code_phase = integration.code_phase
+    slot.last_coherent_integration_time =
+        uconvert(s, integration.num_integrated_samples / integration.sampling_frequency)
     slot.last_early_late_spacing =
-        get_early_late_sample_spacing(
-            record.filtered_correlator,
-            record.sampling_frequency,
+        calc_early_late_sample_spacing(
+            integration.beamformed_correlator_bank,
+            integration.sampling_frequency,
             get_chip_rate(signal),
         ) * code_frequency / fs
     nothing
 end
 
-# A decoding-signal record: decode exactly the soft bits it added (so the host may
-# drain its bit buffer whenever it likes) and note the bit clock at its end. Records
-# later in the fold a sync was found in still have the pre-sync replica (see
-# `fold_record`'s `overlay_wiped`): they leave the bit count unanchored until the
-# next fold.
+# A decoding-signal integration: decode exactly the soft bits it added (so the host may
+# drain its bit synchronizer whenever it likes) and note the bit clock at its end. Integrations
+# later in the batch a sync was found in still have the pre-sync replica (see
+# `_process_correlator_bank_output!`'s `secondary_code_wiped`): they leave the bit count unanchored until the
+# next batch.
 function _advance_decoding!(
     group::VTSlotGroup,
     slot::VTSlot,
-    record::LoopRecord,
-    state::SatVectorPLLAndDLL,
-    words,
+    integration::PredetectionIntegration,
+    state::VectorLoopState,
+    nco_history,
     driver::Bool,
 )
-    if record.sync_change == SYNC_FOUND
-        slot.sync_fold_end = record.fold_end
-    elseif !record.bit_synced
-        slot.sync_fold_end = typemin(Int)
+    if integration.sync_change == SYNC_FOUND
+        slot.sync_batch_end_sample_index = integration.batch_end_sample_index
+    elseif !integration.bit_or_secondary_code_synced
+        slot.sync_batch_end_sample_index = typemin(Int)
     end
-    unwiped_after_sync = record.sync_change != SYNC_FOUND && record.fold_end == slot.sync_fold_end
-    _decode_record!(group, slot, record, state, words, driver, unwiped_after_sync)
+    unwiped_after_sync =
+        integration.sync_change != SYNC_FOUND && integration.batch_end_sample_index == slot.sync_batch_end_sample_index
+    _decode_integration!(group, slot, integration, state, nco_history, driver, unwiped_after_sync)
     code_length = get_code_length(group.decoding_signal)
-    fs = _sampling_frequency_hz(record)
-    slot.decoding_last_end_sample = record.sample_index
-    slot.decoding_last_end_time = record.sample_index / fs
-    slot.decoding_bit_synced = record.bit_synced && !unwiped_after_sync
-    slot.decoding_num_code_periods_into_bit = record.num_code_periods_into_bit
+    fs = _sampling_frequency_hz(integration)
+    slot.decoding_last_end_sample_index = integration.sample_index
+    slot.decoding_last_end_time = integration.sample_index / fs
+    slot.decoding_bit_synced = integration.bit_or_secondary_code_synced && !unwiped_after_sync
+    slot.decoding_num_code_periods_into_bit = integration.num_code_periods_into_bit
     slot.decoding_code_phase_fraction =
-        isnan(record.code_phase) ? NaN :
-        mod(record.code_phase + code_length / 2, code_length) - code_length / 2
+        isnan(integration.code_phase) ? NaN :
+        mod(integration.code_phase + code_length / 2, code_length) - code_length / 2
     nothing
 end
 
-# Decode a decoding-signal record. Out of the vector loop: the host's soft bits. In it
+# Decode a decoding-signal integration. Out of the vector loop: the host's soft bits. In it
 # the carrier NCO runs on the filter's prediction, so the prompts turn at its Doppler
 # error: each prompt is rotated onto the incoming carrier by the residual PLL's estimate
 # (`_bit_prompt_phase`) and the decoding signal's carrier-phase offset from the
 # driver, summed over the bit, and the sum's real part decoded (signed as the host's
-# bit clock signs its own) on the record where the host's bit clock ends the bit. A
-# bit not covered from its first block (the one the satellite joins in, or one after
-# an `unwiped_after_sync` record), and a record ending more than one, take the host's
+# bit clock signs its own) on the integration where the host's bit clock ends the bit. A
+# bit not covered from its first code period (the one the satellite joins in, or one after
+# an `unwiped_after_sync` integration), and an integration ending more than one, take the host's
 # soft bits.
-function _decode_record!(
+function _decode_integration!(
     group::VTSlotGroup,
     slot::VTSlot,
-    record::LoopRecord,
-    state::SatVectorPLLAndDLL,
-    words,
+    integration::PredetectionIntegration,
+    state::VectorLoopState,
+    nco_history,
     driver::Bool,
     unwiped_after_sync::Bool,
 )
-    soft_bits = record.new_soft_bits
+    soft_bits = integration.new_soft_bits
     phase =
-        state.in_vector_loop && record.bit_synced && record.sync_change == SYNC_UNCHANGED && !unwiped_after_sync ?
+        state.vector_controlled && integration.bit_or_secondary_code_synced && integration.sync_change == SYNC_UNCHANGED && !unwiped_after_sync ?
         _bit_prompt_phase(
             state.residual_pll,
             state.ramp,
-            state.previous_replica_half,
+            state.previous_replica_tail,
             slot.prompt_history,
-            record,
-            words,
+            integration,
+            nco_history,
             driver,
         ) :
         NaN
@@ -783,12 +784,12 @@ function _decode_record!(
         rotation =
             2π * (get_carrier_phase_offset(group.driver_signal) - get_carrier_phase_offset(group.decoding_signal) -
             phase)
-        slot.bit_accumulator += ComplexF64(get_prompt(record.filtered_correlator)) * cis(rotation)
+        slot.bit_accumulator += ComplexF64(get_prompt(integration.beamformed_correlator_bank)) * cis(rotation)
     end
     isempty(soft_bits) && return nothing
     if !isnan(phase) && slot.bit_from_edge && Base.length(soft_bits) == 1
         bit = real(slot.bit_accumulator)
-        slot.soft_bit[1] = Float32(record.bit_polarity < 0 ? -bit : bit)
+        slot.soft_bit[1] = Float32(integration.bit_polarity < 0 ? -bit : bit)
         slot.running_decoder = decode!(slot.running_decoder, slot.soft_bit, 1)
     else
         slot.running_decoder = decode!(slot.running_decoder, soft_bits, Base.length(soft_bits))

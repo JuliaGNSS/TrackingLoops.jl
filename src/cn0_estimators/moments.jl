@@ -40,7 +40,7 @@ $(SIGNATURES)
 
 Estimates the CN0 based on the struct `MomentsCN0Estimator`.
 """
-function estimate_cn0(estimator::MomentsCN0Estimator, integration_time)
+function estimate_cn0(estimator::MomentsCN0Estimator, coherent_integration_time)
     length(estimator) == 0 && return 0.0dBHz
     prompt_buffer = get_prompt_buffer(estimator)
     M₂ = 1 / length(estimator) * sum(abs2, prompt_buffer)
@@ -48,5 +48,5 @@ function estimate_cn0(estimator::MomentsCN0Estimator, integration_time)
     Pd = sqrt(abs(2 * M₂^2 - M₄))
     noise_power = abs(M₂ - Pd)
     SNR = Pd / noise_power
-    dBHz(SNR / integration_time)
+    dBHz(SNR / coherent_integration_time)
 end

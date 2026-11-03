@@ -15,12 +15,12 @@ Bit-sync detector for Galileo E6-B: one C/NAV bit per 1 ms primary code
 period (1000 bit/s; OS SIS ICD v2.2 Table 5), so it locks immediately — see
 `_detect_bit_is_code_period_sync`.
 """
-@inline detect_bit_or_secondary_code_sync(
+@inline detect_sync(
     signal::GalileoE6B,
     prn::Integer,
-    code_block_bits::Unsigned,
-    num_code_blocks::Integer,
-) = _detect_bit_is_code_period_sync(signal, prn, code_block_bits, num_code_blocks)
+    code_period_bits::Unsigned,
+    num_code_periods::Integer,
+) = _detect_bit_is_code_period_sync(signal, prn, code_period_bits, num_code_periods)
 
 """
 $(SIGNATURES)
@@ -31,24 +31,24 @@ same half of the table as `GalileoE5aQ`; 100 ms cycle) — see
 `_detect_secondary_code_sync`. The default detector is the soft one
 ([`uses_soft_secondary_code_detection`](@ref)).
 """
-@inline function detect_bit_or_secondary_code_sync(
+@inline function detect_sync(
     signal::GalileoE6C,
     prn::Integer,        # selects the SVID's CS100 column in the reference
-    code_block_bits::Unsigned,
-    num_code_blocks::Integer,
+    code_period_bits::Unsigned,
+    num_code_periods::Integer,
 )
-    _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
+    _detect_secondary_code_sync(signal, prn, code_period_bits, num_code_periods)
 end
 
-# BPSK: EarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(
+# BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(
     ::Union{GalileoE6B,GalileoE6C},
-    num_ants::NumAnts = NumAnts(1),
+    num_antennas::NumAntennas = NumAntennas(1),
 )
-    EarlyPromptLateCorrelator(; num_ants)
+    EarlyPromptLateCorrelatorBank(; num_antennas)
 end
 
-# One bit per code period: nothing to search (see `get_code_block_buffer_type`).
-@inline get_code_block_buffer_type(::GalileoE6B) = UInt8
+# One bit per code period: nothing to search (see `prompt_sign_history_type`).
+@inline prompt_sign_history_type(::GalileoE6B) = UInt8
 # E6-C: holds one CS100 period.
-@inline get_code_block_buffer_type(::GalileoE6C) = UInt128
+@inline prompt_sign_history_type(::GalileoE6C) = UInt128

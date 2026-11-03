@@ -5,18 +5,18 @@ CurrentModule = TrackingLoops
 # Noise estimation
 
 A noise estimator measures the post-correlation noise density `N₀` of one
-signal, which a [`NoiseRefCN0Estimator`](@ref) divides each record's prompt power
-by. It is fed [`NoiseObservation`](@ref TrackingLoops.NoiseObservation)s — from a correlator tap on a PRN that
-is not transmitted ([`noise_observation_from_correlator`](@ref)) or from raw
-samples ([`noise_observation_from_samples`](@ref TrackingLoops.noise_observation_from_samples)) — with
+signal, which a [`NoiseReferencedCN0Estimator`](@ref) divides each predetection integration's prompt power
+by. It is fed [`NoiseObservation`](@ref TrackingLoops.NoiseObservation)s — from a correlator bank on a PRN that
+is not transmitted ([`calc_noise_observation_from_correlator_bank`](@ref)) or from raw
+samples ([`calc_noise_observation_from_samples`](@ref TrackingLoops.calc_noise_observation_from_samples)) — with
 [`append_noise_observation!`](@ref) or [`update_noise!`](@ref TrackingLoops.update_noise!), and read with
 [`get_noise_density`](@ref TrackingLoops.get_noise_density). [`CorrelatorNoiseEstimator`](@ref) keeps a sliding
-window of observations; subtype [`AbstractNoiseEstimator`](@ref TrackingLoops.AbstractNoiseEstimator) for another
+window of observations; subtype [`AbstractNoiseDensityEstimator`](@ref TrackingLoops.AbstractNoiseDensityEstimator) for another
 source.
 
 ## Why per signal and not per RF band
 
-What a record actually divides by is the **post-correlation** density. For an
+What a predetection integration actually divides by is the **post-correlation** density. For an
 interferer of PSD `S_I(f)` on top of the thermal floor that is
 
 ```
@@ -42,10 +42,10 @@ PRN, configured with a code, so per signal is what an FPGA builds anyway.
 
 ## Why a density and not a power
 
-For a correlator normalised the way `TrackingLoops.normalize` normalises — by
-`integrated_samples * code_amplitude` — white input noise of per-sample variance
+For a correlator bank normalised the way `TrackingLoops.normalize` normalises — by
+`num_integrated_samples * code_amplitude` — white input noise of per-sample variance
 `σ²` gives `E|P|² = σ²/N = N₀/T`. So `N₀ = σ²/f_s` is **independent of the
-integration time**, which is what lets one per-signal figure serve records of any
+integration time**, which is what lets one per-signal figure serve predetection integrations of any
 length. It is stored as a Unitful quantity of dimension `1/Hz`, so the
 consumer's `⟨|P|²⟩/N₀ − 1/T` is dimension-checked rather than trusted.
 
@@ -55,13 +55,13 @@ A [`CorrelatorNoiseEstimator`](@ref) plans its own measurement:
 [`noise_despreads`](@ref TrackingLoops.noise_despreads) splits a slice of samples into
 code-period despreads, rotates the PRN and draws each one's random code phase and
 carrier. A host only despreads each [`NoiseDespread`](@ref TrackingLoops.NoiseDespread)
-through [`noise_correlator_bank`](@ref TrackingLoops.noise_correlator_bank)'s taps and appends them
+through [`noise_correlator_bank`](@ref TrackingLoops.noise_correlator_bank)'s correlator outputs and appends them
 with [`append_despread_noise!`](@ref TrackingLoops.append_despread_noise!). Tracking.jl
 does so on its kernels when [`update_noise!`](@ref TrackingLoops.update_noise!) calls its
 [`despread_noise!`](@ref TrackingLoops.despread_noise!):
 
 ```julia
-correlator = TrackingLoops.noise_correlator_bank(estimator)
+correlator_bank = TrackingLoops.noise_correlator_bank(estimator)
 despreads = TrackingLoops.noise_despreads(
     estimator,
     signal,
@@ -70,8 +70,8 @@ despreads = TrackingLoops.noise_despreads(
     intermediate_frequency,
 )
 for despread in despreads
-    taps = despread_on_kernel(correlator, despread)
-    TrackingLoops.append_despread_noise!(estimator, despread, taps)
+    correlator_outputs = despread_on_kernel(correlator_bank, despread)
+    TrackingLoops.append_despread_noise!(estimator, despread, correlator_outputs)
 end
 ```
 
@@ -88,7 +88,7 @@ sample count with [`append_noise_correlator_outputs!`](@ref TrackingLoops.append
 probe = TrackingLoops.next_noise_probe(estimator, signal, intermediate_frequency)
 arm_noise_channel!(device, probe)                       # the host's driver call
 for dump in noise_channel_dumps(device)                 # until the next re-arm
-    TrackingLoops.append_noise_correlator_outputs!(estimator, probe, dump.taps,
+    TrackingLoops.append_noise_correlator_outputs!(estimator, probe, dump.correlator_outputs,
         dump.num_integrated_samples, sampling_frequency)
 end
 ```
@@ -96,7 +96,7 @@ end
 The rotation advances on the next draw: the PRN is carried in the newest observation.
 How often to redraw is the host's trade-off. A probe parked over a whole window that
 happens to line up with a visible but untracked satellite (a hit needs the code phase
-within a tap, about `3 × 1.5 / 1023 ≈ 0.44 %` per such satellite, and the carrier within
+within a correlator, about `3 × 1.5 / 1023 ≈ 0.44 %` per such satellite, and the carrier within
 about `1/T` of its Doppler, about a fifth of a ±5 kHz dither at `T = 1 ms`) raises every
 observation it covers by about `T·(C/N₀)/3 ≈ 10.5·N₀` at 45 dB-Hz, so `N̂₀` by up to
 ≈ 10 dB for that window. Redrawing `n` times per window lets one hit bias only `1/n` of
@@ -105,21 +105,21 @@ hit at a few dB, at the cost of the dumps lost to each re-arm. A device that can
 its code generator at a random phase by itself redraws without a re-arm.
 
 ```@docs
-TrackingLoops.AbstractNoiseEstimator
+TrackingLoops.AbstractNoiseDensityEstimator
 TrackingLoops.NoiseDensity
 TrackingLoops.NoiseEstimators
 TrackingLoops.NoiseObservation
 TrackingLoops.NoiseUpdateContext
-append_noise_observation!(::AbstractNoiseEstimator, ::NoiseObservation)
-TrackingLoops.get_noise_density(::AbstractNoiseEstimator)
-TrackingLoops.noise_density_and_ready(::AbstractNoiseEstimator)
-TrackingLoops.noise_density_type(::AbstractNoiseEstimator)
+append_noise_observation!(::AbstractNoiseDensityEstimator, ::NoiseObservation)
+TrackingLoops.get_noise_density(::AbstractNoiseDensityEstimator)
+TrackingLoops.noise_density_and_ready(::AbstractNoiseDensityEstimator)
+TrackingLoops.noise_density_type(::AbstractNoiseDensityEstimator)
 TrackingLoops.noise_observation(::Complex, ::Any, ::Any)
-noise_observation_from_correlator(::Any, ::Any, ::Any, ::Any)
-TrackingLoops.noise_observation_from_samples(::Any, ::Any, ::Any)
-TrackingLoops.noise_window_filling(::AbstractNoiseEstimator)
-TrackingLoops.noise_window_looks(::AbstractNoiseEstimator)
-TrackingLoops.update_noise!(::AbstractNoiseEstimator, ::Any, ::Any, ::Any, ::Any)
+calc_noise_observation_from_correlator_bank(::Any, ::Any, ::Any, ::Any)
+TrackingLoops.calc_noise_observation_from_samples(::Any, ::Any, ::Any)
+TrackingLoops.noise_window_filling(::AbstractNoiseDensityEstimator)
+TrackingLoops.get_num_squared_magnitudes(::AbstractNoiseDensityEstimator)
+TrackingLoops.update_noise!(::AbstractNoiseDensityEstimator, ::Any, ::Any, ::Any)
 CorrelatorNoiseEstimator
 CorrelatorNoiseEstimator()
 TrackingLoops.NoiseProbe
@@ -132,5 +132,5 @@ TrackingLoops.despread_noise!
 TrackingLoops.get_noise_density(::CorrelatorNoiseEstimator)
 TrackingLoops.noise_correlator_bank(::CorrelatorNoiseEstimator)
 TrackingLoops.noise_despreads(::CorrelatorNoiseEstimator, ::AbstractGNSSSignal, ::AbstractUnitRange{<:Integer}, ::Any, ::Any)
-TrackingLoops.update_noise!(::CorrelatorNoiseEstimator, ::Any, ::Integer, ::Integer, ::NoiseUpdateContext)
+TrackingLoops.update_noise!(::CorrelatorNoiseEstimator, ::Any, ::AbstractUnitRange{<:Integer}, ::NoiseUpdateContext)
 ```

@@ -1,9 +1,9 @@
 # Entry point of the `juliac --trim=safe` check (see `check.jl`): vector tracking from
-# records alone, on the synthetic GPS L1 C/A satellites of `../vector_simulation.jl`
+# integrations alone, on the synthetic GPS L1 C/A satellites of `../vector_simulation.jl`
 # that broadcast real navigation bits — bit sync, decoding, the scalar fix, the seed
 # and a steady state through a partial outage — printed so the trimmed executable's
 # output can be compared against a regular Julia session. It is the loop process's
-# workload: `apply_record` and `step_loop` on every record of every channel, and
+# workload: `process_correlator_bank_output!` and `step_loop!` on every integration of every channel, and
 # nothing else.
 using TrackingLoops, GNSSSignals, StaticArrays, Unitful, LinearAlgebra
 using TrackingLoops: default_cn0_estimator
@@ -11,7 +11,7 @@ using Unitful: Hz, s, ms
 
 include(joinpath(@__DIR__, "..", "vector_simulation.jl"))
 
-# Every channel's records that end within the millisecond ending at `sample`.
+# Every channel's integrations that end within the millisecond ending at `sample`.
 function step_channels!(rx, sample, outage::Bool)
     for (i, sat) in enumerate(rx.sats)
         sat.in_view = !(outage && i <= 2)
@@ -26,11 +26,11 @@ function report(io, cycle, pvt, status)
     print(io, "cycle ", cycle, ":")
     for x in (pvt.position.x, pvt.position.y, pvt.position.z, pvt.velocity.x,
         pvt.velocity.y, pvt.velocity.z,
-        status.position_std.val, status.time_with_insufficient_meas.val)
+        status.position_std.val, status.measurement_deficit_duration.val)
         print(io, " ", x)
     end
     print(io, " ", length(pvt.observations))
-    print(io, " ", status.num_members)
+    print(io, " ", status.num_vector_tracking_members)
     print(io, " ", status.running)
     print(io, " ", status.seeded)
     t = pvt.time
@@ -39,18 +39,18 @@ function report(io, cycle, pvt, status)
 end
 
 # The noise reference as a hardware host fills it: one probe per arm from the estimator's
-# own `Xoshiro`, each dump's taps appended over its own sample count.
+# own `Xoshiro`, each dump's correlator outputs appended over its own sample count.
 function report_noise(io)
     signal = GPSL1CA()
     estimator = CorrelatorNoiseEstimator()
     for k = 1:20
         probe = TrackingLoops.next_noise_probe(estimator, signal, 0.0Hz)
-        taps = SVector(
+        correlator_outputs = SVector(
             complex(probe.code_phase / 1023, 1.0),
             complex(1.0, ustrip(Hz, probe.carrier_frequency) / 5000),
             complex(0.5, 0.5),
         )
-        TrackingLoops.append_noise_correlator_outputs!(estimator, probe, taps, 3990 + k, 4e6Hz)
+        TrackingLoops.append_noise_correlator_outputs!(estimator, probe, correlator_outputs, 3990 + k, 4e6Hz)
         print(io, "noise ", k)
         print(io, " ", probe.prn)
         print(io, " ", probe.code_phase)
@@ -64,16 +64,16 @@ end
 function (@main)(args::Vector{String})::Cint
     io = Core.stdout
     rx = PipelineReceiver(Val(false))
-    nav = rx.estimator.navigation
-    last_cycle = nav.cycle_id
+    nav = rx.tracking_loop.navigation
+    last_cycle = nav.cycle_index
     sample = 0
     # 33 s: the first fix comes 26.2 s in; a two-second outage of two satellites late on.
     for _ = 1:33_000
         sample += SAMPLES_PER_MS
         t = sample / 4e6
         step_channels!(rx, sample, 29.0 <= t <= 31.0)
-        if nav.cycle_id != last_cycle
-            last_cycle = nav.cycle_id
+        if nav.cycle_index != last_cycle
+            last_cycle = nav.cycle_index
             status = nav.status
             (status.seeded || last_cycle % 20 == 0) && report(io, last_cycle, nav.pvt, status)
         end
