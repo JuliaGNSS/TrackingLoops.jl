@@ -10,8 +10,8 @@ An implementation must provide two methods:
   - [`get_weights`](@ref)`(filter, ::NumAnts{M})` — the combining weights `w` this
     filter currently applies. A plain `ComplexF64` at `M == 1`, an
     `SVector{M,ComplexF64}` above.
-  - [`update`](@ref)`(filter, prompt)` — return the filter to use for the next
-    record, which is where an adaptive beamformer recomputes its weights.
+  - [`update`](@ref)`(post_corr_filter, prompt)` — return the post-correlation filter to use for the next
+    integration, which is where an adaptive beamformer recomputes its weights.
 
 The contract is deliberately **linear in the antennas**: the combined correlator output is
 `wᴴ·b`. That is what lets the C/N₀ path stay honest without any per-satellite

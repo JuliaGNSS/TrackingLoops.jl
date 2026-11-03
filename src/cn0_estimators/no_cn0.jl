@@ -2,14 +2,14 @@
 $(SIGNATURES)
 
 A CN0 estimator that estimates nothing: it keeps no state, does no work per
-record, and reports `-Inf dB-Hz`. Use it to say **"this signal's C/N₀ is not
+integration, and reports `-Inf dB-Hz`. Use it to say **"this signal's C/N₀ is not
 measured"** rather than publish a number that cannot be trusted — for a
 non-driver signal whose C/N₀ nobody reads (e.g.
 `cn0_estimator = (NWPRCN0Estimator(), NoCN0Estimator())` on a multi-signal
 `Tracking.TrackedSat`), or as [`NWPRCN0Estimator`](@ref)'s
 `fallback` in place of the [`MomentsCN0Estimator`](@ref)'s ~27.6 dB-Hz noise
 floor where no coherent window exists
-(`NWPRCN0Estimator(; fallback = NoCN0Estimator())`). The per-record saving is under
+(`NWPRCN0Estimator(; fallback = NoCN0Estimator())`). The per-integration saving is under
 1 % of a correlation, so this is for honesty, not speed.
 
 `-Inf` and not `NaN` because, with Unitful's `Level` comparison,

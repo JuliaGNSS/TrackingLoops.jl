@@ -51,7 +51,7 @@ end
     # cycles on a filter built for 100 ms, under a TCXO's 600 m/s of clock drift. A
     # process model kept at 100 ms would mispredict the clock by drift · 100 ms = 60 m
     # every cycle.
-    rx = SimReceiver(; records_per_cycle = 200, nominal_records = 100,
+    rx = SimReceiver(; integrations_per_update = 200, nominal_records = 100,
         truth_kw = (; clock_drift = 600.0))
     results, _, diverged = run_simulation!(rx, 60)
     @test !diverged
@@ -167,12 +167,12 @@ end
 end
 
 @testset "Corrections sized for their landing match the loop without a delay" begin
-    # A 20 ms navigation cycle and the NCO-referenced inner loop, whose landing
+    # A 20 ms navigation cycle and the delay-compensated inner loop, whose landing
     # prediction keeps the carrier loop locked under the delay. A 15 ms delay lands the
     # code correction inside the second half of the cycle, a 25 ms one after the next
     # epoch: both branches of the mid-cycle advance.
     run(delay; kw...) = begin
-        rx = SimReceiver(; inner = NCOReferencedPLLAndDLL(), records_per_cycle = 20, delay_records = delay)
+        rx = SimReceiver(; inner = DelayCompensatedTrackingLoop(), integrations_per_update = 20, delay_integrations = delay)
         results, _, diverged = run_simulation!(rx, 1000; kw...)
         rx, results, diverged
     end
@@ -219,7 +219,7 @@ end
         for k = 4:4:100
             sample_index = sample + k * SAMPLES_PER_MS
             for sat in rx.sats
-                code_error = simulate_record!(sat, rx.estimator, rx.truth, sim_time(rx, sample_index),
+                code_error = simulate_record!(sat, rx.tracking_loop, rx.truth, sim_time(rx, sample_index),
                     4 * SAMPLES_PER_MS, sample_index, NO_LANDING_SAMPLE)
                 max_code_error = max(max_code_error, abs(code_error))
             end

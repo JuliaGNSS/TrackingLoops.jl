@@ -8,7 +8,7 @@ power by.
 One instance is held per **signal** (not per satellite or RF band) in
 `Tracking.TrackState`'s `noise_estimators`. Every satellite of the signal shares
 the one floor, and averaging it once per signal makes the reference's own variance
-negligible against the per-record prompt statistics; see [Noise estimation](@ref)
+negligible against the per-integration prompt statistics; see [Noise estimation](@ref)
 for why per signal rather than per band, and why a density.
 
 # The interface

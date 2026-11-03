@@ -16,7 +16,7 @@ source.
 
 ## Why per signal and not per RF band
 
-What a record actually divides by is the **post-correlation** density. For an
+What a coherent integration actually divides by is the **post-correlation** density. For an
 interferer of PSD `S_I(f)` on top of the thermal floor that is
 
 ```
@@ -45,7 +45,7 @@ PRN, configured with a code, so per signal is what an FPGA builds anyway.
 For a correlator bank normalised the way `TrackingLoops.normalize` normalises — by
 `num_integrated_samples * code_amplitude` — white input noise of per-sample variance
 `σ²` gives `E|P|² = σ²/N = N₀/T`. So `N₀ = σ²/f_s` is **independent of the
-integration time**, which is what lets one per-signal figure serve records of any
+integration time**, which is what lets one per-signal figure serve coherent integrations of any
 length. It is stored as a Unitful quantity of dimension `1/Hz`, so the
 consumer's `⟨|P|²⟩/N₀ − 1/T` is dimension-checked rather than trusted.
 

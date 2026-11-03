@@ -1,6 +1,6 @@
 # Physical NCO Doppler commands and their device-sample timeline.
 
-"No explicit application sample: the record end is used."
+"No explicit application sample: the integration end is used."
 const NO_LANDING_SAMPLE = typemin(Int64)
 
 """
@@ -30,7 +30,7 @@ end
     NCOTimeline(; capacity = 64)
 
 The physical NCO command in effect and commands scheduled at named device samples.
-[`calc_mean_nco_command`](@ref) attributes records to their replica frequencies.
+[`calc_mean_nco_command`](@ref) attributes integrations to their replica frequencies.
 Scheduled commands occupy a fixed vector of `capacity` entries, so nothing
 allocates; [`schedule_command!`](@ref) refuses a command that does not fit.
 

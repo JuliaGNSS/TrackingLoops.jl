@@ -96,17 +96,17 @@ end
 # `carrier` is the default narrow carrier bandwidth as capped for one primary code
 # period.
 function _sig_test_bandwidths(signal, carrier)
-    @test @inferred(default_wide_carrier_loop_filter_bandwidth(signal)) == 50.0Hz
-    @test @inferred(default_narrow_carrier_loop_filter_bandwidth(signal)) == 18.0Hz
-    @test @inferred(default_fll_assist_loop_filter_bandwidth(signal)) == 5.0Hz
+    @test @inferred(default_wide_carrier_loop_bandwidth(signal)) == 50.0Hz
+    @test @inferred(default_narrow_carrier_loop_bandwidth(signal)) == 18.0Hz
+    @test @inferred(default_fll_assist_loop_bandwidth(signal)) == 5.0Hz
     primary_period = get_code_length(signal) / get_chip_rate(signal)
     @test @inferred(
-        effective_carrier_loop_filter_bandwidth(
-            default_narrow_carrier_loop_filter_bandwidth(signal),
+        calc_effective_carrier_loop_bandwidth(
+            default_narrow_carrier_loop_bandwidth(signal),
             primary_period,
         )
     ) ≈ carrier
-    @test @inferred(default_code_loop_filter_bandwidth(signal)) ≈ 1.0Hz
+    @test @inferred(default_code_loop_bandwidth(signal)) ≈ 1.0Hz
 end
 
 @testset "GPS L1 C/A uses the soft bit-edge detector" begin
@@ -141,7 +141,7 @@ end
     _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 4.5Hz)
     # The 1 Hz DLL default is capped to 0.9 Hz at a 20 ms integration.
-    @test @inferred(effective_code_loop_filter_bandwidth(default_code_loop_filter_bandwidth(signal), 20ms)) ≈
+    @test @inferred(calc_effective_code_loop_bandwidth(default_code_loop_bandwidth(signal), 20ms)) ≈
           0.9Hz
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
     @test get_band_id(get_band(signal)) == :L2
@@ -154,7 +154,7 @@ end
     end
     _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 0.06Hz)
-    @test @inferred(effective_code_loop_filter_bandwidth(default_code_loop_filter_bandwidth(signal), 1.5s)) ≈
+    @test @inferred(calc_effective_code_loop_bandwidth(default_code_loop_bandwidth(signal), 1.5s)) ≈
           0.012Hz
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
     @test get_band_id(get_band(signal)) == :L2
