@@ -1,28 +1,28 @@
-# The navigation cycle, cycle by cycle, on the synthetic satellites of
-# `vector_simulation.jl` with the engine filled by hand: seeding from the scalar fix,
+# The navigation filter update, update by update, on the synthetic satellites of
+# `vector_simulation.jl` with the navigation processor filled by hand: seeding from the scalar fix,
 # the loop closure, membership and release, and the solution.
 using PositionVelocityTime: predict_pseudoranges!, PVTSolution
 using Geodesy: ENUfromECEF, wgs84
 
-@testset "The tracking_loop's navigation engine" begin
-    tracking_loop = VectorTrackingLoop(GPSL1CA(), GalileoE1B(); max_satellites_per_signal = 4)
-    nav = tracking_loop.navigation
-    @test length(nav.groups) == 2
-    @test nav.groups[1].driver_signal isa GPSL1CA
-    @test all(group -> length(group.slots) == 4, nav.groups)
-    @test all(group -> all(slot -> !slot.occupied && slot.registration == 0, group.slots), nav.groups)
-    @test nav.vt_update_interval == 0.1s
-    @test nav.lock_cn0_threshold_dbhz == 30.0
-    @test navigation_status(tracking_loop) == NavigationStatus()
-    @test !navigation_status(tracking_loop).running
-    @test navigation_solution(tracking_loop) === nav.pvt
-    @test isempty(vector_loop_members(tracking_loop))
-    @test satellite_report(tracking_loop, GPSL1CA(), 5) === nothing
+@testset "The tracking_loop's navigation processor" begin
+    tracking_loop = VectorTrackingLoop(GPSL1CA(), GalileoE1B(); satellite_capacity_per_signal = 4)
+    nav_processor = tracking_loop.navigation
+    @test length(nav_processor.groups) == 2
+    @test nav_processor.groups[1].driver_signal isa GPSL1CA
+    @test all(group -> length(group.slots) == 4, nav_processor.groups)
+    @test all(group -> all(slot -> !slot.occupied && slot.slot_generation == 0, group.slots), nav_processor.groups)
+    @test nav_processor.navigation_filter_update_interval == 0.1s
+    @test nav_processor.min_tracking_cn0 == 30.0
+    @test get_navigation_status(tracking_loop) == VectorTrackingStatus()
+    @test !get_navigation_status(tracking_loop).running
+    @test get_navigation_solution(tracking_loop) === nav_processor.pvt
+    @test isempty(get_vector_tracking_members(tracking_loop))
+    @test get_satellite_report(tracking_loop, GPSL1CA(), 5) === nothing
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
-    @test (state.slot_index, state.registration, state.cycle_id) == (0, 0, -1)
-    @test !state.in_vector_loop
-    @test VectorTrackingLoop(GPSL1CA(); vt_update_interval = 20ms).navigation.vt_update_interval == 0.02s
-    @test VectorTrackingLoop(GPSL1CA(); lock_cn0_threshold = 35dBHz).navigation.lock_cn0_threshold_dbhz == 35.0
+    @test (state.slot_index, state.slot_generation, state.update_index) == (0, 0, -1)
+    @test !state.vector_controlled
+    @test VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = 20ms).navigation.navigation_filter_update_interval == 0.02s
+    @test VectorTrackingLoop(GPSL1CA(); min_tracking_cn0 = 35dBHz).navigation.min_tracking_cn0 == 35.0
     @test !VectorTrackingLoop(GPSL1CA(); filter_config = nothing).navigation.enabled
 end
 
@@ -32,11 +32,11 @@ end
     # A dataless pilot carries no bits to decode.
     @test_throws ArgumentError VectorTrackingLoop(GPSL1C_P())
     @test_throws ArgumentError VectorTrackingLoop(GalileoE1C())
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); vt_update_interval = 0.0s)
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); vt_update_interval = -0.1s)
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); vt_update_interval = Inf * s)
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); max_satellites_per_signal = 0)
-    # A integration of no satellite, or of a driver it was not built for.
+    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = 0.0s)
+    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = -0.1s)
+    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = Inf * s)
+    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); satellite_capacity_per_signal = 0)
+    # An integration of no satellite, or of a driver it was not built for.
     tracking_loop = VectorTrackingLoop(GPSL1CA())
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
@@ -59,9 +59,9 @@ end
     results, _, diverged = run_simulation!(rx, 5)
     @test !diverged
     @test all(r -> !r.status.running && !r.status.seeded, results)
-    @test all(r -> r.status.num_members == 0, results)
-    @test all(sat -> !sat.state.in_vector_loop, rx.sats)
-    # A scalar fix each cycle, near the truth.
+    @test all(r -> r.status.num_vector_tracking_members == 0, results)
+    @test all(sat -> !sat.state.vector_controlled, rx.sats)
+    # A scalar fix each update, near the truth.
     @test length(results[end].pvt.observations) == length(rx.sats)
     @test position_error(rx, results[end]) < 3.0
     @test isnan(results[end].status.position_std)
@@ -76,18 +76,18 @@ end
     @test seed.status.seeded
     @test seed.status.running
     @test vt.running
-    @test seed.status.num_members == length(rx.sats)
+    @test seed.status.num_vector_tracking_members == length(rx.sats)
     # The emitted solution is the scalar fix, with no per-member report of the filter.
     @test length(seed.pvt.observations) == length(rx.sats)
-    @test isempty(vt.vector_loop_members)
+    @test isempty(vt.vector_tracking_members)
     # Every fix satellite took itself into the loop with corrections, and joined with
     # empty accumulators to accumulate from now on.
     for (sat, slot) in zip(rx.sats, channel_slots(rx.group, rx.sats))
-        @test sat.state.in_vector_loop
+        @test sat.state.vector_controlled
         @test sat.state.code_disc_sum == (0, 0.0)
-        @test isfinite(sat.state.code_freq_update)
-        @test sat.state.cycle_id == vt.cycle_id
-        @test slot.command_cycle == vt.cycle_id
+        @test isfinite(sat.state.code_frequency_correction)
+        @test sat.state.update_index == vt.update_index
+        @test slot.command_update_index == vt.update_index
         @test slot.release_reason == VT_NOT_RELEASED
     end
     # The reference epoch is the fix's, with the reference clock starting at zero.
@@ -101,24 +101,24 @@ end
     for sat in rx.sats
         sat.in_view = true
     end
-    fill_unready!(v, sat, epoch, application_sample_index, nav) = (fill_slot!(v, sat, epoch, application_sample_index, nav); v.pvt_ready = false)
+    fill_unready!(v, sat, epoch, application_sample_index, nav_processor) = (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); v.positioning_ready = false)
     results, _, _ = run_simulation!(rx, 2; fill! = fill_unready!)
     @test all(r -> !r.status.running && !r.status.seeded, results)
-    @test all(sat -> !sat.state.in_vector_loop, rx.sats)
+    @test all(sat -> !sat.state.vector_controlled, rx.sats)
 end
 
 @testset "A failed scalar attempt retains the previous fix without reseeding" begin
-    for filter_config in (nothing, NavigationFilterConfig())
+    for filter_config in (nothing, NavFilterConfig())
         rx = SimReceiver(; filter_config)
         _, sample, _ = run_simulation!(rx, 1)
-        previous_fix = navigation_solution(rx.tracking_loop)
+        previous_fix = get_navigation_solution(rx.tracking_loop)
         @test previous_fix.time !== nothing
         foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
         rx.vt.running = false
-        fill_unready!(slot, sat, epoch, application_sample_index, nav) =
-            (fill_slot!(slot, sat, epoch, application_sample_index, nav); slot.pvt_ready = false)
+        fill_unready!(slot, sat, epoch, application_sample_index, nav_processor) =
+            (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor); slot.positioning_ready = false)
         results, _, _ = run_simulation!(rx, 1; start_sample = sample, fill! = fill_unready!)
-        @test navigation_solution(rx.tracking_loop) === previous_fix
+        @test get_navigation_solution(rx.tracking_loop) === previous_fix
         @test !only(results).status.seeded
         @test !only(results).status.running
     end
@@ -131,8 +131,8 @@ end
     buffers = vt.buffers
     members = buffers.members
     idxs = vt.model.idxs
-    T = 0.1
-    # The corrections the cycle left, recomputed from the updated state the way
+    Δt_nav = 0.1
+    # The corrections the update left, recomputed from the updated state the way
     # GNSSReceiver computed them: all members at once, from the epoch's measurements.
     ξ = position_and_bias_vector(vt.x, idxs)
     predicted = predict_pseudoranges!(zeros(length(members)), [m.sat_pos for m in members], ξ,
@@ -148,7 +148,7 @@ end
                    buffers.delays[j]
         # The carrier NCO is commanded the Doppler of the rate predicted where the
         # command takes effect — at the epoch, with the satellite there; the measured rate, a
-        # mean over the past cycle, does not enter it.
+        # mean over the past update interval, does not enter it.
         ephemeris = something(GNSSDecoder.get_broadcast_ephemeris(slot.decoder))
         orbit = calc_satellite_position_and_velocity(ephemeris, member.time)
         rate_at_epoch = TL.calc_pseudorange_rate(user_pos, user_vel, user_drift,
@@ -156,20 +156,20 @@ end
         @test SVector{3,Float64}(orbit.position) == member.sat_pos
         # The measurement the last update fused against the one the corrections use.
         @test measured === buffers.measured_pseudoranges[j]
-        # The satellite took the corrections up where its command takes effect, at the epoch:
+        # The satellite applied the corrections where its command takes effect, at the epoch:
         # the range from the orbit evaluated there is the epoch's.
-        @test sat.state.code_freq_update ≈
-              TL.nco_code_correction(predicted[j], measured, member.code_frequency, T) * Hz atol = 1e-6Hz
+        @test sat.state.code_frequency_correction ≈
+              TL.calc_nco_code_correction(predicted[j], measured, member.chip_rate, Δt_nav) * Hz atol = 1e-6Hz
         @test sat.state.ramp.doppler ≈
-              TL.predicted_carrier_doppler(rate_at_epoch, member.wavelength) atol = 1e-6
-        @test sat.state.ramp.time ≈ TL._epoch_time(vt, vt.cycle_epoch)
+              TL.predict_carrier_doppler(rate_at_epoch, member.wavelength) atol = 1e-6
+        @test sat.state.ramp.time ≈ TL._epoch_time(vt, vt.update_epoch_index)
         # The post-fit rate is predicted at the measurement's own instant.
         @test buffers.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.x, idxs, member) atol = 1e-9
-        @test sat.state.code_update_landing_lead == 0.0s
+        @test sat.state.feedback_delay == 0.0s
         # The accumulators were emptied at the epoch's snapshot.
         @test sat.state.code_disc_sum == (0, 0.0)
-        # Taken up once: a second take-up changes nothing.
-        @test TL._take_up_cycle(vt, rx.group, slot, sat.state, feedback_integration(sat, 0),
+        # Applied once: applying it again changes nothing.
+        @test TL._apply_filter_feedback(vt, rx.group, slot, sat.state, feedback_integration(sat, 0),
             sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(0)) === sat.state
     end
 end
@@ -186,7 +186,7 @@ end
     integration = feedback_integration(sat, sample)
     at_epoch = TL._commands_at_application(vt, rx.group, slot, integration, nco_history, Int64(sample))
     @test at_epoch[3] == 0.0
-    @test at_epoch[1] ≈ ustrip(Hz, sat.state.code_freq_update) atol = 1e-9
+    @test at_epoch[1] ≈ ustrip(Hz, sat.state.code_frequency_correction) atol = 1e-9
     @test at_epoch[2].doppler ≈ sat.state.ramp.doppler atol = 1e-9
     # 20 ms on, under the same commands: the range has moved on with the replica, so the
     # code correction barely changes, the ramp carries on, and the lead is the 20 ms.
@@ -194,14 +194,14 @@ end
     @test later[3] ≈ 0.02
     @test later[1] ≈ at_epoch[1] atol = 0.05
     @test later[2].doppler ≈ TL._doppler_at(at_epoch[2], later[2].time) atol = 1e-3
-    # It must take effect within 2.5 cycles of the epoch.
+    # It must take effect within 2.5 update intervals of the epoch.
     @test_throws ArgumentError TL._commands_at_application(vt, rx.group, slot, integration, nco_history,
         Int64(sample + 1_100_000))
     @test_throws ArgumentError TL._commands_at_application(vt, rx.group, slot, integration, nco_history,
         Int64(sample - 4000))
 end
 
-@testset "The solution of a running cycle" begin
+@testset "The solution of a running update" begin
     rx = SimReceiver()
     results, _, _ = run_simulation!(rx, 10)
     result = results[end]
@@ -213,18 +213,18 @@ end
     @test pvt.dop !== nothing
     @test 0 < pvt.dop.GDOP < 10
     @test length(pvt.observations) == length(rx.sats)
-    @test keys(vector_loop_members(rx.tracking_loop)) == keys(pvt.observations)
+    @test keys(get_vector_tracking_members(rx.tracking_loop)) == keys(pvt.observations)
     @test isempty(pvt.inter_system_biases)
     @test position_error(rx, result) < 0.5
     @test norm(SVector(pvt.velocity.x, pvt.velocity.y, pvt.velocity.z) - rx.truth.velocity) < 0.05
     @test 0.0u"m" < result.status.position_std < 10.0u"m"
-    @test result.status.clock_std > 0.0u"m"
+    @test result.status.clock_bias_std > 0.0u"m"
     # The filter's clock drift is reported in m/s, the rate of the clock bias.
     @test ustrip(u"m/s", pvt.clock_drift) ≈ rx.truth.clock_drift atol = 0.05
-    # Timestamps advance by the cycle.
+    # Timestamps advance by the update interval.
     @test results[end].pvt.time - results[end-1].pvt.time ≈ 0.1 atol = 1e-6
     # The same solution object is returned and kept.
-    @test pvt === navigation_solution(rx.tracking_loop)
+    @test pvt === get_navigation_solution(rx.tracking_loop)
     # Steered members' post-fit residuals are their discriminators alone: small.
     for info in values(pvt.observations)
         @test abs(info.residual) < 1.0u"m"
@@ -235,70 +235,70 @@ end
 @testset "Membership: out of lock coasts, a dropped satellite is released" begin
     rx = SimReceiver()
     _, sample, _ = run_simulation!(rx, 5)
-    # Out of lock: still a member, unmeasured, still steered, in `vector_loop_members` but
+    # Out of lock: still a member, unmeasured, still steered, in `get_vector_tracking_members` but
     # not in the solution's `sats`.
     prn = rx.sats[1].decoder.prn
-    coast!(v, sat, epoch, application_sample_index, nav) =
-        (fill_slot!(v, sat, epoch, application_sample_index, nav); v.prn == prn && (v.in_lock = false))
+    coast!(v, sat, epoch, application_sample_index, nav_processor) =
+        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); v.prn == prn && (v.measurement_ready = false))
     results, sample, _ = run_simulation!(rx, 1; fill! = coast!, start_sample = sample)
     key = (:GPSL1CA, prn)
-    @test rx.sats[1].state.in_vector_loop
-    @test satellite_report(rx.tracking_loop, GPSL1CA(), prn).release_reason == VT_NOT_RELEASED
+    @test rx.sats[1].state.vector_controlled
+    @test get_satellite_report(rx.tracking_loop, GPSL1CA(), prn).release_reason == VT_NOT_RELEASED
     @test !haskey(results[1].pvt.observations, key)
-    @test haskey(vector_loop_members(rx.tracking_loop), key)
-    @test results[1].status.num_members == length(rx.sats)
+    @test haskey(get_vector_tracking_members(rx.tracking_loop), key)
+    @test results[1].status.num_vector_tracking_members == length(rx.sats)
     @test !results[1].status.released
-    # No integration for two cycles: dropped, released as ineligible, and re-seeded from the
+    # No integration for two update intervals: dropped, released as ineligible, and re-seeded from the
     # replica's Dopplers where its command takes effect.
     dropped = rx.group.slots[2]
-    drop!(v, sat, epoch, application_sample_index, nav) =
-        (fill_slot!(v, sat, epoch, application_sample_index, nav); v === dropped && drop_slot!(v))
+    drop!(v, sat, epoch, application_sample_index, nav_processor) =
+        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); v === dropped && drop_slot!(v))
     results, _, _ = run_simulation!(rx, 1; fill! = drop!, start_sample = sample)
     sat = rx.sats[2]
     @test results[1].status.released
     @test dropped.release_reason == VT_INELIGIBLE
-    @test satellite_report(rx.tracking_loop, GPSL1CA(), dropped.prn).release_reason == VT_INELIGIBLE
+    @test get_satellite_report(rx.tracking_loop, GPSL1CA(), dropped.prn).release_reason == VT_INELIGIBLE
     @test !dropped.occupied
-    @test !dropped.loop_state.in_vector_loop
-    @test !sat.state.in_vector_loop
-    @test sat.state.code_freq_update == 0.0Hz
+    @test !dropped.loop_state.vector_controlled
+    @test !sat.state.vector_controlled
+    @test sat.state.code_frequency_correction == 0.0Hz
     # Re-seeded at its residual PLL's estimate, a hair off the replica's command, which
     # the filter's ramp keeps on the carrier.
     @test sat.state.inner.initial_carrier_doppler ≈ sat.carrier_doppler * Hz atol = 0.01Hz
     @test sat.state.inner.initial_code_doppler == sat.code_doppler * Hz
-    @test results[1].status.num_members == length(rx.sats) - 1
-    @test !haskey(vector_loop_members(rx.tracking_loop), (:GPSL1CA, dropped.prn))
+    @test results[1].status.num_vector_tracking_members == length(rx.sats) - 1
+    @test !haskey(get_vector_tracking_members(rx.tracking_loop), (:GPSL1CA, dropped.prn))
     @test all(v.release_reason == VT_NOT_RELEASED for v in channel_slots(rx.group, rx.sats) if v !== dropped)
 end
 
-@testset "A member that missed the epoch sits the cycle out" begin
+@testset "A member that missed the epoch sits the update out" begin
     rx = SimReceiver()
     _, sample, _ = run_simulation!(rx, 5)
     late = rx.group.slots[3]
-    miss!(v, sat, epoch, application_sample_index, nav) =
-        (fill_slot!(v, sat, epoch, application_sample_index, nav); v === late && (v.snapshot_epoch = typemin(Int)))
+    miss!(v, sat, epoch, application_sample_index, nav_processor) =
+        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); v === late && (v.snapshot_epoch = typemin(Int)))
     results, _, _ = run_simulation!(rx, 1; fill! = miss!, start_sample = sample)
     # Not stale, so not dropped: it keeps its place and its corrections, without new ones.
     @test late.occupied
-    @test !late.in_cycle
+    @test !late.in_update
     @test late.release_reason == VT_NOT_RELEASED
-    @test late.command_cycle != rx.vt.cycle_id
-    @test rx.sats[3].state.in_vector_loop
-    @test results[1].status.num_members == length(rx.sats) - 1
+    @test late.command_update_index != rx.vt.update_index
+    @test rx.sats[3].state.vector_controlled
+    @test results[1].status.num_vector_tracking_members == length(rx.sats) - 1
     @test !results[1].status.released
 end
 
-@testset "An unsolvable epoch grows the starvation timer, a solvable one pays it back" begin
+@testset "An unsolvable epoch grows the measurement deficit timer, a solvable one pays it back" begin
     rx = SimReceiver()
     _, sample, _ = run_simulation!(rx, 3)
     # Three satellites in lock are too few for position and clock.
-    starve!(v, sat, epoch, application_sample_index, nav) =
-        (fill_slot!(v, sat, epoch, application_sample_index, nav); v.in_lock = v.prn in (rx.sats[1].decoder.prn, rx.sats[2].decoder.prn, rx.sats[3].decoder.prn))
+    starve!(v, sat, epoch, application_sample_index, nav_processor) =
+        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); v.measurement_ready = v.prn in (rx.sats[1].decoder.prn, rx.sats[2].decoder.prn, rx.sats[3].decoder.prn))
     results, sample, _ = run_simulation!(rx, 3; fill! = starve!, start_sample = sample)
-    @test [r.status.time_with_insufficient_meas for r in results] ≈ [0.1, 0.2, 0.3] .* s
+    @test [r.status.measurement_deficit_duration for r in results] ≈ [0.1, 0.2, 0.3] .* s
     @test all(r -> r.status.running, results)
     results, _, _ = run_simulation!(rx, 2; start_sample = sample)
-    @test [r.status.time_with_insufficient_meas for r in results] ≈ [0.25, 0.2] .* s
+    @test [r.status.measurement_deficit_duration for r in results] ≈ [0.25, 0.2] .* s
 end
 
 @testset "A released satellite takes over from the replica at application_sample_index" begin
@@ -310,14 +310,14 @@ end
     @test !diverged
     dropped = rx.group.slots[2]
     sat = rx.sats[2]
-    drop!(v, sat, epoch, application_sample_index, nav) =
-        (fill_slot!(v, sat, epoch, application_sample_index, nav); v === dropped && drop_slot!(v))
+    drop!(v, sat, epoch, application_sample_index, nav_processor) =
+        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); v === dropped && drop_slot!(v))
     _, sample, _ = run_simulation!(rx, 1; fill! = drop!, start_sample = sample)
     @test dropped.release_reason == VT_INELIGIBLE
     nco_command = get_nco_command(sat.timeline, sample + 15 * SAMPLES_PER_MS)
-    landing_carrier, landing_code = nco_command.carrier_doppler, nco_command.code_doppler
-    @test sat.state.inner.initial_carrier_doppler ≈ landing_carrier * Hz atol = 0.01Hz
-    @test sat.state.inner.initial_code_doppler == landing_code * Hz
+    application_carrier, application_code = nco_command.carrier_doppler, nco_command.code_doppler
+    @test sat.state.inner.initial_carrier_doppler ≈ application_carrier * Hz atol = 0.01Hz
+    @test sat.state.inner.initial_code_doppler == application_code * Hz
     @test sat.state.inner.initial_carrier_doppler != dropped.carrier_doppler
 end
 
@@ -334,24 +334,24 @@ end
     @test TL._is_above_admission_mask(group.driver_signal, sat, here)
     @test !TL._is_above_admission_mask(group.driver_signal, sat, antipode)
     # Eligible and in lock, but below the mask: not admitted, so a satellite at the
-    # horizon is not admitted and released every cycle. A member stays a member; the
-    # elevation mask of the running cycle releases it.
+    # horizon is not admitted and released every update. A member stays a member; the
+    # elevation mask of the running update releases it.
     @test !TL._update_membership!(false, group, 1, nothing, antipode)
-    @test !sat.loop_state.in_vector_loop
-    @test all(v -> v.loop_state.in_vector_loop, channel_slots(group, rx.sats)[2:end])
+    @test !sat.loop_state.vector_controlled
+    @test all(v -> v.loop_state.vector_controlled, channel_slots(group, rx.sats)[2:end])
     TL._update_membership!(false, group, 1, nothing, here)
-    @test sat.loop_state.in_vector_loop
-    # A running cycle admits it back at the filter's own position, and the satellite
-    # takes the admission up.
+    @test sat.loop_state.vector_controlled
+    # A running update admits it back at the filter's own position, and the satellite
+    # applies the admission.
     rx.sats[1].state = TL._release_from_vector_loop(rx.sats[1].state)
     results, _, _ = run_simulation!(rx, 1; start_sample = sample)
-    @test rx.sats[1].state.in_vector_loop
-    @test results[1].status.num_members == length(rx.sats)
+    @test rx.sats[1].state.vector_controlled
+    @test results[1].status.num_vector_tracking_members == length(rx.sats)
 end
 
 @testset "A member below the horizon is released unmeasured" begin
     # The filter's solution moved to the antipode: every satellite is below its horizon.
-    # The elevation mask runs before the measurement update, at the solution the cycle
+    # The elevation mask runs before the measurement update, at the solution the update
     # starts from, so they are all released without being measured, and with no member
     # left the loop falls back.
     rx = SimReceiver()
@@ -367,8 +367,8 @@ end
 @testset "Biases are reported only for what was measured" begin
     rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()))
     # No Galileo satellite in lock: its clock coasts and is not reported.
-    gps_only!(v, sat, epoch, application_sample_index, nav) =
-        (fill_slot!(v, sat, epoch, application_sample_index, nav); sat.signal isa GalileoE1B && (v.in_lock = false))
+    gps_only!(v, sat, epoch, application_sample_index, nav_processor) =
+        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); sat.signal isa GalileoE1B && (v.measurement_ready = false))
     results, sample, _ = run_simulation!(rx, 10; fill! = gps_only!)
     @test results[end].status.running
     @test !haskey(results[end].pvt.inter_system_biases, GST())

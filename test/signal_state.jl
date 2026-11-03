@@ -12,7 +12,7 @@ function synced_l1ca_state(; kwargs...)
     state
 end
 
-@testset "A integration that crosses the bit boundary is reported, not logged" begin
+@testset "An integration that crosses the bit boundary is reported, not logged" begin
     signal = GPSL1CA()
     state = synced_l1ca_state()
     # Three-period integrations walk the bit accumulator past the 20-period boundary

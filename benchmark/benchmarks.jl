@@ -1,6 +1,6 @@
 # The loop process's navigation budget, on the simulated satellites of the tests
-# (`test/vector_simulation.jl`): one navigation cycle, for GPS L1 C/A alone and with L2C
-# (one inter-frequency bias), and the per-integration step of every member between two cycles.
+# (`test/vector_simulation.jl`): one navigation filter update, for GPS L1 C/A alone and with L2C
+# (one inter-frequency bias), and the per-integration step of every member between two updates.
 # Run with AirspeedVelocity's `benchpkg`, or directly:
 #
 #     julia --project=benchmark -e 'include("benchmark/benchmarks.jl"); run(SUITE)'
@@ -33,22 +33,22 @@ function step_members(tracking_loop, steps::Tuple)
 end
 
 for (name, signals) in (("GPS L1 C/A", (GPSL1CA(),)), ("GPS L1 C/A and L2C", (GPSL1CA(), GPSL2CM())))
-    # A running filter, and every slot filled for the next epoch as `run_cycle!` fills
-    # them. Each sample runs the cycle on a copy, so every one starts from the same state.
+    # A running filter, and every slot filled for the next epoch as `run_update!` fills
+    # them. Each sample runs the update on a copy, so every one starts from the same state.
     rx = SimReceiver(; signals)
     _, sample, _ = run_simulation!(rx, 5)
     rx.vt.running || error("the filter did not start on $name")
-    epoch = sample + rx.cycle_ms * SAMPLES_PER_MS
+    epoch = sample + rx.update_interval_ms * SAMPLES_PER_MS
     rx.vt.pending_epoch = round(Int, epoch / (rx.nominal_ms * SAMPLES_PER_MS))
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
         fill_slot!(group.slots[i], sat, epoch, NO_LANDING_SAMPLE, rx.vt)
     end
     now = epoch / ustrip(Hz, SIM_FS)
     num_satellites = sum(length, rx.channels)
-    SUITE["navigation cycle"]["$num_satellites satellites, $name"] =
-        @benchmarkable TrackingLoops._navigation_cycle!(nav, $now) setup = (nav = deepcopy($(rx.vt))) evals = 1
+    SUITE["navigation filter update"]["$num_satellites satellites, $name"] =
+        @benchmarkable TrackingLoops._navigation_update!(nav_processor, $now) setup = (nav_processor = deepcopy($(rx.vt))) evals = 1
 
-    # One integration of every member, stepped from its state at the cycle's end as the
+    # One integration of every member, stepped from its state at the update's end as the
     # satellite's own loop steps it in the vector loop; one vector per signal, so that
     # each is stepped with its types known.
     steps = map(rx.channels) do channels

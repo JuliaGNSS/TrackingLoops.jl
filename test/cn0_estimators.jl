@@ -101,7 +101,7 @@ end
         SyncHypothesisAccumulators(),
     )
     @test CN0UpdateContext(GPSL1CA(), synced_buffer, 1).num_code_periods_into_bit == 3
-    # Records of a chunk that follow a sync detected in that same chunk were
+    # Integrations of a chunk that follow a sync detected in that same chunk were
     # correlated with pre-sync replicas — their alignment is not trustworthy.
     @test CN0UpdateContext(GPSL1CA(), synced_buffer, 1, false).num_code_periods_into_bit == -1
     # The keywords land in the context.
@@ -155,7 +155,7 @@ end
 end
 
 @testset "Moments CN0 estimate divides by the coherent integration time" begin
-    # A integration spanning N code periods arrives with N times the SNR of a one-period
+    # An integration spanning N code periods arrives with N times the SNR of a one-period
     # integration, so the same shape at two period counts must report the same C/N₀
     # once the divisor is N × the code period.
     rng = Xoshiro(4321)
@@ -236,7 +236,7 @@ end
 end
 
 @testset "NoiseRef: integrations of different length are each divided by their own T" begin
-    # Against a fixed `N₀` the sample-normalised prompt power of a integration at
+    # Against a fixed `N₀` the sample-normalised prompt power of an integration at
     # C/N₀ = γ is `N₀·(γ + 1/T)`, so a 20 ms integration carrying the *same* γ has a
     # visibly different power.
     γ = 3000.0                                   # ≈34.8 dB-Hz
@@ -654,7 +654,7 @@ end
     @test estimator.num_integrations_per_ratio == 5
 end
 
-@testset "NWPR CN0 estimator when a integration outgrows its own window" begin
+@testset "NWPR CN0 estimator when an integration outgrows its own window" begin
     bit_synchronizer = BitSynchronizer{UInt64}()
     context(num_code_periods, num_code_periods_into_bit) =
         CN0UpdateContext(GPSL1CA(), num_code_periods, num_code_periods_into_bit, bit_synchronizer)
@@ -678,7 +678,7 @@ end
           estimate_cn0(estimator.fallback, 20ms)
 end
 
-@testset "NWPR CN0 estimator skips a integration spanning no whole code period" begin
+@testset "NWPR CN0 estimator skips an integration spanning no whole code period" begin
     # The fractional integration right after a sync phase-snap leaves the open
     # window untouched; its prompt still reaches the fallback.
     bit_synchronizer = BitSynchronizer{UInt64}()
