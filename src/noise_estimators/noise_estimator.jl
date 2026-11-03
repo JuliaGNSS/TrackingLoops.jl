@@ -130,7 +130,7 @@ noise_density_type(::AbstractNoiseEstimator) = NoiseDensity
 $(SIGNATURES)
 
 Build a [`NoiseObservation`](@ref) from **one dump given as a raw complex
-accumulation** `Σ x·c` over `integrated_samples` samples — the most faithful
+accumulation** `Σ x·c` over `num_integrated_samples` samples — the most faithful
 form, since the estimator does the squaring, scaling and averaging.
 
 `code_amplitude` is the RMS amplitude of the sampled replica (see
@@ -143,34 +143,34 @@ each satellite's floor is `wᴴR̂w` under its own weights.
 """
 noise_observation(
     accumulation::Complex,
-    integrated_samples,
+    num_integrated_samples,
     sampling_frequency;
     code_amplitude = 1,
     prn::Integer = 0,
 ) = _noise_observation(
     abs2(accumulation),
     1,
-    integrated_samples,
+    num_integrated_samples,
     sampling_frequency,
     code_amplitude,
     prn,
-    integrated_samples / sampling_frequency,
+    num_integrated_samples / sampling_frequency,
 )
 
 noise_observation(
     accumulation::StaticVector{M,<:Complex},
-    integrated_samples,
+    num_integrated_samples,
     sampling_frequency;
     code_amplitude = 1,
     prn::Integer = 0,
 ) where {M} = _noise_observation(
     accumulation * accumulation',
     1,
-    integrated_samples,
+    num_integrated_samples,
     sampling_frequency,
     code_amplitude,
     prn,
-    integrated_samples / sampling_frequency,
+    num_integrated_samples / sampling_frequency,
 )
 
 """
@@ -186,7 +186,7 @@ covers.
 
 `duration` defaults to `total_samples / sampling_frequency`, right for
 consecutive despreads. Pass it explicitly when they are **simultaneous**
-(e.g. correlator taps over the same `N` samples: `N / sampling_frequency`).
+(e.g. correlator outputs over the same `N` samples: `N / sampling_frequency`).
 
 For an antenna array, pass `Σ_m B_m·B_mᴴ` as an `SMatrix` (sum the outer
 products, never the outer product of the sum).

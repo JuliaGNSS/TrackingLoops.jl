@@ -42,8 +42,8 @@ PRN, configured with a code, so per signal is what an FPGA builds anyway.
 
 ## Why a density and not a power
 
-For a correlator normalised the way `TrackingLoops.normalize` normalises — by
-`integrated_samples * code_amplitude` — white input noise of per-sample variance
+For a correlator bank normalised the way `TrackingLoops.normalize` normalises — by
+`num_integrated_samples * code_amplitude` — white input noise of per-sample variance
 `σ²` gives `E|P|² = σ²/N = N₀/T`. So `N₀ = σ²/f_s` is **independent of the
 integration time**, which is what lets one per-signal figure serve records of any
 length. It is stored as a Unitful quantity of dimension `1/Hz`, so the
@@ -55,13 +55,13 @@ A [`CorrelatorNoiseEstimator`](@ref) plans its own measurement:
 [`noise_despreads`](@ref TrackingLoops.noise_despreads) splits a slice of samples into
 code-period despreads, rotates the PRN and draws each one's random code phase and
 carrier. A host only despreads each [`NoiseDespread`](@ref TrackingLoops.NoiseDespread)
-through [`get_noise_correlator_bank`](@ref TrackingLoops.get_noise_correlator_bank)'s taps and appends them
+through [`get_noise_correlator_bank`](@ref TrackingLoops.get_noise_correlator_bank)'s correlator outputs and appends them
 with [`append_despread_noise!`](@ref TrackingLoops.append_despread_noise!). Tracking.jl
 does so on its kernels when [`update_noise!`](@ref TrackingLoops.update_noise!) calls its
 [`despread_noise!`](@ref TrackingLoops.despread_noise!):
 
 ```julia
-correlator = TrackingLoops.get_noise_correlator_bank(estimator)
+correlator_bank = TrackingLoops.get_noise_correlator_bank(estimator)
 despreads = TrackingLoops.noise_despreads(
     estimator,
     signal,
@@ -70,8 +70,8 @@ despreads = TrackingLoops.noise_despreads(
     intermediate_frequency,
 )
 for despread in despreads
-    taps = despread_on_kernel(correlator, despread)
-    TrackingLoops.append_despread_noise!(estimator, despread, taps)
+    correlator_outputs = despread_on_kernel(correlator_bank, despread)
+    TrackingLoops.append_despread_noise!(estimator, despread, correlator_outputs)
 end
 ```
 
@@ -88,7 +88,7 @@ sample count with [`append_noise_correlator_outputs!`](@ref TrackingLoops.append
 probe = TrackingLoops.draw_noise_probe(estimator, signal, intermediate_frequency)
 arm_noise_channel!(device, probe)                       # the host's driver call
 for dump in noise_channel_dumps(device)                 # until the next re-arm
-    TrackingLoops.append_noise_correlator_outputs!(estimator, probe, dump.taps,
+    TrackingLoops.append_noise_correlator_outputs!(estimator, probe, dump.correlator_outputs,
         dump.num_integrated_samples, sampling_frequency)
 end
 ```
@@ -96,7 +96,7 @@ end
 The rotation advances on the next draw: the PRN is carried in the newest observation.
 How often to redraw is the host's trade-off. A probe parked over a whole window that
 happens to line up with a visible but untracked satellite (a hit needs the code phase
-within a tap, about `3 × 1.5 / 1023 ≈ 0.44 %` per such satellite, and the carrier within
+within a correlator, about `3 × 1.5 / 1023 ≈ 0.44 %` per such satellite, and the carrier within
 about `1/T` of its Doppler, about a fifth of a ±5 kHz dither at `T = 1 ms`) raises every
 observation it covers by about `T·(C/N₀)/3 ≈ 10.5·N₀` at 45 dB-Hz, so `N̂₀` by up to
 ≈ 10 dB for that window. Redrawing `n` times per window lets one hit bias only `1/n` of

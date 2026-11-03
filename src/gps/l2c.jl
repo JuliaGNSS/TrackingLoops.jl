@@ -28,9 +28,9 @@ the coherent integration, so there is nothing to lock.
 @inline detect_bit_or_secondary_code_sync(::GPSL2CL, ::Integer, ::Unsigned, ::Integer) =
     SyncResult(false, 0, Int8(0))
 
-# BPSK: EarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(::Union{GPSL2CM,GPSL2CL}, num_ants::NumAnts = NumAnts(1))
-    EarlyPromptLateCorrelator(; num_ants)
+# BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(::Union{GPSL2CM,GPSL2CL}, num_ants::NumAnts = NumAnts(1))
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
 # One bit per code period: nothing to search (see `get_code_block_buffer_type`).

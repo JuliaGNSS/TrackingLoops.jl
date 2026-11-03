@@ -256,8 +256,8 @@ function _step_residual_pll(residual_pll::ResidualPLL, ramp::CarrierRamp, record
     ComplexF64(get_prompt(wiped))
 end
 
-# `correlator` with every tap rotated by `phasor`.
-_rotated(correlator, phasor) = update_accumulator(correlator, get_accumulators(correlator) .* phasor)
+# `correlator_bank` with every correlator output rotated by `phasor`.
+_rotated(correlator_bank, phasor) = set_correlator_outputs(correlator_bank, get_correlator_outputs(correlator_bank) .* phasor)
 
 # A slot's ring of the residual phases (cycles) predicted at the driver's latest prompts
 # and their centres (s), newest at `newest`, `count` valid. A pair's decoding signal reads

@@ -22,7 +22,7 @@ const WIDE_LOOP = (;
 const NCO_REFERENCED_WIDE = (; wide_carrier_loop_filter_bandwidth = 18.0Hz)
 
 loop_epl(late, prompt, early) =
-    EarlyPromptLateCorrelator(SVector{3,ComplexF64}(late, prompt, early), 0.5)
+    EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(late, prompt, early), 0.5)
 
 function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, phi0 = 0.8, steps = 600)
     code_doppler = handover * Hz * get_chip_rate_to_center_frequency_ratio(LOOP_SIGNAL)
@@ -46,7 +46,7 @@ function simulate_delayed_loop(estimator, d; f_true = 130.0, handover = 100.0, p
         p = cis(mean_phase)
         output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, b)
         landing = Int64(b + d * LOOP_N)
-        record = LoopRecord(LOOP_SIGNAL, output.correlator, previous_prompt, output, 1, LOOP_FS; prn = 1)
+        record = LoopRecord(LOOP_SIGNAL, output.correlator_bank, previous_prompt, output, 1, LOOP_FS; prn = 1)
         state, carrier, code = step_loop(estimator, state, record, timeline, landing)
         previous_prompt = p
         schedule_command!(timeline, landing, ustrip(Hz, carrier), ustrip(Hz, code))
@@ -149,7 +149,7 @@ end
     for k = 1:300
         p = cis(0.3 + 0.002k)
         output = CorrelatorOutput(loop_epl(0.45p, p, 0.55p), LOOP_N, LOOP_N * k)
-        record = LoopRecord(signal, output.correlator, previous_prompt, output, 1, LOOP_FS)
+        record = LoopRecord(signal, output.correlator_bank, previous_prompt, output, 1, LOOP_FS)
         words = ConstantNCOCommand(carrier, code)
         conv_state, conv_carrier, conv_code = step_loop(conventional, conv_state, record, words, NO_LANDING_SAMPLE)
         ref_state, ref_carrier, ref_code = step_loop(referenced, ref_state, record, words, NO_LANDING_SAMPLE)
@@ -171,7 +171,7 @@ end
     estimator = ConventionalAssistedPLLAndDLL(; code_loop_filter_bandwidth = 0.5Hz)
     state = init_estimator_state(estimator, LOOP_SIGNAL, 0.0Hz, 0.0Hz)
     output = CorrelatorOutput(loop_epl(0.4, cis(0.2), 0.6), LOOP_N, LOOP_N)
-    record = LoopRecord(LOOP_SIGNAL, output.correlator, cis(0.1), output, 1, LOOP_FS)
+    record = LoopRecord(LOOP_SIGNAL, output.correlator_bank, cis(0.1), output, 1, LOOP_FS)
     state, = step_loop(estimator, state, record, ConstantNCOCommand(0.0, 0.0), NO_LANDING_SAMPLE)
     @test state.carrier_loop_filter.x1 != 0.0Hz
     reset = reset_estimator_state(estimator, state, 42.0Hz, 0.02Hz)
@@ -197,7 +197,7 @@ end
     @test state isa estimator_state_type(estimator, LOOP_SIGNAL)
     output = CorrelatorOutput(loop_epl(0.5, 1.0, 0.5), LOOP_N, LOOP_N)
     # The record names its satellite, which the vector loop's navigation engine needs.
-    record = LoopRecord(LOOP_SIGNAL, output.correlator, complex(0.0, 0.0), output, 1, LOOP_FS; prn = 5)
+    record = LoopRecord(LOOP_SIGNAL, output.correlator_bank, complex(0.0, 0.0), output, 1, LOOP_FS; prn = 5)
     stepped, carrier_doppler, code_doppler =
         @inferred step_loop(estimator, state, record, ConstantNCOCommand(100.0, 0.0), NO_LANDING_SAMPLE)
     @test stepped isa typeof(state)
@@ -229,7 +229,7 @@ end
     n = 25_000
     state = init_estimator_state(estimator, driver, 100.0Hz, 0.1Hz)
     output = CorrelatorOutput(loop_epl(0.5, 1.0, 0.5), n, n)
-    record = LoopRecord(passenger, output.correlator, complex(0.0), output, 1, fs; prn = 5)
+    record = LoopRecord(passenger, output.correlator_bank, complex(0.0), output, 1, fs; prn = 5)
     # The state unchanged, and the command in force…
     stepped, carrier, code = step_loop(estimator, state, record, ConstantNCOCommand(123.0, 0.12), NO_LANDING_SAMPLE)
     @test stepped === state
@@ -251,10 +251,10 @@ end
             p = cis(0.3 + 0.002k)
             output = CorrelatorOutput(loop_epl(0.45p, p, 0.55p), n, n * k)
             if with_passengers
-                passenger_record = LoopRecord(passenger, output.correlator, complex(0.0), output, 1, fs)
+                passenger_record = LoopRecord(passenger, output.correlator_bank, complex(0.0), output, 1, fs)
                 state, = step_loop(estimator, state, passenger_record, ConstantNCOCommand(carrier, code), NO_LANDING_SAMPLE)
             end
-            record = LoopRecord(driver, output.correlator, previous_prompt, output, 1, fs)
+            record = LoopRecord(driver, output.correlator_bank, previous_prompt, output, 1, fs)
             state, c, d = step_loop(estimator, state, record, ConstantNCOCommand(carrier, code), NO_LANDING_SAMPLE)
             push!(sequence, (c, d))
             carrier, code = ustrip(Hz, c), ustrip(Hz, d)
@@ -280,7 +280,7 @@ end
     discriminators(; kwargs...) = TrackingLoops._record_discriminators(
         estimator,
         state,
-        LoopRecord(LOOP_SIGNAL, output.correlator, complex(1.0), output, 1, LOOP_FS; kwargs...),
+        LoopRecord(LOOP_SIGNAL, output.correlator_bank, complex(1.0), output, 1, LOOP_FS; kwargs...),
         ConstantNCOCommand(0.0, 0.0),
         NO_LANDING_SAMPLE;
         form_fll = true,
@@ -320,7 +320,7 @@ end
         phase += 2π * (130.0 - carrier_command) * dt
         p = cis(mean_phase)
         output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), LOOP_N, LOOP_N * (k + 1))
-        record = LoopRecord(LOOP_SIGNAL, output.correlator, previous_prompt, output, 1, LOOP_FS)
+        record = LoopRecord(LOOP_SIGNAL, output.correlator_bank, previous_prompt, output, 1, LOOP_FS)
         uses_fll = carrier_loop_stage(state) == FLL_ASSISTED_PLL
         # The FLL discriminator is formed only while the loop uses it.
         discriminators = TrackingLoops._record_discriminators(
