@@ -132,5 +132,5 @@ TrackingLoops.despread_noise!
 TrackingLoops.get_noise_density(::CorrelatorNoiseEstimator)
 TrackingLoops.get_noise_correlator_bank(::CorrelatorNoiseEstimator)
 TrackingLoops.noise_despreads(::CorrelatorNoiseEstimator, ::AbstractGNSSSignal, ::AbstractUnitRange{<:Integer}, ::Any, ::Any)
-TrackingLoops.update_noise!(::CorrelatorNoiseEstimator, ::Any, ::Integer, ::Integer, ::NoiseUpdateContext)
+TrackingLoops.update_noise!(::CorrelatorNoiseEstimator, ::Any, ::AbstractUnitRange{<:Integer}, ::NoiseUpdateContext)
 ```

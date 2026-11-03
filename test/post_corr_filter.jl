@@ -3,7 +3,7 @@
 using StaticArrays: SMatrix
 using TrackingLoops: _filter_correlator_output, _filter_correlator_bank, _reduce_noise_density
 
-@testset "Post correlation filter" begin
+@testset "Post-correlation filter" begin
     default_post_corr_filter = DefaultPostCorrFilter()
 
     @test update(default_post_corr_filter, 1.0 + 2.0im) == default_post_corr_filter
@@ -26,7 +26,7 @@ using TrackingLoops: _filter_correlator_output, _filter_correlator_bank, _reduce
     @test _filter_correlator_output(SVector{2,ComplexF64}(1, 5), SVector{2,ComplexF64}(1.0im, 0)) ==
           -1.0im
 
-    # A whole multi-antenna correlator reduces to the single-channel one.
+    # A whole multi-antenna correlator bank reduces to the single-channel one.
     correlator_bank = EarlyPromptLateCorrelatorBank(
         SVector(
             SVector{2,ComplexF64}(1, 2),

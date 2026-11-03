@@ -53,7 +53,7 @@ satellites stepped with one estimator share its navigation engine, which
 ```julia
 signal = GPSL1CA()
 tracking_loop = VectorTrackingLoop(signal, GalileoE1C() => GalileoE1B())   # owns decoders, filter and PVT
-loop_state = init_loop_state(tracking_loop, signal = GPSL1CA(), doppler_estimator code_doppler)
+loop_state = init_loop_state(tracking_loop, signal, doppler_estimator code_doppler)
 for chunk in chunks
     track!(tracking_loop)  # decodes, solves, steers
 end
@@ -103,26 +103,26 @@ estimator, prompt filter), advances it with [`apply_record`](@ref) on every
 record, and builds the record from it:
 
 ```julia
-loop, prompt, filtered, blocks, overshoot =
-    apply_record(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready, driver_phase_offset)
+loop, prompt, filtered, code_periods, overshoot =
+    process_correlator_bank_output!(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready, driver_phase_offset)
 integration = LoopRecord(signal, filtered, output, loop, fs; prn)
 loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, integration, words, landing_sample)
 ```
 
-The record summarises that state: whether the bit clock holds the sync and
-whether this record found or lost it, the code blocks into the current bit,
-exactly the soft bits this record added (so the host may drain the bit buffer
+The integration summarises that state: whether the bit clock holds the sync and
+whether this integration found or lost it, the code periods into the current bit,
+exactly the demodulated soft bits this integration added (so the host may drain the bit synchronizer
 whenever it likes), and the host's C/N₀ estimator (noise-referenced by default,
 which reads `-Inf` dB-Hz, out of lock, until the host has a noise density).
 Beyond that, every [`LoopRecord`](@ref) handed to the tracking loop must carry what
 only the correlator knows:
 
 - `prn`: the satellite;
-- `code_phase`: the replica's code phase in chips at the record's end, from the
-  [`CorrelatorOutput`](@ref). The end sample alone pins it only to within one
-  sample (some 75 m at 4 MHz). Only its part past the nearest code-block
-  boundary is read, so any wrap convention works; without it (`NaN`) the record
-  is taken to end on a block boundary;
+- `code_phase`: the replica's code phase in chips at the integration's end, from the
+  [`CorrelatorBankOutput`](@ref). The end sample alone pins it only to within one
+  sample (some 75 m at 4 MHz). Only its part past the nearest code-period
+  boundary is read, so any wrap convention works; without it (`NaN`) the integration
+  is taken to end on a code period boundary;
 - a common time grid: `sample_index / sampling_frequency` must be the time since
   one origin shared by all satellites. A host whose correlator restarts its
   sample count passes the offset as `sample_offset` when it builds the integration.
@@ -213,10 +213,10 @@ the carrier on the prompts the NCO leaves, for the data.
   prompts onto the incoming carrier by the residual PLL's phase (and a data
   component's carrier-phase offset from its pilot), sums them over each data
   bit the host's bit clock counts and decodes the sum's real part. A plain
-  signal's prompt is rotated by the residual PLL's prediction for its record, which
-  that prompt did not correct; a data component's records, which a host folds
-  after its pilot's, take the phase estimated at the pilot's record of the same
-  span. The host's bit buffer still keeps the bit clock (it counts blocks once
+  signal's prompt is rotated by the residual PLL's prediction for its integration, which
+  that prompt did not correct; a data component's integrations, which a host processes
+  after its pilot's, take the phase estimated at the pilot's integration of the same
+  span. The host's bit synchronizer still keeps the bit clock (it counts code periods once
   synced), but its soft bits are not decoded while the satellite is a member, so
   the host's prompts need no rotation. Its C/N₀ estimator should read power only,
   as the default noise-referenced and the moment-based ones do: a coherent one

@@ -41,13 +41,13 @@ which has no Windows build.
 
 ## One loop iteration
 
-Per satellite you hold a Doppler-estimator state and, per tracked signal of
-that satellite, a [`SignalLoopState`](@ref). For every correlator record
-([`CorrelatorOutput`](@ref)) the correlator produced, of every signal,
-[`apply_record`](@ref) folds the record into the signal's prompt filter, C/N₀
-estimator and bit buffer, and [`step_loop`](@ref) turns it into the Dopplers
-the next replica runs with. The estimator state knows its satellite's driver
-signal, the one whose records close the loops; a record of another signal of
+Per satellite you hold a tracking-loop state and, per tracked signal of
+that satellite, a [`PostCorrelationState`](@ref). For every coherent integration
+([`CorrelatorBankOutput`](@ref)) the correlator bank produced, of every signal,
+[`process_correlator_bank_output!`](@ref) processes the integration through the signal's post-correlation filter, C/N₀
+estimator and bit synchronizer, and [`step_loop!`](@ref) turns it into the Dopplers
+the next replica runs with. The loop state knows its satellite's driver
+signal, the one whose integrations close the loops; an integration of another signal of
 the satellite returns the command in force, so the same four calls serve every
 integration and every loop:
 
@@ -58,11 +58,11 @@ signal = GPSL1CA()
 fs = 4e6u"Hz"
 tracking_loop = ConventionalAssistedPLLAndDLL()
 loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
-loop = SignalLoopState(signal)              # bit buffer, C/N₀ estimator, prompt filter
+loop = PostCorrelationState(signal)      # bit synchronizer, C/N₀ estimator, post-correlation filter
 
-# For every coherent integration `correlator_bank_output::CorrelatorOutput` the correlator bank produced:
-loop, prompt, filtered, blocks, overshoot =
-    apply_record(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready)
+# For every coherent integration `correlator_bank_output::CorrelatorBankOutput` the correlator bank produced:
+loop, prompt, filtered, code_periods, overshoot =
+    process_correlator_bank_output!(loop, signal, prn, correlator_bank_output, fs, noise_density, noise_density_ready)
 overshoot && @warn "integration crossed a navigation-bit boundary; bit sync restarted"
 integration = LoopRecord(signal, filtered, output, loop, fs; prn)
 loop_state, carrier_doppler, code_doppler =
@@ -72,23 +72,23 @@ loop_state, carrier_doppler, code_doppler =
 
 Read the results off the state as they become available:
 [`estimate_cn0`](@ref) on `loop.cn0_estimator`,
-[`has_bit_or_secondary_code_been_found`](@ref) and [`get_soft_bits`](@ref) on
-`loop.bit_buffer`.
+[`is_bit_or_secondary_code_synced`](@ref) and [`get_soft_bits`](@ref) on
+`loop.bit_synchronizer`.
 
 Everything is a plain value or a small mutable state that is preallocated once,
 so a loop can be stepped for hours without allocating — provided the consumer
-drains the decoded soft bits ([`get_soft_bits`](@ref)) as they arrive; the bit
-buffer has room for 64 of them before its vector grows.
+drains the demodulated soft bits ([`get_soft_bits`](@ref)) as they arrive; the soft-bit
+vector has room for 64 of them before its vector grows.
 
 ## Contents of this manual
 
 - [Correlator banks and discriminators](@ref) — the integration types, their accessors,
   the discriminators and the post-correlation filter.
-- [Doppler estimators and loop filters](@ref) — the estimators behind
-  [`step_loop`](@ref), their bandwidth rules, and the per-record fold
-  [`apply_record`](@ref).
+- [Tracking loops and loop filters](@ref) — the loops behind
+  [`step_loop!`](@ref), their bandwidth rules, and the post-correlation processing
+  [`process_correlator_bank_output!`](@ref).
 - [NCO timeline](@ref) — what a hardware NCO ran and will run.
-- [Bit and secondary-code synchronisation](@ref) — the bit buffer and the
+- [Bit and secondary-code synchronisation](@ref) — the bit synchronizer and the
   per-signal sync detectors.
 - [C/N₀ estimation](@ref) — the moments, NWPR and noise-referenced estimators.
 - [Noise estimation](@ref) — the noise-density window a noise-referenced

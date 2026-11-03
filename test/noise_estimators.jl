@@ -167,7 +167,7 @@ end
     )
     @test !isnothing(get_noise_density(estimator))
 
-    # The public reader carries the `nothing`; the fold's splitter must not.
+    # The public reader carries the `nothing`; the internal splitter must not.
     D = noise_density_type(estimator)
     @test D === NoiseDensity
     @test Base.return_types(get_noise_density, (typeof(estimator),)) == [Union{Nothing,D}]
