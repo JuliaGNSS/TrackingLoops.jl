@@ -9,10 +9,10 @@ Both offsets are stored as plain `Float64` values. Device adapters translate the
 frequencies to their hardware representation.
 
 A hardware correlator holds each command until the next one takes effect, often
-several records after the record that motivated it. An [`NCOTimeline`](@ref)
+several integrations after the integration that motivated it. An [`NCOTimeline`](@ref)
 tracks the applied command and commands scheduled at named device samples.
-[`calc_mean_nco_command`](@ref) attributes a record covering `[a, b)` to its
-actual replica frequencies. A command applied at `b` belongs to the next record.
+[`calc_mean_nco_command`](@ref) attributes an integration covering `[a, b)` to its
+actual replica frequencies. A command applied at `b` belongs to the next integration.
 The result is an `NCOCommand` with the fields `carrier_doppler` and `code_doppler`.
 A software correlator can use [`ConstantNCOCommand`](@ref) for a command held
 throughout a chunk.
@@ -31,7 +31,7 @@ confirm_command!(timeline, 1000, 1200)
 
 A queued command is named by the sample it was scheduled for, and keeps that name when
 it is confirmed elsewhere. [`confirm_command!`](@ref) moves only the named command and
-preserves every other one, also one it lands on: among commands at one sample the latest
+preserves every other one, also one at the sample it takes effect at: among commands at one sample the latest
 confirmed is in effect, as the device keeps the newest write.
 [`cancel_command!`](@ref) removes only the named rejected command. Neither throws:
 feedback for a command no longer scheduled is a no-op, so the loop never stops on a late

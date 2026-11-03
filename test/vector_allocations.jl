@@ -1,26 +1,26 @@
 # Every kind of navigation cycle allocates nothing once its buffers have grown: the
 # scalar solve, a running cycle, a release, a rejoin, the fallback, and a re-seed from
-# a fresh scalar fix, for one constellation and for two, with the engine filled by hand
-# (`vector_simulation.jl`). The pipeline's records and cycles, registrations and freed
+# a fresh scalar fix, for one constellation and for two, with the navigation processor filled by hand
+# (`vector_simulation.jl`). The pipeline's integrations and cycles, next_slot_generation and freed
 # slots are checked in `vector_pipeline.jl`.
 
 # Fill every channel's slot for the epoch at `sample`, as `run_cycle!` does, then
 # measure the cycle alone.
 function measure_navigation(rx::SimReceiver, sample; fill! = fill_slot!)
-    nav = rx.vt
-    nav.pending_epoch = round(Int, sample / (rx.nominal_ms * SAMPLES_PER_MS))
+    nav_processor = rx.vt
+    nav_processor.pending_epoch = round(Int, sample / (rx.nominal_ms * SAMPLES_PER_MS))
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
-        fill!(group.slots[i], sat, sample, NO_LANDING_SAMPLE, nav)
+        fill!(group.slots[i], sat, sample, NO_LANDING_SAMPLE, nav_processor)
     end
     now = sample / ustrip(Hz, SIM_FS)
-    @allocated TL._navigation_cycle!(nav, now)
+    @allocated TL._navigation_cycle!(nav_processor, now)
 end
 
-# The satellites take the latest cycle up, as they would on their next record.
+# The satellites take the latest cycle up, as they would on their next integration.
 function take_up!(rx::SimReceiver, sample)
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
         sat.state = TL._take_up_cycle(rx.vt, group, group.slots[i], sat.state,
-            take_up_record(sat, sample), sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(sample))
+            take_up_integration(sat, sample), sim_nco_history(sat, NO_LANDING_SAMPLE), Int64(sample))
     end
 end
 
@@ -47,17 +47,17 @@ end
 
     slot = rx.group.slots[2]
     sample += cycle
-    @test measure_navigation(rx, sample; fill! = (v, sat, e, l, nav) ->
-        (fill_slot!(v, sat, e, l, nav); v === slot && drop_slot!(v))) == 0
+    @test measure_navigation(rx, sample; fill! = (v, sat, e, l, nav_processor) ->
+        (fill_slot!(v, sat, e, l, nav_processor); v === slot && drop_slot!(v))) == 0
     @test slot.release_reason == VT_INELIGIBLE
     take_up!(rx, sample)
     sample += cycle
     @test measure_navigation(rx, sample) == 0
     take_up!(rx, sample)
-    @test rx.sats[2].state.in_vector_loop
+    @test rx.sats[2].state.vector_controlled
 
-    unlocked!(v, sat, e, l, nav) = (fill_slot!(v, sat, e, l, nav); v.in_lock = false; v.pvt_ready = false)
-    rx.vt.time_with_insufficient_meas = 10.0s
+    unlocked!(v, sat, e, l, nav_processor) = (fill_slot!(v, sat, e, l, nav_processor); v.measurement_ready = false; v.positioning_ready = false)
+    rx.vt.measurement_deficit_duration = 10.0s
     sample += cycle
     @test measure_navigation(rx, sample; fill! = unlocked!) == 0
     @test !rx.vt.running
@@ -69,7 +69,7 @@ end
     sample += cycle
     @test measure_navigation(rx, sample) == 0
     @test rx.vt.running
-    @test navigation_status(rx.estimator).seeded
+    @test get_navigation_status(rx.tracking_loop).seeded
 end
 
 @testset "Navigation cycles are allocation-free with $name" for (name, kw) in (
@@ -111,10 +111,10 @@ end
     group = rx.group
     sat = rx.sats[1]
     slot = group.slots[1]
-    record = take_up_record(sat, sample)
-    words = sim_nco_history(sat, NO_LANDING_SAMPLE)
+    integration = take_up_integration(sat, sample)
+    nco_history = sim_nco_history(sat, NO_LANDING_SAMPLE)
     state = sat.state
-    take_up(state) = @allocated TL._take_up_cycle(rx.vt, group, slot, state, record, words, Int64(sample))
+    take_up(state) = @allocated TL._take_up_cycle(rx.vt, group, slot, state, integration, nco_history, Int64(sample))
     take_up(state)
     @test take_up(state) == 0
 end

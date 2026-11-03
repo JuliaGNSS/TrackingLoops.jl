@@ -1,8 +1,8 @@
 # Vector tracking closed over many cycles on the synthetic satellites of
-# `vector_simulation.jl`, with the engine filled by hand from the fixture decoders:
+# `vector_simulation.jl`, with the navigation processor filled by hand from the fixture decoders:
 # convergence, an outage, the fallback after the starvation timeout, several
-# constellations and bands, and an NCO delay whose landing the corrections are sized
-# for. `vector_pipeline.jl` closes the loop on records alone.
+# constellations and bands, and an NCO delay whose application the corrections are sized
+# for. `vector_pipeline.jl` closes the loop on integrations alone.
 
 using Accessors: @set
 using Statistics: mean, std
@@ -26,7 +26,7 @@ tail_code_errors(results) = maximum(r -> maximum(abs, r.code_errors), results)
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
     @test all(r -> r.status.running, results)
-    @test all(r -> r.status.num_members == length(rx.sats), results)
+    @test all(r -> r.status.num_vector_tracking_members == length(rx.sats), results)
     tail = results[51:end]
     @test tail_errors(rx, tail) < 0.2
     @test tail_code_errors(tail) < 0.005
@@ -51,7 +51,7 @@ end
     # cycles on a filter built for 100 ms, under a TCXO's 600 m/s of clock drift. A
     # process model kept at 100 ms would mispredict the clock by drift · 100 ms = 60 m
     # every cycle.
-    rx = SimReceiver(; records_per_cycle = 200, nominal_records = 100,
+    rx = SimReceiver(; integrations_per_cycle = 200, nominal_integrations = 100,
         truth_kw = (; clock_drift = 600.0))
     results, _, diverged = run_simulation!(rx, 60)
     @test !diverged
@@ -68,8 +68,8 @@ end
     outage(cycle, i) = 20 <= cycle <= 70 && i <= 3
     results, _, diverged = run_simulation!(rx, 120; outage)
     @test !diverged
-    @test all(r -> r.status.running && r.status.num_members == length(rx.sats), results)
-    @test all(r -> r.status.time_with_insufficient_meas == 0.0s, results)
+    @test all(r -> r.status.running && r.status.num_vector_tracking_members == length(rx.sats), results)
+    @test all(r -> r.status.measurement_deficit_duration == 0.0s, results)
     @test all(r -> all(==(VT_NOT_RELEASED), r.reasons), results)
     during = results[25:70]
     # The coasting members are reported but not measured.
@@ -88,11 +88,11 @@ end
     _, sample, _ = run_simulation!(rx, 19)
     # The receiver flags every satellite out of lock (and so not ready for a scalar
     # solve), while the signals stay: nothing can be measured.
-    unlocked!(slot, sat, epoch, landing, nav) =
-        (fill_slot!(slot, sat, epoch, landing, nav; in_lock = false); slot.pvt_ready = false)
+    unlocked!(slot, sat, epoch, application_sample_index, nav_processor) =
+        (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor; measurement_ready = false); slot.positioning_ready = false)
     results, sample, diverged = run_simulation!(rx, 105; start_sample = sample, fill! = unlocked!)
     @test !diverged
-    timers = [r.status.time_with_insufficient_meas for r in results]
+    timers = [r.status.measurement_deficit_duration for r in results]
     # Strictly beyond the ten-second timeout: the 101st unsolvable cycle.
     fallback = findfirst(r -> r.status.fell_back, results)
     @test fallback == 101
@@ -101,13 +101,13 @@ end
     @test timers[fallback-1] ≈ 10.0s
     @test results[fallback].status.released
     @test !results[fallback].status.running
-    @test results[fallback].status.num_members == 0
+    @test results[fallback].status.num_vector_tracking_members == 0
     @test all(==(VT_FALLBACK), results[fallback].reasons)
     # A fallback cycle still emits its (predicted) solution.
     @test results[fallback].pvt.time isa TAITime
     @test isempty(results[fallback].measured)
     # The released satellites run their scalar loops: nothing steered, nothing accumulated.
-    @test all(sat -> !sat.state.in_vector_loop && sat.state.code_freq_update == 0.0Hz, rx.sats)
+    @test all(sat -> !sat.state.vector_controlled && sat.state.code_frequency_correction == 0.0Hz, rx.sats)
     @test all(sat -> sat.state.code_disc_sum == (0, 0.0), rx.sats)
     # Not ready, no satellite enters the scalar solve, so nothing re-seeds…
     @test all(r -> !r.status.running && !r.status.seeded, results[fallback+1:end])
@@ -125,7 +125,7 @@ end
     num_sats = sum(length, rx.channels)
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
-    @test all(r -> r.status.running && r.status.num_members == num_sats, results)
+    @test all(r -> r.status.running && r.status.num_vector_tracking_members == num_sats, results)
     tail = results[51:end]
     @test tail_errors(rx, tail) < 0.2
     @test tail_code_errors(tail) < 0.005
@@ -166,13 +166,13 @@ end
     @test tail_errors(rx, results[601:end]) < 0.5
 end
 
-@testset "Corrections sized for their landing match the loop without a delay" begin
-    # A 20 ms navigation cycle and the NCO-referenced inner loop, whose landing
-    # prediction keeps the carrier loop locked under the delay. A 15 ms delay lands the
+@testset "Corrections sized for their application_sample_index match the loop without a delay" begin
+    # A 20 ms navigation cycle and the NCO-referenced inner loop, whose application
+    # prediction keeps the carrier loop locked under the delay. A 15 ms delay applies the
     # code correction inside the second half of the cycle, a 25 ms one after the next
     # epoch: both branches of the mid-cycle advance.
     run(delay; kw...) = begin
-        rx = SimReceiver(; inner = NCOReferencedPLLAndDLL(), records_per_cycle = 20, delay_records = delay)
+        rx = SimReceiver(; inner = DelayCompensatedTrackingLoop(), integrations_per_cycle = 20, delay_integrations = delay)
         results, _, diverged = run_simulation!(rx, 1000; kw...)
         rx, results, diverged
     end
@@ -190,7 +190,7 @@ end
         # The rate residue of NCO motion the signal does not back stays at the level of
         # the undelayed loop's.
         @test rate_residual(tail) < 2 * rate_residual(tail0) + 1e-3u"m/s"
-        @test all(sat -> sat.state.code_update_landing_lead ≈ delay * 1.0ms, rx.sats)
+        @test all(sat -> sat.state.code_command_delay ≈ delay * 1.0ms, rx.sats)
     end
     # The negative control: the same delay with the corrections sized as if they acted at
     # the epoch loses the loop.
@@ -219,7 +219,7 @@ end
         for k = 4:4:100
             sample_index = sample + k * SAMPLES_PER_MS
             for sat in rx.sats
-                code_error = simulate_record!(sat, rx.estimator, rx.truth, sim_time(rx, sample_index),
+                code_error = simulate_integration!(sat, rx.tracking_loop, rx.truth, sim_time(rx, sample_index),
                     4 * SAMPLES_PER_MS, sample_index, NO_LANDING_SAMPLE)
                 max_code_error = max(max_code_error, abs(code_error))
             end
@@ -270,7 +270,7 @@ end
     @test rx.vt.layout.extra_bands == [:L2]
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
-    @test all(r -> r.status.running && r.status.num_members == num_sats, results)
+    @test all(r -> r.status.running && r.status.num_vector_tracking_members == num_sats, results)
     tail = results[51:end]
     @test tail_errors(rx, tail) < 0.2
     @test tail_code_errors(tail) < 0.005
@@ -291,7 +291,7 @@ end
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
     @test results[1].status.seeded
-    @test all(r -> r.status.running && r.status.num_members == 4, results)
+    @test all(r -> r.status.running && r.status.num_vector_tracking_members == 4, results)
     @test all(r -> length(r.measured) == 4, results)
     gst_clock, gpst_clock, isb = only(rx.vt.buffers.clock_constraints)
     @test (gst_clock, gpst_clock) == (2, 1)

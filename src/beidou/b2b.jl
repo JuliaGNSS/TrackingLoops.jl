@@ -16,17 +16,17 @@ Bit-sync detector for BeiDou B2b_I: one B-CNAV3 bit per 1 ms primary code
 period (1000 bit/s; BDS-SIS-ICD-B2b-1.0 §5), so it locks immediately — see
 `_detect_bit_is_code_period_sync`.
 """
-@inline detect_bit_or_secondary_code_sync(
+@inline detect_sync(
     signal::BeiDouB2bI,
     prn::Integer,
-    code_block_bits::Unsigned,
-    num_code_blocks::Integer,
-) = _detect_bit_is_code_period_sync(signal, prn, code_block_bits, num_code_blocks)
+    code_period_bits::Unsigned,
+    num_code_periods::Integer,
+) = _detect_bit_is_code_period_sync(signal, prn, code_period_bits, num_code_periods)
 
-# BPSK: EarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(::BeiDouB2bI, num_ants::NumAnts = NumAnts(1))
-    EarlyPromptLateCorrelator(; num_ants)
+# BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(::BeiDouB2bI, num_ants::NumAnts = NumAnts(1))
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
-# One bit per code period: nothing to search (see `get_code_block_buffer_type`).
-@inline get_code_block_buffer_type(::BeiDouB2bI) = UInt8
+# One bit per code period: nothing to search (see `prompt_sign_history_type`).
+@inline prompt_sign_history_type(::BeiDouB2bI) = UInt8

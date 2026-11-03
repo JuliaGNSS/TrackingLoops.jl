@@ -1,6 +1,6 @@
-# Vector tracking from records alone: GPS L1 C/A satellites broadcasting real LNAV
-# bits, every one stepped through `step_loop` and nothing else (the pipeline harness of
-# `vector_simulation.jl`). The estimator syncs to the bits, decodes them, solves the
+# Vector tracking from integrations alone: GPS L1 C/A satellites broadcasting real LNAV
+# bits, every one stepped through `step_loop!` and nothing else (the pipeline harness of
+# `vector_simulation.jl`). The tracking_loop syncs to the bits, decodes them, solves the
 # scalar PVT, seeds its filter and takes the satellites over by itself.
 
 pipeline_errors(receiver, results) = maximum(r -> position_error(receiver, r), results)
@@ -12,29 +12,29 @@ pipeline_slots(receiver) = receiver.vt.groups[1].slots[1:length(receiver.sats)]
 
 # A receiver started cold and run until vector tracking has run for a few seconds.
 const WARM_PIPELINE = let
-    rx = PipelineReceiver(; num_sats = 8, estimator_kw = (; max_satellites_per_signal = 8))
+    rx = PipelineReceiver(; num_sats = 8, tracking_loop_kw = (; satellite_capacity_per_signal = 8))
     results, sample, diverged = run_pipeline!(rx, 30.0)
     @assert !diverged && results[end].status.running
     (; rx, results, sample)
 end
 
 # A copy of the warm receiver to run on. On Julia 1.10 `deepcopy` keeps no spare
-# capacity of an empty vector, so the soft-bit buffers get theirs back: the first soft
+# capacity of an empty vector, so the soft-bit synchronizers get theirs back: the first soft
 # bit of every satellite would allocate otherwise.
 function warm_pipeline()
     rx = deepcopy(WARM_PIPELINE.rx)
     for sat in rx.sats
-        sizehint!(sat.loop.bit_buffer.soft_bits, 64)
+        sizehint!(sat.loop.bit_synchronizer.soft_bits, 64)
     end
     rx
 end
 
-@testset "From records alone: bit sync, decoding, the scalar fix, the filter" begin
+@testset "From integrations alone: bit sync, decoding, the scalar fix, the filter" begin
     rx = PipelineReceiver()
     results, sample, diverged = run_pipeline!(rx, 36.0)
     @test !diverged
-    nav = rx.vt
-    # A cycle on every epoch: the records' grid starts at sample 0.
+    nav_processor = rx.vt
+    # A cycle on every epoch: the integrations' grid starts at sample 0.
     @test length(results) == 360
     @test [r.time - rx.truth.t0 for r in results] ≈ 0.0:0.1:35.9
     # Every satellite found its bit edges, decoded its clock and ephemeris and is in
@@ -44,7 +44,7 @@ end
         @test slot.occupied
         @test slot.decoding_bit_synced
         @test TL.has_positioning_data(slot.running_decoder)
-        @test slot.in_lock && slot.pvt_ready
+        @test slot.measurement_ready && slot.positioning_ready
         @test 40 < slot.cn0_dbhz < 50
     end
     seed = findfirst(r -> r.status.seeded, results)
@@ -54,47 +54,47 @@ end
     # Then the filter has every satellite: the solution near the truth, each replica
     # on its signal.
     tail = results[seed+50:end]
-    @test all(r -> r.status.running && r.status.num_members == length(rx.sats), tail)
+    @test all(r -> r.status.running && r.status.num_vector_tracking_members == length(rx.sats), tail)
     @test all(r -> length(r.measured) == length(rx.sats), tail)
     @test all(r -> all(==(VT_NOT_RELEASED), r.reasons), tail)
     @test pipeline_errors(rx, tail) < 3.0
     @test pipeline_code_errors(tail) < 0.05
-    @test all(sat -> sat.state.in_vector_loop, rx.sats)
-    @test 0.0u"m" < navigation_status(rx.estimator).position_std < 3.0u"m"
-    @test keys(vector_loop_members(rx.estimator)) == keys(navigation_solution(rx.estimator).observations)
+    @test all(sat -> sat.state.vector_controlled, rx.sats)
+    @test 0.0u"m" < get_navigation_status(rx.tracking_loop).position_std < 3.0u"m"
+    @test keys(get_vector_tracking_members(rx.tracking_loop)) == keys(get_navigation_solution(rx.tracking_loop).observations)
     # Each satellite took up every cycle once.
-    @test all(sat -> sat.state.cycle_id == nav.cycle_id, rx.sats)
-    @test nav.registrations == length(rx.sats)
-    # What a consumer reads off the estimator: the cycle count and its epoch on the
-    # records' grid, the solution with its DOP, and per satellite what the engine
+    @test all(sat -> sat.state.cycle_index == nav_processor.cycle_index, rx.sats)
+    @test nav_processor.next_slot_generation == length(rx.sats)
+    # What a consumer reads off the tracking_loop: the cycle count and its epoch on the
+    # integrations' grid, the solution with its DOP, and per satellite what the navigation processor
     # decoded and measured.
-    estimator = rx.estimator
-    @test navigation_cycle(estimator) == length(results)
-    @test navigation_epoch(estimator) ≈ 35.9s
-    @test navigation_epoch(estimator) ≈ (results[end].time - rx.truth.t0) * s
-    solution = navigation_solution(estimator)
+    tracking_loop = rx.tracking_loop
+    @test get_navigation_cycle_index(tracking_loop) == length(results)
+    @test get_navigation_elapsed_time(tracking_loop) ≈ 35.9s
+    @test get_navigation_elapsed_time(tracking_loop) ≈ (results[end].time - rx.truth.t0) * s
+    solution = get_navigation_solution(tracking_loop)
     @test solution.dop !== nothing && 0 < solution.dop.GDOP < 10
     for sat in rx.sats
-        report = satellite_report(estimator, GPSL1CA(), sat.decoder.prn)
+        report = get_satellite_report(tracking_loop, GPSL1CA(), sat.decoder.prn)
         @test report isa SatelliteReport
         @test report.prn == sat.decoder.prn
-        @test report.tracked && report.bit_synced && report.in_lock && report.pvt_ready
-        @test report.in_vector_loop
+        @test report.tracked && report.bit_or_secondary_code_synced && report.measurement_ready && report.positioning_ready
+        @test report.vector_controlled
         @test report.release_reason == VT_NOT_RELEASED
-        @test report.epoch ≈ navigation_epoch(estimator)
+        @test report.epoch ≈ get_navigation_elapsed_time(tracking_loop)
         @test 40 < report.cn0_dbhz < 50
         @test TL.has_positioning_data(report.decoder)
         @test get_broadcast_ephemeris(report.decoder) == get_broadcast_ephemeris(sat.decoder)
     end
-    @test satellite_report(estimator, GPSL1CA(), 32) === nothing
-    @test satellite_report(estimator, GalileoE1B(), rx.sats[1].decoder.prn) === nothing
-    report_of(e, signal, prn) = @allocated satellite_report(e, signal, prn)
+    @test get_satellite_report(tracking_loop, GPSL1CA(), 32) === nothing
+    @test get_satellite_report(tracking_loop, GalileoE1B(), rx.sats[1].decoder.prn) === nothing
+    report_of(e, signal, prn) = @allocated get_satellite_report(e, signal, prn)
     signal = GPSL1CA()
-    report_of(estimator, signal, rx.sats[1].decoder.prn)
-    @test report_of(estimator, signal, rx.sats[1].decoder.prn) == 0
+    report_of(tracking_loop, signal, rx.sats[1].decoder.prn)
+    @test report_of(tracking_loop, signal, rx.sats[1].decoder.prn) == 0
 end
 
-@testset "From records alone, on a clean signal" begin
+@testset "From integrations alone, on a clean signal" begin
     rx = PipelineReceiver(; cn0_dbhz = 80.0)
     results, _, diverged = run_pipeline!(rx, 36.0)
     @test !diverged
@@ -107,7 +107,7 @@ end
     @test pipeline_code_errors(tail) < 0.005
 end
 
-@testset "From records alone, an outage of some satellites is ridden through" begin
+@testset "From integrations alone, an outage of some satellites is ridden through" begin
     rx = warm_pipeline()
     start = WARM_PIPELINE.sample
     t_start = start / 4e6
@@ -118,7 +118,7 @@ end
     outage(t, i) = t_start + 1 <= t <= t_start + 5 && i <= 3
     results, _, diverged = run_pipeline!(rx, 12.0; start_sample = start, outage)
     @test !diverged
-    @test all(r -> r.status.running && r.status.num_members == length(rx.sats), results)
+    @test all(r -> r.status.running && r.status.num_vector_tracking_members == length(rx.sats), results)
     @test all(r -> all(==(VT_NOT_RELEASED), r.reasons), results)
     during = filter(r -> t_start + 3 <= r.time - rx.truth.t0 <= t_start + 5, results)
     @test all(r -> length(r.measured) < length(rx.sats), during)
@@ -132,13 +132,13 @@ end
     @test pipeline_code_errors(after) < 0.05
 end
 
-@testset "From records alone, a starved filter falls back and seeds again" begin
+@testset "From integrations alone, a starved filter falls back and seeds again" begin
     # A one-second starvation timeout, and six satellites faded 12 dB for two seconds,
     # below the 35 dB-Hz lock threshold: two measured are too few, so the loop falls back
     # to scalar tracking, whose loops keep the faded signals, and seeds anew from the
     # first scalar fix once they are back above it.
-    rx = PipelineReceiver(; num_sats = 8, filter_config = NavigationFilterConfig(; insufficient_meas_timeout = 1.0s),
-        estimator_kw = (; lock_cn0_threshold = 35dBHz))
+    rx = PipelineReceiver(; num_sats = 8, filter_config = NavigationFilterConfig(; measurement_deficit_timeout = 1.0s),
+        tracking_loop_kw = (; min_tracking_cn0 = 35dBHz))
     results, start, diverged = run_pipeline!(rx, 30.0)
     @test !diverged && results[end].status.running
     t_start = start / 4e6
@@ -153,16 +153,16 @@ end
     reseed = findfirst(r -> r.status.seeded, results)
     @test reseed !== nothing && reseed > fallback
     @test results[end].status.running
-    @test all(sat -> sat.state.in_vector_loop, rx.sats)
+    @test all(sat -> sat.state.vector_controlled, rx.sats)
 end
 
 @testset "A fallback releases a member that missed its epoch" begin
-    # As above, but satellite 7, not faded, reaches the estimator 190 ms late from just
+    # As above, but satellite 7, not faded, reaches the tracking_loop 190 ms late from just
     # before the epoch the filter falls back at: the others are past the next epoch by
     # then, so the cycle runs without it — and it is not stale yet. It is released all
     # the same, and its scalar loop tracks it until the filter seeds anew.
-    rx = PipelineReceiver(; num_sats = 8, filter_config = NavigationFilterConfig(; insufficient_meas_timeout = 1.0s),
-        estimator_kw = (; lock_cn0_threshold = 35dBHz))
+    rx = PipelineReceiver(; num_sats = 8, filter_config = NavigationFilterConfig(; measurement_deficit_timeout = 1.0s),
+        tracking_loop_kw = (; min_tracking_cn0 = 35dBHz))
     results, start, diverged = run_pipeline!(rx, 30.0)
     @test !diverged && results[end].status.running
     t_start = start / 4e6
@@ -170,14 +170,14 @@ end
     # The cycle that coasted to the timeout is the last before the fallback.
     pause_start = Ref(Inf)
     paused(t, i) = begin
-        if isinf(pause_start[]) && rx.vt.time_with_insufficient_meas >= 0.95s
+        if isinf(pause_start[]) && rx.vt.measurement_deficit_duration >= 0.95s
             pause_start[] = t + 0.05
         end
         i == 7 && pause_start[] <= t <= pause_start[] + 0.19
     end
     lagging = []
     on_tick(sample) = push!(lagging, (; t = sample / 4e6, status = rx.vt.status,
-        in_loop = rx.vt.groups[1].slots[7].estimator_state.in_vector_loop))
+        in_loop = rx.vt.groups[1].slots[7].loop_state.vector_controlled))
     results, _, diverged = run_pipeline!(rx, 6.0; start_sample = start, fade, paused, on_tick)
     @test !diverged
     fallback = findfirst(r -> r.status.fell_back, results)
@@ -189,20 +189,20 @@ end
     # No satellite is in the loop while the scalar solve is in control.
     scalar = filter(l -> !l.status.running, lagging)
     @test !isempty(scalar)
-    @test all(l -> l.status.num_members == 0 && !l.in_loop, scalar)
+    @test all(l -> l.status.num_vector_tracking_members == 0 && !l.in_loop, scalar)
     @test results[end].status.running
-    @test all(sat -> sat.state.in_vector_loop, rx.sats)
+    @test all(sat -> sat.state.vector_controlled, rx.sats)
 end
 
-@testset "From records alone, under an NCO delay" begin
-    # A 20 ms navigation cycle and the NCO-referenced inner loop, the commands landing
-    # 15 ms after the record that computed them: each satellite sizes its corrections
-    # for its own landing.
-    kw = (; num_sats = 8, inner = NCOReferencedPLLAndDLL(), estimator_kw = (; vt_update_interval = 20ms))
+@testset "From integrations alone, under an NCO delay" begin
+    # A 20 ms navigation cycle and the NCO-referenced inner loop, the commands applied
+    # 15 ms after the integration that computed them: each satellite sizes its corrections
+    # for its own application sample.
+    kw = (; num_sats = 8, inner = DelayCompensatedTrackingLoop(), tracking_loop_kw = (; navigation_filter_update_interval = 20ms))
     rx0 = PipelineReceiver(; kw...)
     results0, _, diverged0 = run_pipeline!(rx0, 33.0)
     @test !diverged0
-    rx = PipelineReceiver(; kw..., delay_records = 15)
+    rx = PipelineReceiver(; kw..., delay_integrations = 15)
     results, _, diverged = run_pipeline!(rx, 33.0)
     @test !diverged
     seed = findfirst(r -> r.status.seeded, results)
@@ -212,35 +212,35 @@ end
     @test all(r -> r.status.running, tail)
     @test pipeline_errors(rx, tail) < 2 * pipeline_errors(rx0, tail0) + 0.5
     @test pipeline_code_errors(tail) < 2 * pipeline_code_errors(tail0) + 0.01
-    # The lead is the delay plus the wait for the next record after the cycle.
-    @test all(sat -> 0.015 <= ustrip(s, sat.state.code_update_landing_lead) <= 0.018, rx.sats)
+    # The lead is the delay plus the wait for the next integration after the cycle.
+    @test all(sat -> 0.015 <= ustrip(s, sat.state.code_command_delay) <= 0.018, rx.sats)
 end
 
 @testset "A dropped satellite frees its slot for the next" begin
     rx = warm_pipeline()
-    nav = rx.vt
+    nav_processor = rx.vt
     start = WARM_PIPELINE.sample
-    slots = nav.groups[1].slots
+    slots = nav_processor.groups[1].slots
     @test length(slots) == 8
     gone = pop!(rx.sats)
     pop!(rx.last_ends)
     gone_slot = slots[gone.state.slot_index]
-    # Two cycles without a record: dropped, released as ineligible, its slot free with
+    # Two cycles without an integration: dropped, released as ineligible, its slot free with
     # its storage kept.
     rx.measuring[] = true
     results, sample, diverged = run_pipeline!(rx, 0.5; start_sample = start)
     @test !diverged
     @test !gone_slot.occupied
-    @test !satellite_report(rx.estimator, GPSL1CA(), gone.decoder.prn).tracked
+    @test !get_satellite_report(rx.tracking_loop, GPSL1CA(), gone.decoder.prn).tracked
     @test any(r -> r.status.released, results)
-    gone_report = satellite_report(rx.estimator, GPSL1CA(), gone.decoder.prn)
+    gone_report = get_satellite_report(rx.tracking_loop, GPSL1CA(), gone.decoder.prn)
     @test gone_report === nothing || gone_report.release_reason in (VT_INELIGIBLE, VT_NOT_RELEASED)
-    @test all(r -> r.status.num_members == 7, results[end-2:end])
+    @test all(r -> r.status.num_vector_tracking_members == 7, results[end-2:end])
     # A satellite never seen before takes the free slot: no slot is added, and its
     # decoder starts from nothing.
     decoders, _ = fixture_decoders(GPSL1CA())
     newcomer_decoder = decoders[9]
-    newcomer = SimSat(GPSL1CA(), newcomer_decoder, rx.estimator, rx.truth, sim_time(rx, sample);
+    newcomer = SimSat(GPSL1CA(), newcomer_decoder, rx.tracking_loop, rx.truth, sim_time(rx, sample);
         cn0_dbhz = 45.0, stream = LNAVStream(newcomer_decoder.data))
     newcomer.next_end_sample = next_block_end(newcomer, sample)
     push!(rx.sats, newcomer)
@@ -253,13 +253,13 @@ end
     @test gone_slot.prn == newcomer_decoder.prn
     @test gone_slot.running_decoder.prn == newcomer_decoder.prn
     @test !TL.has_positioning_data(gone_slot.running_decoder)
-    @test nav.registrations == 9
+    @test nav_processor.next_slot_generation == 9
     # Dropping, freeing and taking the slot over allocated nothing, and neither did the
-    # warm records and cycles around it.
+    # warm integrations and cycles around it.
     @test rx.allocated[] == 0
     @test all(r -> r.status.running, results)
     # With every slot taken, one more satellite grows the group.
-    another = SimSat(GPSL1CA(), gone.decoder, rx.estimator, rx.truth, sim_time(rx, sample);
+    another = SimSat(GPSL1CA(), gone.decoder, rx.tracking_loop, rx.truth, sim_time(rx, sample);
         cn0_dbhz = 45.0, stream = gone.stream)
     another.next_end_sample = next_block_end(another, sample)
     push!(rx.sats, another)
@@ -273,46 +273,46 @@ end
 
 @testset "A re-acquired satellite gets its slot and its decoded data back" begin
     rx = warm_pipeline()
-    nav = rx.vt
+    nav_processor = rx.vt
     lost = rx.sats[2]
     index = lost.state.slot_index
     prn = lost.decoder.prn
-    # Lost for half a second, no record at all: dropped and released.
+    # Lost for half a second, no integration at all: dropped and released.
     deleteat!(rx.sats, 2)
     deleteat!(rx.last_ends, 2)
     _, sample, diverged = run_pipeline!(rx, 0.5; start_sample = WARM_PIPELINE.sample)
     @test !diverged
-    slot = nav.groups[1].slots[index]
+    slot = nav_processor.groups[1].slots[index]
     @test !slot.occupied
     # Re-acquired: a fresh state on the same PRN, which registers on its old slot.
-    registrations = nav.registrations
-    reacquired = SimSat(GPSL1CA(), lost.decoder, rx.estimator, rx.truth, sim_time(rx, sample);
+    next_slot_generation = nav_processor.next_slot_generation
+    reacquired = SimSat(GPSL1CA(), lost.decoder, rx.tracking_loop, rx.truth, sim_time(rx, sample);
         cn0_dbhz = 45.0, stream = lost.stream)
     reacquired.next_end_sample = next_block_end(reacquired, sample)
     push!(rx.sats, reacquired)
     push!(rx.last_ends, sample)
     results, _, diverged = run_pipeline!(rx, 14.0; start_sample = sample)
     @test !diverged
-    @test nav.registrations == registrations + 1
+    @test nav_processor.next_slot_generation == next_slot_generation + 1
     @test reacquired.state.slot_index == index
     @test slot.occupied && slot.prn == prn
     # Its decoder restarted its sync but kept what it had decoded, so once the bit clock
     # has found the edges again the next subframe makes it ready — not a whole frame —
     # and the filter takes it back.
-    @test slot.pvt_ready
-    @test reacquired.state.in_vector_loop
-    @test results[end].status.num_members == length(rx.sats)
+    @test slot.positioning_ready
+    @test reacquired.state.vector_controlled
+    @test results[end].status.num_vector_tracking_members == length(rx.sats)
     @test all(r -> r.status.running, results)
 end
 
 @testset "Satellites stepped past an epoch before it is pending rejoin the next" begin
     # Six of the eight satellites restart, as after a fallback, while the epoch they
-    # left waits for a seventh, whose records the host holds back. They register past
+    # left waits for a seventh, whose integrations the host holds back. They register past
     # that epoch and are not due at it. When the cycle runs without them, an epoch late,
     # they are past the next epoch as well: the host steps them before the satellite
     # that runs the cycle. They must not be locked out of the epochs after.
     rx = warm_pipeline()
-    nav = rx.vt
+    nav_processor = rx.vt
     function step_ticks!(sample, duration, sats)
         stop = sample + round(Int, duration * ustrip(Hz, SIM_FS))
         while sample < stop
@@ -324,21 +324,21 @@ end
     held, restarting = 7, 1:6
     others = setdiff(eachindex(rx.sats), held)
     sample = step_ticks!(WARM_PIPELINE.sample, 0.05, eachindex(rx.sats))
-    epoch = nav.pending_epoch
+    epoch = nav_processor.pending_epoch
     sample = step_ticks!(sample, 0.1, others)
-    @test nav.pending_epoch == epoch
+    @test nav_processor.pending_epoch == epoch
     for i in restarting
         rx.sats[i].state = TL._registered(rx.sats[i].state, 0, 0)
     end
     sample = step_ticks!(sample, 0.07, others)
-    @test nav.cycle_epoch == epoch
+    @test nav_processor.cycle_epoch == epoch
     @test all(i -> pipeline_slots(rx)[i].first_epoch == epoch + 1, restarting)
     # The held-back satellite catches up. Half a second on, every satellite snapshots
     # every epoch, and the cycles run as the epochs are crossed, not an epoch late.
     results, sample, diverged = run_pipeline!(rx, 0.5; start_sample = sample)
     @test !diverged
-    @test nav.cycle_epoch == fld(sample, round(Int, 0.1 * ustrip(Hz, SIM_FS)))
-    @test all(slot -> slot.snapshot_epoch == nav.cycle_epoch, pipeline_slots(rx))
+    @test nav_processor.cycle_epoch == fld(sample, round(Int, 0.1 * ustrip(Hz, SIM_FS)))
+    @test all(slot -> slot.snapshot_epoch == nav_processor.cycle_epoch, pipeline_slots(rx))
     # Once the restarted satellites have decoded a subframe again, the filter measures
     # all eight.
     results, _, diverged = run_pipeline!(rx, 12.0; start_sample = sample)
@@ -367,11 +367,11 @@ using PositionVelocityTime: calc_uncorrected_transmit_time
 # Per satellite, the transmit time of its latest snapshot minus the true one at that
 # epoch, as a range (m).
 function snapshot_range_errors(rx)
-    nav = rx.vt
-    group = nav.groups[1]
+    nav_processor = rx.vt
+    group = nav_processor.groups[1]
     map(rx.sats) do sat
         slot = group.slots[sat.state.slot_index]
-        t = rx.truth.t0 + TL._epoch_time(nav, slot.snapshot_epoch)
+        t = rx.truth.t0 + TL._epoch_time(nav_processor, slot.snapshot_epoch)
         u_true = uncorrected_time(sat, first(true_transmit(sat, rx.truth, t)))
         (calc_uncorrected_transmit_time(TL._signal_observation(group.driver_signal, slot)) - u_true) *
             TL.SPEED_OF_LIGHT
@@ -384,7 +384,7 @@ first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
     rx = PipelineReceiver(; pilot = true)
     results, sample, diverged = run_pipeline!(rx, 36.0)
     @test !diverged
-    estimator = rx.estimator
+    tracking_loop = rx.tracking_loop
     group = rx.vt.groups[1]
     @test group.driver_signal isa GPSL1C_P && group.decoding_signal isa GPSL1CA
     # The data's bit clock synced and its bits decoded; the pilot's C/N₀ sets the lock.
@@ -392,27 +392,27 @@ first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
         slot = group.slots[sat.state.slot_index]
         @test slot.decoding_bit_synced
         @test TL.has_positioning_data(slot.running_decoder)
-        @test slot.in_lock && slot.pvt_ready
-        report = satellite_report(estimator, GPSL1C_P(), sat.decoder.prn)
-        @test report.bit_synced && report.in_vector_loop
+        @test slot.measurement_ready && slot.positioning_ready
+        report = get_satellite_report(tracking_loop, GPSL1C_P(), sat.decoder.prn)
+        @test report.bit_or_secondary_code_synced && report.vector_controlled
         @test report.cn0_dbhz ≈ ustrip(estimate_cn0(sat.loop, 1ms)) atol = 1.0
-        @test satellite_report(estimator, GPSL1CA(), sat.decoder.prn) === nothing
-        @test satellite_report(estimator, GPSL1C_P(), sat.decoder.prn).release_reason == VT_NOT_RELEASED
+        @test get_satellite_report(tracking_loop, GPSL1CA(), sat.decoder.prn) === nothing
+        @test get_satellite_report(tracking_loop, GPSL1C_P(), sat.decoder.prn).release_reason == VT_NOT_RELEASED
     end
     # The first fix comes once every satellite's data is decoded, as on the data alone.
     seed = findfirst(r -> r.status.seeded, results)
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
     @test position_error(rx, results[seed]) < 10.0
     tail = results[seed+50:end]
-    @test all(r -> r.status.running && r.status.num_members == length(rx.sats), tail)
+    @test all(r -> r.status.running && r.status.num_vector_tracking_members == length(rx.sats), tail)
     @test pipeline_errors(rx, tail) < 3.0
     @test pipeline_code_errors(tail) < 0.2
     # The solution and the members are keyed by the driver.
-    @test all(key -> first(key) == :GPSL1C_P, keys(vector_loop_members(estimator)))
-    @test all(key -> first(key) == :GPSL1C_P, keys(navigation_solution(estimator).observations))
-    # Warm, a pair's records step without allocating.
+    @test all(key -> first(key) == :GPSL1C_P, keys(get_vector_tracking_members(tracking_loop)))
+    @test all(key -> first(key) == :GPSL1C_P, keys(get_navigation_solution(tracking_loop).observations))
+    # Warm, a pair's integrations step without allocating.
     for sat in Iterators.flatten((rx.sats, rx.passengers))
-        sizehint!(sat.loop.bit_buffer.soft_bits, 64)
+        sizehint!(sat.loop.bit_synchronizer.soft_bits, 64)
     end
     rx.measuring[] = true
     _, _, diverged = run_pipeline!(rx, 2.0; start_sample = sample)
@@ -422,7 +422,7 @@ end
 
 @testset "A pair's transmit time is the data's own, on a code $(pilot ? "ten times longer" : "of its own")" for pilot in (false, true)
     # On a clean signal the snapshot's transmit time is the true one to within the
-    # sample the record ends on, although the pilot's code is ten data codes long: the
+    # sample the integration ends on, although the pilot's code is ten data codes long: the
     # data's bit clock counts the bits, the pilot's replica places the epoch in
     # one. And the scalar fix is the one the data alone gives.
     rx = PipelineReceiver(; pilot, cn0_dbhz = 80.0, num_sats = 6)
@@ -432,19 +432,19 @@ end
     @test position_error(rx, first_fix(results)) < 2.0
 end
 
-@testset "At an epoch the data's record may come before or after the pilot's" begin
-    # The data's records reach the estimator 25 ms after the pilot's, more than one
-    # 10 ms pilot record late — or the pilot's 25 ms after the data's. Every epoch's
+@testset "At an epoch the data's integration may come before or after the pilot's" begin
+    # The data's integrations reach the tracking_loop 25 ms after the pilot's, more than one
+    # 10 ms pilot integration late — or the pilot's 25 ms after the data's. Every epoch's
     # snapshot is the same either way, and so is every scalar fix up to the one that
-    # seeds the filter; the commands land 30 ms after their record, after the late
-    # records, so the replicas do not depend on when the records are stepped. (The
-    # satellites register in the order their first records arrive, so the solve sums
+    # seeds the filter; the commands take effect 30 ms after their integration, after the late
+    # integrations, so the replicas do not depend on when the integrations are stepped. (The
+    # satellites register in the order their first integrations arrive, so the solve sums
     # them in another order: the fixes agree to the solver's convergence. It stops at a
     # step of ~2 µm (PositionVelocityTime's `x_tol` of 1e-13 against the ~2e7 m clock
     # bias), so the rounding of the other order — which also depends on the BLAS
     # kernels the CPU gets — can leave the fixes a few µm apart; a snapshot that
     # differed would move them by far more than the 0.1 mm allowed.)
-    kw = (; pilot = true, num_sats = 6, inner = NCOReferencedPLLAndDLL(), delay_records = 30)
+    kw = (; pilot = true, num_sats = 6, inner = DelayCompensatedTrackingLoop(), delay_integrations = 30)
     runs = map(((0, 0), (0, 25), (25, 0))) do (driver_lag_ms, passenger_lag_ms)
         rx = PipelineReceiver(; kw..., driver_lag_ms, passenger_lag_ms)
         results, _, diverged = run_pipeline!(rx, 28.0)
@@ -464,13 +464,13 @@ end
 end
 
 @testset "A data component almost half a cycle behind its pilot keeps its phase" begin
-    # The data's records reach the estimator 45 ms after the pilot's, at 100 ms cycles,
-    # the commands landing 50 ms after their record, after the late records: up to five
-    # 10 ms pilot records later, which a slot's history of half a cycle and one record
-    # holds, all of it in use. Every data record in the loop is rotated by the phase the
+    # The data's integrations reach the tracking_loop 45 ms after the pilot's, at 100 ms cycles,
+    # the commands applied 50 ms after their integration, after the late integrations: up to five
+    # 10 ms pilot integrations later, which a slot's history of half a cycle and one integration
+    # holds, all of it in use. Every data integration in the loop is rotated by the phase the
     # residual PLL estimated for its span; none falls back to the host's soft bits.
     rx = PipelineReceiver(; pilot = true, num_sats = 6, passenger_lag_ms = 45,
-        inner = NCOReferencedPLLAndDLL(), delay_records = 50)
+        inner = DelayCompensatedTrackingLoop(), delay_integrations = 50)
     results, sample, diverged = run_pipeline!(rx, 28.0)
     @test !diverged
     @test findfirst(r -> r.status.seeded, results) !== nothing
@@ -479,20 +479,20 @@ end
     @test all(slot -> length(slot.prompt_history.centers) == 6, slots)
     dropped = Ref(0)
     results, _, diverged = run_pipeline!(rx, 4.0; start_sample = sample, on_tick = _ ->
-        (dropped[] += count(slot -> slot.estimator_state.in_vector_loop && !slot.bit_from_edge, slots)))
+        (dropped[] += count(slot -> slot.loop_state.vector_controlled && !slot.bit_from_edge, slots)))
     @test !diverged
-    @test all(r -> r.status.running && r.status.num_members == length(rx.sats), results)
+    @test all(r -> r.status.running && r.status.num_vector_tracking_members == length(rx.sats), results)
     @test dropped[] == 0
     @test all(slot -> slot.prompt_history.count == 6, slots)
     @test pipeline_errors(rx, results) < 3.0
 end
 
 @testset "The soft bits decode the same whenever the host drains them" begin
-    # After every record, as a loop process publishes them, or once per millisecond
-    # of records, as Tracking.jl's `track!` leaves them for its consumer: the engine
-    # decodes exactly the bits each record added, either way.
-    runs = map((true, false)) do drain_per_record
-        rx = PipelineReceiver(; num_sats = 6, drain_per_record)
+    # After every integration, as a loop process publishes them, or once per millisecond
+    # of integrations, as Tracking.jl's `track!` leaves them for its consumer: the navigation processor
+    # decodes exactly the bits each integration added, either way.
+    runs = map((true, false)) do drain_per_integration
+        rx = PipelineReceiver(; num_sats = 6, drain_per_integration)
         results, _, diverged = run_pipeline!(rx, 28.0)
         @test !diverged
         rx, results
@@ -506,7 +506,7 @@ end
     end
 end
 
-@testset "The engine reads the C/N₀ estimator the host configured: $name" for (name, cn0_estimator) in (
+@testset "The navigation processor reads the C/N₀ estimator the host configured: $name" for (name, cn0_estimator) in (
     ("moments", () -> MomentsCN0Estimator(100)),
     ("NWPR", () -> NWPRCN0Estimator()),
 )
@@ -516,8 +516,8 @@ end
     @test any(r -> r.status.seeded, results)
     for sat in rx.sats
         @test sat.loop.cn0_estimator isa typeof(cn0_estimator())
-        report = satellite_report(rx.estimator, GPSL1CA(), sat.decoder.prn)
-        @test report.in_lock
+        report = get_satellite_report(rx.tracking_loop, GPSL1CA(), sat.decoder.prn)
+        @test report.measurement_ready
         @test 40 < report.cn0_dbhz < 50
     end
 end
@@ -531,8 +531,8 @@ end
     @test !diverged
     @test all(r -> isempty(r.measured) && !r.status.seeded, results)
     for sat in rx.sats
-        report = satellite_report(rx.estimator, GPSL1CA(), sat.decoder.prn)
-        @test report.bit_synced && !report.in_lock && !report.pvt_ready
+        report = get_satellite_report(rx.tracking_loop, GPSL1CA(), sat.decoder.prn)
+        @test report.bit_or_secondary_code_synced && !report.measurement_ready && !report.positioning_ready
         @test report.cn0_dbhz == -Inf
         @test TL.has_positioning_data(report.decoder)
     end
@@ -541,22 +541,22 @@ end
     @test any(r -> r.status.seeded, results)
 end
 
-@testset "One host loop drives $name" for (name, estimator, pilot) in (
+@testset "One host loop drives $name" for (name, tracking_loop, pilot) in (
     ("a scalar loop on pairs", ConventionalAssistedPLLAndDLL(), true),
-    ("a scalar loop on plain signals", NCOReferencedPLLAndDLL(), false),
+    ("a scalar loop on plain signals", DelayCompensatedTrackingLoop(), false),
     ("the vector loop on plain signals", nothing, false),
     ("the vector loop on pairs", nothing, true),
 )
-    # `pipeline_record!` calls the same functions on every record of every signal,
-    # whichever estimator it was given.
-    rx = PipelineReceiver(; num_sats = 4, pilot, estimator)
+    # `pipeline_integration!` calls the same functions on every integration of every signal,
+    # whichever tracking_loop it was given.
+    rx = PipelineReceiver(; num_sats = 4, pilot, tracking_loop)
     results, _, diverged = run_pipeline!(rx, 3.0)
     @test !diverged
-    if rx.estimator isa VectorPLLAndDLL
+    if rx.tracking_loop isa VectorTrackingLoop
         @test length(results) == 30
     else
         @test isempty(results)
-        @test navigation_solution(rx.estimator) === nothing
-        @test navigation_cycle(rx.estimator) === nothing
+        @test get_navigation_solution(rx.tracking_loop) === nothing
+        @test get_navigation_cycle_index(rx.tracking_loop) === nothing
     end
 end

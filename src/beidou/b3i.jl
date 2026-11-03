@@ -14,19 +14,19 @@ overlay — see `_detect_secondary_code_sync`; behaves as
 `BeiDouB1I`'s. The default detector is the soft one
 ([`uses_soft_secondary_code_detection`](@ref)).
 """
-@inline function detect_bit_or_secondary_code_sync(
+@inline function detect_sync(
     signal::BeiDouB3I,
     prn::Integer,        # selects the PRN's NH20 column (all-ones on GEO)
-    code_block_bits::Unsigned,
-    num_code_blocks::Integer,
+    code_period_bits::Unsigned,
+    num_code_periods::Integer,
 )
-    _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
+    _detect_secondary_code_sync(signal, prn, code_period_bits, num_code_periods)
 end
 
-# BPSK: EarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(::BeiDouB3I, num_ants::NumAnts = NumAnts(1))
-    EarlyPromptLateCorrelator(; num_ants)
+# BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(::BeiDouB3I, num_ants::NumAnts = NumAnts(1))
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
-# Holds one NH20 period (see `get_code_block_buffer_type`).
-@inline get_code_block_buffer_type(::BeiDouB3I) = UInt32
+# Holds one NH20 period (see `prompt_sign_history_type`).
+@inline prompt_sign_history_type(::BeiDouB3I) = UInt32

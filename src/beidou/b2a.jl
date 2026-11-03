@@ -15,13 +15,13 @@ the shared 5-chip code (`00010`; BDS-SIS-ICD-B2a-1.0 §5.2.1) — see
 B-CNAV2 bit. The default detector is the soft one
 ([`uses_soft_secondary_code_detection`](@ref)).
 """
-@inline function detect_bit_or_secondary_code_sync(
+@inline function detect_sync(
     signal::BeiDouB2aI,
     prn::Integer,        # ignored by the reference; the 5-chip code is shared
-    code_block_bits::Unsigned,
-    num_code_blocks::Integer,
+    code_period_bits::Unsigned,
+    num_code_periods::Integer,
 )
-    _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
+    _detect_secondary_code_sync(signal, prn, code_period_bits, num_code_periods)
 end
 
 """
@@ -32,23 +32,23 @@ per-PRN 100-chip code (BDS-SIS-ICD-B2a-1.0 §5.2.1 Table 5-4; 100 ms cycle) —
 see `_detect_secondary_code_sync`. The default detector is the soft one
 ([`uses_soft_secondary_code_detection`](@ref)).
 """
-@inline function detect_bit_or_secondary_code_sync(
+@inline function detect_sync(
     signal::BeiDouB2aQ,
     prn::Integer,        # selects the PRN's secondary-code column
-    code_block_bits::Unsigned,
-    num_code_blocks::Integer,
+    code_period_bits::Unsigned,
+    num_code_periods::Integer,
 )
-    _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
+    _detect_secondary_code_sync(signal, prn, code_period_bits, num_code_periods)
 end
 
-# BPSK: EarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(
+# BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(
     ::Union{BeiDouB2aI,BeiDouB2aQ},
     num_ants::NumAnts = NumAnts(1),
 )
-    EarlyPromptLateCorrelator(; num_ants)
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
-# Hold one 5-chip / 100-chip period (see `get_code_block_buffer_type`).
-@inline get_code_block_buffer_type(::BeiDouB2aI) = UInt32
-@inline get_code_block_buffer_type(::BeiDouB2aQ) = UInt128
+# Hold one 5-chip / 100-chip period (see `prompt_sign_history_type`).
+@inline prompt_sign_history_type(::BeiDouB2aI) = UInt32
+@inline prompt_sign_history_type(::BeiDouB2aQ) = UInt128

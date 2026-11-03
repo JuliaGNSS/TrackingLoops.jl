@@ -1,50 +1,54 @@
 """
 $(SIGNATURES)
 
-Correlator with early, prompt and late taps. The code shift (chips) is a preferred
-shift: rounded to whole samples for the sampling and code frequency, at least one.
+Correlator bank with early, prompt and late correlators.
+
+`preferred_early_late_to_prompt_spacing` is the requested distance in chips from
+prompt to each early/late correlator, rounded to whole samples for the sampling
+and code frequency, at least one sample. The default `0.5` places early and late
+half a chip from prompt, for a total early–late spacing of one chip before rounding.
 """
-struct EarlyPromptLateCorrelator{M,T} <: AbstractEarlyPromptLateCorrelator{M}
-    accumulators::SVector{3,T}
-    preferred_early_late_to_prompt_code_shift::Float64
-    function EarlyPromptLateCorrelator(
-        accumulators::AbstractVector{SVector{M,T}},
-        preferred_early_late_to_prompt_code_shift,
+struct EarlyPromptLateCorrelatorBank{M,T} <: AbstractEarlyPromptLateCorrelatorBank{M}
+    correlator_outputs::SVector{3,T}
+    preferred_early_late_to_prompt_spacing::Float64
+    function EarlyPromptLateCorrelatorBank(
+        correlator_outputs::AbstractVector{SVector{M,T}},
+        preferred_early_late_to_prompt_spacing,
     ) where {M,T<:Complex}
-        new{M,SVector{M,T}}(accumulators, preferred_early_late_to_prompt_code_shift)
+        new{M,SVector{M,T}}(correlator_outputs, preferred_early_late_to_prompt_spacing)
     end
-    function EarlyPromptLateCorrelator(
-        accumulators::AbstractVector{T},
-        preferred_early_late_to_prompt_code_shift,
+    function EarlyPromptLateCorrelatorBank(
+        correlator_outputs::AbstractVector{T},
+        preferred_early_late_to_prompt_spacing,
     ) where {T<:Complex}
-        new{1,T}(accumulators, preferred_early_late_to_prompt_code_shift)
+        new{1,T}(correlator_outputs, preferred_early_late_to_prompt_spacing)
     end
 end
 
 """
 $(SIGNATURES)
 
-Construct a zeroed [`EarlyPromptLateCorrelator`](@ref).
+Construct a zeroed [`EarlyPromptLateCorrelatorBank`](@ref).
 """
-function EarlyPromptLateCorrelator(;
+function EarlyPromptLateCorrelatorBank(;
     num_ants::NumAnts = NumAnts(1),
-    preferred_early_late_to_prompt_code_shift = 0.5,
+    preferred_early_late_to_prompt_spacing = 0.5,
 )
-    EarlyPromptLateCorrelator(
-        get_initial_accumulator(num_ants, NumAccumulators(3)),
-        preferred_early_late_to_prompt_code_shift,
+    EarlyPromptLateCorrelatorBank(
+        zero_correlator_outputs(num_ants, NumCorrelators(3)),
+        preferred_early_late_to_prompt_spacing,
     )
 end
 
 """
 $(SIGNATURES)
 
-Update the correlator with new accumulators
+Update the correlator bank with new correlator outputs
 """
-function update_accumulator(correlator::EarlyPromptLateCorrelator, accumulators)
-    EarlyPromptLateCorrelator(
-        accumulators,
-        correlator.preferred_early_late_to_prompt_code_shift,
+function set_correlator_outputs(correlator_bank::EarlyPromptLateCorrelatorBank, correlator_outputs)
+    EarlyPromptLateCorrelatorBank(
+        correlator_outputs,
+        correlator_bank.preferred_early_late_to_prompt_spacing,
     )
 end
 
@@ -53,13 +57,13 @@ $(SIGNATURES)
 
 Replica shifts relative to the prompt in samples, from latest to earliest replica.
 """
-function get_correlator_sample_shifts(
-    correlator::EarlyPromptLateCorrelator,
+function calc_correlator_sample_offsets(
+    correlator_bank::EarlyPromptLateCorrelatorBank,
     sampling_frequency,
     code_frequency,
 )
-    sample_shift = calc_preferred_code_shift_to_sample_shift(
-        correlator.preferred_early_late_to_prompt_code_shift,
+    sample_shift = calc_correlator_sample_offset(
+        correlator_bank.preferred_early_late_to_prompt_spacing,
         sampling_frequency,
         code_frequency,
     )

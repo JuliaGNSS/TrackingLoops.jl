@@ -13,7 +13,7 @@ using Geodesy: ECEF
 
 const TL = TrackingLoops
 
-# A `VTMember` with hand-picked geometry for the measurement-model tests; the
+# A `VectorTrackingObservation` with hand-picked geometry for the measurement-model tests; the
 # defaults describe a GPS L1 C/A satellite straight overhead along +x, at 45 dB-Hz,
 # with a one-chip early-late spacing and one code period of coherent integration.
 function _test_member(;
@@ -37,7 +37,7 @@ function _test_member(;
     c = SPEED_OF_LIGHT
     code_frequency = Float64(ustrip(Hz, get_chip_rate(signal)))
     tcoh = something(coherent_integration_time, get_code_length(signal) / code_frequency)
-    TL.VTMember(
+    TL.VectorTrackingObservation(
         group,
         slot,
         prn,
@@ -116,7 +116,7 @@ end
     @test config.use_pseudorange_rates # VDFLL by default
     @test config.motion_model_order == 2
     @test config.clock_model_order == 2
-    @test config.insufficient_meas_timeout == 10.0s
+    @test config.measurement_deficit_timeout == 10.0s
 
     vdll = NavigationFilterConfig(use_pseudorange_rates = false)
     @test !vdll.use_pseudorange_rates
@@ -212,26 +212,26 @@ end
     config = NavigationFilterConfig()
     T = 0.1
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
-    nav = TL.NavFilterModel(config, layout, 100.0ms)
-    @test size(nav.F) == (9, 9)
+    nav_processor = TL.NavFilterModel(config, layout, 100.0ms)
+    @test size(nav_processor.F) == (9, 9)
     # Per-axis constant-velocity blocks propagate x += T * ẋ.
     for i in [1, 3, 5]
-        @test nav.F[i, i] == 1.0
-        @test nav.F[i, i+1] == T
-        @test nav.F[i+1, i+1] == 1.0
-        @test nav.F[i+1, i] == 0.0
+        @test nav_processor.F[i, i] == 1.0
+        @test nav_processor.F[i, i+1] == T
+        @test nav_processor.F[i+1, i+1] == 1.0
+        @test nav_processor.F[i+1, i] == 0.0
     end
     # Both clock biases integrate the single oscillator drift.
-    @test nav.F[7, 9] == T
-    @test nav.F[8, 9] == T
-    @test nav.F[9, 9] == 1.0
+    @test nav_processor.F[7, 9] == T
+    @test nav_processor.F[8, 9] == T
+    @test nav_processor.F[9, 9] == 1.0
     # Process noise is symmetric positive semi-definite with positive variances,
     # and the drift random walk is fully correlated across the biases (one
     # oscillator).
-    @test nav.Q ≈ nav.Q'
-    @test all(diag(nav.Q) .> 0)
-    @test all(eigvals(Symmetric(nav.Q)) .> -1e-12)
-    @test nav.Q[7, 8] > 0
+    @test nav_processor.Q ≈ nav_processor.Q'
+    @test all(diag(nav_processor.Q) .> 0)
+    @test all(eigvals(Symmetric(nav_processor.Q)) .> -1e-12)
+    @test nav_processor.Q[7, 8] > 0
 
     # Position-only, bias-only model: pure identity dynamics.
     nav1 = TL.NavFilterModel(
@@ -260,31 +260,31 @@ end
     # Integration-time management: the process model follows the measured interval,
     # however small the deviation (a chunk's 4 ms on 100 ms is metres of clock bias at a
     # TCXO's drift), rebuilt in place.
-    nav = TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 100.0ms)
-    F = nav.F
-    Q = copy(nav.Q)
-    TL.ensure_nav_filter_cycle_time!(nav, config, 100.0ms)
-    @test nav.Q == Q
-    TL.ensure_nav_filter_cycle_time!(nav, config, 0.104s)
-    @test nav.cycle_time == 0.104s
-    @test nav.F[1, 2] == 0.104
-    @test nav.Q == TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 0.104s).Q
-    TL.ensure_nav_filter_cycle_time!(nav, config, 0.2s)
-    @test nav.cycle_time == 0.2s
-    @test nav.F[1, 2] ≈ 0.2
-    @test nav.F === F
+    nav_processor = TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 100.0ms)
+    F = nav_processor.F
+    Q = copy(nav_processor.Q)
+    TL.ensure_nav_filter_cycle_time!(nav_processor, config, 100.0ms)
+    @test nav_processor.Q == Q
+    TL.ensure_nav_filter_cycle_time!(nav_processor, config, 0.104s)
+    @test nav_processor.cycle_time == 0.104s
+    @test nav_processor.F[1, 2] == 0.104
+    @test nav_processor.Q == TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 0.104s).Q
+    TL.ensure_nav_filter_cycle_time!(nav_processor, config, 0.2s)
+    @test nav_processor.cycle_time == 0.2s
+    @test nav_processor.F[1, 2] ≈ 0.2
+    @test nav_processor.F === F
 end
 
 @testset "Motion and clock model orders preserve the state dynamics" begin
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GPSL5I()))
     for motion_model_order in 1:3, clock_model_order in 1:2
         config = NavigationFilterConfig(; motion_model_order, clock_model_order)
-        nav = TL.NavFilterModel(config, layout, 0.25s)
+        nav_processor = TL.NavFilterModel(config, layout, 0.25s)
         x = collect(1.0:TL.num_nav_states(config, layout))
-        @test length(nav.idxs.vel) == (motion_model_order == 1 ? 0 : 3)
-        @test length(nav.idxs.acc) == (motion_model_order == 3 ? 3 : 0)
-        @test (nav.idxs.clock_drift == 0) == (clock_model_order == 1)
-        @test TL.propagate_state!(similar(x), x, nav.idxs, 0.25) ≈ nav.F * x
+        @test length(nav_processor.idxs.vel) == (motion_model_order == 1 ? 0 : 3)
+        @test length(nav_processor.idxs.acc) == (motion_model_order == 3 ? 3 : 0)
+        @test (nav_processor.idxs.clock_drift == 0) == (clock_model_order == 1)
+        @test TL.propagate_state!(similar(x), x, nav_processor.idxs, 0.25) ≈ nav_processor.F * x
     end
 end
 
@@ -321,16 +321,16 @@ end
     # at 1 s.
     for (order, expected) in ((1, σ_v), (2, σ_a), (3, σ_j))
         recovered(interval) = let
-            nav = TL.NavFilterModel(config(order), layout, interval)
+            nav_processor = TL.NavFilterModel(config(order), layout, interval)
             # The last modelled derivative's own gain is `T` at every order.
-            sqrt(nav.Q[order, order]) / ustrip(s, interval)
+            sqrt(nav_processor.Q[order, order]) / ustrip(s, interval)
         end
         @test recovered(0.1s) ≈ expected
         @test recovered(1.0s) ≈ expected
     end
 end
 
-@testset "The state propagated to a landing" begin
+@testset "The state propagated to a application_sample_index" begin
     idxs = TL.NavFilterIndices(3, 2, 2, 1)
     x = collect(1.0:13.0)
     x_τ = similar(x)
@@ -355,8 +355,8 @@ end
 @testset "Measurement prediction" begin
     config = NavigationFilterConfig()
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
-    nav = TL.NavFilterModel(config, layout, 100.0ms)
-    idxs = nav.idxs
+    nav_processor = TL.NavFilterModel(config, layout, 100.0ms)
+    idxs = nav_processor.idxs
 
     # One GPS satellite along +x, one Galileo along +z: each pseudorange
     # carries its own system's clock bias.
@@ -468,7 +468,7 @@ end
     @test weak_loss > 10
     @test TL.pseudorange_noise_variance(weak, 0.1) ≈ range_var(weak, 0.1)
 
-    # Narrowing the correlator at equal C/N0 lowers the thermal term proportionally, which
+    # Narrowing the early-late spacing at equal C/N0 lowers the thermal term proportionally, which
     # is the whole point of a narrow spacing.
     narrow = _test_member(; early_late_spacing = 0.5)
     @test TL.pseudorange_noise_variance(narrow, 0.1) ≈ range_var(narrow, 0.1)
@@ -609,7 +609,7 @@ end
     idxs = TL.NavFilterIndices(NavigationFilterConfig(), layout)
     P = zeros(10, 10)
     P[idxs.pos, idxs.pos] = Diagonal([9.0, 16.0, 144.0])
-    @test TL.position_uncertainty(P, idxs) ≈ sqrt(169.0)
+    @test TL.calc_position_std(P, idxs) ≈ sqrt(169.0)
 end
 
 @testset "The DOP's clock column of the reference system" begin
@@ -761,33 +761,33 @@ end
     # `fll_disc` measures f_incoming − f_replica, so a positive reading must ADD to the
     # replica Doppler the rate is measured from; the discriminator enters with its own
     # sign, not flipped. Pins the sign so a re-introduced negation is caught.
-    base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
-    pos = SatVectorPLLAndDLL(base; fll_disc_sum = (1, 3.0Hz))
-    neg = SatVectorPLLAndDLL(base; fll_disc_sum = (2, -8.0Hz))
-    empty_acc = SatVectorPLLAndDLL(base; fll_disc_sum = (0, 0.0Hz))
+    base = init_loop_state(VectorTrackingLoop(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
+    pos = VectorLoopState(base; fll_disc_sum = (1, 3.0Hz))
+    neg = VectorLoopState(base; fll_disc_sum = (2, -8.0Hz))
+    empty_acc = VectorLoopState(base; fll_disc_sum = (0, 0.0Hz))
     @test TL.mean_fll_disc(pos) ≈ 3.0
     @test TL.mean_fll_disc(neg) ≈ -4.0
     @test TL.mean_fll_disc(empty_acc) == 0.0
     # The DLL mean enters negated.
-    @test TL.mean_code_disc_at_epoch(SatVectorPLLAndDLL(base; code_disc_sum = (2, 0.1)), 0.1) ≈ -0.05
+    @test TL.mean_code_disc_at_epoch(VectorLoopState(base; code_disc_sum = (2, 0.1)), 0.1) ≈ -0.05
 end
 
 @testset "The code measurement is moved from mid-cycle to the epoch" begin
-    base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
+    base = init_loop_state(VectorTrackingLoop(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
     T = 0.1
     # Without an NCO delay the advance is the correction's `c·T/2`, bit for bit.
     for c_new in (0.37, -2.5, 1e-3), c_old in (0.0, 4.0, -1.1)
-        state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c_new * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
-        @test state.code_freq_update_history == (c_new * Hz, c_old * Hz, 0.0Hz)
+        state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c_new * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
+        @test state.code_frequency_correction_history == (c_new * Hz, c_old * Hz, 0.0Hz)
         @test TL.code_phase_advance(state, T) === c_new * T / 2
-        state = SatVectorPLLAndDLL(state; code_disc_sum = (4, 0.2))
+        state = VectorLoopState(state; code_disc_sum = (4, 0.2))
         @test TL.mean_code_disc_at_epoch(state, T) === -0.05 + c_new * T / 2
     end
     # Under an NCO delay the second half-cycle ran on the corrections in effect before
-    # the newest landed: on `c₁` while the newest lands inside it or after the epoch, and
-    # on `c₂` while `c₁` itself lands only after mid-cycle (`L > 1.5T`).
+    # the newest took effect: on `c₁` while the newest takes effect inside it or after the epoch, and
+    # on `c₂` while `c₁` itself takes effect only after mid-cycle (`L > 1.5T`).
     c₂, c₁, c₀ = 0.5, 1.0, 2.0
-    older = TL._set_vector_commands(TL._set_vector_commands(base, c₂ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c₁ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
+    older = TL._set_vector_commands(TL._set_vector_commands(base, c₂ * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0), c₁ * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0)
     for (L, expected) in (
         (0.03, c₀ * 0.05),
         (0.075, c₀ * 0.025 + c₁ * 0.025),
@@ -797,7 +797,7 @@ end
         (0.2, c₂ * 0.05),
         (0.25, c₂ * 0.05),
     )
-        state = TL._set_vector_commands(older, c₀ * Hz, TL.CarrierRamp(20.0, 0.0, 0.0), L * s, ConstantNCOCommand(20.0, 0.0), 0)
+        state = TL._set_vector_commands(older, c₀ * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), L * s, ConstantNCOCommand(20.0, 0.0), 0)
         @test TL.code_phase_advance(state, T) ≈ expected
     end
 end
@@ -807,16 +807,16 @@ end
     # accumulated, which the navigation filter cannot distinguish from a genuine zero
     # residual measured at full weight. `has_disc_sums` is the guard that keeps such a
     # member out of the measurement set.
-    base = init_estimator_state(VectorPLLAndDLL(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
-    accumulated = SatVectorPLLAndDLL(base; code_disc_sum = (3, 0.06),
+    base = init_loop_state(VectorTrackingLoop(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
+    accumulated = VectorLoopState(base; code_disc_sum = (3, 0.06),
         fll_disc_sum = (3, 6.0Hz))
-    nothing_accumulated = SatVectorPLLAndDLL(base; code_disc_sum = (0, 0.0),
+    nothing_accumulated = VectorLoopState(base; code_disc_sum = (0, 0.0),
         fll_disc_sum = (0, 0.0Hz))
     @test TL.has_disc_sums(accumulated)
     @test !TL.has_disc_sums(nothing_accumulated)
-    # A cycle without a frequency measurement — its only record the first after a
+    # A cycle without a frequency measurement — its only integration the first after a
     # (re)start — has no rate to measure, and is withheld too.
-    no_fll = SatVectorPLLAndDLL(base; code_disc_sum = (1, 0.02),
+    no_fll = VectorLoopState(base; code_disc_sum = (1, 0.02),
         fll_disc_sum = (0, 0.0Hz))
     @test !TL.has_disc_sums(no_fll)
     # The zero the helpers would otherwise hand to the filter is indistinguishable from a
@@ -924,7 +924,7 @@ _fix_positions(user, directions) = [user + 2.0e7 * SVector(d) / norm(SVector(d))
     @test TL.seed_fix_covariance!(P, idxs, layout, pvt, 1, H, zeros(5, 5), fix_bias_layout)
     block = [idxs.pos; idxs.clock_biases]
     @test P[block, block] ≈ TL.FIX_PSEUDORANGE_STD^2 * inv(H' * H)
-    @test TL.position_uncertainty(P, idxs) ≈ TL.FIX_PSEUDORANGE_STD * dop.PDOP
+    @test TL.calc_position_std(P, idxs) ≈ TL.FIX_PSEUDORANGE_STD * dop.PDOP
     @test P ≈ P'
     @test isposdef(Symmetric(P))
     @test P[idxs.clock_biases[2], idxs.pos[1]] != 0

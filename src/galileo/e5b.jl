@@ -12,13 +12,13 @@ code (`1110`; OS SIS ICD v2.2 §3.5.1) — see `_detect_secondary_code_sync`. On
 CS4 period is exactly one 250 bit/s I/NAV bit. The default detector is the soft
 one ([`uses_soft_secondary_code_detection`](@ref)).
 """
-@inline function detect_bit_or_secondary_code_sync(
+@inline function detect_sync(
     signal::GalileoE5bI,
     prn::Integer,        # ignored by the reference; CS4 is shared across SVIDs
-    code_block_bits::Unsigned,
-    num_code_blocks::Integer,
+    code_period_bits::Unsigned,
+    num_code_periods::Integer,
 )
-    _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
+    _detect_secondary_code_sync(signal, prn, code_period_bits, num_code_periods)
 end
 
 """
@@ -29,23 +29,23 @@ per-SVID CS100 code (OS SIS ICD v2.2 §3.5.2: CS100₍ₙ₊₅₀₎ for SVID `
 cycle) — see `_detect_secondary_code_sync`. The default detector is the soft one
 ([`uses_soft_secondary_code_detection`](@ref)).
 """
-@inline function detect_bit_or_secondary_code_sync(
+@inline function detect_sync(
     signal::GalileoE5bQ,
     prn::Integer,        # selects the SVID's CS100 column in the reference
-    code_block_bits::Unsigned,
-    num_code_blocks::Integer,
+    code_period_bits::Unsigned,
+    num_code_periods::Integer,
 )
-    _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
+    _detect_secondary_code_sync(signal, prn, code_period_bits, num_code_periods)
 end
 
 # Each sideband is modelled as BPSK(10), not AltBOC(15,10): EarlyPromptLate, as E5a.
-function get_default_correlator(
+function get_default_correlator_bank(
     ::Union{GalileoE5bI,GalileoE5bQ},
     num_ants::NumAnts = NumAnts(1),
 )
-    EarlyPromptLateCorrelator(; num_ants)
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
-# Hold one CS4 / CS100 period (see `get_code_block_buffer_type`).
-@inline get_code_block_buffer_type(::GalileoE5bI) = UInt32
-@inline get_code_block_buffer_type(::GalileoE5bQ) = UInt128
+# Hold one CS4 / CS100 period (see `prompt_sign_history_type`).
+@inline prompt_sign_history_type(::GalileoE5bI) = UInt32
+@inline prompt_sign_history_type(::GalileoE5bQ) = UInt128
