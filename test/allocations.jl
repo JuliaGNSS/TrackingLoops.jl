@@ -25,7 +25,7 @@
         for k = first_k:(first_k+n-1)
             sgn = isodd(div(k - 1, 20)) ? -1.0 : 1.0
             p = 2000.0 * sgn * cis(0.01)
-            output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
+            output = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
             st, prompt, filtered, blocks = apply_record(st, signal, 7, output, fs, density, true)
             record = LoopRecord(signal, filtered, output, st, fs)
             es, carrier, code = step_loop(estimator, es, record, timeline, Int64(4000k + 8000))
@@ -47,8 +47,8 @@
     state = state_ref[]
     est_state = est_ref[]
 
-    output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000)
-    record = LoopRecord(signal, output.correlator, complex(0.0, 0.0), output, 1, fs)
+    output = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000)
+    record = LoopRecord(signal, output.correlator_bank, complex(0.0, 0.0), output, 1, fs)
     step_sig = Tuple{typeof(estimator),typeof(est_state),typeof(record),typeof(timeline),Int64}
     @test isempty(AllocCheck.check_allocs(step_loop, step_sig; ignore_throw = true))
     conv = ConventionalAssistedPLLAndDLL()
@@ -59,8 +59,8 @@
     @test isempty(AllocCheck.check_allocs(advance_timeline!, Tuple{NCOTimeline,Int64}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(confirm_command!, Tuple{NCOTimeline,Int64,Int64}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(cancel_command!, Tuple{NCOTimeline,Int64}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(pll_disc, Tuple{typeof(signal),typeof(output.correlator)}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(dll_disc, Tuple{typeof(signal),typeof(output.correlator),typeof(0.1Hz),typeof(fs)}; ignore_throw = true))
+    @test isempty(AllocCheck.check_allocs(pll_disc, Tuple{typeof(signal),typeof(output.correlator_bank)}; ignore_throw = true))
+    @test isempty(AllocCheck.check_allocs(dll_disc, Tuple{typeof(signal),typeof(output.correlator_bank),typeof(0.1Hz),typeof(fs)}; ignore_throw = true))
 end
 
 @testset "The vector loop's per-record path is allocation-free" begin
@@ -69,8 +69,8 @@ end
     for inner in (ConventionalAssistedPLLAndDLL(), NCOReferencedPLLAndDLL())
         estimator = VectorPLLAndDLL(signal; inner)
         state = init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz)
-        output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000, 0.0)
-        record = LoopRecord(signal, output.correlator, cis(0.1), output, 1, fs; prn = 3)
+        output = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5), 4000, 4000, 0.0)
+        record = LoopRecord(signal, output.correlator_bank, cis(0.1), output, 1, fs; prn = 3)
         nav = estimator.navigation
         group = first(nav.groups)
         slot = first(group.slots)
@@ -103,8 +103,8 @@ end
             previous = complex(0.0, 0.0)
             for k = first_k:(first_k+n-1)
                 p = cis(0.01k) * (isodd(k ÷ 20) ? 1 : -1)
-                out = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k, 0.0)
-                rec = LoopRecord(signal, out.correlator, previous, out, 1, fs; prn = 3)
+                out = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k, 0.0)
+                rec = LoopRecord(signal, out.correlator_bank, previous, out, 1, fs; prn = 3)
                 st, carrier, code = step_loop(estimator, st, rec, timeline, Int64(4000k + 8000))
                 schedule_command!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
                 advance_timeline!(timeline, 4000k - 4000)

@@ -513,7 +513,7 @@ end
 #     var(mean) = d/(4·C/N0·T) · (1 + 2/((2 − d)·C/N0·T_coh))   [chips²]:
 # the thermal term averages down over `T`, the squaring loss stays pinned to `T_coh`.
 # Times `chip_length²` for metres. For VEML `d` is the inner pair's spacing, making this
-# EPL model mildly conservative (the outer taps average a little more noise away).
+# EPL model mildly conservative (the outer correlators average a little more noise away).
 # Assumes `d < 2` chips (the default is 0.5).
 function pseudorange_noise_variance(member::VTMember, T)
     cn0_tcoh = member.cn0_lin * member.coherent_integration_time

@@ -2,7 +2,7 @@
 CurrentModule = TrackingLoops
 ```
 
-# Correlators and discriminators
+# Correlator banks and discriminators
 
 A correlator holds the accumulators of one integration: one complex value per
 tap and antenna. [`EarlyPromptLateCorrelator`](@ref) has the early, prompt and
@@ -12,46 +12,54 @@ and a very-late tap, e.g. for multipath monitoring or BOC tracking. A
 the loop: the correlator together with the sample span it was integrated over.
 
 The discriminators [`pll_disc`](@ref TrackingLoops.pll_disc), [`fll_disc`](@ref TrackingLoops.fll_disc) and
-[`dll_disc`](@ref TrackingLoops.dll_disc) turn a (filtered) correlator into the carrier-phase,
+[`dll_disc`](@ref TrackingLoops.dll_disc) turn a (filtered) correlator bank into the carrier-phase,
 carrier-frequency and code-phase errors the loop filters act on. Before that,
 the [`DefaultPostCorrFilter`](@ref) combines the antennas of a multi-antenna
-correlator into one; subtype [`AbstractPostCorrFilter`](@ref TrackingLoops.AbstractPostCorrFilter) for beamforming.
+correlator bank into one; subtype [`AbstractPostCorrFilter`](@ref TrackingLoops.AbstractPostCorrFilter) for beamforming.
 
-## Correlators
+## Correlator banks
+
+The spacing keywords give the requested distance **from prompt**, in chips:
+`preferred_early_late_to_prompt_spacing` for early and late, and
+`preferred_very_early_late_to_prompt_spacing` for very early and very late.
+For example, an early/late-to-prompt spacing of `0.5` puts each correlator half a
+chip from prompt, for a full early–late spacing of one chip. The requested positions
+are rounded to whole samples. `calc_correlator_sample_offsets` returns those
+signed sample offsets; `calc_early_late_sample_spacing` returns their full separation.
 
 ```@docs
-TrackingLoops.AbstractCorrelator
-TrackingLoops.AbstractEarlyPromptLateCorrelator
+TrackingLoops.AbstractCorrelatorBank
+TrackingLoops.AbstractEarlyPromptLateCorrelatorBank
 CorrelatorOutput
-TrackingLoops.apply(::F, ::AbstractCorrelator) where {F}
-TrackingLoops.calc_preferred_code_shift_to_sample_shift(::Any, ::Any, ::Any)
-get_accumulators(::AbstractCorrelator)
-get_early(::AbstractEarlyPromptLateCorrelator)
-TrackingLoops.get_early_late_sample_spacing(::AbstractEarlyPromptLateCorrelator, ::Any, ::Any)
-TrackingLoops.get_initial_accumulator(::NumAnts, ::NumAccumulators{M}) where {M}
-get_late(::AbstractEarlyPromptLateCorrelator)
-TrackingLoops.get_num_accumulators(::AbstractCorrelator)
-get_num_ants(::AbstractCorrelator{M}) where {M}
-get_prompt(::AbstractCorrelator)
-TrackingLoops.get_prompt_index(::AbstractCorrelator)
-TrackingLoops.normalize(::AbstractCorrelator, ::Any, ::Any = 1)
-EarlyPromptLateCorrelator
-EarlyPromptLateCorrelator()
-TrackingLoops.get_correlator_sample_shifts(::EarlyPromptLateCorrelator, ::Any, ::Any)
-TrackingLoops.update_accumulator(::EarlyPromptLateCorrelator, ::Any)
-VeryEarlyPromptLateCorrelator
-VeryEarlyPromptLateCorrelator()
-TrackingLoops.get_correlator_sample_shifts(::VeryEarlyPromptLateCorrelator, ::Any, ::Any)
-TrackingLoops.get_very_early(::VeryEarlyPromptLateCorrelator)
-TrackingLoops.get_very_late(::VeryEarlyPromptLateCorrelator)
-TrackingLoops.update_accumulator(::VeryEarlyPromptLateCorrelator, ::Any)
+TrackingLoops.apply(::F, ::AbstractCorrelatorBank) where {F}
+TrackingLoops.calc_correlator_sample_offset(::Any, ::Any, ::Any)
+get_correlator_outputs(::AbstractCorrelatorBank)
+get_early(::AbstractEarlyPromptLateCorrelatorBank)
+TrackingLoops.calc_early_late_sample_spacing(::AbstractEarlyPromptLateCorrelatorBank, ::Any, ::Any)
+TrackingLoops.zero_correlator_outputs(::NumAnts, ::NumCorrelators{K}) where {K}
+get_late(::AbstractEarlyPromptLateCorrelatorBank)
+TrackingLoops.get_num_correlators(::AbstractCorrelatorBank)
+get_num_ants(::AbstractCorrelatorBank{M}) where {M}
+get_prompt(::AbstractCorrelatorBank)
+TrackingLoops.get_prompt_index(::AbstractCorrelatorBank)
+TrackingLoops.normalize(::AbstractCorrelatorBank, ::Any, ::Any = 1)
+EarlyPromptLateCorrelatorBank
+EarlyPromptLateCorrelatorBank()
+TrackingLoops.calc_correlator_sample_offsets(::EarlyPromptLateCorrelatorBank, ::Any, ::Any)
+TrackingLoops.set_correlator_outputs(::EarlyPromptLateCorrelatorBank, ::Any)
+VeryEarlyPromptLateCorrelatorBank
+VeryEarlyPromptLateCorrelatorBank()
+TrackingLoops.calc_correlator_sample_offsets(::VeryEarlyPromptLateCorrelatorBank, ::Any, ::Any)
+TrackingLoops.get_very_early(::VeryEarlyPromptLateCorrelatorBank)
+TrackingLoops.get_very_late(::VeryEarlyPromptLateCorrelatorBank)
+TrackingLoops.set_correlator_outputs(::VeryEarlyPromptLateCorrelatorBank, ::Any)
 ```
 
 ## Discriminators
 
 ```@docs
-TrackingLoops.dll_disc(::AbstractGNSSSignal, ::EarlyPromptLateCorrelator, ::Any, ::Any)
-TrackingLoops.dll_disc(::AbstractGNSSSignal, ::VeryEarlyPromptLateCorrelator, ::Any, ::Any)
+TrackingLoops.dll_disc(::AbstractGNSSSignal, ::EarlyPromptLateCorrelatorBank, ::Any, ::Any)
+TrackingLoops.dll_disc(::AbstractGNSSSignal, ::VeryEarlyPromptLateCorrelatorBank, ::Any, ::Any)
 TrackingLoops.fll_disc(::AbstractGNSSSignal, ::Any, ::Any, ::Any)
 TrackingLoops.pll_disc(::AbstractGNSSSignal, ::Any)
 ```

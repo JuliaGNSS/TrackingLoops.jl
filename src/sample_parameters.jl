@@ -63,14 +63,14 @@ record actually covered, recovered from its sample count.
 """
 @inline function calc_num_code_blocks_for_bit_buffer(
     signal::AbstractGNSSSignal,
-    integrated_samples::Integer,
+    num_integrated_samples::Integer,
     sampling_frequency,
     secondary_code_or_bit_found::Bool,
 )
     secondary_code_or_bit_found || return 1
     round(
         Int,
-        integrated_samples * get_chip_rate(signal) /
+        num_integrated_samples * get_chip_rate(signal) /
         (get_code_length(signal) * sampling_frequency),
     )
 end

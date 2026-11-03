@@ -18,7 +18,7 @@ end
 # The generic `_packed_secondary_code` rebuilds the reference on every call
 # until lock; not cached, since the 1800-phase sweep dominates its cost.
 
-# `get_default_correlator(::GPSL1C_P)` is defined with GPS L1C-D in `l1c_d.jl`.
+# `get_default_correlator_bank(::GPSL1C_P)` is defined with GPS L1C-D in `l1c_d.jl`.
 
 # Exact-width container for the 1800-chip overlay search
 # (`BitIntegers.@define_integers 1800` in `src/TrackingLoops.jl`).

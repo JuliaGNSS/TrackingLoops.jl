@@ -23,9 +23,9 @@ period (1000 bit/s; BDS-SIS-ICD-B2b-1.0 §5), so it locks immediately — see
     num_code_blocks::Integer,
 ) = _detect_bit_is_code_period_sync(signal, prn, code_block_bits, num_code_blocks)
 
-# BPSK: EarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(::BeiDouB2bI, num_ants::NumAnts = NumAnts(1))
-    EarlyPromptLateCorrelator(; num_ants)
+# BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(::BeiDouB2bI, num_ants::NumAnts = NumAnts(1))
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
 # One bit per code period: nothing to search (see `get_code_block_buffer_type`).

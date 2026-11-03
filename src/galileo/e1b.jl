@@ -13,9 +13,9 @@ immediately — see `_detect_bit_is_code_period_sync`.
     num_code_blocks::Integer,
 ) = _detect_bit_is_code_period_sync(signal, prn, code_block_bits, num_code_blocks)
 
-# BOC(1,1)-class (CBOC): VeryEarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(::GalileoE1B, num_ants::NumAnts = NumAnts(1))
-    VeryEarlyPromptLateCorrelator(; num_ants)
+# BOC(1,1)-class (CBOC): VeryEarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(::GalileoE1B, num_ants::NumAnts = NumAnts(1))
+    VeryEarlyPromptLateCorrelatorBank(; num_ants)
 end
 
 # One bit per code period: nothing to search (see `get_code_block_buffer_type`).

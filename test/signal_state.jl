@@ -1,4 +1,4 @@
-epl(p) = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
+epl(p) = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
 
 # GPS L1 C/A at 4 MHz: one code block is 4000 samples, 20 blocks form a bit.
 function synced_l1ca_state(; kwargs...)

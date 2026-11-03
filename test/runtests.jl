@@ -1,9 +1,9 @@
 using Test
 using TrackingLoops
 using TrackingLoops:
-    NumAccumulators, AbstractCorrelator, AbstractEarlyPromptLateCorrelator,
-    get_very_early, get_very_late, get_num_accumulators, get_prompt_index,
-    get_early_late_sample_spacing, get_correlator_sample_shifts, update_accumulator,
+    NumCorrelators, AbstractCorrelatorBank, AbstractEarlyPromptLateCorrelatorBank,
+    get_very_early, get_very_late, get_num_correlators, get_prompt_index,
+    calc_early_late_sample_spacing, calc_correlator_sample_offsets, set_correlator_outputs,
     normalize, pll_disc, fll_disc, dll_disc, AbstractPostCorrFilter, get_weights,
     update, BitBuffer, PhaseAccumulators, SyncResult, get_code_block_buffer_type,
     detect_bit_or_secondary_code_sync, uses_soft_bit_edge_detection,

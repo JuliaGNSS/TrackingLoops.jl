@@ -1,33 +1,33 @@
 # Post-correlation filter. Ported from Tracking.jl's `test/post_corr_filter.jl`.
 
 using StaticArrays: SMatrix
-using TrackingLoops: _combine_antennas, _combine_correlator, _reduce_noise_density
+using TrackingLoops: _filter_correlator_output, _filter_correlator_bank, _reduce_noise_density
 
 @testset "Post correlation filter" begin
     default_post_corr_filter = DefaultPostCorrFilter()
 
     @test update(default_post_corr_filter, 1.0 + 2.0im) == default_post_corr_filter
 
-    # Single antenna: unity weight, and combining is the identity on the tap.
+    # Single antenna: unity weight, and combining is the identity on the correlator output.
     w1 = @inferred get_weights(default_post_corr_filter, NumAnts(1))
     @test w1 === 1.0 + 0.0im
-    @test @inferred(_combine_antennas(w1, complex(1.2, 1.3))) === complex(1.2, 1.3)
+    @test @inferred(_filter_correlator_output(complex(1.2, 1.3), w1)) === complex(1.2, 1.3)
 
     # Multi antenna: the last element is selected.
     w2 = @inferred get_weights(default_post_corr_filter, NumAnts(2))
     @test w2 === SVector{2,ComplexF64}(0.0 + 0.0im, 1.0 + 0.0im)
-    tap = SVector(complex(1.2, 1.3), complex(2.2, 4.3))
-    @test @inferred(_combine_antennas(w2, tap)) === complex(2.2, 4.3)
+    correlator_output = SVector(complex(1.2, 1.3), complex(2.2, 4.3))
+    @test @inferred(_filter_correlator_output(correlator_output, w2)) === complex(2.2, 4.3)
     w3 = get_weights(default_post_corr_filter, NumAnts(3))
     @test w3 == SVector{3,ComplexF64}(0, 0, 1)
 
     # The weights are conjugated: wᴴ·b.
-    @test _combine_antennas(1.0im, 1.0 + 0.0im) == -1.0im
-    @test _combine_antennas(SVector{2,ComplexF64}(1.0im, 0), SVector{2,ComplexF64}(1, 5)) ==
+    @test _filter_correlator_output(1.0 + 0.0im, 1.0im) == -1.0im
+    @test _filter_correlator_output(SVector{2,ComplexF64}(1, 5), SVector{2,ComplexF64}(1.0im, 0)) ==
           -1.0im
 
     # A whole multi-antenna correlator reduces to the single-channel one.
-    correlator = EarlyPromptLateCorrelator(
+    correlator_bank = EarlyPromptLateCorrelatorBank(
         SVector(
             SVector{2,ComplexF64}(1, 2),
             SVector{2,ComplexF64}(3, 4),
@@ -35,8 +35,8 @@ using TrackingLoops: _combine_antennas, _combine_correlator, _reduce_noise_densi
         ),
         0.5,
     )
-    combined = @inferred _combine_correlator(correlator, w2)
-    @test get_accumulators(combined) == SVector{3,ComplexF64}(2, 4, 6)
+    combined = @inferred _filter_correlator_bank(correlator_bank, w2)
+    @test get_correlator_outputs(combined) == SVector{3,ComplexF64}(2, 4, 6)
 end
 
 @testset "Noise density reduces through the same weights" begin

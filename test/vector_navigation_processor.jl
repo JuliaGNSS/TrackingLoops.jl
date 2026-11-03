@@ -39,17 +39,17 @@ end
     # A record of no satellite, or of a driver it was not built for.
     estimator = VectorPLLAndDLL(GPSL1CA())
     state = init_estimator_state(estimator, GPSL1CA(), 100.0Hz, 0.1Hz)
-    correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
-    output = CorrelatorOutput(correlator, 4000, 4000, 0.0)
+    correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
+    output = CorrelatorOutput(correlator_bank, 4000, 4000, 0.0)
     words = ConstantNCOCommand(100.0, 0.1)
     @test_throws ArgumentError step_loop(estimator, state,
-        LoopRecord(GPSL1CA(), correlator, complex(0.0), output, 1, 4e6Hz), words, NO_LANDING_SAMPLE)
+        LoopRecord(GPSL1CA(), correlator_bank, complex(0.0), output, 1, 4e6Hz), words, NO_LANDING_SAMPLE)
     galileo = init_estimator_state(estimator, GalileoE1B(), 100.0Hz, 0.1Hz)
     @test_throws ArgumentError step_loop(estimator, galileo,
-        LoopRecord(GalileoE1B(), correlator, complex(0.0), output, 1, 4e6Hz; prn = 3), words, NO_LANDING_SAMPLE)
+        LoopRecord(GalileoE1B(), correlator_bank, complex(0.0), output, 1, 4e6Hz; prn = 3), words, NO_LANDING_SAMPLE)
     # A passenger it does not decode is the host's business: it is ignored.
     @test step_loop(estimator, state,
-        LoopRecord(GalileoE1B(), correlator, complex(0.0), output, 1, 4e6Hz; prn = 3), words,
+        LoopRecord(GalileoE1B(), correlator_bank, complex(0.0), output, 1, 4e6Hz; prn = 3), words,
         NO_LANDING_SAMPLE) == (state, 100.0Hz, 0.1Hz)
 end
 

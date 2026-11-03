@@ -26,9 +26,9 @@ sync (see [BeiDou GEO satellites](@ref)). The default detector is the soft one
     _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
 end
 
-# BPSK: EarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(::BeiDouB1I, num_ants::NumAnts = NumAnts(1))
-    EarlyPromptLateCorrelator(; num_ants)
+# BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(::BeiDouB1I, num_ants::NumAnts = NumAnts(1))
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
 # Holds one NH20 period (see `get_code_block_buffer_type`).

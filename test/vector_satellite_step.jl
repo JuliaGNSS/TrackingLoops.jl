@@ -2,7 +2,7 @@
 # snapshot of a satellite at an epoch, registration and the slots, staleness.
 using GNSSDecoder: GNSSDecoder, GNSSDecoderState, decode!
 
-engine_correlator(p = 1.0 + 0.0im) = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
+engine_correlator(p = 1.0 + 0.0im) = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
 
 # A record of `n` samples ending at `sample_index` on the 4 MHz grid.
 engine_record(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0 + 0.0im, signal = GPSL1CA()) =

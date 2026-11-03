@@ -76,7 +76,7 @@ the bit clock unsynchronised, add no soft bits, carry a [`NoCN0Estimator`](@ref)
 and take `carrier_phase_polarity` as a keyword (`0` by default): a host with its
 own per-signal state passes the one `fold_record` returned for the record.
 """
-struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelator,F,CN0<:AbstractCN0Estimator}
+struct LoopRecord{S<:AbstractGNSSSignal,C<:AbstractCorrelatorBank,F,CN0<:AbstractCN0Estimator}
     signal::S
     filtered_correlator::C
     previous_prompt::ComplexF64
@@ -98,7 +98,7 @@ end
 
 LoopRecord(
     signal::AbstractGNSSSignal,
-    filtered_correlator::AbstractCorrelator,
+    filtered_correlator::AbstractCorrelatorBank,
     previous_prompt,
     integrated_samples::Integer,
     sample_index::Integer,
@@ -143,7 +143,7 @@ LoopRecord(
     signal,
     filtered_correlator,
     ComplexF64(previous_prompt),
-    output.integrated_samples,
+    output.num_integrated_samples,
     output.sample_index + Int(sample_offset),
     Int(fold_end) + Int(sample_offset),
     Int(integrated_code_blocks),
@@ -188,7 +188,7 @@ function LoopRecord(
         signal,
         filtered_correlator,
         state.last_previous_prompt,
-        output.integrated_samples,
+        output.num_integrated_samples,
         output.sample_index + Int(sample_offset),
         Int(fold_end) + Int(sample_offset),
         state.last_num_code_blocks,
@@ -468,23 +468,23 @@ end
     integration_time = record.integrated_samples / record.sampling_frequency
     record_start = record.sample_index - record.integrated_samples
     applied_code = calc_mean_nco_command(words, record_start, record.sample_index).code_doppler
-    filtered_correlator = record.filtered_correlator
+    filtered_correlator_bank = record.filtered_correlator
     frequency_error =
         form_fll ?
         fll_disc(
             signal,
-            filtered_correlator,
+            filtered_correlator_bank,
             record.previous_prompt,
             integration_time;
             polarity = record.carrier_phase_polarity,
         ) : 0.0Hz
     (;
         integration_time,
-        phase_error = pll_disc(signal, filtered_correlator; polarity = record.carrier_phase_polarity),
+        phase_error = pll_disc(signal, filtered_correlator_bank; polarity = record.carrier_phase_polarity),
         frequency_error,
         code_error = dll_disc(
             signal,
-            filtered_correlator,
+            filtered_correlator_bank,
             applied_code * Hz,
             record.sampling_frequency,
         ),
@@ -792,17 +792,17 @@ Passenger records are handled as by the conventional loop.
     record_start = record_end - record_samples
     center = record_end - record_samples / 2
     integration_time = record_samples / sampling_frequency
-    filtered_correlator = record.filtered_correlator
+    filtered_correlator_bank = record.filtered_correlator
 
     nco_command = calc_mean_nco_command(words, record_start, record_end)
     applied_carrier, applied_code = nco_command.carrier_doppler, nco_command.code_doppler
     # Discriminators against the applied replica; the FLL's only if `form_fll`.
-    phase_error = pll_disc(signal, filtered_correlator; polarity = record.carrier_phase_polarity)
+    phase_error = pll_disc(signal, filtered_correlator_bank; polarity = record.carrier_phase_polarity)
     frequency_error =
         form_fll ?
         fll_disc(
             signal,
-            filtered_correlator,
+            filtered_correlator_bank,
             record.previous_prompt,
             integration_time;
             polarity = record.carrier_phase_polarity,
@@ -833,7 +833,7 @@ Passenger records are handled as by the conventional loop.
         integration_time,
         phase_error,
         frequency_error,
-        code_error = dll_disc(signal, filtered_correlator, applied_code * Hz, sampling_frequency),
+        code_error = dll_disc(signal, filtered_correlator_bank, applied_code * Hz, sampling_frequency),
         center,
     )
 end

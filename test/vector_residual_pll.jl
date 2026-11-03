@@ -335,8 +335,8 @@ end
 # host's bit clock having appended `host_bits`, signed by `bit_polarity`.
 function decoding_record(signal, prompt, sample_index; host_bits = Float32[], bit_polarity = 1,
         sync_change = TL.SYNC_UNCHANGED, fold_end = sample_index)
-    correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5prompt, prompt, 0.5prompt), 0.5)
-    LoopRecord(signal, correlator, complex(0.0), 4000, sample_index, fold_end, 1, 4e6Hz, 5, NaN,
+    correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5prompt, prompt, 0.5prompt), 0.5)
+    LoopRecord(signal, correlator_bank, complex(0.0), 4000, sample_index, fold_end, 1, 4e6Hz, 5, NaN,
         true, sync_change, 0, view(host_bits, 1:length(host_bits)), NoCN0Estimator(), Int8(0),
         Int8(bit_polarity))
 end

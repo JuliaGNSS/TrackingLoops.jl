@@ -36,7 +36,7 @@ has_bit_or_secondary_code_been_found(::BitBuffer)
 TrackingLoops.reset(::BitBuffer{B}) where {B<:Unsigned}
 TrackingLoops.uses_soft_bit_edge_detection(::AbstractGNSSSignal)
 TrackingLoops.uses_soft_secondary_code_detection(::AbstractGNSSSignal)
-get_default_correlator(::GPSL1CA, ::NumAnts = NumAnts(1))
+get_default_correlator_bank(::GPSL1CA, ::NumAnts = NumAnts(1))
 TrackingLoops.detect_bit_or_secondary_code_sync(::GPSL1C_D, ::Integer, ::Unsigned, ::Integer)
 TrackingLoops.detect_bit_or_secondary_code_sync(::GPSL1C_P, ::Integer, ::UInt1800, ::Integer)
 TrackingLoops.detect_bit_or_secondary_code_sync(::GPSL2CL, ::Integer, ::Unsigned, ::Integer)

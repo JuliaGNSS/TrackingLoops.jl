@@ -39,11 +39,11 @@ cycle) — see `_detect_secondary_code_sync`. The default detector is the soft o
 end
 
 # Each sideband is modelled as BPSK(10), not AltBOC(15,10): EarlyPromptLate, as E5a.
-function get_default_correlator(
+function get_default_correlator_bank(
     ::Union{GalileoE5bI,GalileoE5bQ},
     num_ants::NumAnts = NumAnts(1),
 )
-    EarlyPromptLateCorrelator(; num_ants)
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
 # Hold one CS4 / CS100 period (see `get_code_block_buffer_type`).

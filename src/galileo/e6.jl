@@ -40,12 +40,12 @@ same half of the table as `GalileoE5aQ`; 100 ms cycle) — see
     _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
 end
 
-# BPSK: EarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(
+# BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(
     ::Union{GalileoE6B,GalileoE6C},
     num_ants::NumAnts = NumAnts(1),
 )
-    EarlyPromptLateCorrelator(; num_ants)
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
 # One bit per code period: nothing to search (see `get_code_block_buffer_type`).

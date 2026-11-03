@@ -17,18 +17,18 @@ with_cn0(record::LoopRecord, cn0_dbhz) = LoopRecord(
     (f === :cn0_estimator ? ReportedCN0(cn0_dbhz) : getfield(record, f) for f in fieldnames(LoopRecord))...,
 )
 
-# One record at `sample_index` with the given raw accumulators, normalised the
+# One record at `sample_index` with the given raw correlator outputs, normalised the
 # way `apply_record` does before the loop filters see it (the post-correlation
 # filter is the identity for the first prompt), its host reading `cn0_dbhz`.
-function vector_record(signal, accumulators, num_samples, fs; previous_prompt = complex(0.0, 0.0),
+function vector_record(signal, correlator_outputs, num_samples, fs; previous_prompt = complex(0.0, 0.0),
         sample_index = num_samples, cn0_dbhz = 45.0)
-    correlator = update_accumulator(get_default_correlator(signal), SVector(accumulators...))
-    output = CorrelatorOutput(correlator, num_samples, sample_index)
-    normalized = normalize(correlator, num_samples, get_code_amplitude(signal))
+    correlator_bank = set_correlator_outputs(get_default_correlator_bank(signal), SVector(correlator_outputs...))
+    output = CorrelatorOutput(correlator_bank, num_samples, sample_index)
+    normalized = normalize(correlator_bank, num_samples, get_code_amplitude(signal))
     with_cn0(LoopRecord(signal, normalized, previous_prompt, output, 1, fs), cn0_dbhz)
 end
 
-# A record whose prompt is `prompt`, its early and late taps half of it.
+# A record whose prompt is `prompt`, its early and late correlators half of it.
 prompt_record(signal, prompt, num_samples, fs; sample_index = num_samples, previous_prompt = complex(0.0),
         cn0_dbhz = 45.0) =
     vector_record(signal, (500.0prompt, 1000.0prompt, 500.0prompt), num_samples, fs; previous_prompt,
@@ -178,18 +178,18 @@ end
     carrier_doppler = 100.0Hz
     init_code_doppler = carrier_doppler * get_chip_rate_to_center_frequency_ratio(gpsl1)
     num_samples = 5000
-    accumulators = (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im)
+    correlator_outputs = (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im)
     estimator = VectorPLLAndDLL(GPSL1CA(); inner)
     state = init_estimator_state(estimator, gpsl1, carrier_doppler, init_code_doppler)
     state = commanded(state, TL.CarrierRamp(100.0, 0.0, 0.0); code_update = -0.25Hz)
-    record = vector_record(gpsl1, accumulators, num_samples, sampling_frequency)
+    record = vector_record(gpsl1, correlator_outputs, num_samples, sampling_frequency)
     words = ConstantNCOCommand(ustrip(Hz, carrier_doppler), ustrip(Hz, init_code_doppler))
     state, = step_satellite(estimator, state, record, words, NO_LANDING_SAMPLE)
-    normalized_correlator = update_accumulator(
-        get_default_correlator(gpsl1),
-        SVector(accumulators...) ./ num_samples,
+    normalized_correlator_bank = set_correlator_outputs(
+        get_default_correlator_bank(gpsl1),
+        SVector(correlator_outputs...) ./ num_samples,
     )
-    dll_discriminator = dll_disc(gpsl1, normalized_correlator, init_code_doppler, sampling_frequency)
+    dll_discriminator = dll_disc(gpsl1, normalized_correlator_bank, init_code_doppler, sampling_frequency)
     @test state.inner.code_loop_filter == SecondOrderBilinearLF()
     # The DLL discriminator is accumulated. Without a previous prompt there is no
     # frequency measurement, so no carrier span opens: not a span of zero rotation.
@@ -224,8 +224,8 @@ end
     estimator = VectorPLLAndDLL(GPSL1CA())
     state = commanded(init_estimator_state(estimator, signal, 100.0Hz, 0.1Hz), TL.CarrierRamp(100.0, 0.0, 0.0))
     previous = cis(0.2)
-    accumulators = (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im)
-    records = [vector_record(signal, accumulators, 5000, fs; previous_prompt = previous, sample_index = 5000k)
+    correlator_outputs = (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im)
+    records = [vector_record(signal, correlator_outputs, 5000, fs; previous_prompt = previous, sample_index = 5000k)
                for k = 1:2]
     fll = fll_disc(signal, records[1].filtered_correlator, previous, 5000 / fs)
     @test fll != 0.0Hz
@@ -237,7 +237,7 @@ end
     @test state.previous_replica_half == (120.0 * 0.0005, 0.0005s)
     # A record without a previous prompt (a changed carrier phase polarity) has no
     # frequency measurement, so it is left out rather than taken as 0 Hz.
-    no_prompt = vector_record(signal, accumulators, 5000, fs; sample_index = 15000)
+    no_prompt = vector_record(signal, correlator_outputs, 5000, fs; sample_index = 15000)
     skipped, = step_satellite(estimator, state, no_prompt, ConstantNCOCommand(160.0, 0.1), NO_LANDING_SAMPLE)
     @test skipped.fll_disc_sum == state.fll_disc_sum
     @test skipped.previous_replica_half == (160.0 * 0.0005, 0.0005s)
@@ -277,7 +277,7 @@ end
         for k = 1:50
             p = cis(0.3 + 0.01k)
             output = CorrelatorOutput(loop_epl(0.5p, p, 0.5p), 4000, 4000k)
-            record = LoopRecord(signal, output.correlator, previous, output, 1, fs)
+            record = LoopRecord(signal, output.correlator_bank, previous, output, 1, fs)
             landing = landing_offset == 0 ? NO_LANDING_SAMPLE : Int64(4000k + landing_offset)
             state, carrier, code = step_satellite(estimator, state, record, timeline, landing)
             schedule_command!(timeline, 4000k + landing_offset, ustrip(Hz, carrier), ustrip(Hz, code))
@@ -492,7 +492,7 @@ function track_carrier(phase, doppler0, rate; offset = 0.5, record_samples = 160
                                 replica_phase - carrier * (i - 0.5) / n * (t1 - t0))) for i = 1:n) / n
         prompt += noise_std * complex(randn(rng), randn(rng))
         output = CorrelatorOutput(loop_epl(0.5prompt, prompt, 0.5prompt), record_end - record_start, record_end)
-        record = LoopRecord(RATE_SIGNAL, output.correlator, previous_prompt, output, 1, RATE_FS * Hz)
+        record = LoopRecord(RATE_SIGNAL, output.correlator_bank, previous_prompt, output, 1, RATE_FS * Hz)
         state, new_carrier, = TL._step_satellite(estimator, state, record,
             ConstantNCOCommand(carrier, 0.0), NO_LANDING_SAMPLE)
         replica_phase += carrier * (t1 - t0)

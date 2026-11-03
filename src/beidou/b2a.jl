@@ -41,12 +41,12 @@ see `_detect_secondary_code_sync`. The default detector is the soft one
     _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
 end
 
-# BPSK: EarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(
+# BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(
     ::Union{BeiDouB2aI,BeiDouB2aQ},
     num_ants::NumAnts = NumAnts(1),
 )
-    EarlyPromptLateCorrelator(; num_ants)
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
 # Hold one 5-chip / 100-chip period (see `get_code_block_buffer_type`).

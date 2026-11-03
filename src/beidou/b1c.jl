@@ -41,12 +41,12 @@ function detect_bit_or_secondary_code_sync(
     _detect_secondary_code_sync(signal, prn, code_block_bits, num_code_blocks)
 end
 
-# BOC(1,1)-class (see header): VeryEarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(
+# BOC(1,1)-class (see header): VeryEarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(
     ::Union{BeiDouB1C_D,BeiDouB1C_P},
     num_ants::NumAnts = NumAnts(1),
 )
-    VeryEarlyPromptLateCorrelator(; num_ants)
+    VeryEarlyPromptLateCorrelatorBank(; num_ants)
 end
 
 # One bit per code period: nothing to search (see `get_code_block_buffer_type`).

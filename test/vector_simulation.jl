@@ -282,8 +282,8 @@ function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_inde
     u_replica = sat.replica_time + dt / 2 * (1 + code / sat.code_frequency)
     code_error = (u_true - u_replica) * sat.code_frequency
     mean_phase = sat.phase_error + (f_true - carrier) * dt / 2
-    correlator_template = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0, 0, 0), 0.5)
-    d = TrackingLoops.get_early_late_sample_spacing(correlator_template, SIM_FS, get_chip_rate(sat.signal)) *
+    correlator_template = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0, 0, 0), 0.5)
+    d = TrackingLoops.calc_early_late_sample_spacing(correlator_template, SIM_FS, get_chip_rate(sat.signal)) *
         sat.code_frequency / fs
     bit = isnothing(sat.stream) || iszero(get_bit_rate(sat.signal)) ? true :
         lnav_bit(sat.stream, floor(Int, u_true * 50))
@@ -297,8 +297,8 @@ function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_inde
     prompt = amplitude * triangle(code_error) * rotation + floor_ * cis(1e3 * t_end) + noise()
     early = amplitude * triangle(code_error - d / 2) * rotation + floor_ * cis(2e3 * t_end) + noise()
     late = amplitude * triangle(code_error + d / 2) * rotation + floor_ * cis(3e3 * t_end) + noise()
-    correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(late, prompt, early), 0.5)
-    correlator, prompt, code_error, f_true, carrier, code
+    correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(late, prompt, early), 0.5)
+    correlator_bank, prompt, code_error, f_true, carrier, code
 end
 
 # The replica moved on by a record, and the new commands commanded.
@@ -327,10 +327,10 @@ sim_nco_history(sat::SimSat, landing_sample) =
 function simulate_record!(sat::SimSat, estimator, truth, t_end, num_samples, sample_index, landing_sample;
         polarity = 0)
     words = sim_nco_history(sat, landing_sample)
-    correlator, prompt, code_error, f_true, carrier, code =
+    correlator_bank, prompt, code_error, f_true, carrier, code =
         simulate_correlator(sat, truth, t_end, num_samples, sample_index, words)
     # The host reads the C/N₀ `fill_slot!` reports, and no signal during an outage.
-    record = with_cn0(LoopRecord(sat.signal, correlator, sat.previous_prompt, num_samples,
+    record = with_cn0(LoopRecord(sat.signal, correlator_bank, sat.previous_prompt, num_samples,
         sample_index, sample_index, 1, SIM_FS; carrier_phase_polarity = polarity), sat.in_view ? 45.0 : -Inf)
     sat.state, new_carrier, new_code =
         TrackingLoops._step_satellite(estimator, sat.state, record, words, landing_sample)
@@ -363,8 +363,8 @@ function fill_slot!(slot, sat::SimSat, epoch_sample, landing_sample, nav; in_loc
     slot.cn0_dbhz = 45.0
     slot.coherent_integration_time = record_ms(sat.signal) * 1.0ms
     slot.early_late_spacing =
-        TrackingLoops.get_early_late_sample_spacing(
-            EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0, 0, 0), 0.5),
+        TrackingLoops.calc_early_late_sample_spacing(
+            EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0, 0, 0), 0.5),
             SIM_FS,
             get_chip_rate(sat.signal),
         ) * sat.code_frequency / fs
@@ -466,7 +466,7 @@ sim_time(receiver, sample) = receiver.truth.t0 + sample / ustrip(Hz, SIM_FS)
 # A record standing in for the one a satellite takes a cycle up on: only its sampling
 # frequency is read.
 take_up_record(sat::SimSat, sample) =
-    LoopRecord(sat.signal, EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0, 1, 0), 0.5),
+    LoopRecord(sat.signal, EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0, 1, 0), 0.5),
         complex(0.0), SAMPLES_PER_MS, sample, sample, 1, SIM_FS)
 
 # The cycle at device sample `sample` (an epoch), and every satellite taking it up, the
@@ -667,7 +667,7 @@ function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample,
     landing = receiver.delay_ms == 0 ? NO_LANDING_SAMPLE :
         Int64(sample_index + receiver.delay_ms * SAMPLES_PER_MS)
     words = sim_nco_history(sat, landing)
-    correlator, _, code_error, f_true, carrier, code =
+    correlator_bank, _, code_error, f_true, carrier, code =
         simulate_correlator(sat, receiver.truth, sim_time(receiver, sample_index), num_samples, sample_index, words)
     dt = num_samples / ustrip(Hz, SIM_FS)
     code_phase = mod((sat.replica_time + dt * (1 + code / sat.code_frequency)) * sat.code_frequency,
@@ -677,8 +677,8 @@ function pipeline_record!(receiver::PipelineReceiver, sat::SimSat, start_sample,
     # back onto the driver's.
     driver_phase_offset = get_carrier_phase_offset(owner.signal)
     rotation = cispi(2 * (get_carrier_phase_offset(sat.signal) - driver_phase_offset))
-    raw = EarlyPromptLateCorrelator(
-        get_accumulators(correlator) .* (rotation * num_samples * get_code_amplitude(sat.signal)), 0.5)
+    raw = EarlyPromptLateCorrelatorBank(
+        get_correlator_outputs(correlator_bank) .* (rotation * num_samples * get_code_amplitude(sat.signal)), 0.5)
     output = CorrelatorOutput(raw, num_samples, sample_index, code_phase)
     noise_ready = sim_time(receiver, sample_index) - receiver.truth.t0 >= receiver.noise_ready_after
     sat.loop, _, filtered, _, _ = apply_record(sat.loop, sat.signal, sat.decoder.prn, output, SIM_FS,

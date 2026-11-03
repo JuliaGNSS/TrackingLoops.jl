@@ -10,7 +10,7 @@ using Random: MersenneTwister
     for k = 1:200
         sgn = isodd(div(k - 1, 20)) ? -1.0 : 1.0
         p = 2000.0 * sgn
-        output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
+        output = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
         state, prompt, filtered, blocks = apply_record(state, signal, 7, output, fs, density, true)
         @test prompt == p / 4000
         @test get_prompt(filtered) == prompt
@@ -52,7 +52,7 @@ end
     fs = 25e6Hz
     state = SignalLoopState(data)
     p = 2000.0im   # the data component sits on the imaginary axis of the driver's frame
-    output = CorrelatorOutput(EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 25_000, 25_000)
+    output = CorrelatorOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 25_000, 25_000)
     state, prompt, _, _ = apply_record(state, data, 3, output, fs, 1e-6 / Hz, true, get_carrier_phase_offset(driver))
     @test prompt == p / 25_000
     # The recorded prompt is the un-rotated one; the rotation only reaches the bit buffer.
@@ -60,24 +60,24 @@ end
 end
 
 @testset "A loop record identifies its satellite and replica phase" begin
-    correlator = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
-    output = CorrelatorOutput(correlator, 4000, 8000, 3.25)
-    record = LoopRecord(GPSL1CA(), correlator, cis(0.1), output, 1, 4e6Hz)
+    correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
+    output = CorrelatorOutput(correlator_bank, 4000, 8000, 3.25)
+    record = LoopRecord(GPSL1CA(), correlator_bank, cis(0.1), output, 1, 4e6Hz)
     @test record.prn == 0
     @test record.code_phase == 3.25
     @test record.sample_index == 8000
     @test record.fold_end == 8000
     # The host's per-measurement origin moves onto the band's common one.
-    shifted = LoopRecord(GPSL1CA(), correlator, cis(0.1), output, 1, 4e6Hz;
+    shifted = LoopRecord(GPSL1CA(), correlator_bank, cis(0.1), output, 1, 4e6Hz;
         fold_end = 12_000, prn = 7, sample_offset = 40_000)
     @test shifted.prn == 7
     @test shifted.sample_index == 48_000
     @test shifted.fold_end == 52_000
     @test shifted.integrated_samples == 4000
     # The positional form keeps its eight arguments.
-    plain = LoopRecord(GPSL1CA(), correlator, cis(0.1), 4000, 8000, 8000, 1, 4e6Hz)
+    plain = LoopRecord(GPSL1CA(), correlator_bank, cis(0.1), 4000, 8000, 8000, 1, 4e6Hz)
     @test plain.prn == 0 && isnan(plain.code_phase)
-    @test LoopRecord(GPSL1CA(), correlator, cis(0.1), 4000, 8000, 8000, 1, 4e6Hz;
+    @test LoopRecord(GPSL1CA(), correlator_bank, cis(0.1), 4000, 8000, 8000, 1, 4e6Hz;
         prn = 3, code_phase = 0.5).prn == 3
 end
 
@@ -85,7 +85,7 @@ end
     signal = GPSL1CA()
     fs = 4e6Hz
     state = SignalLoopState(signal)
-    epl(p) = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
+    epl(p) = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
     records = LoopRecord[]
     changes = SyncChange[]
     for k = 1:200
@@ -126,7 +126,7 @@ end
 @testset "A lost sync is reported on the record" begin
     signal = GPSL1CA()
     state = SignalLoopState(signal)
-    epl(p) = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
+    epl(p) = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
     for k = 1:200
         p = 2000.0 * (isodd(div(k - 1, 20)) ? -1.0 : 1.0)
         state, = apply_record(state, signal, 7, CorrelatorOutput(epl(p), 4000, 4000k), 4e6Hz, 1e-6 / Hz, true)
@@ -152,7 +152,7 @@ end
     signal = GalileoE1C()
     fs = 4e6Hz
     code = get_secondary_code(signal)
-    epl(p) = EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
+    epl(p) = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5)
     rng = MersenneTwister(2)
     for prn in (1, 3), sign in (1.0, -1.0)
         chip(k) = GNSSSignals.secondary_value(code, prn, mod(k, 25))
@@ -235,7 +235,7 @@ end
         TrackingLoops.PhaseAccumulators(),
     )
     output = CorrelatorOutput(
-        EarlyPromptLateCorrelator(SVector{3,ComplexF64}(0.5, 1.0, 0.5) .* 10230, 0.5),
+        EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5) .* 10230, 0.5),
         10230,
         10230,
     )

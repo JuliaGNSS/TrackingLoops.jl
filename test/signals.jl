@@ -88,9 +88,9 @@ function _sig_test_overlay_search(signal, prn)
 end
 
 function _sig_test_correlator(signal, C)
-    @test @inferred(get_default_correlator(signal, NumAnts(1))) == C(; num_ants = NumAnts(1))
-    @test @inferred(get_default_correlator(signal, NumAnts(3))) == C(; num_ants = NumAnts(3))
-    @test get_default_correlator(signal) == C(; num_ants = NumAnts(1))
+    @test @inferred(get_default_correlator_bank(signal, NumAnts(1))) == C(; num_ants = NumAnts(1))
+    @test @inferred(get_default_correlator_bank(signal, NumAnts(3))) == C(; num_ants = NumAnts(3))
+    @test get_default_correlator_bank(signal) == C(; num_ants = NumAnts(1))
 end
 
 # `carrier` is the default narrow carrier bandwidth as capped for one primary code
@@ -111,7 +111,7 @@ end
 
 @testset "GPS L1 C/A uses the soft bit-edge detector" begin
     signal = GPSL1CA()
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt64
     @test @inferred(uses_soft_bit_edge_detection(signal)) == true
@@ -122,7 +122,7 @@ end
 @testset "GPS L1C-D reports one bit per code block" begin
     signal = GPSL1C_D()
     _sig_test_bit_is_code_period(signal, 1, UInt8)
-    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 9.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
 end
@@ -130,7 +130,7 @@ end
 @testset "GPS L1C-P locks its 1800-chip overlay with the hard rotation sweep" begin
     signal = GPSL1C_P()
     _sig_test_overlay_search(signal, 1)
-    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 9.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt1800
 end
@@ -138,7 +138,7 @@ end
 @testset "GPS L2CM reports one bit per code block" begin
     signal = GPSL2CM()
     _sig_test_bit_is_code_period(signal, 1, UInt8)
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 4.5Hz)
     # The 1 Hz DLL default is capped to 0.9 Hz at a 20 ms integration.
     @test @inferred(effective_code_loop_filter_bandwidth(default_code_loop_filter_bandwidth(signal), 20ms)) ≈
@@ -152,7 +152,7 @@ end
     for (bits, n) in ((UInt8(0x0), 0), (UInt8(0x1), 10), (UInt8(0xff), 1000))
         @test @inferred(detect_bit_or_secondary_code_sync(signal, 1, bits, n)).found == false
     end
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 0.06Hz)
     @test @inferred(effective_code_loop_filter_bandwidth(default_code_loop_filter_bandwidth(signal), 1.5s)) ≈
           0.012Hz
@@ -175,7 +175,7 @@ end
     _sig_test_secondary_search(signal, prn, UInt32, 0:9)
     # 2.5 % of a 10-block window floors to an exact match.
     @test detect_bit_or_secondary_code_sync(signal, prn, UInt32(0x3ca) ⊻ UInt32(0x1), 10).found == false
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt32
     @test uses_soft_secondary_code_detection(signal) == true
@@ -188,7 +188,7 @@ end
     _sig_test_secondary_search(signal, prn, UInt32, (0, 7, 19))
     reference = _packed_secondary_code(UInt32, signal, prn)
     @test detect_bit_or_secondary_code_sync(signal, prn, reference ⊻ UInt32(0x1), 20).found == false
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt32
     @test uses_soft_secondary_code_detection(signal) == true
@@ -197,7 +197,7 @@ end
 @testset "Galileo E1B reports one bit per code block ($(nameof(typeof(signal))))" for signal in
                                                                                          (GalileoE1B(CBOC), GalileoE1B())
     _sig_test_bit_is_code_period(signal, 1, UInt8)
-    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
 end
@@ -206,7 +206,7 @@ end
                                                                                        (GalileoE1C(CBOC), GalileoE1C())
     @test get_secondary_code_length(signal) == 25
     _sig_test_secondary_search(signal, 1, UInt32, (0, 11, 24))
-    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt32
     @test uses_soft_secondary_code_detection(signal) == true
@@ -216,7 +216,7 @@ end
     signal = GalileoE5aI()
     @test get_secondary_code_length(signal) == 20
     _sig_test_secondary_search(signal, 1, UInt32, (0, 9, 19))
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt32
     @test uses_soft_secondary_code_detection(signal) == true
@@ -227,7 +227,7 @@ end
     @test get_secondary_code_length(signal) == 100
     _sig_test_secondary_search(signal, 1, UInt128, (0, 37, 99))
     @test _packed_secondary_code(UInt128, signal, 1) != _packed_secondary_code(UInt128, signal, 2)
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt128
     @test uses_soft_secondary_code_detection(signal) == true
@@ -239,7 +239,7 @@ end
     @test get_secondary_code_length(signal) == 1
     @test uses_soft_secondary_code_detection(signal) == false
     @test uses_soft_bit_edge_detection(signal) == false
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
     @test max_num_code_blocks_to_integrate(signal) == 31
     @test default_num_code_blocks_to_integrate(signal) == 31
@@ -258,7 +258,7 @@ end
     for bit = 0:(N-1)
         @test detect_bit_or_secondary_code_sync(signal, prn, reference ⊻ (UInt32(1) << bit), N).found == false
     end
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt32
     @test uses_soft_secondary_code_detection(signal) == true
@@ -270,7 +270,7 @@ end
     _sig_test_secondary_search(signal, 1, UInt128, (0, 37, 99))
     # E5b-Q draws the upper half of the CS100 table, E5a-Q the lower.
     @test _packed_secondary_code(UInt128, signal, 1) != _packed_secondary_code(UInt128, GalileoE5aQ(), 1)
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt128
     @test uses_soft_secondary_code_detection(signal) == true
@@ -280,7 +280,7 @@ end
     signal = GalileoE6B()
     @test get_secondary_code_length(signal) == 1
     _sig_test_bit_is_code_period(signal, 1, UInt8)
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
     @test uses_soft_secondary_code_detection(signal) == false
@@ -294,7 +294,7 @@ end
     _sig_test_secondary_search(signal, 1, UInt128, (0, 61, 99))
     # E6-C draws the same CS100 half as E5a-Q.
     @test _packed_secondary_code(UInt128, signal, 1) == _packed_secondary_code(UInt128, GalileoE5aQ(), 1)
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt128
     @test uses_soft_secondary_code_detection(signal) == true
@@ -306,7 +306,7 @@ end
     @test get_secondary_code_length(signal) == 1
     _sig_test_bit_is_code_period(signal, 1, UInt8)
     @test get_band_id(signal) === :L1
-    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 9.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
     @test uses_soft_secondary_code_detection(signal) == false
@@ -318,7 +318,7 @@ end
     @test get_secondary_code_length(signal) == 1800
     _sig_test_overlay_search(signal, 1)
     @test get_band_id(signal) === :L1
-    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, VeryEarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 9.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt1800
 end
@@ -380,7 +380,7 @@ end
 
     @test uses_soft_secondary_code_detection(signal) == true
     @test uses_soft_bit_edge_detection(signal) == false
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt32
 end
@@ -392,7 +392,7 @@ end
     @test _packed_secondary_code(UInt32, signal, 1) == UInt32(0b00010)
     _sig_test_secondary_search(signal, 1, UInt32, 0:(N-1))
     @test get_band_id(signal) === :L5
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt32
     @test uses_soft_secondary_code_detection(signal) == true
@@ -403,7 +403,7 @@ end
     @test get_secondary_code_length(signal) == 100
     _sig_test_secondary_search(signal, 1, UInt128, (0, 44, 99))
     @test get_band_id(signal) === :L5
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt128
     @test uses_soft_secondary_code_detection(signal) == true
@@ -415,7 +415,7 @@ end
     @test get_secondary_code_length(signal) == 1
     _sig_test_bit_is_code_period(signal, prn, UInt8)
     @test get_band_id(signal) === :E5b
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt8
     @test uses_soft_secondary_code_detection(signal) == false
@@ -432,7 +432,7 @@ end
     @test _packed_secondary_code(UInt32, signal, SIG_BEIDOU_GEO_PRN) == (one(UInt32) << N) - one(UInt32)
     @test uses_soft_secondary_code_detection(signal) == true
     @test uses_soft_bit_edge_detection(signal) == false
-    _sig_test_correlator(signal, EarlyPromptLateCorrelator)
+    _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
     @test @inferred(get_code_block_buffer_type(signal)) === UInt32
 end
@@ -450,15 +450,15 @@ const SIG_SUPPORTED = [Base.typename(T).wrapper() for T in _sig_signal_types()]
 @testset "Every GNSSSignals signal type has a sync API" begin
     @test !isempty(SIG_SUPPORTED)
     for T in _sig_signal_types()
-        @test hasmethod(get_default_correlator, Tuple{Base.typename(T).wrapper,NumAnts})
+        @test hasmethod(get_default_correlator_bank, Tuple{Base.typename(T).wrapper,NumAnts})
     end
 end
 
 @testset "The per-signal sync API is complete for $(get_signal_name(signal))" for signal in SIG_SUPPORTED
     for num_ants in (1, 3)
-        correlator = @inferred get_default_correlator(signal, NumAnts(num_ants))
-        @test correlator isa AbstractCorrelator
-        @test get_num_ants(correlator) == num_ants
+        correlator_bank = @inferred get_default_correlator_bank(signal, NumAnts(num_ants))
+        @test correlator_bank isa AbstractCorrelatorBank
+        @test get_num_ants(correlator_bank) == num_ants
     end
 
     # The sync-search buffer must hold one whole secondary-code period.

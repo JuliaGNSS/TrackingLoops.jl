@@ -477,7 +477,7 @@ end
     @test weak_loss > 10
     @test TL.pseudorange_noise_variance(weak, 0.1) ≈ range_var(weak, 0.1)
 
-    # Narrowing the correlator at equal C/N0 lowers the thermal term proportionally, which
+    # Narrowing the early-late spacing at equal C/N0 lowers the thermal term proportionally, which
     # is the whole point of a narrow spacing.
     narrow = _test_member(; early_late_spacing = 0.5)
     @test TL.pseudorange_noise_variance(narrow, 0.1) ≈ range_var(narrow, 0.1)
