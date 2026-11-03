@@ -11,12 +11,12 @@ Bit-sync detector for GPS L2CM: one CNAV bit per 20 ms code period
 (50 bit/s; IS-GPS-200N §3.2.2), so it locks immediately — see
 `_detect_bit_is_code_period_sync`.
 """
-@inline detect_bit_or_secondary_code_sync(
+@inline detect_sync(
     signal::GPSL2CM,
     prn::Integer,
-    code_block_bits::Unsigned,
-    num_code_blocks::Integer,
-) = _detect_bit_is_code_period_sync(signal, prn, code_block_bits, num_code_blocks)
+    code_period_bits::Unsigned,
+    num_code_periods::Integer,
+) = _detect_bit_is_code_period_sync(signal, prn, code_period_bits, num_code_periods)
 
 """
 $(SIGNATURES)
@@ -25,15 +25,15 @@ $(SIGNATURES)
 dataless pilot without overlay whose 767250-chip (1.5 s) code period already is
 the coherent integration, so there is nothing to lock.
 """
-@inline detect_bit_or_secondary_code_sync(::GPSL2CL, ::Integer, ::Unsigned, ::Integer) =
+@inline detect_sync(::GPSL2CL, ::Integer, ::Unsigned, ::Integer) =
     SyncResult(false, 0, Int8(0))
 
-# BPSK: EarlyPromptLate (see `get_default_correlator`).
-function get_default_correlator(::Union{GPSL2CM,GPSL2CL}, num_ants::NumAnts = NumAnts(1))
-    EarlyPromptLateCorrelator(; num_ants)
+# BPSK: EarlyPromptLate (see `get_default_correlator_bank`).
+function get_default_correlator_bank(::Union{GPSL2CM,GPSL2CL}, num_ants::NumAnts = NumAnts(1))
+    EarlyPromptLateCorrelatorBank(; num_ants)
 end
 
-# One bit per code period: nothing to search (see `get_code_block_buffer_type`).
-@inline get_code_block_buffer_type(::GPSL2CM) = UInt8
+# One bit per code period: nothing to search (see `prompt_sign_history_type`).
+@inline prompt_sign_history_type(::GPSL2CM) = UInt8
 # L2CL: no sync feature at all.
-@inline get_code_block_buffer_type(::GPSL2CL) = UInt8
+@inline prompt_sign_history_type(::GPSL2CL) = UInt8

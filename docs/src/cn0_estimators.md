@@ -4,14 +4,14 @@ CurrentModule = TrackingLoops
 
 # C/N₀ estimation
 
-A C/N₀ estimator is advanced once per record with the record's prompt
-(`TrackingLoops.update`, called by [`apply_record`](@ref)) and read with
+A C/N₀ estimator is advanced once per integration with the integration's prompt
+(`TrackingLoops.update`, called by [`process_correlator_bank_output!`](@ref)) and read with
 [`estimate_cn0`](@ref). The package provides:
 
 - [`MomentsCN0Estimator`](@ref) — the moments method on a window of prompts;
 - [`NWPRCN0Estimator`](@ref) — the narrow-to-wideband power ratio, summing
   prompts coherently over short windows, aligned to the bit grid once known;
-- [`NoiseRefCN0Estimator`](@ref) — divides the prompt power by a noise density
+- [`NoiseReferencedCN0Estimator`](@ref) — divides the prompt power by a noise density
   measured independently of the signal (see [Noise estimation](@ref));
 - [`NoCN0Estimator`](@ref) — for a component whose C/N₀ is not needed.
 
@@ -32,12 +32,12 @@ NWPRCN0Estimator()
 estimate_cn0(::NWPRCN0Estimator, ::Any)
 TrackingLoops.update(::NWPRCN0Estimator, ::Any, ::CN0UpdateContext)
 TrackingLoops.update(::NWPRCN0Estimator, ::Any)
-NoiseRefCN0Estimator
-NoiseRefCN0Estimator()
-estimate_cn0(::NoiseRefCN0Estimator, ::Any)
-TrackingLoops.requires_noise_density(::Type{NoiseRefCN0Estimator})
-TrackingLoops.update(::NoiseRefCN0Estimator, ::Any, ::CN0UpdateContext)
-TrackingLoops.update(::NoiseRefCN0Estimator, ::Any)
+NoiseReferencedCN0Estimator
+NoiseReferencedCN0Estimator()
+estimate_cn0(::NoiseReferencedCN0Estimator, ::Any)
+TrackingLoops.requires_noise_density(::Type{NoiseReferencedCN0Estimator})
+TrackingLoops.update(::NoiseReferencedCN0Estimator, ::Any, ::CN0UpdateContext)
+TrackingLoops.update(::NoiseReferencedCN0Estimator, ::Any)
 NoCN0Estimator
 estimate_cn0(::NoCN0Estimator, ::Any)
 TrackingLoops.update(::NoCN0Estimator, ::Any)

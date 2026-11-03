@@ -10,16 +10,16 @@ Table 5.5; GNSS-SDR tracking_discriminators.cc.
 """
 function dll_disc(
     signal::AbstractGNSSSignal,
-    correlator::EarlyPromptLateCorrelator,
+    correlator_bank::EarlyPromptLateCorrelatorBank,
     code_doppler,
     sampling_frequency,
 )
     code_frequency = code_doppler + get_chip_rate(signal)
     code_phase_delta = code_frequency / sampling_frequency
-    E = abs(get_early(correlator))
-    L = abs(get_late(correlator))
+    E = abs(get_early(correlator_bank))
+    L = abs(get_late(correlator_bank))
     distance_between_early_and_late =
-        get_early_late_sample_spacing(correlator, sampling_frequency, code_frequency) *
+        calc_early_late_sample_spacing(correlator_bank, sampling_frequency, code_frequency) *
         code_phase_delta
     (2 - distance_between_early_and_late) / 2 * (E - L) / (E + L)
 end
@@ -32,7 +32,7 @@ _boc11_envelope(offset) =
     offset < 1 / 3 ? 1 - 3 * offset :
     offset < 1 / 2 ? 3 * offset - 1 : offset < 1 ? 1 - offset : 0.0
 
-# Mean of the one-sided derivatives, so a tap exactly on a knot (e.g. the side-lobe
+# Mean of the one-sided derivatives, so a correlator exactly on a knot (e.g. the side-lobe
 # vertex at 0.5 chips under coarse sampling) gets the slope its ± excursions produce.
 function _boc11_envelope_slope(offset)
     right = offset < 1 / 3 ? -3.0 : offset < 1 / 2 ? 3.0 : offset < 1 ? -1.0 : 0.0
@@ -40,8 +40,8 @@ function _boc11_envelope_slope(offset)
     (left + right) / 2
 end
 
-# VEML S-curve slope at the origin for inner and outer tap offsets in chips: each tap
-# pair contributes −2·slope·τ to the numerator and 2·|R| to the denominator.
+# VEML S-curve slope at the origin for inner and outer correlator offsets in chips: each
+# correlator pair contributes −2·slope·τ to the numerator and 2·|R| to the denominator.
 _veml_discriminator_slope(inner_offset, outer_offset) =
     -(_boc11_envelope_slope(inner_offset) + _boc11_envelope_slope(outer_offset)) /
     (_boc11_envelope(inner_offset) + _boc11_envelope(outer_offset))
@@ -53,13 +53,13 @@ Code phase error in chips from the noncoherent very-early-minus-late envelope
 normalized discriminator `(VE + E - VL - L) / (VE + E + VL + L)` for
 BOC(1,1)-dominant signals (Galileo E1, GPS L1C, BeiDou B1C), divided by its S-curve
 slope so the output is in chips.
-The slope (`4 / (2 − 3·0.15 − 0.6) ≈ 4.2` for the default ±0.15/±0.6 chip taps) is
-evaluated on the piecewise-linear sine-BOC(1,1) envelope at the sample-quantized tap
+The slope (`4 / (2 − 3·0.15 − 0.6) ≈ 4.2` for the default ±0.15/±0.6 chip correlators) is
+evaluated on the piecewise-linear sine-BOC(1,1) envelope at the sample-quantized correlator
 offsets, as GNSS-SDR's `CalculateSlopeAbs` on `SinBocCorrelationFunction` does.
 Against full CBOC/TMBOC a residual gain error remains; the discriminator is linear
-only within the inner tap offset.
+only within the inner correlator offset.
 
-Throws an `ArgumentError` if both quantized tap offsets are one chip or more (slope
+Throws an `ArgumentError` if both quantized correlator offsets are one chip or more (slope
 undefined), which a coarse sampling rate can cause for shifts just below one chip.
 
 Raw discriminator form from:
@@ -67,37 +67,37 @@ https://gnss-sdr.org/docs/sp-blocks/tracking/#implementation-galileo_e1_dll_pll_
 """
 function dll_disc(
     signal::AbstractGNSSSignal,
-    correlator::VeryEarlyPromptLateCorrelator,
+    correlator_bank::VeryEarlyPromptLateCorrelatorBank,
     code_doppler,
     sampling_frequency,
 )
     code_frequency = code_doppler + get_chip_rate(signal)
     code_phase_delta = upreferred(code_frequency / sampling_frequency)
     inner_offset =
-        calc_preferred_code_shift_to_sample_shift(
-            correlator.preferred_early_late_to_prompt_code_shift,
+        calc_correlator_sample_offset(
+            correlator_bank.preferred_early_late_to_prompt_spacing,
             sampling_frequency,
             code_frequency,
         ) * code_phase_delta
     outer_offset =
-        calc_preferred_code_shift_to_sample_shift(
-            correlator.preferred_very_early_late_to_prompt_code_shift,
+        calc_correlator_sample_offset(
+            correlator_bank.preferred_very_early_late_to_prompt_spacing,
             sampling_frequency,
             code_frequency,
         ) * code_phase_delta
     # Constant message: this path is compiled with `juliac --trim`.
     min(inner_offset, outer_offset) < 1 || throw(
         ArgumentError(
-            "VEML dll_disc: both tap offsets are one chip or more at this sampling " *
+            "VEML dll_disc: both correlator offsets are one chip or more at this sampling " *
             "frequency, where the BOC(1,1) correlation peak has vanished; " *
             "use code shifts below one chip.",
         ),
     )
     slope = _veml_discriminator_slope(inner_offset, outer_offset)
-    VE = abs(get_very_early(correlator))
-    E = abs(get_early(correlator))
-    L = abs(get_late(correlator))
-    VL = abs(get_very_late(correlator))
+    VE = abs(get_very_early(correlator_bank))
+    E = abs(get_early(correlator_bank))
+    L = abs(get_late(correlator_bank))
+    VL = abs(get_very_late(correlator_bank))
     raw = (VE + E - VL - L) / (VE + E + VL + L)
     # A locally flat S-curve cannot be calibrated; functional layouts have slope > 0.
     slope == 0 ? raw : raw / slope
@@ -118,8 +118,8 @@ code.
 See: Kaplan & Hegarty, "Understanding GPS: Principles and Applications", 2nd ed.,
 Tables 5.2 and 5.3.
 """
-function pll_disc(signal::AbstractGNSSSignal, correlator; polarity::Real = 0)
-    p = get_prompt(correlator)
+function pll_disc(signal::AbstractGNSSSignal, correlator_bank; polarity::Real = 0)
+    p = get_prompt(correlator_bank)
     iszero(polarity) && return atan(imag(p) / real(p)) / 2π
     q = polarity * p
     atan(imag(q), real(q)) / 2π
@@ -131,9 +131,9 @@ $(SIGNATURES)
 Carrier frequency error in `Hz`, whatever unit the integration time carries, from
 the rotation between the previous and current prompt; zero without a previous
 prompt. With `polarity = 0` (default) the two-quadrant `atan(cross / dot)`,
-insensitive to a sign flip between the prompts, range ±1 / (4 · `integration_time`).
+insensitive to a sign flip between the prompts, range ±1 / (4 · `coherent_integration_time`).
 With `polarity = ±1` the four-quadrant `atan(cross, dot)`, range
-±1 / (2 · `integration_time`); it needs both prompts to share their sign, as for
+±1 / (2 · `coherent_integration_time`); it needs both prompts to share their sign, as for
 [`pll_disc`](@ref). Which sign does not matter (it cancels in the product), only
 whether `polarity` is nonzero.
 
@@ -142,16 +142,16 @@ Table 5.4.
 """
 function fll_disc(
     signal::AbstractGNSSSignal,
-    correlator,
+    correlator_bank,
     previous_prompt,
-    integration_time;
+    coherent_integration_time;
     polarity::Real = 0,
 )
     if previous_prompt == 0
-        return uconvert(Hz, 0.0/integration_time)
+        return uconvert(Hz, 0.0/coherent_integration_time)
     end
 
-    current_prompt = get_prompt(correlator)
+    current_prompt = get_prompt(correlator_bank)
 
     result = conj(previous_prompt) * current_prompt
     cross = imag(result)
@@ -159,5 +159,5 @@ function fll_disc(
 
     # Two-quadrant: `cross / dot` is ±Inf where `dot` is zero, which `atan` maps to ±π/2.
     rotation = iszero(polarity) ? atan(cross / dot) : atan(cross, dot)
-    return uconvert(Hz, rotation / (2 * pi * integration_time))
+    return uconvert(Hz, rotation / (2 * pi * coherent_integration_time))
 end

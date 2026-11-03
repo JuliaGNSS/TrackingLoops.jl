@@ -12,7 +12,7 @@
 # Saastamoinen troposphere. Which biases an epoch can determine is decided per cycle by
 # `decide_bias_layout!` (see `clock_constraints!`).
 #
-# The per-record `VectorPLLAndDLL` accumulates discriminators and applies the filter's
+# The per-integration `VectorTrackingLoop` accumulates discriminators and applies the filter's
 # commands; this file holds the model above it (the cycle is in `vector/tracking.jl`):
 # plain functions that allocate nothing once their buffers exist.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -23,9 +23,9 @@
                            acceleration_noise_std = 5.0m/s^2,
                            h0 = 2e-19, hm2 = 2e-20,
                            ifb_noise_density = 0.01m/sqrt(1.0s),
-                           insufficient_meas_timeout = 10.0s)
+                           measurement_deficit_timeout = 10.0s)
 
-Configuration of the vector-tracking navigation filter of a [`VectorPLLAndDLL`](@ref).
+Configuration of the vector-tracking navigation filter of a [`VectorTrackingLoop`](@ref).
 The defaults suit a vehicle with a consumer-grade front end.
 
 # Fields
@@ -47,10 +47,10 @@ The defaults suit a vehicle with a consumer-grade front end.
   covering the front end's thermal drift: by default a bias wanders ~`0.01 m` (1σ) in
   one second. Raise it for bands that are less thermally coupled, lower it for a
   calibrated front end.
-- `insufficient_meas_timeout`: how long the filter may coast on unsolvable epochs (too few
+- `measurement_deficit_timeout`: how long the filter may coast on unsolvable epochs (too few
   measurements or distinct satellites for the unknowns) before falling back to scalar
   tracking. Solution uncertainty is reported, not policed: see
-  [`NavigationStatus`](@ref)'s `position_std`.
+  [`VectorTrackingStatus`](@ref)'s `position_std`.
 """
 struct NavigationFilterConfig
     use_pseudorange_rates::Bool
@@ -60,7 +60,7 @@ struct NavigationFilterConfig
     h0::Float64
     hm2::Float64
     ifb_noise_density::typeof(1.0m / sqrt(1.0s))
-    insufficient_meas_timeout::typeof(1.0s)
+    measurement_deficit_timeout::typeof(1.0s)
 end
 
 function NavigationFilterConfig(;
@@ -71,7 +71,7 @@ function NavigationFilterConfig(;
     h0 = 2e-19,
     hm2 = 2e-20,
     ifb_noise_density = 0.01m / sqrt(1.0s),
-    insufficient_meas_timeout = 10.0s,
+    measurement_deficit_timeout = 10.0s,
 )
     1 <= motion_model_order <= 3 ||
         throw(ArgumentError("motion_model_order must be 1, 2 or 3"))
@@ -84,7 +84,7 @@ function NavigationFilterConfig(;
         h0,
         hm2,
         ifb_noise_density,
-        insufficient_meas_timeout,
+        measurement_deficit_timeout,
     )
 end
 
@@ -102,7 +102,7 @@ struct NavFilterLayout
     clock_bias_index_by_group::Vector{Int}    # group ⇒ clock-bias state
     ifb_index_by_group::Vector{Int}           # group ⇒ IFB state (0 = reference band)
     band_by_group::Vector{Symbol}             # group ⇒ frequency band
-    signal_id_by_group::Vector{Symbol}        # group ⇒ signal id, the `sats` key
+    signal_id_by_group::Vector{Symbol}        # group ⇒ signal id, the `observations` key
 end
 
 function NavFilterLayout(signals::Tuple{Vararg{AbstractGNSSSignal}})
@@ -331,7 +331,7 @@ function ensure_nav_filter_cycle_time!(
 end
 
 # The state propagated kinematically by `τ` seconds into `x_τ` (a plain copy for
-# `τ = 0`); sizes commands that land `τ` after the cycle epoch.
+# `τ = 0`); sizes commands that take effect `τ` after the cycle epoch.
 function propagate_state!(x_τ, x, idxs::NavFilterIndices, τ)
     copyto!(x_τ, x)
     has_vel = !isempty(idxs.vel)
@@ -361,7 +361,7 @@ end
 # What the navigation filter needs about one vector-loop member for one cycle. All
 # downstream per-satellite buffers align with the member vector. Plain data, so it is
 # stored inline and refilled without allocating.
-struct VTMember
+struct VectorTrackingObservation
     group::Int             # position of the member's signal group
     slot_index::Int        # position in that group's satellite vector
     prn::Int
@@ -384,28 +384,28 @@ struct VTMember
     pseudorange_rate::Float64 # measured −λ·(replica Doppler + mean FLL) at the epoch (m/s)
     cn0_lin::Float64         # C/N₀, linear (Hz); C/N₀ without `_lin` is in dB-Hz
     early_late_spacing::Float64 # chips
-    coherent_integration_time::Float64 # s, per coherent correlator dump (sets DLL/FLL noise)
+    coherent_integration_time::Float64 # s, per coherent integration (sets DLL/FLL noise)
 end
 
 # Code phase (chips) the code correction steered out over the cycle's second half,
 # `∫_{T/2}^{T} c(t) dt`: moves the mean code discriminator from mid-cycle to the epoch.
 # `c₀, c₁, c₂` are the last three corrections, newest first, each reaching the replica
 # `L` after its cycle's epoch; `L = 0` gives `c₀·T/2`. Valid for `L ≤ 2.5T`
-# (`MAX_LANDING_LEAD_CYCLES`).
-function code_phase_advance(state::SatVectorPLLAndDLL, T)
-    c₀, c₁, c₂ = map(c -> ustrip(Hz, c), state.code_freq_update_history)
-    L = ustrip(s, state.code_update_landing_lead)
+# (`MAX_APPLICATION_LEAD_CYCLES`).
+function code_phase_advance(state::VectorLoopState, T)
+    c₀, c₁, c₂ = map(c -> ustrip(Hz, c), state.code_frequency_correction_history)
+    L = ustrip(s, state.code_command_delay)
     c₀ * T / 2 - (c₀ - c₁) * clamp(L - T / 2, 0.0, T / 2) -
     (c₁ - c₂) * clamp(L - 3T / 2, 0.0, T / 2)
 end
 
 # Longest NCO delay (cycles) `code_phase_advance` covers; longer ones throw.
-const MAX_LANDING_LEAD_CYCLES = 2.5
+const MAX_APPLICATION_LEAD_CYCLES = 2.5
 
 # Mean DLL discriminator (chips), advanced to the epoch by `code_phase_advance`; negated
 # because `dll_disc`'s sense is reversed. Zero when nothing was accumulated (see
 # `has_disc_sums`).
-function mean_code_disc_at_epoch(state::SatVectorPLLAndDLL, T)
+function mean_code_disc_at_epoch(state::VectorLoopState, T)
     mean = _disc_mean(state.code_disc_sum)
     isnothing(mean) ? 0.0 : -mean + code_phase_advance(state, T)
 end
@@ -419,28 +419,28 @@ end
 # `f_replica(epoch) − mean(f_replica)` is the predicted Doppler's rise over half the
 # cycle, the incoming carrier's to first order: the sum is the incoming Doppler at the
 # epoch. The ramp is the filter's prediction alone, so no loop's jitter enters the
-# replica's command; with the PLL on the NCO, one record's jitter
+# replica's command; with the PLL on the NCO, one integration's jitter
 # (`f_NCO,end − mean(f_NCO)`) would make the integrated rate error walk. A command
-# landing inside the cycle (an NCO delay) leaves a share of the filter's own correction
+# applied inside the cycle (an NCO delay) leaves a share of the filter's own correction
 # in the measurement: on the simulator the residuals stay at `√R` and the integrated
 # rate error at a centimetre, but the lag-1 autocorrelation shortens from −1/2 (−0.3 at
 # 20 ms of delay, −0.1 at 50 ms).
-function mean_fll_disc(state::SatVectorPLLAndDLL)
+function mean_fll_disc(state::VectorLoopState)
     mean = _disc_mean(state.fll_disc_sum)
     isnothing(mean) ? 0.0 : ustrip(Hz, mean)
 end
 
 # Whether a member accumulated both a code and a carrier measurement this cycle (none
-# without a full dump, e.g. admitted at the cycle's end or starved of samples). The zero
+# without a full coherent integration, e.g. admitted at the cycle's end or starved of samples). The zero
 # `mean_code_disc_at_epoch` and `mean_fll_disc` substitute would be a confidently zero
 # residual at full `R` weight, pulling the state toward the NCO, so such members are
 # withheld from the measurements (still commanded, like a member out of code lock). The
-# carrier sum counts only records with a previous prompt, so it can be empty alone (a
-# cycle whose only record is the first after a (re)start); that member is withheld too.
-has_disc_sums(state::SatVectorPLLAndDLL) = first(state.code_disc_sum) > 0 && first(state.fll_disc_sum) > 0
+# carrier sum counts only integrations with a previous prompt, so it can be empty alone (a
+# cycle whose only integration is the first after a (re)start); that member is withheld too.
+has_disc_sums(state::VectorLoopState) = first(state.code_disc_sum) > 0 && first(state.fll_disc_sum) > 0
 
 # Linear C/N₀ (Hz) from dB-Hz, floored to 1 against a degenerate weight; a NaN estimate
-# (empty correlator) maps to 1 so it cannot corrupt the Kalman update.
+# (empty correlator bank) maps to 1 so it cannot corrupt the Kalman update.
 function linear_cn0_floor(cn0_dbhz)
     cn0_lin = 10^(cn0_dbhz / 10)
     isnan(cn0_lin) ? 1.0 : max(cn0_lin, 1.0)
@@ -471,7 +471,7 @@ member_bias_columns(members, layout::NavFilterLayout, indices = eachindex(member
 # The pseudorange rate (m/s) the epoch state `x` predicts for `member`: the derivative of
 # the pseudorange `predict_pseudoranges!` models, Earth rotation included (PositionVelocityTime's
 # `calc_pseudorange_rate`), positive while receding.
-@inline function predict_pseudorange_rate(x, idxs::NavFilterIndices, member::VTMember)
+@inline function predict_pseudorange_rate(x, idxs::NavFilterIndices, member::VectorTrackingObservation)
     user_pos, user_vel, user_clock_drift = nav_filter_states(x, idxs)
     calc_pseudorange_rate(
         user_pos,
@@ -486,28 +486,28 @@ end
 # Measurement model `h!(y, x)`: the candidates' pseudoranges, then their rates when
 # fused, then one row per time-offset constraint (the offset between two clock states). A
 # callable struct, not a closure, so the update is concrete and allocation-free.
-struct VTMeasurementModel
+struct NavFilterMeasurementModel
     idxs::NavFilterIndices
     ξ::Vector{Float64}
     positions::Vector{SVector{3,Float64}}
-    members::Vector{VTMember}
+    members::Vector{VectorTrackingObservation}
     candidates::Vector{Int}
     columns::BiasColumns
     use_rates::Bool
     constraints::Vector{Tuple{Int,Int,Float64}}
 end
 
-function (model::VTMeasurementModel)(y, x)
+function (model::NavFilterMeasurementModel)(y, x)
     idxs = model.idxs
-    num_sats = length(model.positions)
+    num_observations = length(model.positions)
     position_and_bias_vector!(model.ξ, x, idxs)
     predict_pseudoranges!(y, model.positions, model.ξ, model.columns)
-    offset = num_sats
+    offset = num_observations
     if model.use_rates
         for (k, j) in enumerate(model.candidates)
-            y[num_sats+k] = predict_pseudorange_rate(x, idxs, model.members[j])
+            y[num_observations+k] = predict_pseudorange_rate(x, idxs, model.members[j])
         end
-        offset += num_sats
+        offset += num_observations
     end
     for (i, (clock_index, target_clock_index, _)) in enumerate(model.constraints)
         y[offset+i] = x[idxs.clock_biases[clock_index]] - x[idxs.clock_biases[target_clock_index]]
@@ -515,31 +515,31 @@ function (model::VTMeasurementModel)(y, x)
     y
 end
 
-# Measurement-noise variances, each the per-dump discriminator variance for a coherent
-# integration time `T_coh` propagated through the mean of the `N = T/T_coh` dumps that
-# the filter's measurement is.
+# Measurement-noise variances, each the discriminator variance of one coherent
+# integration of length `T_coh` propagated through the mean of the
+# `N = T/T_coh` coherent integrations that the filter's measurement is.
 #
 # Code: `dll_disc` is the noncoherent early-minus-late discriminator (Kaplan & Hegarty,
 # "Understanding GPS: Principles and Applications", 2nd ed., Artech House 2006, §5.5.2;
 # Betz & Kolodziejski, "Generalized Theory of Code Tracking with an Early-Late
 # Discriminator, Part II", IEEE Trans. AES 45(4), 2009, pp. 1557-1564), with their loop
-# bandwidth `B_n` set to one dump's open-loop `1/(2·T_coh)`. Dumps share no samples,
-# so their noise is white and
+# bandwidth `B_n` set to one integration's open-loop `1/(2·T_coh)`. Integrations share no
+# samples, so their noise is white and
 #     var(mean) = d/(4·C/N0·T) · (1 + 2/((2 − d)·C/N0·T_coh))   [chips²]:
 # the thermal term averages down over `T`, the squaring loss stays pinned to `T_coh`.
 # Times `chip_length²` for metres. For VEML `d` is the inner pair's spacing, making this
-# EPL model mildly conservative (the outer taps average a little more noise away).
+# EPL model mildly conservative (the outer correlators average a little more noise away).
 # Assumes `d < 2` chips (the default is 0.5).
-function pseudorange_noise_variance(member::VTMember, T)
+function pseudorange_noise_variance(member::VectorTrackingObservation, T)
     cn0_tcoh = member.cn0_lin * member.coherent_integration_time
     d = member.early_late_spacing
     squaring_loss = 1 + 2 / ((2 - d) * cn0_tcoh)
     d / (4 * T * member.cn0_lin) * squaring_loss * member.chip_length^2
 end
 
-# Rate: the ATAN FLL (`fll_disc`) phase jitter per dump is
+# Rate: the ATAN FLL (`fll_disc`) phase jitter per coherent integration is
 #     σ_φ² = 1/(2·C/N0·T_coh)·(1 + 1/(2·C/N0·T_coh))   [rad²].
-# Each dump is `(θ_k − θ_{k-1})/(2π·T_coh)`, so the mean telescopes to
+# Each integration's reading is `(θ_k − θ_{k-1})/(2π·T_coh)`, so the mean telescopes to
 # `(θ_N − θ_0)/(2π·T)`:
 #     var(mean) = 2·σ_φ² / (2π·T)²   [Hz²],   times λ² for (m/s)².
 # Consecutive cycles share a boundary phase (`previous_prompt` chains across them) with
@@ -548,12 +548,12 @@ end
 # negative, it only makes the filter pessimistic about the rates, so `R` is deliberately
 # not inflated; its cost, a pessimistic velocity / clock-drift uncertainty, only
 # measurement differencing (Bryson-Henrikson) or a boundary-phase state would remove.
-# Nor is the variance `N` times larger, as independent dumps would give: the telescoping
+# Nor is the variance `N` times larger, as independent integrations would give: the telescoping
 # earns the tighter figure. The ≈ −0.5 lag-1 autocorrelation of the rate residuals is by
 # construction and must not be tuned against. One well short of it, with residuals well
 # above `√R`, is the signature of a replica term that does not telescope (see
 # `mean_fll_disc`).
-function pseudorange_rate_noise_variance(member::VTMember, T)
+function pseudorange_rate_noise_variance(member::VectorTrackingObservation, T)
     cn0_tcoh = member.cn0_lin * member.coherent_integration_time
     sigma_phi2 = 1 / (2 * cn0_tcoh) * (1 + 1 / (2 * cn0_tcoh))
     member.wavelength^2 * sigma_phi2 / (2 * π^2 * T^2)
@@ -601,7 +601,7 @@ function clock_constraints!(constraints, layout::NavFilterLayout, bias_layout)
 end
 
 # 1σ 3-D position uncertainty (m) of a navigation-filter covariance.
-function position_uncertainty(P, idxs::NavFilterIndices)
+function calc_position_std(P, idxs::NavFilterIndices)
     variance = 0.0
     for i in idxs.pos
         variance += P[i, i]
@@ -614,7 +614,7 @@ end
 
 # Commands of one member: the predicted minus the replica's pseudorange as a code
 # frequency offset removing it over the next interval `T`; the carrier NCO is set to the
-# predicted Doppler itself (`_commands_at_landing`), formed where it lands rather than
+# predicted Doppler itself (`_commands_at_application`), formed where it takes effect rather than
 # from the measured rate, which reaches the NCO only through the updated state. Predict
 # from the *updated* state only: adding the update's projected state correction too
 # would double-count it (loop gain 2, oscillation).
@@ -633,7 +633,7 @@ predicted_carrier_doppler(predicted_pseudorange_rate, wavelength) = -predicted_p
 # the update are reported too. Under VDLL the rate residual tests the solution against
 # rates it never fused.
 function post_fit_residuals(
-    member::VTMember,
+    member::VectorTrackingObservation,
     measured_pseudorange,
     predicted_pseudorange,
     predicted_pseudorange_rate,
