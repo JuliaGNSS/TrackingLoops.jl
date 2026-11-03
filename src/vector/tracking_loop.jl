@@ -41,7 +41,7 @@ once it is released. In the vector loop (see [The carrier in the vector
 loop](@ref vector-carrier)):
 
   - the navigation filter alone sets the carrier NCO, to its predicted Doppler at the
-    middle of the record the command lands on;
+    middle of the integration the command takes effect on;
   - a residual PLL (`TrackingLoops.ResidualPLL`) follows the carrier on the prompts the
     NCO leaves, without steering it; the scalar loop, its staging included, stands
     still. [`get_phase_lock_indicator`](@ref) and [`is_phase_locked`](@ref) are the residual
@@ -68,9 +68,9 @@ the residual PLL follows a manoeuvre by itself: a third-order loop's error to a 
 0.5 g manoeuvre built up over two seconds, 43° at 5 Hz. Narrower suits a gentler
 platform or `motion_model_order = 3`.
 
-The latest cycle's commands are taken up on the next driver record, sized for where
-they land: at `landing_sample`, or at the record's end under `NO_LANDING_SAMPLE`. A
-record of any other signal returns the command in force there.
+The latest cycle's commands are taken up on the next driver integration, sized for where
+they take effect: at `application_sample_index`, or at the integration's end under `NO_LANDING_SAMPLE`. A
+integration of any other signal returns the command in force there.
 
 `inner` must have an FLL-assisted carrier filter, which pulls a released satellite in
 again: a `ScalarTrackingLoop{ThirdOrderAssistedBilinearLF}` (what
@@ -240,8 +240,8 @@ Re-seed the inner loop from the converged Dopplers, zero the accumulators and dr
 the code correction, keeping `in_vector_loop`, the carrier ramp, the residual PLL and
 the satellite's place in the navigation engine. The converged Dopplers already contain
 the code correction, so keeping it would apply it twice; the replica was still steered
-by it, so the correction history and landing lead are kept. The carrier ramp replaces
-the inner loop's carrier word rather than adding to it, so it stays.
+by it, so the correction history and the feedback delay are kept. The carrier ramp replaces
+the inner loop's carrier command rather than adding to it, so it stays.
 """
 reinit_loop_state(
     estimator::VectorTrackingLoop,
@@ -264,14 +264,14 @@ get_phase_lock_indicator(loop_state::VectorLoopState) =
     get_phase_lock_indicator(loop_state.inner)
 is_phase_locked(loop_state::VectorLoopState) =
     loop_state.in_vector_loop ? loop_state.residual_pll.lock.locked : is_phase_locked(loop_state.inner)
-function calc_carrier_phase_correction(loop_state::VectorLoopState, words, sample_index, sampling_frequency)
+function calc_carrier_phase_correction(loop_state::VectorLoopState, nco_history, sample_index, sampling_frequency)
     residual_pll = loop_state.residual_pll
     loop_state.in_vector_loop || return 0.0
     # Both are set by the first driver integration.
     isnan(residual_pll.prompt_center) && return 0.0
     isnan(first(loop_state.previous_replica_half)) && return 0.0
     fs = Float64(ustrip(Hz, sampling_frequency))
-    _residual_phase_after(residual_pll, loop_state.ramp, loop_state.previous_replica_half, sample_index / fs, fs, words)
+    _residual_phase_after(residual_pll, loop_state.ramp, loop_state.previous_replica_half, sample_index / fs, fs, nco_history)
 end
 
 
@@ -308,19 +308,19 @@ _release_from_vector_loop(loop_state::VectorLoopState) =
         residual_pll_loop_bandwidth = loop_state.residual_pll.bandwidth,
     )
 
-# `_release_from_vector_loop` with the inner loop re-seeded at the sample `landing`
-# (records' grid at `fs`, Hz) where the release lands: at the residual PLL's estimate of
+# `_release_from_vector_loop` with the inner loop re-seeded at the sample `application_sample_index`
+# (integrations' grid at `fs`, Hz) where the release takes effect: at the residual PLL's estimate of
 # the incoming Doppler (ramp plus residual) and its rate, which a third-order carrier
 # filter starts from. A residual PLL out of lock (or never stepped) knows no better than
-# the filter, so then the replica's carrier word there and the ramp's rate. The code
-# starts from the replica's code word. Unlike a reset, it restarts the staging, so the
+# the filter, so then the replica's carrier command there and the ramp's rate. The code
+# starts from the replica's code command. Unlike a reset, it restarts the staging, so the
 # scalar loop pulls in again FLL-assisted at the wide bandwidth.
-function _hand_over_to_scalar_loop(loop_state::VectorLoopState, words, landing, fs)
-    nco_command = get_nco_command(words, landing)
+function _hand_over_to_scalar_loop(loop_state::VectorLoopState, nco_history, application_sample_index, fs)
+    nco_command = get_nco_command(nco_history, application_sample_index)
     carrier_command, code_command = nco_command.carrier_doppler, nco_command.code_doppler
     carrier_doppler = carrier_command * Hz
     code_doppler = code_command * Hz
-    time = landing / fs
+    time = application_sample_index / fs
     ramp, residual_pll = loop_state.ramp, loop_state.residual_pll
     rate = ramp.rate
     if residual_pll.lock.locked && !isnan(residual_pll.prompt_center)
@@ -366,14 +366,14 @@ function _set_vector_commands(
     code_freq_update,
     ramp::CarrierRamp,
     landing_lead,
-    words,
-    landing,
+    nco_history,
+    application_sample_index,
 )
     newest, previous, _ = loop_state.code_freq_update_history
     residual_pll = if _has_carrier_ramp(loop_state)
         _residual_pll_on_new_ramp(loop_state.residual_pll, loop_state.ramp, ramp)
     else
-        scalar_doppler = get_nco_command(words, landing).carrier_doppler
+        scalar_doppler = get_nco_command(nco_history, application_sample_index).carrier_doppler
         _initialized_residual_pll(loop_state.residual_pll, ramp, scalar_doppler, ramp.time, loop_state.inner.staging)
     end
     VectorLoopState(
@@ -399,14 +399,14 @@ _reset_discriminator_accumulators(loop_state::VectorLoopState) =
 _disc_mean((count, disc_sum)) = count == 0 ? nothing : disc_sum / count
 
 # `(cycles, duration)` the replica's carrier advanced by over each half of `integration`,
-# from the words it ran on (Hz).
-@inline function _replica_halves(integration::LoopRecord, words)
+# from the commands it ran on (Hz).
+@inline function _replica_halves(integration::LoopRecord, nco_history)
     fs = integration.sampling_frequency
     integration_end_sample_index = integration.sample_index
     half_samples = integration.integrated_samples / 2
     center = integration_end_sample_index - half_samples
-    first_command = calc_mean_nco_command(words, integration_end_sample_index - integration.integrated_samples, center).carrier_doppler
-    second_command = calc_mean_nco_command(words, center, integration_end_sample_index).carrier_doppler
+    first_command = calc_mean_nco_command(nco_history, integration_end_sample_index - integration.integrated_samples, center).carrier_doppler
+    second_command = calc_mean_nco_command(nco_history, center, integration_end_sample_index).carrier_doppler
     half_duration = convert(typeof(1.0s), half_samples / fs)
     first_cycles = Float64(uconvert(NoUnits, first_command * Hz * half_duration))
     second_cycles = Float64(uconvert(NoUnits, second_command * Hz * half_duration))
@@ -425,46 +425,46 @@ end
     estimator::VectorTrackingLoop,
     loop_state::VectorLoopState,
     integration::LoopRecord,
-    words,
-    landing_sample::Int64,
+    nco_history,
+    application_sample_index::Int64,
 )
-    replica_halves = _replica_halves(integration, words)
+    replica_halves = _replica_halves(integration, nco_history)
     if !loop_state.in_vector_loop
         inner, carrier_doppler, code_doppler =
-            step_loop!(estimator.inner, loop_state.inner, integration, words, landing_sample)
+            step_loop!(estimator.inner, loop_state.inner, integration, nco_history, application_sample_index)
         return VectorLoopState(loop_state; inner, previous_replica_half = replica_halves.second),
         carrier_doppler,
         code_doppler
     end
-    _step_vector_loop(loop_state, integration, words, landing_sample, replica_halves, estimator.navigation.lock_cn0_threshold_dbhz)
+    _step_vector_loop(loop_state, integration, nco_history, application_sample_index, replica_halves, estimator.navigation.lock_cn0_threshold_dbhz)
 end
 
-# A record's DLL output (chips), normalised by the code word the replica ran on, as
+# An integration's DLL output (chips), normalised by the code command the replica ran on, as
 # the inner loops measure it.
-@inline function _code_discriminator(integration::LoopRecord, words)
+@inline function _code_discriminator(integration::LoopRecord, nco_history)
     integration_start_sample_index = integration.sample_index - integration.integrated_samples
-    applied_code = calc_mean_nco_command(words, integration_start_sample_index, integration.sample_index).code_doppler
+    applied_code = calc_mean_nco_command(nco_history, integration_start_sample_index, integration.sample_index).code_doppler
     dll_disc(integration.signal, integration.filtered_correlator, applied_code * Hz, integration.sampling_frequency)
 end
 
-# One record of a member: the DLL accumulated, the carrier measured
-# (`_measure_carrier`), and the next command: the ramp at the middle of the record it
-# lands on and, carrier-aided, the code correction. The inner loop and its staging
+# One integration of a member: the DLL accumulated, the carrier measured
+# (`_measure_carrier`), and the next command: the ramp at the middle of the integration it
+# takes effect on and, carrier-aided, the code correction. The inner loop and its staging
 # stand still; a release re-seeds them.
 @inline function _step_vector_loop(
     loop_state::VectorLoopState,
     integration::LoopRecord,
-    words,
-    landing_sample::Int64,
+    nco_history,
+    application_sample_index::Int64,
     replica_halves,
     lock_cn0_threshold_dbhz::Float64,
 )
     inner = loop_state.inner
-    landing = landing_sample == NO_LANDING_SAMPLE ? integration.sample_index : landing_sample
-    residual_pll, fll_disc_sum = _measure_carrier(loop_state, integration, words, replica_halves, lock_cn0_threshold_dbhz)
-    # The command lands on a integration taken to be this one's length.
+    application_sample_index = application_sample_index == NO_LANDING_SAMPLE ? integration.sample_index : application_sample_index
+    residual_pll, fll_disc_sum = _measure_carrier(loop_state, integration, nco_history, replica_halves, lock_cn0_threshold_dbhz)
+    # The command takes effect on a integration taken to be this one's length.
     carrier =
-        _doppler_at(loop_state.ramp, (landing + integration.integrated_samples / 2) / _sampling_frequency_hz(integration))
+        _doppler_at(loop_state.ramp, (application_sample_index + integration.integrated_samples / 2) / _sampling_frequency_hz(integration))
     carrier_doppler, code_doppler = calc_carrier_aided_dopplers(
         integration.signal,
         inner.initial_carrier_doppler,
@@ -474,7 +474,7 @@ end
     )
     VectorLoopState(
         loop_state;
-        code_disc_sum = loop_state.code_disc_sum .+ (1, _code_discriminator(integration, words)),
+        code_disc_sum = loop_state.code_disc_sum .+ (1, _code_discriminator(integration, nco_history)),
         fll_disc_sum,
         previous_replica_half = replica_halves.second,
         residual_pll,
@@ -486,11 +486,11 @@ end
 # A member's carrier: the FLL accumulated, the residual PLL stepped on the prompt and
 # its lock tested (`_with_lock_test`). Returns the residual PLL and the FLL accumulator.
 # Both span the previous prompt's centre to this one's, including any gap a host left
-# between the records (the replica ran on through it on the words in force).
+# between the integrations (the replica ran on through it on the commands in force).
 @inline function _measure_carrier(
     loop_state::VectorLoopState,
     integration::LoopRecord,
-    words,
+    nco_history,
     replica_halves,
     lock_cn0_threshold_dbhz::Float64,
 )
@@ -504,7 +504,7 @@ end
     gap = isnan(previous_end) ? 0.0 : integration_start_sample_index / fs - previous_end
     gap_cycles = 0.0
     if gap > 0.5 / fs
-        gap_command = calc_mean_nco_command(words, previous_end * fs, integration_start_sample_index).carrier_doppler
+        gap_command = calc_mean_nco_command(nco_history, previous_end * fs, integration_start_sample_index).carrier_doppler
         gap_cycles = gap_command * gap
     else
         gap = 0.0

@@ -31,7 +31,7 @@ confirm_command!(timeline, 1000, 1200)
 
 A queued command is named by the sample it was scheduled for, and keeps that name when
 it is confirmed elsewhere. [`confirm_command!`](@ref) moves only the named command and
-preserves every other one, also one it lands on: among commands at one sample the latest
+preserves every other one, also one at the sample it takes effect at: among commands at one sample the latest
 confirmed is in effect, as the device keeps the newest write.
 [`cancel_command!`](@ref) removes only the named rejected command. Neither throws:
 feedback for a command no longer scheduled is a no-op, so the loop never stops on a late

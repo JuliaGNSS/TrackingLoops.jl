@@ -16,12 +16,12 @@ struct NCOCommand
 end
 
 """
-A physical NCO command queued in an [`NCOTimeline`](@ref), in effect from `sample_index`:
-the sample it was scheduled for, which names it for the device's feedback, until
-`confirmed`, then the one it really took effect at.
+A physical NCO command queued in an [`NCOTimeline`](@ref), in effect from its
+`application_sample_index`: the sample it was scheduled for, which names it for the
+device's feedback, until `confirmed`, then the one it really took effect at.
 """
 struct ScheduledNCOCommand
-    sample_index::Int64
+    application_sample_index::Int64
     confirmed::Bool
     command::NCOCommand
 end
@@ -58,23 +58,24 @@ function reset_timeline!(timeline::NCOTimeline, carrier_doppler_hz, code_doppler
 end
 
 """
-    schedule_command!(timeline, sample_index, carrier_doppler_hz, code_doppler_hz)
+    schedule_command!(timeline, application_sample_index, carrier_doppler_hz, code_doppler_hz)
 
-Schedule physical Doppler offsets at `sample_index` and return `true`. Anything queued
-at or past that sample is superseded: a device keeps the newest command per sample, and
-a later command never targets an earlier sample. With the queue full, return `false`
-and leave the timeline as it is: the host must not write that command to the device,
-and a queue that stays full means [`advance_timeline!`](@ref) is not keeping up.
+Schedule physical Doppler offsets to take effect at `application_sample_index` and
+return `true`. Anything queued at or past that sample is superseded: a device keeps the
+newest command per sample, and a later command never targets an earlier sample. With the
+queue full, return `false` and leave the timeline as it is: the host must not write that
+command to the device, and a queue that stays full means [`advance_timeline!`](@ref) is
+not keeping up.
 """
-function schedule_command!(timeline::NCOTimeline, sample_index, carrier_doppler_hz, code_doppler_hz)
+function schedule_command!(timeline::NCOTimeline, application_sample_index, carrier_doppler_hz, code_doppler_hz)
     commands = timeline.scheduled_commands
     count = timeline.num_scheduled_commands
-    @inbounds while count > 0 && commands[count].sample_index >= sample_index
+    @inbounds while count > 0 && commands[count].application_sample_index >= application_sample_index
         count -= 1
     end
     count < length(commands) || return false
     @inbounds commands[count+1] =
-        ScheduledNCOCommand(Int64(sample_index), false, NCOCommand(carrier_doppler_hz, code_doppler_hz))
+        ScheduledNCOCommand(Int64(application_sample_index), false, NCOCommand(carrier_doppler_hz, code_doppler_hz))
     timeline.num_scheduled_commands = count + 1
     true
 end
@@ -84,7 +85,7 @@ end
 function _pending_command_index(timeline::NCOTimeline, predicted_sample_index)
     @inbounds for i = timeline.num_scheduled_commands:-1:1
         scheduled = timeline.scheduled_commands[i]
-        !scheduled.confirmed && scheduled.sample_index == predicted_sample_index && return i
+        !scheduled.confirmed && scheduled.application_sample_index == predicted_sample_index && return i
     end
     0
 end
@@ -119,7 +120,7 @@ function confirm_command!(timeline::NCOTimeline, predicted_sample_index, actual_
     _remove_scheduled_command!(timeline, index)
     count = timeline.num_scheduled_commands
     insert_at = count + 1
-    @inbounds while insert_at > 1 && commands[insert_at-1].sample_index > actual_sample_index
+    @inbounds while insert_at > 1 && commands[insert_at-1].application_sample_index > actual_sample_index
         commands[insert_at] = commands[insert_at-1]
         insert_at -= 1
     end
@@ -156,7 +157,7 @@ function advance_timeline!(timeline::NCOTimeline, sample_index)
     n = 0
     @inbounds for i = 1:count
         command = commands[i]
-        command.sample_index <= sample_index || break
+        command.application_sample_index <= sample_index || break
         timeline.applied_command = command.command
         n += 1
     end
@@ -174,7 +175,7 @@ function get_nco_command(timeline::NCOTimeline, sample_index)
     command = timeline.applied_command
     @inbounds for i = 1:timeline.num_scheduled_commands
         scheduled = timeline.scheduled_commands[i]
-        scheduled.sample_index <= sample_index || break
+        scheduled.application_sample_index <= sample_index || break
         command = scheduled.command
     end
     command
@@ -184,7 +185,7 @@ end
     calc_mean_nco_command(commands, a, b) -> NCOCommand
 
 Time-weighted physical Doppler offsets in effect over device samples `[a, b)`.
-A command landing at `s` is in effect from `s` onwards. For `b <= a`, return the
+A command applied at `s` is in effect from `s` onwards. For `b <= a`, return the
 command at `a`. Accepts an [`NCOTimeline`](@ref) or [`ConstantNCOCommand`](@ref).
 """
 function calc_mean_nco_command(timeline::NCOTimeline, a::Real, b::Real)
@@ -196,11 +197,11 @@ function calc_mean_nco_command(timeline::NCOTimeline, a::Real, b::Real)
     t = a
     @inbounds for i = 1:timeline.num_scheduled_commands
         scheduled = timeline.scheduled_commands[i]
-        scheduled.sample_index >= b && break
-        if scheduled.sample_index > t
-            carrier_sum += carrier_doppler * (scheduled.sample_index - t)
-            code_sum += code_doppler * (scheduled.sample_index - t)
-            t = scheduled.sample_index
+        scheduled.application_sample_index >= b && break
+        if scheduled.application_sample_index > t
+            carrier_sum += carrier_doppler * (scheduled.application_sample_index - t)
+            code_sum += code_doppler * (scheduled.application_sample_index - t)
+            t = scheduled.application_sample_index
         end
         (; carrier_doppler, code_doppler) = scheduled.command
     end
