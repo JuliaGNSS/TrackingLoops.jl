@@ -13,7 +13,7 @@
 # `decide_bias_layout!` (see `clock_constraints!`).
 #
 # The per-record `VectorPLLAndDLL` accumulates discriminators and applies the filter's
-# commands; this file holds the model above it (the cycle is in `vector/tracking.jl`):
+# commands; this file holds the model above it (the cycle is in `vector/navigation_processor.jl`):
 # plain functions that allocate nothing once their buffers exist.
 # ─────────────────────────────────────────────────────────────────────────────
 
