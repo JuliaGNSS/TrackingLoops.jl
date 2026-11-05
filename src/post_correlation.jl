@@ -197,6 +197,44 @@ is_bit_or_secondary_code_synced(state::PostCorrelationState) =
 get_soft_bits(state::PostCorrelationState) = get_soft_bits(state.bit_synchronizer)
 drain_soft_bits!(state::PostCorrelationState) = (drain_soft_bits!(state.bit_synchronizer); state)
 
+"""
+    get_secondary_code_phase(state::PostCorrelationState) -> Int
+
+The secondary-code chip of the code period after the latest coherent integration
+the bit synchronizer advanced over: found at sync, then moved along by every integration
+not passed as `secondary_code_wiped` (see [`process_correlator_bank_output!`](@ref)). `0`
+before sync and for a signal without a secondary code.
+"""
+get_secondary_code_phase(state::PostCorrelationState) = state.bit_synchronizer.secondary_code_phase
+
+"""
+    get_num_code_periods_into_bit(state::PostCorrelationState) -> Int
+
+The code periods integrated into the current navigation bit since its edge, once
+[`is_bit_or_secondary_code_synced`](@ref); `0` before sync. A host that sizes its next
+coherent integration so it does not cross a bit edge reads it.
+"""
+get_num_code_periods_into_bit(state::PostCorrelationState) =
+    is_bit_or_secondary_code_synced(state) ? state.bit_synchronizer.num_code_periods_into_bit : 0
+
+"""
+    get_last_num_code_periods(state::PostCorrelationState) -> Int
+
+The code periods the latest coherent integration spanned, which its coherent
+integration time and the C/N₀ estimate follow.
+"""
+get_last_num_code_periods(state::PostCorrelationState) = state.last_num_code_periods
+
+"""
+    get_bit_polarity(state::PostCorrelationState) -> Int8
+
+The sign the bit synchronizer found the bits at once
+[`is_bit_or_secondary_code_synced`](@ref): `-1` if they come inverted, `+1` if not, `0`
+before sync.
+"""
+get_bit_polarity(state::PostCorrelationState) =
+    is_bit_or_secondary_code_synced(state) ? state.bit_synchronizer.bit_polarity : Int8(0)
+
 estimate_cn0(state::PostCorrelationState, coherent_integration_time) =
     estimate_cn0(state.cn0_estimator, coherent_integration_time)
 

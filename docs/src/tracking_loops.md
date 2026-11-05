@@ -66,6 +66,10 @@ process_correlator_bank_output!(::PostCorrelationState, ::CorrelatorBankOutput, 
 is_dataless_with_secondary_code(::AbstractGNSSSignal)
 reset_post_correlation!(::PostCorrelationState)
 reset_sync!(::PostCorrelationState)
+get_secondary_code_phase(::PostCorrelationState)
+get_num_code_periods_into_bit(::PostCorrelationState)
+get_last_num_code_periods(::PostCorrelationState)
+get_bit_polarity(::PostCorrelationState)
 ```
 
 ## Two- and four-quadrant discriminators

@@ -17,6 +17,13 @@ using Random: MersenneTwister
     end
     @test is_bit_or_secondary_code_synced(state)
     @test length(get_soft_bits(state)) >= 8
+    # The host's read-outs: one code period per integration, the bit position, no overlay.
+    @test get_last_num_code_periods(state) == 1
+    @test get_num_code_periods_into_bit(state) == state.bit_synchronizer.num_code_periods_into_bit
+    @test 0 <= get_num_code_periods_into_bit(state) < 20
+    @test get_secondary_code_phase(state) == 0
+    @test get_bit_polarity(state) in (-1, 1)
+    @test get_bit_polarity(PostCorrelationState(signal, 7)) == 0
     @test all(abs.(get_soft_bits(state)) .> 0)
     # C/N0: |P|²/N0 − 1/T with |P| = 0.5 and N0 = 1e-6/Hz over 1 ms integrations.
     cn0 = estimate_cn0(state, 1023 / get_chip_rate(signal))
@@ -114,6 +121,9 @@ end
         @test state.last_num_new_soft_bits == length(get_soft_bits(state)) - num_bits
         push!(changes, state.last_sync_change)
         if is_bit_or_secondary_code_synced(state)
+            @test get_num_code_periods_into_bit(state) == state.bit_synchronizer.num_code_periods_into_bit
+            # The sign the sync found the soft bits at.
+            @test get_bit_polarity(state) == state.bit_synchronizer.bit_polarity != 0
             # Drained after every other integration: the next integration's bits are still its own,
             # and the drained ones are no longer reported.
             if iseven(k)
@@ -121,14 +131,16 @@ end
                 @test isempty(get_soft_bits(state))
             end
         else
+            @test get_num_code_periods_into_bit(state) == 0
             @test state.last_num_new_soft_bits == 0
+            @test get_bit_polarity(state) == 0
         end
     end
     @test count(==(SYNC_FOUND), changes) == 1
     @test count(==(SYNC_LOST), changes) == 0
     # A latest integration set without processing: no sync, no bits, no C/N₀.
     plain = processed_state(signal, epl(1.0), 0.0, 4000, 4000, 4000, 1, fs)
-    @test !is_bit_or_secondary_code_synced(plain) && plain.last_sync_change == SYNC_UNCHANGED
+    @test !is_bit_or_secondary_code_synced(plain) && plain.last_sync_change == SYNC_UNCHANGED && get_bit_polarity(plain) == 0
     @test plain.last_num_new_soft_bits == 0 && plain.cn0_estimator isa NoCN0Estimator
     # A restarted bit clock reports no new bits.
     restarted = reset_sync!(state)
