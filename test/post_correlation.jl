@@ -17,6 +17,13 @@ using Random: MersenneTwister
     end
     @test is_bit_or_secondary_code_synced(state)
     @test length(get_soft_bits(state)) >= 8
+    # The host's read-outs: one code period per integration, the bit position, no overlay.
+    @test get_last_num_code_periods(state) == 1
+    @test get_num_code_periods_into_bit(state) == state.bit_synchronizer.num_code_periods_into_bit
+    @test 0 <= get_num_code_periods_into_bit(state) < 20
+    @test get_secondary_code_phase(state) == 0
+    @test get_bit_polarity(state) in (-1, 1)
+    @test get_bit_polarity(PostCorrelationState(signal)) == 0
     @test all(abs.(get_soft_bits(state)) .> 0)
     # C/N0: |P|²/N0 − 1/T with |P| = 0.5 and N0 = 1e-6/Hz over 1 ms integrations.
     cn0 = estimate_cn0(state, 1023 / get_chip_rate(signal))

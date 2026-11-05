@@ -230,7 +230,11 @@ What the latest navigation cycle of a [`VectorTrackingLoop`](@ref) did (see
     per satellite and ranging signal (see [`get_vector_tracking_members`](@ref));
   - the events `seeded` (a fresh scalar fix seeded the filter), `fell_back`
     (vector tracking stopped) and `released` (some satellite was released; see
-    [`get_release_reason`](@ref)).
+    [`get_release_reason`](@ref));
+  - `solution_from_filter`: [`get_navigation_solution`](@ref) is the navigation filter's
+    this cycle, not a scalar fix. It differs from `vector_tracking_active` on the
+    transitions: the cycle that seeds the filter reports the scalar fix it seeded
+    from, and the cycle that falls back still reports the filter's last update.
 
 The per-member report of the latest cycle is [`get_vector_tracking_members`](@ref).
 """
@@ -243,9 +247,10 @@ struct NavigationStatus
     seeded::Bool
     fell_back::Bool
     released::Bool
+    solution_from_filter::Bool
 end
 
-NavigationStatus() = NavigationStatus(false, NaN * m, NaN * m, 0.0s, 0, false, false, false)
+NavigationStatus() = NavigationStatus(false, NaN * m, NaN * m, 0.0s, 0, false, false, false, false)
 
 # The unscented update's buffers (intermediate, `z`, `R`) for one measurement count.
 struct MeasurementUpdateWorkspace{I}
@@ -529,6 +534,34 @@ independent decoding.
 """
 get_decoder(loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer) =
     _get_decoder(loop.engine.groups, signal, Int(prn))
+
+"""
+    get_signal_pairs(loop::VectorTrackingLoop) -> Tuple
+
+The signals `loop` was built with, one `driver_signal => decoding_signal` pair per
+signal: a pilot ranged on and the data component decoded with it, or a data signal
+paired with itself.
+"""
+get_signal_pairs(loop::VectorTrackingLoop) =
+    map(group -> group.driver_signal => group.decoding_signal, loop.engine.groups)
+
+"""
+    get_scalar_loop(loop::VectorTrackingLoop) -> AbstractTrackingLoop
+
+The scalar tracking loop each satellite runs outside vector control (the `scalar_loop`
+`loop` was built with).
+"""
+get_scalar_loop(loop::VectorTrackingLoop) = loop.scalar_loop
+
+"""
+    is_vector_tracking_enabled(loop::AbstractTrackingLoop) -> Bool
+
+Whether `loop` closes the satellites' loops through a navigation filter: `false` for a
+scalar loop and for a `VectorTrackingLoop` built with `filter_config = nothing`, which
+only solves a scalar PVT.
+"""
+is_vector_tracking_enabled(::AbstractTrackingLoop) = false
+is_vector_tracking_enabled(loop::VectorTrackingLoop) = loop.engine.enabled
 
 _get_decoder(::Tuple{}, signal, prn) = nothing
 function _get_decoder(groups::Tuple, signal::S, prn) where {S}

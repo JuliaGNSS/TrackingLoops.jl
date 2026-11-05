@@ -681,6 +681,7 @@ function _navigation_cycle!(nav::VectorNavState, now)
         seeded,
         fell_back,
         released || dropped,
+        nav.vector_tracking_active && !seeded || fell_back,
     )
     nav.cycle_epoch_index = epoch_index
     nav.pending_epoch_index = _next_pending_epoch(nav, epoch_index)

@@ -351,6 +351,9 @@ TrackingLoops.default_residual_pll_loop_filter_bandwidth()
 TrackingLoops.NavigationStatus
 TrackingLoops.SatelliteReport
 get_decoder
+get_signal_pairs(::VectorTrackingLoop)
+get_scalar_loop(::VectorTrackingLoop)
+is_vector_tracking_enabled
 TrackingLoops.VectorReleaseReason
 TrackingLoops.calc_clock_bias_std(::VectorTrackingLoop)
 get_navigation_solution(::VectorTrackingLoop)
