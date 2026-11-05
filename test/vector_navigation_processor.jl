@@ -24,6 +24,11 @@ using Geodesy: ENUfromECEF, wgs84
     @test VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = 20ms).navigation_processor.navigation_filter_update_interval == 0.02s
     @test VectorTrackingLoop(GPSL1CA(); min_tracking_cn0 = 35dBHz).navigation_processor.min_tracking_cn0 == 35.0
     @test !VectorTrackingLoop(GPSL1CA(); filter_config = nothing).navigation_processor.enabled
+    paired = VectorTrackingLoop(GPSL1CA(), BeiDouB1C_P() => BeiDouB1C_D(); scalar_loop = DelayCompensatedTrackingLoop())
+    pairs = get_signal_pairs(paired)
+    @test map(pair -> typeof(first(pair)) => typeof(last(pair)), pairs) ==
+          (typeof(GPSL1CA()) => typeof(GPSL1CA()), typeof(BeiDouB1C_P()) => typeof(BeiDouB1C_D()))
+    @test get_scalar_loop(paired) isa DelayCompensatedTrackingLoop
 end
 
 @testset "The tracking_loop rejects what it cannot track" begin
@@ -75,6 +80,7 @@ end
     seed = results[1]
     @test seed.status.seeded
     @test seed.status.vector_tracking_active
+    @test !seed.status.solution_from_filter
     @test vt.vector_tracking_active
     @test seed.status.num_vector_tracking_members == length(rx.sats)
     # The emitted solution is the scalar fix, with no per-member report of the filter.
@@ -207,6 +213,7 @@ end
     result = results[end]
     pvt = result.pvt
     @test result.status.vector_tracking_active
+    @test result.status.solution_from_filter
     @test !result.status.seeded
     @test pvt.time isa TAITime
     @test pvt.reference_system === GPST()
@@ -362,6 +369,7 @@ end
     @test all(==(VT_BELOW_HORIZON), results[1].reasons)
     @test isempty(results[1].measured)
     @test results[1].status.fell_back
+    @test results[1].status.solution_from_filter
 end
 
 @testset "Biases are reported only for what was measured" begin
