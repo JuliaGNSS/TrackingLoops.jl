@@ -692,6 +692,7 @@ function _navigation_update!(nav_processor::NavigationProcessor, time)
         seeded,
         fell_back,
         released || dropped,
+        nav_processor.vector_tracking_active && !seeded || fell_back,
     )
     nav_processor.update_epoch_index = epoch_index
     nav_processor.pending_epoch_index = _next_pending_epoch(nav_processor, epoch_index)
@@ -750,8 +751,7 @@ function _advance_decoding!(
     slot.decoding_last_end_sample_index = post_correlation_state.last_sample_index
     slot.decoding_last_end_time = post_correlation_state.last_sample_index / fs
     slot.decoding_bit_synced = is_bit_or_secondary_code_synced(post_correlation_state) && !unwiped_after_sync
-    slot.decoding_num_code_periods_into_bit =
-        is_bit_or_secondary_code_synced(post_correlation_state) ? post_correlation_state.bit_synchronizer.num_code_periods_into_bit : 0
+    slot.decoding_num_code_periods_into_bit = get_num_code_periods_into_bit(post_correlation_state)
     slot.decoding_code_phase_fraction =
         isnan(post_correlation_state.last_code_phase) ? NaN :
         mod(post_correlation_state.last_code_phase + code_length / 2, code_length) - code_length / 2
@@ -806,8 +806,7 @@ function _decode_integration!(
     isempty(soft_bits) && return nothing
     if !isnan(phase) && slot.bit_from_edge && Base.length(soft_bits) == 1
         bit = real(slot.bit_accumulator)
-        inverted = is_bit_or_secondary_code_synced(post_correlation_state) && post_correlation_state.bit_synchronizer.bit_polarity < 0
-        slot.soft_bit[1] = Float32(inverted ? -bit : bit)
+        slot.soft_bit[1] = Float32(get_bit_polarity(post_correlation_state) < 0 ? -bit : bit)
         slot.running_decoder = decode!(slot.running_decoder, slot.soft_bit, 1)
     else
         slot.running_decoder = decode!(slot.running_decoder, soft_bits, Base.length(soft_bits))

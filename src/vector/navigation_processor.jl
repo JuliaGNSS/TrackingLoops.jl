@@ -230,7 +230,11 @@ What the latest navigation filter update of a [`VectorTrackingLoop`](@ref) did (
     per satellite and ranging signal (see [`get_vector_tracking_members`](@ref));
   - the events `seeded` (a fresh scalar fix seeded the filter), `fell_back`
     (vector tracking stopped) and `released` (some satellite was released; see
-    the reports' `release_reason`).
+    the reports' `release_reason`);
+  - `solution_from_filter`: [`get_navigation_solution`](@ref) is the navigation filter's
+    this update, not a scalar fix. It differs from `vector_tracking_active` on the
+    transitions: the update that seeds the filter reports the scalar fix it seeded
+    from, and the update that falls back still reports the filter's last update.
 
 The per-member report of the latest update is [`get_vector_tracking_members`](@ref).
 """
@@ -243,9 +247,10 @@ struct VectorTrackingStatus
     seeded::Bool
     fell_back::Bool
     released::Bool
+    solution_from_filter::Bool
 end
 
-VectorTrackingStatus() = VectorTrackingStatus(false, NaN * m, NaN * m, 0.0s, 0, false, false, false)
+VectorTrackingStatus() = VectorTrackingStatus(false, NaN * m, NaN * m, 0.0s, 0, false, false, false, false)
 
 # The unscented update's buffers (intermediate, `z`, `R`) for one measurement count.
 struct MeasurementUpdateWorkspace{I}
@@ -527,6 +532,24 @@ independent decoding.
 """
 get_decoder(tracking_loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer) =
     _get_decoder(tracking_loop.navigation_processor.groups, signal, Int(prn))
+
+"""
+    get_signal_pairs(tracking_loop::VectorTrackingLoop) -> Tuple
+
+The signals `tracking_loop` was built with, one `driver_signal => decoding_signal` pair per
+signal: a pilot ranged on and the data component decoded with it, or a data signal
+paired with itself.
+"""
+get_signal_pairs(tracking_loop::VectorTrackingLoop) =
+    map(group -> group.driver_signal => group.decoding_signal, tracking_loop.navigation_processor.groups)
+
+"""
+    get_scalar_loop(tracking_loop::VectorTrackingLoop) -> AbstractTrackingLoop
+
+The scalar tracking loop each satellite runs outside vector control (the `scalar_loop`
+`tracking_loop` was built with).
+"""
+get_scalar_loop(tracking_loop::VectorTrackingLoop) = tracking_loop.scalar_loop
 
 _get_decoder(::Tuple{}, signal, prn) = nothing
 function _get_decoder(groups::Tuple, signal::S, prn) where {S}
