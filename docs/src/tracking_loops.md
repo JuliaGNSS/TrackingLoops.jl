@@ -70,6 +70,28 @@ get_last_num_code_periods(::PostCorrelationState)
 get_bit_polarity(::PostCorrelationState)
 ```
 
+## A host's lifecycle
+
+Every host, Tracking.jl, HardwareLoopCore.jl or another, drives a satellite through
+the same calls:
+
+  - **Arm** (a satellite acquired, or a channel given a new satellite or PRN): a fresh
+    [`PostCorrelationState`](@ref) per signal, or [`reset_post_correlation!`](@ref) on
+    the old one to reuse its buffers, and a fresh [`init_loop_state`](@ref) at the
+    acquisition Dopplers; a hardware channel also [`reset_timeline!`](@ref)s its NCO
+    timeline to the commanded Dopplers.
+  - **Every predetection integration**: [`process_correlator_bank_output!`](@ref), then
+    [`step_loop!`](@ref) with the returned integration, then write the command it
+    returns (on hardware: [`schedule_command!`](@ref), and [`confirm_command!`](@ref) or
+    [`cancel_command!`](@ref) once the device answers).
+  - **A cut in the integrations** (a lost dump, a gap in the samples): the bit edge is no
+    longer known, so [`reset_sync!`](@ref) the signal's state; the loop state and the C/N₀
+    history are kept.
+  - **A handoff** (a new integration length, a Doppler correction from outside):
+    [`reseed_loop_state`](@ref) at the new Dopplers, keeping bandwidths and stage.
+  - **Release** (the satellite dropped): nothing to call; drop or reuse the states.
+
+
 ## Two- and four-quadrant discriminators
 
 The carrier discriminators are two-quadrant (Costas) by default: they read a
