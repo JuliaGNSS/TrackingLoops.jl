@@ -76,7 +76,7 @@ integration of any other signal returns the command in force there.
 again: a `ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)` or a
 [`DelayCompensatedTrackingLoop`](@ref). Anything else throws an `ArgumentError`, as does a
 dataless signal given alone (pair a pilot such as GPS L1C-P or Galileo E1C with its
-data component). `filter_config = nothing` only ever solves the scalar PVT.
+data component).
 
 Storage is allocated for `satellite_capacity_per_signal` satellites per ranging signal
 (a `pilot => data` pair is one) and grows only past that; a dropped satellite leaves

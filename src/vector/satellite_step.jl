@@ -38,7 +38,7 @@ end
 function VectorTrackingLoop(
     signals::Union{AbstractGNSSSignal,Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}}...;
     scalar_loop::AbstractTrackingLoop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
-    filter_config::Union{NavFilterConfig,Nothing} = NavFilterConfig(),
+    filter_config::NavFilterConfig = NavFilterConfig(),
     navigation_filter_update_interval = 100.0ms,
     min_tracking_cn0 = 30.0dBHz,
     residual_pll_loop_bandwidth = default_residual_pll_loop_bandwidth(),
@@ -669,7 +669,6 @@ end
 #     `measurement_deficit_timeout` of unsolvable epochs, or with no member left, every
 #     satellite in the loop is released (those that missed the epoch too) and the next
 #     update solves the scalar PVT.
-#   - `filter_config = nothing`: the scalar PVT only.
 function _navigation_update!(nav_processor::NavigationProcessor, time)
     groups = nav_processor.groups
     buffers = nav_processor.buffers
@@ -680,7 +679,7 @@ function _navigation_update!(nav_processor::NavigationProcessor, time)
     nav_processor.update_index += 1
     dropped = _fold_groups(_prepare_slots!, false, groups, nav_processor, time)
     seeded = released = fell_back = false
-    if nav_processor.enabled && nav_processor.vector_tracking_active
+    if nav_processor.vector_tracking_active
         released, fell_back = _nav_filter_update!(nav_processor, groups, update_interval)
     else
         # Scalar solve: no per-member report.
@@ -697,10 +696,8 @@ function _navigation_update!(nav_processor::NavigationProcessor, time)
         )
         if result.status == PositionVelocityTime.solved
             nav_processor.pvt = result.solution
-            if nav_processor.enabled
-                seeded = true
-                _seed!(nav_processor, groups, update_interval)
-            end
+            seeded = true
+            _seed!(nav_processor, groups, update_interval)
         end
     end
     num_members = _fold_groups_with_buffers(_count_members, 0, groups, buffers.signal_observations, 1)
