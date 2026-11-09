@@ -29,10 +29,6 @@ end
     (GPSL1CA(), GalileoE1B()),
 )
     samples_per_update = 100 * SAMPLES_PER_MS
-    scalar = SimReceiver(; signals, filter_config = nothing)
-    _, sample, _ = run_simulation!(scalar, 3)
-    @test measure_navigation(scalar, sample + samples_per_update) == 0
-
     rx = SimReceiver(; signals)
     _, sample, _ = run_simulation!(rx, 20)
     @test rx.vt.vector_tracking_active
@@ -77,9 +73,6 @@ end
     ("two bands", (; signals = (GPSL1CA(), GPSL2CM()), range_biases = (0.0, 4.0))),
 )
     samples_per_update = 100 * SAMPLES_PER_MS
-    scalar = SimReceiver(; kw..., filter_config = nothing)
-    _, sample, _ = run_simulation!(scalar, 3)
-    @test measure_navigation(scalar, sample + samples_per_update) == 0
     rx = SimReceiver(; kw...)
     _, sample, _ = run_simulation!(rx, 20)
     @test rx.vt.vector_tracking_active
@@ -91,16 +84,13 @@ end
     # hand. Reading it allocates on Julia 1.10, which GNSSDecoder does not check for
     # allocations. The allocation-free loop process is built with juliac on 1.12 or later.
     # Here the GGTO also ties the Galileo clock to the GPS one.
-    for filter_config in (nothing, NavFilterConfig())
-        rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1), filter_config)
-        galileo = only(rx.channels[2])
-        galileo.decoder = with_zero_ggto(galileo.decoder)
-        _, sample, _ = run_simulation!(rx, 20)
-        @test rx.vt.vector_tracking_active == !isnothing(filter_config)
-        isnothing(filter_config) ||
-            @test !isempty(rx.vt.buffers.clock_constraints)
-        @test measure_navigation(rx, sample + 100 * SAMPLES_PER_MS) == 0 skip = VERSION < v"1.11"
-    end
+    rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()), num_sats = (3, 1))
+    galileo = only(rx.channels[2])
+    galileo.decoder = with_zero_ggto(galileo.decoder)
+    _, sample, _ = run_simulation!(rx, 20)
+    @test rx.vt.vector_tracking_active
+    @test !isempty(rx.vt.buffers.clock_constraints)
+    @test measure_navigation(rx, sample + 100 * SAMPLES_PER_MS) == 0 skip = VERSION < v"1.11"
 end
 
 @testset "A satellite applies an update without allocating" begin

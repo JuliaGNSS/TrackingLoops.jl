@@ -417,7 +417,6 @@ filter coasted through an obscuration.
 """
 mutable struct NavigationProcessor{G<:Tuple,SB<:Tuple}
     const nav_filter::NavFilter
-    const enabled::Bool
     vector_tracking_active::Bool
     measurement_deficit_duration::typeof(1.0s)
     const vector_tracking_members::Dictionary{Tuple{Symbol,Int},ObservationResiduals}
@@ -442,7 +441,7 @@ mutable struct NavigationProcessor{G<:Tuple,SB<:Tuple}
 end
 
 function NavigationProcessor(
-    filter_config::Union{NavFilterConfig,Nothing},
+    config::NavFilterConfig,
     pairs::Tuple,
     scalar_loop::AbstractTrackingLoop;
     navigation_filter_update_interval,
@@ -452,7 +451,6 @@ function NavigationProcessor(
     enable_ionospheric_correction::Bool,
     enable_tropospheric_correction::Bool,
 )
-    config = something(filter_config, NavFilterConfig())
     signals = map(first, pairs)
     layout = NavFilterLayout(signals)
     model = NavFilterModel(config, layout, uconvert(s, navigation_filter_update_interval))
@@ -465,7 +463,6 @@ function NavigationProcessor(
     signal_observations = map(_signal_observation_buffer, groups)
     NavigationProcessor(
         NavFilter(config, layout, model, zeros(n), zeros(n, n), 1, TAITime(0, 0.0)),
-        !isnothing(filter_config),
         false,
         0.0s,
         Dictionary{Tuple{Symbol,Int},ObservationResiduals}(),
