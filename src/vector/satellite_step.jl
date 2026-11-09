@@ -302,11 +302,11 @@ function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSl
     slot.slot_generation = nav_processor.next_slot_generation
     slot.in_update = false
     fs = _sampling_frequency_hz(post_correlation_state)
-    start = post_correlation_state.last_sample_index - post_correlation_state.last_num_integrated_samples
+    start = _integration_start(post_correlation_state)
     slot.driver.last_end_sample_index = start
     slot.driver.sampling_frequency = post_correlation_state.sampling_frequency
     slot.driver.last_code_phase = NaN
-    slot.driver.last_coherent_integration_time = uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
+    slot.driver.last_coherent_integration_time = uconvert(s, _coherent_integration_time(post_correlation_state))
     slot.driver.chips_since_epoch = 0.0
     slot.decoding.last_end_sample_index = start
     slot.decoding.sampling_frequency = post_correlation_state.sampling_frequency
@@ -456,7 +456,7 @@ function _snapshot_driver!(
     code_command = calc_mean_nco_command(nco_history, slot.driver.last_end_sample_index, epoch_sample_index).code_doppler
     chips_to_epoch = (epoch_time - _last_end_time(slot.driver)) * (chip_rate + code_command)
     (; carrier_doppler, code_doppler) = get_nco_command(nco_history, epoch_sample_index)
-    coherent_integration_time = uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
+    coherent_integration_time = uconvert(s, _coherent_integration_time(post_correlation_state))
     slot.pending_snapshot = SatelliteSnapshot(
         slot.pending_snapshot;
         loop_state = loop_state,
@@ -733,7 +733,7 @@ function _advance_driver!(group::VectorTrackingSlotGroup, slot::VectorTrackingSl
     slot.driver.sampling_frequency = post_correlation_state.sampling_frequency
     slot.driver.last_code_phase = post_correlation_state.last_code_phase
     slot.driver.last_coherent_integration_time =
-        uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
+        uconvert(s, _coherent_integration_time(post_correlation_state))
     slot.driver.last_early_late_spacing =
         calc_early_late_sample_spacing(
             post_correlation_state.last_filtered_correlator_bank,

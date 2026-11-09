@@ -181,7 +181,7 @@ end
 # The carrier discriminators (`_calc_carrier_discriminators`) and the DLL's
 # (`_calc_code_discriminator`) under the mean NCO command the integration ran on.
 @inline function _calc_discriminators(post_correlation_state::PostCorrelationState, nco_history; form_fll::Bool)
-    integration_start_sample_index = post_correlation_state.last_sample_index - post_correlation_state.last_num_integrated_samples
+    integration_start_sample_index = _integration_start(post_correlation_state)
     nco_command = calc_mean_nco_command(nco_history, integration_start_sample_index, post_correlation_state.last_sample_index)
     (;
         _calc_carrier_discriminators(post_correlation_state, nco_command.carrier_doppler; form_fll)...,
@@ -193,7 +193,7 @@ end
 # it ran on, with its coherent integration time and centre sample.
 @inline function _calc_carrier_discriminators(post_correlation_state::PostCorrelationState, applied_carrier; form_fll::Bool)
     signal = post_correlation_state.signal
-    coherent_integration_time = post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency
+    coherent_integration_time = _coherent_integration_time(post_correlation_state)
     filtered_correlator_bank = post_correlation_state.last_filtered_correlator_bank
     frequency_error =
         form_fll ?
@@ -209,7 +209,7 @@ end
         applied_carrier,
         phase_error = pll_disc(signal, filtered_correlator_bank; polarity = post_correlation_state.last_carrier_phase_polarity),
         frequency_error,
-        center = post_correlation_state.last_sample_index - post_correlation_state.last_num_integrated_samples / 2,
+        center = _integration_center(post_correlation_state),
     )
 end
 
@@ -458,7 +458,7 @@ integration's end under `nothing`), so applying it changes nothing.
     measured = _calc_discriminators(post_correlation_state, nco_history; form_fll)
     (; center, coherent_integration_time, phase_error, frequency_error) = measured
     integration_end_sample_index = post_correlation_state.last_sample_index
-    integration_start_sample_index = integration_end_sample_index - post_correlation_state.last_num_integrated_samples
+    integration_start_sample_index = _integration_start(post_correlation_state)
     # Every integration of the batch maps onto the delay-free loop's integration this far ahead.
     shift = isnothing(application_sample_index) ? 0 : application_sample_index - post_correlation_state.last_command_issue_sample_index
 
