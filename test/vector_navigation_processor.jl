@@ -107,7 +107,7 @@ end
     for sat in rx.sats
         sat.in_view = true
     end
-    fill_unready!(v, sat, epoch, application_sample_index, nav_processor) = (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); v.positioning_ready = false)
+    fill_unready!(v, sat, epoch, application_sample_index, nav_processor) = (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); set_snapshot!(v; positioning_ready = false))
     results, _, _ = run_simulation!(rx, 2; fill! = fill_unready!)
     @test all(r -> !r.status.vector_tracking_active && !r.status.seeded, results)
     @test all(sat -> !sat.state.vector_controlled, rx.sats)
@@ -122,7 +122,7 @@ end
         foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
         rx.vt.vector_tracking_active = false
         fill_unready!(slot, sat, epoch, application_sample_index, nav_processor) =
-            (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor); slot.positioning_ready = false)
+            (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor); set_snapshot!(slot; positioning_ready = false))
         results, _, _ = run_simulation!(rx, 1; start_sample = sample, fill! = fill_unready!)
         @test get_navigation_solution(rx.tracking_loop) === previous_fix
         @test !only(results).status.seeded
@@ -155,7 +155,7 @@ end
         # The carrier NCO is commanded the Doppler of the rate predicted where the
         # command takes effect — at the epoch, with the satellite there; the measured rate, a
         # mean over the past update interval, does not enter it.
-        ephemeris = something(GNSSDecoder.get_broadcast_ephemeris(slot.decoder))
+        ephemeris = something(GNSSDecoder.get_broadcast_ephemeris(slot.snapshot.decoder))
         orbit = calc_satellite_position_and_velocity(ephemeris, member.transmit_tow)
         rate_at_epoch = TL.calc_pseudorange_rate(user_pos, user_vel, user_drift,
             member.sat_pos, orbit.velocity, calc_satellite_clock_drift(ephemeris, member.transmit_tow))
@@ -246,7 +246,7 @@ end
     # not in the solution's `sats`.
     prn = rx.sats[1].decoder.prn
     coast!(v, sat, epoch, application_sample_index, nav_processor) =
-        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); v.prn == prn && (v.measurement_ready = false))
+        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); v.prn == prn && set_snapshot!(v; measurement_ready = false))
     results, sample, _ = run_simulation!(rx, 1; fill! = coast!, start_sample = sample)
     key = (:GPSL1CA, prn)
     @test rx.sats[1].state.vector_controlled
@@ -266,7 +266,7 @@ end
     @test dropped.release_reason == VT_INELIGIBLE
     @test get_satellite_report(rx.tracking_loop, GPSL1CA(), dropped.prn).release_reason == VT_INELIGIBLE
     @test !dropped.occupied
-    @test !dropped.loop_state.vector_controlled
+    @test !dropped.in_vector_loop
     @test !sat.state.vector_controlled
     @test sat.state.code_frequency_correction == 0.0Hz
     # Re-initialised at its residual PLL's estimate, a hair off the replica's command, which
@@ -300,7 +300,7 @@ end
     _, sample, _ = run_simulation!(rx, 3)
     # Three satellites in lock are too few for position and clock.
     starve!(v, sat, epoch, application_sample_index, nav_processor) =
-        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); v.measurement_ready = v.prn in (rx.sats[1].decoder.prn, rx.sats[2].decoder.prn, rx.sats[3].decoder.prn))
+        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); set_snapshot!(v; measurement_ready = v.prn in (rx.sats[1].decoder.prn, rx.sats[2].decoder.prn, rx.sats[3].decoder.prn)))
     results, sample, _ = run_simulation!(rx, 3; fill! = starve!, start_sample = sample)
     @test [r.status.measurement_deficit_duration for r in results] ≈ [0.1, 0.2, 0.3] .* s
     @test all(r -> r.status.vector_tracking_active, results)
@@ -325,7 +325,7 @@ end
     application_carrier, application_code = nco_command.carrier_doppler, nco_command.code_doppler
     @test sat.state.scalar_state.initial_carrier_doppler ≈ application_carrier * Hz atol = 0.01Hz
     @test sat.state.scalar_state.initial_code_doppler == application_code * Hz
-    @test sat.state.scalar_state.initial_carrier_doppler != dropped.carrier_doppler
+    @test sat.state.scalar_state.initial_carrier_doppler != dropped.snapshot.carrier_doppler
 end
 
 @testset "A satellite is admitted only above the admission mask" begin
@@ -333,21 +333,21 @@ end
     _, sample, _ = run_simulation!(rx, 5)
     vt = rx.vt
     group = rx.group
-    sat = group.slots[1]
-    sat.loop_state = TL._release_from_vector_loop(sat.loop_state)
+    slot = group.slots[1]
+    set_snapshot!(slot; loop_state = TL._release_from_vector_loop(slot.snapshot.loop_state))
     user_pos = first(TL.nav_filter_states(vt.nav_filter.x, vt.nav_filter.model.idxs))
     here = ENUfromECEF(ECEF(user_pos...), wgs84)
     antipode = ENUfromECEF(ECEF((-user_pos)...), wgs84)
-    @test TL._is_above_admission_mask(group.driver_signal, sat, here)
-    @test !TL._is_above_admission_mask(group.driver_signal, sat, antipode)
+    @test TL._is_above_admission_mask(group.driver_signal, slot, here)
+    @test !TL._is_above_admission_mask(group.driver_signal, slot, antipode)
     # Eligible and in lock, but below the mask: not admitted, so a satellite at the
     # horizon is not admitted and released every update. A member stays a member; the
     # elevation mask of the running update releases it.
     @test !TL._update_membership!(false, group, 1, nothing, antipode)
-    @test !sat.loop_state.vector_controlled
-    @test all(v -> v.loop_state.vector_controlled, channel_slots(group, rx.sats)[2:end])
+    @test !slot.in_vector_loop
+    @test all(v -> v.in_vector_loop, channel_slots(group, rx.sats)[2:end])
     TL._update_membership!(false, group, 1, nothing, here)
-    @test sat.loop_state.vector_controlled
+    @test slot.in_vector_loop
     # A running update admits it back at the filter's own position, and the satellite
     # applies the admission.
     rx.sats[1].state = TL._release_from_vector_loop(rx.sats[1].state)
@@ -376,7 +376,7 @@ end
     rx = SimReceiver(; signals = (GPSL1CA(), GalileoE1B()))
     # No Galileo satellite in lock: its clock coasts and is not reported.
     gps_only!(v, sat, epoch, application_sample_index, nav_processor) =
-        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); sat.signal isa GalileoE1B && (v.measurement_ready = false))
+        (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); sat.signal isa GalileoE1B && set_snapshot!(v; measurement_ready = false))
     results, sample, _ = run_simulation!(rx, 10; fill! = gps_only!)
     @test results[end].status.vector_tracking_active
     @test !haskey(results[end].pvt.inter_system_biases, GST())

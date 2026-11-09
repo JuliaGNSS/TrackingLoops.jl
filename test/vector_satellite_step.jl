@@ -37,12 +37,12 @@ end
     state, = step_loop!(tracking_loop, state, nav_processor_integration(7, 4000), nco_history, nothing)
     @test (state.slot_index, state.slot_generation) == (1, 1)
     slot = group.slots[1]
-    @test slot.occupied && slot.prn == 7 && slot.running_decoder.prn == 7
+    @test slot.occupied && slot.prn == 7 && slot.decoding.decoder.prn == 7
     # The integration started at sample 0: the first epoch it can snapshot is the one there,
     # and as the only satellite it ran that epoch's update at once.
     @test slot.first_epoch_index == 0
     @test nav_processor.update_epoch_index == 0 && nav_processor.pending_epoch_index == 1
-    @test slot.driver_last_end_sample_index == 4000
+    @test slot.driver.last_end_sample_index == 4000
     # Later integrations keep the slot.
     state, = step_loop!(tracking_loop, state, nav_processor_integration(7, 8000), nco_history, nothing)
     @test nav_processor.next_slot_generation == 1
@@ -57,7 +57,7 @@ end
     reacquired, = step_loop!(tracking_loop, reacquired, nav_processor_integration(7, 12_000), nco_history, nothing)
     @test reacquired.slot_index == 1 && reacquired.slot_generation == 3
     @test slot.slot_generation == 3
-    @test isnothing(slot.running_decoder.num_bits_since_time_reference)
+    @test isnothing(slot.decoding.decoder.num_bits_since_time_reference)
     # A third satellite finds no free slot and grows the group.
     third = init_loop_state(tracking_loop, GPSL1CA(), 10.0Hz, 0.0Hz)
     third, = step_loop!(tracking_loop, third, nav_processor_integration(11, 12_000), nco_history, nothing)
@@ -80,14 +80,14 @@ b1c_subframe1(prn, soh) = Float32[
     state = init_loop_state(tracking_loop, BeiDouB1C_P(), 100.0Hz, 0.1Hz)
     state, = step_loop!(tracking_loop, state, nav_processor_integration(19, 4000; signal = BeiDouB1C_P()), nco_history, nothing)
     slot = group.slots[1]
-    @test slot.running_decoder.prn == 19
+    @test slot.decoding.decoder.prn == 19
     slot.occupied = false
     other = init_loop_state(tracking_loop, BeiDouB1C_P(), 100.0Hz, 0.1Hz)
     other, = step_loop!(tracking_loop, other, nav_processor_integration(30, 8000; signal = BeiDouB1C_P()), nco_history, nothing)
-    @test other.slot_index == 1 && slot.running_decoder.prn == 30
+    @test other.slot_index == 1 && slot.decoding.decoder.prn == 30
     # Subframe 1 at both ends of a frame is all the sync reads.
     frame = [b1c_subframe1(30, 10); ones(Float32, 1728); b1c_subframe1(30, 11)]
-    decoder = decode!(slot.running_decoder, frame, length(frame))
+    decoder = decode!(slot.decoding.decoder, frame, length(frame))
     @test decoder.raw_data.SOH == 10
 end
 
@@ -103,21 +103,21 @@ function take_snapshot!(nav_processor, group, slot, decoder, epoch_sample_index;
     slot.occupied = true
     slot.first_epoch_index = 0
     slot.driver_epoch_index = slot.decoding_epoch_index = slot.snapshot_epoch_index = typemin(Int)
-    slot.running_decoder = decoder
-    slot.decoding_bit_synced = synced
-    slot.decoding_num_code_periods_into_bit = code_periods
-    slot.decoding_code_phase_fraction = fraction
-    slot.decoding_last_end_sample_index = decoding_end
-    slot.decoding_last_end_time = decoding_end / fs
-    slot.last_code_phase = driver_phase
-    slot.driver_last_end_sample_index = end_sample
-    slot.driver_last_end_time = end_sample / fs
+    slot.decoding.decoder = decoder
+    slot.decoding.bit_synced = synced
+    slot.decoding.num_code_periods_into_bit = code_periods
+    slot.decoding.code_phase_fraction = fraction
+    slot.decoding.last_end_sample_index = decoding_end
+    slot.decoding.sampling_frequency = fs * Hz
+    slot.driver.last_code_phase = driver_phase
+    slot.driver.last_end_sample_index = end_sample
+    slot.driver.sampling_frequency = fs * Hz
     nco_history = ConstantNCOCommand(0.0, code_doppler)
     post_correlation_state = nav_processor_integration(3, epoch_sample_index + 4000; signal = group.driver_signal)
     TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, nco_history)
     TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, nco_history)
     TL._complete_snapshot!(nav_processor, group, slot)
-    slot.decoder.num_bits_since_time_reference, slot.code_phase
+    slot.snapshot.decoder.num_bits_since_time_reference, slot.snapshot.code_phase
 end
 
 @testset "The snapshot reads the code phase from the last bit edge" begin
@@ -158,12 +158,11 @@ end
     @test code_phase ≈ 5 * 1023 + 1000 / fs * chip_rate
     # Out of sync there is no lock, and no bit edge to count from.
     snapshot(5, 0.2, 399_000, 400_000; synced = false)
-    @test !slot.measurement_ready
+    @test !slot.snapshot.measurement_ready
     # An integration that does not cross the pending epoch takes no snapshot.
     nav_processor.num_snapshots = 0
     slot.driver_epoch_index = slot.decoding_epoch_index = slot.snapshot_epoch_index = typemin(Int)
-    slot.driver_last_end_sample_index = slot.decoding_last_end_sample_index = 300_000
-    slot.driver_last_end_time = slot.decoding_last_end_time = 300_000 / fs
+    slot.driver.last_end_sample_index = slot.decoding.last_end_sample_index = 300_000
     post_correlation_state = nav_processor_integration(3, 304_000)
     TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, ConstantNCOCommand(0.0, 0.0))
     TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, ConstantNCOCommand(0.0, 0.0))
@@ -180,7 +179,7 @@ end
     group = nav_processor.groups[1]
     @test group.decoding_signal isa GPSL2CM
     slot = group.slots[1]
-    @test slot.running_decoder isa typeof(GNSSDecoderState(GPSL2CM(), 1))
+    @test slot.decoding.decoder isa typeof(GNSSDecoderState(GPSL2CM(), 1))
     decoder = GNSSDecoderState(GNSSDecoderState(GPSL2CM(), 3); num_bits_since_time_reference = 10)
     chip_rate = 511.5e3
     fs = 4e6
@@ -220,25 +219,28 @@ end
         slot.occupied = true
         slot.first_epoch_index = 0
     end
-    ended!(slot, t) = (slot.driver_last_end_time = slot.decoding_last_end_time = t)
+    # Ended at `t` (s), on a 4 MHz grid.
+    ended_at!(role, t) = (role.sampling_frequency = 4e6Hz; role.last_end_sample_index = round(Int, t * 4e6))
+    ended!(slot, t) = (ended_at!(slot.driver, t); ended_at!(slot.decoding, t))
     fresh.snapshot_epoch_index = 10
     ended!(fresh, 1.0)
     ended!(stale, 0.75)
     ended!(member, 0.7)
-    member.loop_state = TL._add_to_vector_loop(group.prototype)
+    member.snapshot = TL.SatelliteSnapshot(member.snapshot; loop_state = TL._add_to_vector_loop(group.prototype))
+    member.in_vector_loop = true
     # The stale ones are not waited for…
     @test TL._all_snapshotted(true, group, nav_processor, 1.0)
     ended!(stale, 0.85)
     @test !TL._all_snapshotted(true, group, nav_processor, 1.0)
     # …and a satellite is stale once either of its signals is.
-    stale.decoding_last_end_time = 0.75
+    ended_at!(stale.decoding, 0.75)
     @test TL._all_snapshotted(true, group, nav_processor, 1.0)
     # …nor one past the epoch without its snapshot, which it can no longer take — but
     # one with the driver's half taken is, while its decoding signal is short of it…
     ended!(stale, 1.001)
     @test TL._all_snapshotted(true, group, nav_processor, 1.002)
     stale.driver_epoch_index = 10
-    stale.decoding_last_end_time = 0.999
+    ended_at!(stale.decoding, 0.999)
     @test !TL._all_snapshotted(true, group, nav_processor, 1.002)
     stale.driver_epoch_index = typemin(Int)
     ended!(stale, 0.75)
@@ -247,7 +249,7 @@ end
     @test fresh.in_update && fresh.occupied
     @test !stale.occupied && stale.release_reason == VT_NOT_RELEASED
     @test !member.occupied && member.release_reason == VT_INELIGIBLE
-    @test !member.loop_state.vector_controlled
+    @test !member.in_vector_loop
     @test get_satellite_report(VectorTrackingLoop(signal), signal, 3) === nothing
 end
 
@@ -368,14 +370,14 @@ end
     # `b` is a member of the vector loop, in the slot and in the state its host keeps.
     slot = group.slots[b.slot_index]
     b = TL._add_to_vector_loop(b)
-    slot.loop_state = b
+    slot.snapshot = TL.SatelliteSnapshot(slot.snapshot; loop_state = b)
     # Its integrations stop for longer than two update intervals: an update drops it and releases it, but
     # only in the slot — the host never hands the satellite the release.
     for k = 11:400
         a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000k), nco_history, nothing)
     end
     @test !slot.occupied
-    @test !slot.loop_state.vector_controlled
+    @test !slot.in_vector_loop
     @test b.vector_controlled
     # Its integrations resume: it registers anew, and applies the release it missed, its
     # scalar loop re-initialised at the replica's Dopplers.
@@ -383,7 +385,7 @@ end
     b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 401), resumed, nothing)
     @test slot.occupied
     @test !b.vector_controlled
-    @test !slot.loop_state.vector_controlled
+    @test !slot.in_vector_loop
     @test b.code_frequency_correction == 0.0Hz
     @test b.scalar_state.initial_carrier_doppler == 120.0Hz
     @test b.scalar_state.initial_code_doppler == 0.12Hz
@@ -394,7 +396,7 @@ end
     groups = pair.navigation_processor.groups
     @test groups[1].driver_signal isa GPSL1CA && groups[1].decoding_signal isa GPSL1CA
     @test groups[2].driver_signal isa GalileoE1C && groups[2].decoding_signal isa GalileoE1B
-    @test groups[2].slots[1].running_decoder isa typeof(GNSSDecoderState(GalileoE1B(), 1))
+    @test groups[2].slots[1].decoding.decoder isa typeof(GNSSDecoderState(GalileoE1B(), 1))
     @test pair.navigation_processor.nav_filter.layout.signal_id_by_group == [:GPSL1CA, :GalileoE1C]
     # A dataless driver needs a data component to decode; that one must carry data and
     # have the driver's chip rate, and no signal may be given twice.
@@ -418,7 +420,7 @@ end
     @test (stepped.slot_index, stepped.slot_generation) == (1, 1)
     @test stepped.scalar_state === state.scalar_state
     @test (carrier, code) == (100.0Hz, 0.1Hz)
-    @test nav_processor.groups[1].slots[1].decoding_last_end_sample_index == 4000
+    @test nav_processor.groups[1].slots[1].decoding.last_end_sample_index == 4000
     # Under an application sample the command in force is the one there.
     timeline = NCOTimeline()
     reset_timeline!(timeline, 100.0, 0.1)
@@ -428,7 +430,7 @@ end
     # The pilot's integration steps the loop on the same slot.
     driven, = step_loop!(tracking_loop, stepped, nav_processor_integration(7, 40_000; n = 40_000, signal = GPSL1C_P()), nco_history, nothing)
     @test driven.slot_index == 1 && nav_processor.next_slot_generation == 1
-    @test nav_processor.groups[1].slots[1].driver_last_end_sample_index == 40_000
+    @test nav_processor.groups[1].slots[1].driver.last_end_sample_index == 40_000
     # A passenger the tracking_loop does not decode is ignored; a driver it does not range
     # on is an error, as is a satellite stepped with another satellite's driver.
     plain = VectorTrackingLoop(GPSL1CA())
@@ -487,7 +489,7 @@ TL.estimate_cn0(estimator::FixedCN0Estimator, coherent_integration_time) = estim
         slot = nav_processor.groups[1].slots[1]
         @test slot.snapshot_epoch_index == 1
         # Capped at 80 dB-Hz, and out of lock without the bit sync.
-        @test slot.cn0_dbhz == read
-        @test !slot.measurement_ready
+        @test slot.snapshot.cn0_dbhz == read
+        @test !slot.snapshot.measurement_ready
     end
 end

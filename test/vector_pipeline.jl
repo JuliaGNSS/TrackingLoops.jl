@@ -42,10 +42,10 @@ end
     # in, and seeded the filter.
     for slot in pipeline_slots(rx)
         @test slot.occupied
-        @test slot.decoding_bit_synced
-        @test TL.has_positioning_data(slot.running_decoder)
-        @test slot.measurement_ready && slot.positioning_ready
-        @test 40 < slot.cn0_dbhz < 50
+        @test slot.decoding.bit_synced
+        @test TL.has_positioning_data(slot.decoding.decoder)
+        @test slot.snapshot.measurement_ready && slot.snapshot.positioning_ready
+        @test 40 < slot.snapshot.cn0_dbhz < 50
     end
     seed = findfirst(r -> r.status.seeded, results)
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
@@ -95,13 +95,13 @@ end
     prn = rx.sats[1].decoder.prn
     snapshot = get_satellite_report(tracking_loop, signal, prn)
     slot = only(filter(slot -> slot.prn == prn, tracking_loop.navigation_processor.groups[1].slots))
-    @test get_decoder(tracking_loop, signal, prn) === slot.running_decoder
+    @test get_decoder(tracking_loop, signal, prn) === slot.decoding.decoder
     @test !hasproperty(snapshot, :decoder)
-    original_cn0 = slot.cn0_dbhz
-    slot.cn0_dbhz = original_cn0 + 1
+    original_cn0 = slot.snapshot.cn0_dbhz
+    slot.snapshot = TL.SatelliteSnapshot(slot.snapshot; cn0_dbhz = original_cn0 + 1)
     @test snapshot.cn0_dbhz == original_cn0
     @test get_satellite_report(tracking_loop, signal, prn).cn0_dbhz == original_cn0 + 1
-    slot.cn0_dbhz = original_cn0
+    slot.snapshot = TL.SatelliteSnapshot(slot.snapshot; cn0_dbhz = original_cn0)
 end
 
 @testset "From integrations alone, on a clean signal" begin
@@ -187,7 +187,7 @@ end
     end
     lagging = []
     on_tick(sample) = push!(lagging, (; t = sample / 4e6, status = rx.vt.status,
-        in_loop = rx.vt.groups[1].slots[7].loop_state.vector_controlled))
+        in_loop = rx.vt.groups[1].slots[7].in_vector_loop))
     results, _, diverged = run_pipeline!(rx, 6.0; start_sample = start, fade, paused, on_tick)
     @test !diverged
     fallback = findfirst(r -> r.status.fell_back, results)
@@ -261,8 +261,8 @@ end
     @test newcomer.state.slot_index == gone.state.slot_index
     @test gone_slot.occupied
     @test gone_slot.prn == newcomer_decoder.prn
-    @test gone_slot.running_decoder.prn == newcomer_decoder.prn
-    @test !TL.has_positioning_data(gone_slot.running_decoder)
+    @test gone_slot.decoding.decoder.prn == newcomer_decoder.prn
+    @test !TL.has_positioning_data(gone_slot.decoding.decoder)
     @test nav_processor.next_slot_generation == 9
     # Dropping, freeing and taking the slot over allocated nothing, and neither did the
     # warm integrations and updates around it.
@@ -309,7 +309,7 @@ end
     # Its decoder restarted its sync but kept what it had decoded, so once the bit clock
     # has found the edges again the next subframe makes it ready — not a whole frame —
     # and the filter takes it back.
-    @test slot.positioning_ready
+    @test slot.snapshot.positioning_ready
     @test reacquired.state.vector_controlled
     @test results[end].status.num_vector_tracking_members == length(rx.sats)
     @test all(r -> r.status.vector_tracking_active, results)
@@ -400,9 +400,9 @@ first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
     # The data's bit clock synced and its bits decoded; the pilot's C/N₀ sets the lock.
     for sat in rx.sats
         slot = group.slots[sat.state.slot_index]
-        @test slot.decoding_bit_synced
-        @test TL.has_positioning_data(slot.running_decoder)
-        @test slot.measurement_ready && slot.positioning_ready
+        @test slot.decoding.bit_synced
+        @test TL.has_positioning_data(slot.decoding.decoder)
+        @test slot.snapshot.measurement_ready && slot.snapshot.positioning_ready
         report = get_satellite_report(tracking_loop, GPSL1C_P(), sat.decoder.prn)
         @test report.bit_or_secondary_code_synced && report.vector_controlled
         @test report.cn0_dbhz ≈ ustrip(estimate_cn0(sat.loop, 1ms)) atol = 1.0
@@ -486,14 +486,14 @@ end
     @test findfirst(r -> r.status.seeded, results) !== nothing
     group = rx.vt.groups[1]
     slots = [group.slots[sat.state.slot_index] for sat in rx.sats]
-    @test all(slot -> length(slot.prompt_history.centers) == 6, slots)
+    @test all(slot -> length(slot.bit_accumulator.prompt_history.centers) == 6, slots)
     dropped = Ref(0)
     results, _, diverged = run_pipeline!(rx, 4.0; start_sample = sample, on_tick = _ ->
-        (dropped[] += count(slot -> slot.loop_state.vector_controlled && !slot.bit_from_edge, slots)))
+        (dropped[] += count(slot -> slot.in_vector_loop && !slot.bit_accumulator.from_edge, slots)))
     @test !diverged
     @test all(r -> r.status.vector_tracking_active && r.status.num_vector_tracking_members == length(rx.sats), results)
     @test dropped[] == 0
-    @test all(slot -> slot.prompt_history.count == 6, slots)
+    @test all(slot -> slot.bit_accumulator.prompt_history.count == 6, slots)
     @test pipeline_errors(rx, results) < 3.0
 end
 
@@ -511,8 +511,8 @@ end
     @test any(r -> r.status.seeded, results1)
     @test [r.pvt.position for r in results1] == [r.pvt.position for r in results2]
     for (a, b) in zip(rx1.vt.groups[1].slots, rx2.vt.groups[1].slots)
-        @test a.running_decoder.num_bits_since_time_reference ==
-              b.running_decoder.num_bits_since_time_reference
+        @test a.decoding.decoder.num_bits_since_time_reference ==
+              b.decoding.decoder.num_bits_since_time_reference
     end
 end
 

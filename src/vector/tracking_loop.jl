@@ -292,9 +292,8 @@ _add_to_vector_loop(loop_state::VectorLoopState) =
     )
 
 # Out of the vector loop with the vector interface cleared and the scalar loop as it
-# stands, not re-initialised: it marks the release on the slot's copy of the state
-# (`_mark_release!`; the satellite's own state hands over in `_apply_filter_feedback`) and
-# registers a satellite out of the loop.
+# stands, not re-initialised: a satellite registering with a slot starts out of the loop
+# (the satellite's own state hands over in `_apply_filter_feedback`).
 _release_from_vector_loop(loop_state::VectorLoopState) =
     VectorLoopState(
         loop_state.scalar_state,

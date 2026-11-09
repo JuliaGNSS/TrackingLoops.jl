@@ -56,7 +56,7 @@ end
     apply_feedback!(rx, sample)
     @test rx.sats[2].state.vector_controlled
 
-    unlocked!(v, sat, e, l, nav_processor) = (fill_slot!(v, sat, e, l, nav_processor); v.measurement_ready = false; v.positioning_ready = false)
+    unlocked!(v, sat, e, l, nav_processor) = (fill_slot!(v, sat, e, l, nav_processor); set_snapshot!(v; measurement_ready = false, positioning_ready = false))
     rx.vt.measurement_deficit_duration = 10.0s
     sample += samples_per_update
     @test measure_navigation(rx, sample; fill! = unlocked!) == 0

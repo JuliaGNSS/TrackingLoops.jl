@@ -65,6 +65,105 @@ struct SatelliteReport
     release_reason::VectorTrackingReleaseReason
 end
 
+# A satellite's driver role in the navigation processor: where the driver signal's last
+# integration ended, and what the driver's half of a snapshot reads off it. A role, not a
+# signal: a signal that ranges and carries the data itself (GPS L1 C/A alone) plays both
+# roles and fills this part and `DecodingState`.
+mutable struct DriverState
+    last_end_sample_index::Int
+    # Of the signal's band: the end is at `last_end_sample_index / sampling_frequency`
+    # on the integrations' time grid (`_last_end_time`).
+    sampling_frequency::typeof(1.0Hz)
+    last_code_phase::Float64 # chips, as the integration reported it; `NaN` if it did not
+    last_coherent_integration_time::typeof(1.0s)
+    last_early_late_spacing::Float64 # chips
+    # Replica chips from the epoch of the latest snapshot to the last integration end.
+    chips_since_epoch::Float64
+end
+
+# A satellite's decoding role: the decoder every integration of the decoding signal
+# advances, where its last integration ended and its bit clock there (see `DriverState`
+# for the roles).
+mutable struct DecodingState{D}
+    decoder::D
+    last_end_sample_index::Int
+    sampling_frequency::typeof(1.0Hz) # of the signal's band (see `DriverState`)
+    bit_synced::Bool
+    num_code_periods_into_bit::Int
+    code_phase_fraction::Float64 # chips past the nearest code-period boundary
+    # The `command_issue_sample_index` of the batch the bit sync was found in
+    # (`typemin(Int)` for none): its later integrations were correlated before the sync.
+    sync_command_issue_sample_index::Int
+end
+
+# The data bit in the making while the filter steers the carrier: the sum of the
+# decoding signal's prompts rotated onto the incoming carrier by the residual PLL, whether
+# it covers the bit from its edge on, the soft bit it ends in, and the residual PLL's
+# phases at the driver's latest prompts it rotates a pair's decoding signal by
+# (`PromptHistory`).
+mutable struct BitAccumulator
+    prompt_sum::ComplexF64
+    from_edge::Bool
+    const soft_bit::Vector{Float32}
+    const prompt_history::PromptHistory
+end
+
+# A satellite at a navigation epoch. A slot builds the pending epoch's from its two
+# signals' halves (`pending_snapshot`) and, once both are in, keeps it as the snapshot
+# the update reads (`snapshot`). The update does not write it: its decisions are the slot's.
+struct SatelliteSnapshot{D,E}
+    # The driver's half: the state at the epoch with the discriminators accumulated up to
+    # it, the replica's code phase there
+    # (chips; `NaN` if not reported), the Dopplers commanded there, the driver's C/N₀,
+    # coherent integration time and early-late spacing.
+    loop_state::E
+    driver_code_phase::Float64
+    carrier_doppler::typeof(1.0Hz)
+    code_doppler::typeof(1.0Hz)
+    cn0_dbhz::Float64
+    coherent_integration_time::typeof(1.0s)
+    early_late_spacing::Float64
+    # The decoding signal's half: the decoder at its last integration end before the
+    # epoch, whether its bit clock held the sync there, and the code phase at the epoch
+    # from the decoder's last bit edge (chips). In `snapshot`, the decoder and code phase
+    # are moved onto the bit the driver's replica is in (`_complete_snapshot!`).
+    decoder::D
+    bit_synced::Bool
+    code_phase::Float64
+    # Set when the snapshot completes.
+    measurement_ready::Bool
+    positioning_ready::Bool
+end
+
+SatelliteSnapshot(
+    snapshot::SatelliteSnapshot;
+    loop_state = snapshot.loop_state,
+    driver_code_phase = snapshot.driver_code_phase,
+    carrier_doppler = snapshot.carrier_doppler,
+    code_doppler = snapshot.code_doppler,
+    cn0_dbhz = snapshot.cn0_dbhz,
+    coherent_integration_time = snapshot.coherent_integration_time,
+    early_late_spacing = snapshot.early_late_spacing,
+    decoder = snapshot.decoder,
+    bit_synced = snapshot.bit_synced,
+    code_phase = snapshot.code_phase,
+    measurement_ready = snapshot.measurement_ready,
+    positioning_ready = snapshot.positioning_ready,
+) = typeof(snapshot)(
+    loop_state,
+    driver_code_phase,
+    carrier_doppler,
+    code_doppler,
+    cn0_dbhz,
+    coherent_integration_time,
+    early_late_spacing,
+    decoder,
+    bit_synced,
+    code_phase,
+    measurement_ready,
+    positioning_ready,
+)
+
 # One satellite of the navigation processor. A slot is never deleted: a dropped satellite
 # leaves it, with its storage, for the next one to reuse.
 mutable struct VectorTrackingSlot{D,E<:VectorLoopState}
@@ -74,62 +173,21 @@ mutable struct VectorTrackingSlot{D,E<:VectorLoopState}
     slot_generation::Int
     # Whether the slot snapshotted the running update's epoch.
     in_update::Bool
-    # Advanced by every integration of the decoding signal.
-    running_decoder::D
-    # The driver's last integration end.
-    driver_last_end_sample_index::Int
-    driver_last_end_time::Float64 # s
-    last_code_phase::Float64 # chips, as the integration reported it; `NaN` if it did not
-    last_coherent_integration_time::typeof(1.0s)
-    last_early_late_spacing::Float64 # chips
-    # Replica chips from the epoch of the latest snapshot to the driver's last integration end.
-    chips_since_epoch::Float64
-    # The decoding signal's last integration end, and its bit clock there.
-    decoding_last_end_sample_index::Int
-    decoding_last_end_time::Float64 # s
-    decoding_bit_synced::Bool
-    decoding_num_code_periods_into_bit::Int
-    decoding_code_phase_fraction::Float64 # chips past the nearest code-period boundary
-    # The `command_issue_sample_index` of the batch the decoding signal's bit sync was
-    # found in (`typemin(Int)` for none): its later integrations were correlated before
-    # the sync.
-    sync_command_issue_sample_index::Int
-    # The data bit in the making while the filter steers the carrier: the decoding
-    # signal's prompts rotated onto the incoming carrier by the residual PLL, whether
-    # they cover the bit from its edge on, and the soft bit it ends in.
-    bit_accumulator::ComplexF64
-    bit_from_edge::Bool
-    const soft_bit::Vector{Float32}
-    # For a pair's decoding signal (`PromptHistory`).
-    const prompt_history::PromptHistory
+    const driver::DriverState
+    const decoding::DecodingState{D}
+    const bit_accumulator::BitAccumulator
     # The first epoch the slot can snapshot, the epochs of the driver's and decoding
-    # signal's halves of a snapshot, and that of its latest complete snapshot.
+    # signal's halves of the pending snapshot, and that of its latest complete snapshot.
     first_epoch_index::Int
     driver_epoch_index::Int
     decoding_epoch_index::Int
     snapshot_epoch_index::Int
-    # The decoding signal's half of the snapshot in the making: the decoder at its last
-    # integration end before the epoch, whether its bit clock held the sync there, and the
-    # code phase at the epoch from the decoder's last bit edge (chips).
-    epoch_decoder::D
-    epoch_bit_synced::Bool
-    epoch_code_phase::Float64
-    # The driver's replica code phase at the epoch (chips; `NaN` if not reported).
-    epoch_driver_code_phase::Float64
-    # The snapshot the update reads and partly writes: the decoder at the last integration
-    # end before the epoch, the replica moved on to the epoch, and the state there
-    # with the discriminators accumulated up to it, carrying the update's decisions.
-    decoder::D
-    loop_state::E
-    code_phase::Float64 # chips since the last decoded data bit
-    carrier_doppler::typeof(1.0Hz)
-    code_doppler::typeof(1.0Hz)
-    cn0_dbhz::Float64 # the driver's
-    coherent_integration_time::typeof(1.0s)
-    early_late_spacing::Float64
-    measurement_ready::Bool
-    positioning_ready::Bool
-    # What the latest update decided, for the satellite to apply.
+    pending_snapshot::SatelliteSnapshot{D,E}
+    snapshot::SatelliteSnapshot{D,E}
+    # What the latest update decided, for the satellite to apply: whether it is in the
+    # vector loop (from its snapshot's state until an update admits or releases it), why it
+    # was released, and the update and member index of its commands.
+    in_vector_loop::Bool
     release_reason::VectorTrackingReleaseReason
     command_update_index::Int
     member_index::Int
@@ -142,46 +200,22 @@ function VectorTrackingSlot(
     prompt_history_length::Int,
 )
     decoder = GNSSDecoderState(decoding_signal, prn)
+    snapshot = SatelliteSnapshot(loop_state, NaN, 0.0Hz, 0.0Hz, NaN, 0.001s, 0.5, decoder, false, 0.0, false, false)
     VectorTrackingSlot(
         Int(prn),
         false,
         0,
         false,
-        decoder,
-        0,
-        0.0,
-        NaN,
-        0.001s,
-        0.5,
-        0.0,
-        0,
-        0.0,
-        false,
-        0,
-        NaN,
-        typemin(Int),
-        zero(ComplexF64),
-        false,
-        zeros(Float32, 1),
-        PromptHistory(prompt_history_length),
+        DriverState(0, 1.0Hz, NaN, 0.001s, 0.5, 0.0),
+        DecodingState(decoder, 0, 1.0Hz, false, 0, NaN, typemin(Int)),
+        BitAccumulator(zero(ComplexF64), false, zeros(Float32, 1), PromptHistory(prompt_history_length)),
         typemax(Int),
         typemin(Int),
         typemin(Int),
         typemin(Int),
-        decoder,
-        false,
-        0.0,
-        NaN,
-        decoder,
-        loop_state,
-        0.0,
-        0.0Hz,
-        0.0Hz,
-        NaN,
-        0.001s,
-        0.5,
-        false,
-        false,
+        snapshot,
+        snapshot,
+        loop_state.vector_controlled,
         VT_NOT_RELEASED,
         -1,
         0,
@@ -517,12 +551,12 @@ function _satellite_report(nav_processor, groups::Tuple, signal::S, prn) where {
     SatelliteReport(
         slot.prn,
         slot.occupied,
-        slot.decoding_bit_synced,
+        slot.decoding.bit_synced,
         snapshot_time,
-        slot.cn0_dbhz,
-        slot.measurement_ready,
-        slot.positioning_ready,
-        slot.loop_state.vector_controlled,
+        slot.snapshot.cn0_dbhz,
+        slot.snapshot.measurement_ready,
+        slot.snapshot.positioning_ready,
+        slot.in_vector_loop,
         slot.release_reason,
     )
 end
@@ -563,7 +597,7 @@ function _get_decoder(groups::Tuple, signal::S, prn) where {S}
     group = first(groups)
     group.driver_signal isa S || return _get_decoder(Base.tail(groups), signal, prn)
     slot = _held_slot(group, prn)
-    isnothing(slot) ? nothing : slot.running_decoder
+    isnothing(slot) ? nothing : slot.decoding.decoder
 end
 
 """
@@ -603,17 +637,17 @@ get_vector_tracking_members(tracking_loop::VectorTrackingLoop) = tracking_loop.n
 function _collect_pvt_ready!(acc, group, group_index, buffer)
     empty!(buffer)
     for slot in group.slots
-        slot.in_update && slot.positioning_ready || continue
+        slot.in_update && slot.snapshot.positioning_ready || continue
         push!(buffer, _signal_observation(group.driver_signal, slot))
     end
     acc
 end
 
 @inline _signal_observation(signal, slot::VectorTrackingSlot) = SignalObservation(;
-    decoder = slot.decoder,
+    decoder = slot.snapshot.decoder,
     signal = signal,
-    code_phase = slot.code_phase,
-    carrier_doppler = slot.carrier_doppler,
+    code_phase = slot.snapshot.code_phase,
+    carrier_doppler = slot.snapshot.carrier_doppler,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -621,18 +655,18 @@ end
 
 # Hand `slot` back to its scalar loop; applied on its next integration (`_apply_filter_feedback`).
 function _mark_release!(slot::VectorTrackingSlot, reason::VectorTrackingReleaseReason)
-    slot.loop_state = _release_from_vector_loop(slot.loop_state)
+    slot.in_vector_loop = false
     slot.release_reason = reason
     nothing
 end
 
 # A member that missed the epoch sits the update out.
-_is_member(slot::VectorTrackingSlot) = slot.in_update && slot.loop_state.vector_controlled
+_is_member(slot::VectorTrackingSlot) = slot.in_update && slot.in_vector_loop
 
 _is_eligible(slot::VectorTrackingSlot) =
     slot.in_update &&
-    has_positioning_data(slot.decoder) &&
-    is_sat_healthy(slot.decoder)
+    has_positioning_data(slot.snapshot.decoder) &&
+    is_sat_healthy(slot.snapshot.decoder)
 
 # Admission elevation, above the horizon that releases a member: the hysteresis keeps a
 # satellite near the horizon from being admitted and released every update. One degree
@@ -658,12 +692,11 @@ function _update_membership!(released, group, group_index, buffer, enu_from_ecef
     for slot in group.slots
         slot.in_update || continue
         eligible = _is_eligible(slot)
-        loop_state = slot.loop_state
-        if eligible && slot.measurement_ready
-            if loop_state.vector_controlled || _is_above_admission_mask(group.driver_signal, slot, enu_from_ecef)
-                slot.loop_state = _add_to_vector_loop(loop_state)
+        if eligible && slot.snapshot.measurement_ready
+            if slot.in_vector_loop || _is_above_admission_mask(group.driver_signal, slot, enu_from_ecef)
+                slot.in_vector_loop = true
             end
-        elseif !eligible && loop_state.vector_controlled
+        elseif !eligible && slot.in_vector_loop
             _mark_release!(slot, VT_INELIGIBLE)
             released = true
         end
@@ -682,6 +715,11 @@ function _collect_member_states!(acc, group, group_index, buffer)
     acc
 end
 
+# A member's loop state at the epoch, as the vector loop sees it: its snapshot's, or, for a
+# satellite this update admitted, that state with the vector interface empty (no
+# discriminators accumulated yet), as `_apply_filter_feedback` will make it.
+_member_loop_state(slot::VectorTrackingSlot) = _add_to_vector_loop(slot.snapshot.loop_state)
+
 # One `VectorTrackingObservation` per satellite in the loop, from its measurement; returns the running index.
 function _collect_members!(j, group, group_index, buffer, nav_processor, Δt_nav)
     layout = nav_processor.nav_filter.layout
@@ -694,7 +732,7 @@ function _collect_members!(j, group, group_index, buffer, nav_processor, Δt_nav
     ifb_index = layout.ifb_index_by_group[group_index]
     for (slot_index, slot) in enumerate(group.slots)
         _is_member(slot) || continue
-        loop_state = slot.loop_state
+        loop_state = _member_loop_state(slot)
         j += 1
         measurement = buffers.measurements[j]
         push!(
@@ -708,17 +746,17 @@ function _collect_members!(j, group, group_index, buffer, nav_processor, Δt_nav
                 chip_length,
                 wavelength,
                 chip_rate,
-                slot.measurement_ready && has_disc_sums(loop_state),
+                slot.snapshot.measurement_ready && has_disc_sums(loop_state),
                 measurement.transmit_time,
                 measurement.position,
                 measurement.velocity,
                 measurement.satellite_clock_drift,
                 calc_mean_code_disc_at_epoch(loop_state, Δt_nav),
                 -wavelength *
-                (ustrip(Hz, slot.carrier_doppler) + calc_mean_fll_disc(loop_state)),
-                calc_linear_cn0_floor(slot.cn0_dbhz),
-                slot.early_late_spacing,
-                ustrip(s, slot.coherent_integration_time),
+                (ustrip(Hz, slot.snapshot.carrier_doppler) + calc_mean_fll_disc(loop_state)),
+                calc_linear_cn0_floor(slot.snapshot.cn0_dbhz),
+                slot.snapshot.early_late_spacing,
+                ustrip(s, slot.snapshot.coherent_integration_time),
             ),
         )
     end
@@ -937,7 +975,7 @@ function _predict_after_epoch(nav_processor::NavigationProcessor, slot::VectorTr
     buffers = nav_processor.buffers
     idxs = nav_filter.model.idxs
     application_transmit_tow = member.transmit_tow + chips / member.chip_rate
-    ephemeris = something(get_broadcast_ephemeris(slot.decoder))
+    ephemeris = something(get_broadcast_ephemeris(slot.snapshot.decoder))
     application_orbit = calc_satellite_position_and_velocity(ephemeris, application_transmit_tow)
     application_position = application_orbit.position
     application_velocity = application_orbit.velocity
@@ -988,7 +1026,7 @@ end
 # missed the epoch alike, for `reason`; returns whether any was.
 function _release_all!(released, group, group_index, buffer, reason::VectorTrackingReleaseReason)
     for slot in group.slots
-        slot.loop_state.vector_controlled || continue
+        slot.in_vector_loop || continue
         _mark_release!(slot, reason)
         released = true
     end
@@ -1010,7 +1048,7 @@ function _add_fix_satellites!(num_added, group, group_index, buffer, nav_process
     observations = nav_processor.pvt.observations
     for slot in group.slots
         slot.in_update && haskey(observations, (signal_id, slot.prn)) || continue
-        slot.loop_state = _add_to_vector_loop(slot.loop_state)
+        slot.in_vector_loop = true
         num_added += 1
     end
     num_added
