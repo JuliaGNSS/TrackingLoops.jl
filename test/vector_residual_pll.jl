@@ -14,7 +14,7 @@ noise_std_at(cn0_dbhz) = sqrt(1 / (2 * 10^(cn0_dbhz / 10) * 1e-3))
 # does: a host's C/N₀ estimator that does not notice a fade.
 reporting(cn0_dbhz) =
     (slot, sat, epoch, application_sample_index, nav_processor; measurement_ready = sat.in_view) ->
-        (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor; measurement_ready); slot.cn0_dbhz = cn0_dbhz; slot)
+        (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor; measurement_ready); set_snapshot!(slot; cn0_dbhz))
 
 # Run `num_updates` updates, 100 ms apart, of 1 ms ticks, each channel's noise σ set by
 # `noise(update_index, i)` before the update. `on_integration(update_index, i, sat, phase_error_before,
@@ -364,7 +364,7 @@ residual_pll_at(center, predicted_prompt_phase; carrier_frequency_correction = 0
     nco_history = ConstantNCOCommand(100.0, 0.0)
     state = TL._add_to_vector_loop(init_loop_state(tracking_loop, signal, 100.0Hz, 0.0Hz))
     sentinel = 12345.0f0
-    slot.soft_bit[1] = sentinel
+    slot.bit_accumulator.soft_bit[1] = sentinel
     # The prompts of one data bit of value `-1` turn by 0.1 cycle an integration at the
     # filter's Doppler error, and the residual PLL's prediction turns with them: rotated
     # back, they sum to the real axis, which the host's bit clock, signed by its sync
@@ -374,35 +374,35 @@ residual_pll_at(center, predicted_prompt_phase; carrier_frequency_correction = 0
         VectorLoopState(state; residual_pll = residual_pll_at(4000k - 2000, phase)), nco_history, true, unwiped)
     # A bit the satellite joins the loop within is the host's.
     feed!(1, 0.1; host_bits = Float32[0.5])
-    @test slot.soft_bit[1] == sentinel
-    @test slot.bit_from_edge
+    @test slot.bit_accumulator.soft_bit[1] == sentinel
+    @test slot.bit_accumulator.from_edge
     # The next ones are the navigation processor's: three integrations, the last ending the bit.
     feed!(2, 0.2)
     feed!(3, 0.3)
-    @test slot.bit_accumulator ≈ -2.0
+    @test slot.bit_accumulator.prompt_sum ≈ -2.0
     feed!(4, 0.4; host_bits = Float32[0.7])
-    @test slot.soft_bit[1] ≈ -3.0f0
-    @test slot.bit_accumulator == 0.0
+    @test slot.bit_accumulator.soft_bit[1] ≈ -3.0f0
+    @test slot.bit_accumulator.prompt_sum == 0.0
     feed!(5, 0.5)
     feed!(6, 0.6; host_bits = Float32[0.7], bit_polarity = -1)
-    @test slot.soft_bit[1] ≈ 2.0f0
+    @test slot.bit_accumulator.soft_bit[1] ≈ 2.0f0
     # An integration correlated before the overlay was wiped breaks the bit: the host's
     # soft bits until the next one begins.
-    slot.soft_bit[1] = sentinel
+    slot.bit_accumulator.soft_bit[1] = sentinel
     feed!(7, 0.7; unwiped = true)
-    @test !slot.bit_from_edge && slot.bit_accumulator == 0.0
+    @test !slot.bit_accumulator.from_edge && slot.bit_accumulator.prompt_sum == 0.0
     feed!(8, 0.8; host_bits = Float32[0.7])
-    @test slot.soft_bit[1] == sentinel
-    @test slot.bit_from_edge
+    @test slot.bit_accumulator.soft_bit[1] == sentinel
+    @test slot.bit_accumulator.from_edge
     feed!(9, 0.9; host_bits = Float32[0.7])
-    @test slot.soft_bit[1] ≈ -1.0f0
+    @test slot.bit_accumulator.soft_bit[1] ≈ -1.0f0
     # Out of the vector loop the navigation processor decodes the host's soft bits.
-    slot.soft_bit[1] = sentinel
+    slot.bit_accumulator.soft_bit[1] = sentinel
     out = init_loop_state(tracking_loop, signal, 100.0Hz, 0.0Hz)
     TL._decode_integration!(group, slot, decoding_integration(signal, cis(0.3), 40000; host_bits = Float32[0.7]),
         out, nco_history, true, false)
-    @test slot.soft_bit[1] == sentinel
-    @test !slot.bit_from_edge
+    @test slot.bit_accumulator.soft_bit[1] == sentinel
+    @test !slot.bit_accumulator.from_edge
 end
 
 @testset "A data component's prompt is rotated by the phase the residual PLL estimated for its pilot" begin
@@ -453,7 +453,7 @@ end
     # A plain signal decodes its own integrations.
     @test TL._prompt_history_length(GPSL1CA(), GPSL1CA(), 100.0ms) == 0
     tracking_loop = VectorTrackingLoop(GPSL5Q() => GPSL5I(), GPSL1CA())
-    @test [length(group.slots[1].prompt_history.centers) for group in tracking_loop.navigation_processor.groups] == [51, 0]
+    @test [length(group.slots[1].bit_accumulator.prompt_history.centers) for group in tracking_loop.navigation_processor.groups] == [51, 0]
     # A ring: the newest prompts are kept.
     history = TL.PromptHistory(3)
     for k = 1:5
@@ -477,11 +477,11 @@ end
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
     @test all(r -> r.status.vector_tracking_active, results[seed:end])
     slots = rx.vt.groups[1].slots[1:length(rx.sats)]
-    @test all(slot -> slot.decoding_bit_synced && slot.measurement_ready, slots)
+    @test all(slot -> slot.decoding.bit_synced && slot.snapshot.measurement_ready, slots)
     # Every decoder decoded the subframes broadcast while the filter set the carrier, up
     # to a minute after the receiver started, from the navigation processor's own soft bits.
-    @test all(slot -> slot.bit_from_edge, slots)
-    @test all(slot -> get_broadcast_time_of_week(slot.running_decoder) >=
+    @test all(slot -> slot.bit_accumulator.from_edge, slots)
+    @test all(slot -> get_broadcast_time_of_week(slot.decoding.decoder) >=
         get_broadcast_time_of_week(rx.sats[1].decoder) + 60, slots)
     prn = rx.sats[1].decoder.prn
     elapsed(r) = r.time - rx.truth.t0
