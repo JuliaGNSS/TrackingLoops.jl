@@ -426,7 +426,7 @@ end
 
     @test allocations_of_noise_despreads(estimator, signal, 1:40000, fs, f_if) == 0
 
-    # A hardware host draws one probe per arm, from the same rng in the same order,
+    # A hardware host draws one probe per redraw, from the same rng in the same order,
     # and appends each dump over its own sample count.
     estimator = CorrelatorNoiseDensityEstimator(; rng = Xoshiro(3))
     probe = draw_noise_probe(estimator, signal, f_if)
