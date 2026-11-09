@@ -331,7 +331,7 @@ function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSl
     slot.epoch_decoder = slot.running_decoder
     slot.epoch_bit_synced = false
     # Registered out of the vector loop; a state still in it applies the release in
-    # `_apply_filter_feedback`, re-seeding its scalar loop.
+    # `_apply_filter_feedback`, re-initialising its scalar loop.
     slot.loop_state = _release_from_vector_loop(loop_state)
     slot.measurement_ready = false
     slot.positioning_ready = false
@@ -344,7 +344,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Applying the navigation filter's feedback
 
-# Apply the latest update's decisions once: admission, release (re-seeding the scalar
+# Apply the latest update's decisions once: admission, release (re-initialising the scalar
 # loop at the application sample) and commands sized for it.
 function _apply_filter_feedback(
     nav_processor::NavigationProcessor,

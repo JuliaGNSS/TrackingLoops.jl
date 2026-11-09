@@ -39,7 +39,7 @@ function report(io, update_index, pvt, status)
     println(io)
 end
 
-# The noise reference as a hardware host fills it: one probe per arm from the estimator's
+# The noise reference as a hardware host fills it: one probe per redraw from the estimator's
 # own `Xoshiro`, each dump's correlator outputs appended over its own sample count.
 function report_noise(io)
     signal = GPSL1CA()

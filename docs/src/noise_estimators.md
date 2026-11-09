@@ -77,17 +77,17 @@ end
 
 ## A hardware noise channel
 
-A hardware host cannot redraw per code period: each new probe is a re-arm of its noise
+A hardware host cannot redraw per code period: each redrawn probe reprograms its noise
 channel, and the device dumps on its own grid. So it draws one
-[`NoiseProbe`](@ref TrackingLoops.NoiseProbe) per arm with
+[`NoiseProbe`](@ref TrackingLoops.NoiseProbe) per redraw with
 [`draw_noise_probe`](@ref TrackingLoops.draw_noise_probe), programs the channel with its
 PRN, code phase, code frequency and carrier, and appends every dump over the dump's own
 sample count with [`append_noise_correlator_outputs!`](@ref TrackingLoops.append_noise_correlator_outputs!):
 
 ```julia
 probe = TrackingLoops.draw_noise_probe(estimator, signal, intermediate_frequency)
-arm_noise_channel!(device, probe)                       # the host's driver call
-for dump in noise_channel_dumps(device)                 # until the next re-arm
+program_noise_channel!(device, probe)                   # the host's driver call
+for dump in noise_channel_dumps(device)                 # until the next redraw
     TrackingLoops.append_noise_correlator_outputs!(estimator, probe, dump.correlator_outputs,
         dump.num_integrated_samples, sampling_frequency)
 end
@@ -101,8 +101,8 @@ about `1/T` of its Doppler, about a fifth of a ±5 kHz dither at `T = 1 ms`) rai
 observation it covers by about `T·(C/N₀)/3 ≈ 10.5·N₀` at 45 dB-Hz, so `N̂₀` by up to
 ≈ 10 dB for that window. Redrawing `n` times per window lets one hit bias only `1/n` of
 it, at `n` times the chance of some hit: a few redraws per window already cap a rare
-hit at a few dB, at the cost of the dumps lost to each re-arm. A device that can restart
-its code generator at a random phase by itself redraws without a re-arm.
+hit at a few dB, at the cost of the dumps lost to each redraw. A device that can restart
+its code generator at a random phase by itself redraws without reprogramming.
 
 ```@docs
 TrackingLoops.AbstractNoiseDensityEstimator

@@ -378,7 +378,7 @@ end
     @test !slot.loop_state.vector_controlled
     @test b.vector_controlled
     # Its integrations resume: it registers anew, and applies the release it missed, its
-    # scalar loop re-seeded from the replica's Dopplers.
+    # scalar loop re-initialised at the replica's Dopplers.
     resumed = ConstantNCOCommand(120.0, 0.12)
     b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 401), resumed, nothing)
     @test slot.occupied
