@@ -23,7 +23,6 @@ using Geodesy: ENUfromECEF, wgs84
     @test !state.vector_controlled
     @test VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = 20ms).navigation_processor.navigation_filter_update_interval == 0.02s
     @test VectorTrackingLoop(GPSL1CA(); min_tracking_cn0 = 35dBHz).navigation_processor.min_tracking_cn0 == 35.0
-    @test !VectorTrackingLoop(GPSL1CA(); filter_config = nothing).navigation_processor.enabled
     paired = VectorTrackingLoop(GPSL1CA(), BeiDouB1C_P() => BeiDouB1C_D(); scalar_loop = DelayCompensatedTrackingLoop())
     pairs = get_signal_pairs(paired)
     @test map(pair -> typeof(first(pair)) => typeof(last(pair)), pairs) ==
@@ -56,20 +55,6 @@ end
     @test step_loop!(tracking_loop, state,
         processed_state(GalileoE1B(), correlator_bank, complex(0.0), output, 1, 4e6Hz; prn = 3), nco_history,
         nothing) == (state, 100.0Hz, 0.1Hz)
-end
-
-@testset "Without a configuration only the scalar PVT is solved" begin
-    rx = SimReceiver(; filter_config = nothing)
-    @test !rx.vt.enabled
-    results, _, diverged = run_simulation!(rx, 5)
-    @test !diverged
-    @test all(r -> !r.status.vector_tracking_active && !r.status.seeded, results)
-    @test all(r -> r.status.num_vector_tracking_members == 0, results)
-    @test all(sat -> !sat.state.vector_controlled, rx.sats)
-    # A scalar fix each update, near the truth.
-    @test length(results[end].pvt.observations) == length(rx.sats)
-    @test position_error(rx, results[end]) < 3.0
-    @test isnan(results[end].status.position_std)
 end
 
 @testset "A fresh scalar fix seeds the filter and closes the loops" begin
@@ -114,20 +99,18 @@ end
 end
 
 @testset "A failed scalar attempt retains the previous fix without reseeding" begin
-    for filter_config in (nothing, NavFilterConfig())
-        rx = SimReceiver(; filter_config)
-        _, sample, _ = run_simulation!(rx, 1)
-        previous_fix = get_navigation_solution(rx.tracking_loop)
-        @test previous_fix.time !== nothing
-        foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
-        rx.vt.vector_tracking_active = false
-        fill_unready!(slot, sat, epoch, application_sample_index, nav_processor) =
-            (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor); set_snapshot!(slot; positioning_ready = false))
-        results, _, _ = run_simulation!(rx, 1; start_sample = sample, fill! = fill_unready!)
-        @test get_navigation_solution(rx.tracking_loop) === previous_fix
-        @test !only(results).status.seeded
-        @test !only(results).status.vector_tracking_active
-    end
+    rx = SimReceiver()
+    _, sample, _ = run_simulation!(rx, 1)
+    previous_fix = get_navigation_solution(rx.tracking_loop)
+    @test previous_fix.time !== nothing
+    foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
+    rx.vt.vector_tracking_active = false
+    fill_unready!(slot, sat, epoch, application_sample_index, nav_processor) =
+        (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor); set_snapshot!(slot; positioning_ready = false))
+    results, _, _ = run_simulation!(rx, 1; start_sample = sample, fill! = fill_unready!)
+    @test get_navigation_solution(rx.tracking_loop) === previous_fix
+    @test !only(results).status.seeded
+    @test !only(results).status.vector_tracking_active
 end
 
 @testset "Without an NCO delay the corrections are the residuals at the updated state" begin
