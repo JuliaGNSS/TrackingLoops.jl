@@ -492,16 +492,15 @@ end
     previous_cycles, previous_duration = loop_state.previous_replica_tail
     first_cycles, first_duration = replica_halves.first
     integration_start_sample_index = post_correlation_state.last_sample_index - post_correlation_state.last_num_integrated_samples
-    # The previous integration's end, known once the residual PLL has stepped on its prompt.
-    previous_end_sample_index = loop_state.residual_pll.last_prompt_sample_index + ustrip(s, previous_duration) * fs
-    gap = isnan(previous_end_sample_index) ? 0.0 : (integration_start_sample_index - previous_end_sample_index) / fs
-    gap_cycles = 0.0
-    if gap > 0.5 / fs
-        gap_command = calc_mean_nco_command(nco_history, previous_end_sample_index, integration_start_sample_index).carrier_doppler
-        gap_cycles = gap_command * gap
-    else
-        gap = 0.0
-    end
+    # The previous integration's end, known once the residual PLL has stepped on its prompt:
+    # its prompt's sample index plus the replica's second half, a sample index up to rounding.
+    previous_end = loop_state.residual_pll.last_prompt_sample_index + ustrip(s, previous_duration) * fs
+    previous_end_sample_index = isnan(previous_end) ? integration_start_sample_index :
+        round(Int, previous_end)
+    num_gap_samples = max(0, integration_start_sample_index - previous_end_sample_index)
+    gap = num_gap_samples / fs
+    gap_cycles = num_gap_samples == 0 ? 0.0 :
+        calc_mean_nco_command(nco_history, previous_end_sample_index, integration_start_sample_index).carrier_doppler * gap
     span = ustrip(s, previous_duration) + gap + ustrip(s, first_duration)
     # The incoming carrier against the replica between the prompts' centres; the replica
     # runs on the filter's command alone, so only the signal moves this.
