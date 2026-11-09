@@ -102,8 +102,8 @@ CarrierLoopStaging(::Type{F}) where {F<:AbstractLoopFilter} = CarrierLoopStaging
     0,
 )
 
-# Whether a carrier loop filter type has an FLL path (more methods in
-# `vector/tracking_loop.jl`).
+# Whether a carrier loop filter type has an FLL path (the tracking loops' in
+# `tracking_loops.jl`, after their types).
 @inline _has_fll_path(::Type{<:ThirdOrderAssistedBilinearLF}) = true
 @inline _has_fll_path(::Type{<:AbstractLoopFilter}) = false
 

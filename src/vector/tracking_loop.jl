@@ -89,12 +89,6 @@ struct VectorTrackingLoop{E<:AbstractTrackingLoop,N} <: AbstractTrackingLoop
     residual_pll_loop_bandwidth::typeof(1.0Hz)
 end
 
-# Whether a loop's carrier filter has an FLL path: an FLL-assisted scalar loop and
-# the delay-compensated loop.
-_has_fll_path(::AbstractTrackingLoop) = false
-_has_fll_path(::ScalarTrackingLoop{CA}) where {CA} = _has_fll_path(CA)
-_has_fll_path(::DelayCompensatedTrackingLoop) = true
-
 """
     VectorLoopState
 

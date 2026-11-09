@@ -340,6 +340,12 @@ struct DelayCompensatedTrackingLoop{CO<:AbstractLoopFilter} <: AbstractTrackingL
     compensate_delay::Bool
 end
 
+# Whether a loop's carrier filter has an FLL path: an FLL-assisted scalar loop and
+# the delay-compensated loop.
+_has_fll_path(::AbstractTrackingLoop) = false
+_has_fll_path(::ScalarTrackingLoop{CA}) where {CA} = _has_fll_path(CA)
+_has_fll_path(::DelayCompensatedTrackingLoop) = true
+
 function DelayCompensatedTrackingLoop(
     ::Type{CO} = SecondOrderBilinearLF;
     compensate_delay::Bool = true,

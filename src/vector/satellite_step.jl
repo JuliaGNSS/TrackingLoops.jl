@@ -245,10 +245,14 @@ function _epoch_at_or_after(nav_processor::NavigationProcessor, t)
     (epoch_index - 1) * Δt_nav >= t ? epoch_index - 1 : epoch_index * Δt_nav < t ? epoch_index + 1 : epoch_index
 end
 
-# `f(acc, group, args...)` over the slot groups, in order, statically dispatched.
+# `f(acc, group, args...)` over the slot groups, in order, statically dispatched; a group
+# given with its index, or its index and observation buffer (`_indexed`, `_with_buffers`),
+# is handed to `f` as `group, group_index[, buffer]`.
 @inline _fold_groups(f::F, acc, ::Tuple{}, args...) where {F} = acc
 @inline _fold_groups(f::F, acc, groups::Tuple, args...) where {F} =
-    _fold_groups(f, f(acc, first(groups), args...), Base.tail(groups), args...)
+    _fold_groups(f, f(acc, _group_args(first(groups))..., args...), Base.tail(groups), args...)
+@inline _group_args(group) = (group,)
+@inline _group_args(item::Tuple) = item
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Registration
@@ -694,7 +698,7 @@ function _navigation_update!(nav_processor::NavigationProcessor, time)
     else
         # Scalar solve: no per-member report.
         empty_keeping_capacity!(nav_processor.vector_tracking_members)
-        _fold_groups_with_buffers(_collect_pvt_ready!, nothing, groups, buffers.signal_observations, 1)
+        _fold_groups(_collect_pvt_ready!, nothing, _with_buffers(groups, buffers.signal_observations))
         result = calc_pvt!(
             nav_processor.pvt,
             nav_processor.workspace,
@@ -710,7 +714,7 @@ function _navigation_update!(nav_processor::NavigationProcessor, time)
             _seed!(nav_processor, groups, update_interval)
         end
     end
-    num_members = _fold_groups_with_buffers(_count_members, 0, groups, buffers.signal_observations, 1)
+    num_members = _fold_groups(_count_members, 0, groups)
     nav_processor.status = VectorTrackingStatus(
         nav_processor.vector_tracking_active,
         nav_processor.vector_tracking_active || fell_back ? calc_position_std(nav_processor) * m : NaN * m,
@@ -823,10 +827,8 @@ function _decode_integration!(
         slot.bit_accumulator.prompt_sum = zero(ComplexF64)
         slot.bit_accumulator.from_edge = false
     else
-        rotation =
-            2π * (get_carrier_phase_offset(group.driver_signal) - get_carrier_phase_offset(group.decoding_signal) -
-            phase)
-        slot.bit_accumulator.prompt_sum += ComplexF64(get_prompt(post_correlation_state.last_filtered_correlator_bank)) * cis(rotation)
+        rotation = _carrier_phase_derotation(get_carrier_phase_offset(group.driver_signal), group.decoding_signal, phase)
+        slot.bit_accumulator.prompt_sum += ComplexF64(get_prompt(post_correlation_state.last_filtered_correlator_bank)) * rotation
     end
     isempty(soft_bits) && return nothing
     if !isnan(phase) && slot.bit_accumulator.from_edge && Base.length(soft_bits) == 1
