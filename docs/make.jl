@@ -27,6 +27,7 @@ const PAGES = [
     "cn0_estimators.md",
     "noise_estimators.md",
     "vector_tracking.md",
+    "glossary.md",
 ]
 
 # The internals page documents what the topic pages do not list.
