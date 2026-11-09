@@ -412,8 +412,7 @@ wrap_phase_error(phase_error; polarity::Real = 0) =
         uconvert(
             Hz,
             loop_state.initial_carrier_doppler +
-            carrier_loop_filter.x1 +
-            coherent_integration_time / 2 * carrier_loop_filter.x2,
+            _doppler_estimate_at_center(carrier_loop_filter, coherent_integration_time),
         ),
     )
     ramp_command = calc_mean_nco_command(nco_history, center, center + shift).carrier_doppler
