@@ -393,10 +393,10 @@ _disc_mean((count, disc_sum)) = count == 0 ? nothing : disc_sum / count
 # from the commands it ran on (Hz).
 @inline function _replica_halves(post_correlation_state::PostCorrelationState, nco_history)
     fs = post_correlation_state.sampling_frequency
-    integration_end_sample_index = post_correlation_state.last_sample_index
+    integration_end_sample_index = post_correlation_state.last_end_sample_index
     half_samples = post_correlation_state.last_num_integrated_samples / 2
-    center = integration_end_sample_index - half_samples
-    first_command = calc_mean_nco_command(nco_history, integration_end_sample_index - post_correlation_state.last_num_integrated_samples, center).carrier_doppler
+    center = _integration_center(post_correlation_state)
+    first_command = calc_mean_nco_command(nco_history, _integration_start(post_correlation_state), center).carrier_doppler
     second_command = calc_mean_nco_command(nco_history, center, integration_end_sample_index).carrier_doppler
     half_duration = convert(typeof(1.0s), half_samples / fs)
     first_cycles = Float64(uconvert(NoUnits, first_command * Hz * half_duration))
@@ -433,8 +433,8 @@ end
 # An integration's DLL output (chips), normalised by the code command the replica ran on, as
 # the scalar loops measure it.
 @inline function _code_discriminator(post_correlation_state::PostCorrelationState, nco_history)
-    integration_start_sample_index = post_correlation_state.last_sample_index - post_correlation_state.last_num_integrated_samples
-    applied_code = calc_mean_nco_command(nco_history, integration_start_sample_index, post_correlation_state.last_sample_index).code_doppler
+    integration_start_sample_index = _integration_start(post_correlation_state)
+    applied_code = calc_mean_nco_command(nco_history, integration_start_sample_index, post_correlation_state.last_end_sample_index).code_doppler
     _calc_code_discriminator(post_correlation_state, applied_code)
 end
 
@@ -451,7 +451,7 @@ end
     min_tracking_cn0::Float64,
 )
     scalar_state = loop_state.scalar_state
-    application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_sample_index : application_sample_index
+    application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_end_sample_index : application_sample_index
     residual_pll, fll_disc_sum = _measure_carrier(loop_state, post_correlation_state, nco_history, replica_halves, min_tracking_cn0)
     # The command takes effect on an integration taken to be this one's length.
     carrier =
@@ -489,7 +489,7 @@ end
     coherent_integration_time = post_correlation_state.last_num_integrated_samples / fs
     previous_cycles, previous_duration = loop_state.previous_replica_tail
     first_cycles, first_duration = replica_halves.first
-    integration_start_sample_index = post_correlation_state.last_sample_index - post_correlation_state.last_num_integrated_samples
+    integration_start_sample_index = _integration_start(post_correlation_state)
     # The previous integration's end, known once the residual PLL has stepped on its prompt:
     # its prompt's sample index plus the replica's second half, a sample index up to rounding.
     previous_end = loop_state.residual_pll.last_prompt_sample_index + ustrip(s, previous_duration) * fs

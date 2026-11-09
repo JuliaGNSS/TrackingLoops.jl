@@ -47,7 +47,7 @@ processed_state(
     last_filtered_correlator_bank = filtered_correlator_bank,
     previous_filtered_prompt = previous_prompt,
     last_num_integrated_samples = num_integrated_samples,
-    last_sample_index = sample_index,
+    last_end_sample_index = sample_index,
     last_command_issue_sample_index = command_issue_sample_index,
     last_num_code_periods = num_code_periods,
     last_code_phase = code_phase,

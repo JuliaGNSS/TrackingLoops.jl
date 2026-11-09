@@ -14,7 +14,7 @@
         4000, 8000,
     )
     processing = @inferred process_correlator_bank_output!(processing, output, fs, density, true; command_issue_sample_index = 10_000,)
-    @test processing.last_sample_index == output.end_sample_index == 8000
+    @test processing.last_end_sample_index == output.end_sample_index == 8000
     @test processing.last_num_code_periods == 1
     timeline = NCOTimeline()
     reset_timeline!(timeline, 100.0, 0.1)
@@ -141,7 +141,7 @@ end
                 p = cis(0.01k) * (isodd(k ÷ 20) ? 1 : -1)
                 out = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k, 0.0)
                 rec = PostCorrelationState(base; last_filtered_correlator_bank = out.correlator_bank,
-                    previous_filtered_prompt = previous, last_sample_index = 4000k,
+                    previous_filtered_prompt = previous, last_end_sample_index = 4000k,
                     last_command_issue_sample_index = 4000k, last_code_phase = 0.0)
                 st, carrier, code = step_loop!(tracking_loop, st, rec, timeline, Int64(4000k + 8000))
                 schedule_command!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))

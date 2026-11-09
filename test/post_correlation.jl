@@ -71,14 +71,14 @@ end
     state = processed_state(GPSL1CA(), correlator_bank, cis(0.1), output, 1, 4e6Hz)
     @test state.prn == 0
     @test state.last_code_phase == 3.25
-    @test state.last_sample_index == 8000
+    @test state.last_end_sample_index == 8000
     @test state.last_command_issue_sample_index == 8000
     @test state.sampling_frequency === 4.0e6Hz
     # The host's per-measurement origin moves onto the band's common one.
     shifted = processed_state(GPSL1CA(), correlator_bank, cis(0.1), output, 1, 4e6Hz;
         command_issue_sample_index = 12_000, prn = 7, sample_index_offset = 40_000)
     @test shifted.prn == 7
-    @test shifted.last_sample_index == 48_000
+    @test shifted.last_end_sample_index == 48_000
     @test shifted.last_command_issue_sample_index == 52_000
     @test shifted.last_num_integrated_samples == 4000
     # The positional form keeps its eight arguments.
@@ -305,7 +305,7 @@ end
 
 function process_correlator_bank_output_allocation_probe(state, signal, output)
     next_state = process_correlator_bank_output!(state, output, 4e6Hz, 1e-6 / Hz, true; command_issue_sample_index = 12_000, sample_index_offset = 40_000)
-    next_state, next_state.last_sample_index + next_state.last_command_issue_sample_index + next_state.last_num_new_soft_bits
+    next_state, next_state.last_end_sample_index + next_state.last_command_issue_sample_index + next_state.last_num_new_soft_bits
 end
 
 function integration_processing_allocations(state, signal, output)
@@ -319,7 +319,7 @@ end
     output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(
         SVector{3,ComplexF64}(1000, 2000, 1000), 0.5), 4000, 8000, 3.25)
     state = @inferred process_correlator_bank_output!(state, output, 4e6Hz, 1e-6 / Hz, true; command_issue_sample_index = 12_000, sample_index_offset = 40_000)
-    @test state.last_sample_index == 48_000
+    @test state.last_end_sample_index == 48_000
     @test state.last_command_issue_sample_index == 52_000
     @test state.prn == 7 && state.last_code_phase == 3.25
     # The soft bits are the bit synchronizer's own vector, which the vector loop views.
