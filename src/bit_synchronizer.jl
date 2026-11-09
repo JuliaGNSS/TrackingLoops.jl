@@ -219,9 +219,8 @@ find the maximum-energy hypothesis and its closest competitor in the
 `period` is both the code periods per bin and the number of hypotheses; `confidence` is
 the target `1 − P(false lock)`.
 
-Returns `(accepted, peak_index, peak_bin_count)`: whether the gap is significant
-(the caller still gates on the bin boundary), the 0-based winner (`-1` if none)
-and its completed-bin count.
+Returns `(accepted, peak_index)`: whether the gap is significant (the caller still
+gates on the bin boundary) and the 0-based winner (`-1` if none).
 
 The true hypothesis keeps full coherent gain on every bin while wrong ones lose
 energy (straddling a bit transition, or failing to wipe the overlay), so the mean
@@ -246,7 +245,7 @@ asymmetry stays bounded and never locks.
     confidence::Float64,
 )
     # Need two complete bins on some hypothesis.
-    num_code_periods < 2 * period && return (false, -1, 0)
+    num_code_periods < 2 * period && return (false, -1)
 
     # One pass: the peak (highest energy with ≥ 2 bins) and the two highest
     # overall; the runner-up is the higher of those that isn't the peak.
@@ -279,15 +278,15 @@ asymmetry stays bounded and never locks.
         end
     end
     # Unreachable: hypothesis 0 has ≥ 2 bins here.
-    peak_index < 0 && return (false, -1, 0)
+    peak_index < 0 && return (false, -1)
 
     runner_up_energy, runner_up_bin_count =
         best_index == peak_index ? (second_best_energy, second_best_bin_count) :
         (best_energy, best_bin_count)
-    runner_up_bin_count < 1 && return (false, peak_index, peak_bin_count)
+    runner_up_bin_count < 1 && return (false, peak_index)
 
     energy_gap = peak_energy - runner_up_energy
-    energy_gap <= 0 && return (false, peak_index, peak_bin_count)
+    energy_gap <= 0 && return (false, peak_index)
 
     # The runner-up is assumed to share the peak's variance (its straddling bins
     # can only make it larger): the fastest-locking choice that rejects drift.
@@ -308,9 +307,9 @@ asymmetry stays bounded and never locks.
     # 2-bin fluctuation lock. The t quantile demands z ≈ 6000 at 1 d.o.f. and relaxes
     # to normal as bins accumulate (which also lets the carrier settle).
     z_threshold = _t_quantile(quantile_argument, _bin_energy_variance_dof(peak_bin_count))
-    z_score < z_threshold && return (false, peak_index, peak_bin_count)
+    z_score < z_threshold && return (false, peak_index)
 
-    (true, peak_index, peak_bin_count)
+    (true, peak_index)
 end
 
 """
@@ -330,7 +329,7 @@ function _detect_bit_edge_cfar(
     confidence::Float64,
     num_code_periods::Int,
 )
-    accepted, peak_phase, _ = _cfar_decide(
+    accepted, peak_phase = _cfar_decide(
         accumulators.mean_bin_energy,
         accumulators.bin_energy_sum_of_squared_deviations,
         num_code_periods,
@@ -399,7 +398,7 @@ function _detect_secondary_code_cfar(
     confidence::Float64,
     num_code_periods::Int,
 )
-    accepted, peak_rotation, _ = _cfar_decide(
+    accepted, peak_rotation = _cfar_decide(
         accumulators.mean_bin_energy,
         accumulators.bin_energy_sum_of_squared_deviations,
         num_code_periods,
