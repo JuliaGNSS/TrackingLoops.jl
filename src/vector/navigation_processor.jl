@@ -39,8 +39,8 @@ What a [`VectorTrackingLoop`](@ref) knows of one member, a satellite on one rang
 signal (see
 [`get_satellite_report`](@ref)), so a consumer need not decode or estimate C/N₀ again:
 
-  - `prn`, and `tracked`: whether it is stepped now (`false` after two update intervals
-    without an integration; the rest then describes it as it was);
+  - `prn`; a satellite dropped after two update intervals without an integration is
+    still reported, as it was, with `release_reason` `VT_INELIGIBLE`;
   - `bit_or_secondary_code_synced`: whether the decoding signal's bit clock held the bit sync at
     that signal's last integration;
   - at its latest snapshot (`snapshot_time`, on the navigation-epoch grid, a multiple of
@@ -55,7 +55,6 @@ and report calls. Access the separately borrowed decoder with [`get_decoder`](@r
 """
 struct SatelliteReport
     prn::Int
-    tracked::Bool
     bit_or_secondary_code_synced::Bool
     snapshot_time::Union{Nothing,typeof(1.0s)}
     cn0_dbhz::Float64
@@ -413,7 +412,28 @@ It holds the latest solution (`pvt`, whose containers every update reuses) and
 the member results (`vector_tracking_members`, read with
 [`get_vector_tracking_members`](@ref)). `pvt.observations` carries only
 the members the update measured, so the keys missing from it are the members the
-filter coasted through an obscuration.
+filter coasted through an obscuration. `vector_tracking_active` says whether the
+navigation filter runs: `false` until a scalar fix seeds it and again after a fallback,
+while the update solves the scalar PVT.
+
+A satellite passes these checks on its way into an update's measurements, each on
+top of the one before:
+
+  - `occupied`: its slot holds it (it is stepped and not stale);
+  - `in_update`: it latched the update's measurement epoch;
+  - `measurement_ready`: its decoding signal is synced and the driver's C/N₀ is at least
+    the lock threshold;
+  - available: measurement-ready with discriminator sums accumulated since the last
+    update (`has_disc_sums`);
+  - used: available and above the horizon at the update's starting solution.
+
+Admission into the vector loop takes `positioning_ready` (in lock, decoded for
+positioning and healthy) and, on top, the elevation mask (`ADMISSION_ELEVATION`).
+
+The phases the residual PLL predicted at the driver's latest prompts live in the slot
+(`prompt_history`), not in the loop state that holds the residual PLL: a data
+component's integrations reach the processor before or after the driver's, and the
+history lets either be wiped with the phase at its own prompt.
 """
 mutable struct NavigationProcessor{G<:Tuple,SB<:Tuple}
     const nav_filter::NavFilter
@@ -547,7 +567,6 @@ function _satellite_report(nav_processor, groups::Tuple, signal::S, prn) where {
         slot.snapshot_epoch_index * nav_processor.navigation_filter_update_interval
     SatelliteReport(
         slot.prn,
-        slot.occupied,
         slot.decoding.bit_synced,
         snapshot_time,
         slot.snapshot.cn0_dbhz,
