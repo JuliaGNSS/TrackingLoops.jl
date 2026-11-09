@@ -202,16 +202,17 @@ is_dataless_with_secondary_code(signal::AbstractGNSSSignal) =
     Int8(0)
 
 """
-    _process_correlator_bank_output!(signal, prn, bit_synchronizer, cn0_estimator, post_corr_filter, output,
+    _process_correlator_bank_output!(state::PostCorrelationState, signal, prn, output,
                 sampling_frequency, noise_density, noise_density_ready,
                 driver_carrier_phase_offset;
-                secondary_code_wiped = is_bit_or_secondary_code_synced(bit_synchronizer))
-        -> (bit_synchronizer, cn0_estimator, post_corr_filter, prompt, filtered_correlator_bank,
-            num_bit_synchronizer_code_periods, num_code_periods, overshoot, carrier_phase_polarity)
+                secondary_code_wiped = is_bit_or_secondary_code_synced(state))
+        -> (state, filtered_correlator_bank)
 
-Apply one completed integration to a signal component's bare state: normalize the raw
+Apply one completed integration to a signal component's state: normalize the raw
 correlator bank by sample count and code amplitude, update and apply the
-post-correlation filter, advance the C/N₀ estimator and the bit synchronizer.
+post-correlation filter, advance the C/N₀ estimator and the bit synchronizer. Returns
+the new state, which keeps the prompt, the code periods and the carrier phase
+polarity, and the filtered correlator bank the discriminators read.
 
 The bit synchronizer is credited with the code periods actually integrated
 (`calc_num_bit_synchronizer_code_periods`), recovered from the sample count. Everything
@@ -220,32 +221,32 @@ here is Tracking's per-integration arithmetic, in the same order.
 every sign modulation off it (a dataless signal with a secondary code, overlay
 wiped), else `0`; a [`CoherentIntegration`](@ref) carries it to the carrier discriminators.
 
-`overshoot`, `secondary_code_wiped` and the pre-sync contract are as for
+`secondary_code_wiped` and the pre-sync contract are as for
 [`process_correlator_bank_output!`](@ref).
 """
 @inline function _process_correlator_bank_output!(
+    state::PostCorrelationState,
     signal::AbstractGNSSSignal,
     prn::Integer,
-    bit_synchronizer::BitSynchronizer,
-    cn0_estimator::AbstractCN0Estimator,
-    post_corr_filter::AbstractPostCorrFilter,
     output::CorrelatorBankOutput,
     sampling_frequency,
     noise_density,
     noise_density_ready::Bool,
     driver_carrier_phase_offset::Real;
-    secondary_code_wiped::Bool = is_bit_or_secondary_code_synced(bit_synchronizer),
+    secondary_code_wiped::Bool = is_bit_or_secondary_code_synced(state),
 )
-    bit_synchronizer_before = bit_synchronizer
-    synced_before = is_bit_or_secondary_code_synced(bit_synchronizer)
+    bit_synchronizer_before = state.bit_synchronizer
+    synced_before = is_bit_or_secondary_code_synced(bit_synchronizer_before)
+    # Normalize, then filter: the antennas combined into one correlator bank.
     normalized_correlator_bank =
         normalize(output.correlator_bank, output.num_integrated_samples, get_code_amplitude(signal))
-    post_corr_filter = update!(post_corr_filter, get_prompt(normalized_correlator_bank))
+    post_corr_filter = update!(state.post_corr_filter, get_prompt(normalized_correlator_bank))
     # Used twice: to combine the antennas and to reduce the shared noise covariance
     # to this satellite's density.
     weights = get_weights(post_corr_filter, NumAnts(normalized_correlator_bank))
     filtered_correlator_bank = _filter_correlator_bank(normalized_correlator_bank, weights)
     prompt = get_prompt(filtered_correlator_bank)
+    # The code periods integrated, recovered from the sample count.
     num_bit_synchronizer_code_periods = calc_num_bit_synchronizer_code_periods(
         signal,
         output.num_integrated_samples,
@@ -257,22 +258,24 @@ wiped), else `0`; a [`CoherentIntegration`](@ref) carries it to the carrier disc
     # Onto the driver's (real) phase frame for sync search and bit accumulation.
     bit_prompt = prompt * _carrier_phase_derotation(driver_carrier_phase_offset, signal)
     drop_prompt = _drops_unwiped_prompt(signal, synced_before, secondary_code_wiped)
+    # C/N₀ against this satellite's share of the noise density.
     scalar_noise_density = _reduce_noise_density(noise_density, weights)
     cn0_estimator = _update_cn0_estimator(
-        cn0_estimator,
+        state.cn0_estimator,
         prompt,
         signal,
-        bit_synchronizer,
+        bit_synchronizer_before,
         num_bit_synchronizer_code_periods,
         !drop_prompt,
         scalar_noise_density,
         noise_density_ready,
         output.num_integrated_samples / sampling_frequency,
     )
+    # Bit synchronization: the sync search, or the bit accumulation once synced.
     bit_synchronizer = update_bit_sync!(
         signal,
         prn,
-        bit_synchronizer,
+        bit_synchronizer_before,
         num_bit_synchronizer_code_periods,
         drop_prompt ? zero(bit_prompt) : bit_prompt,
     )
@@ -281,17 +284,11 @@ wiped), else `0`; a [`CoherentIntegration`](@ref) carries it to the carrier disc
     if synced_before && !secondary_code_wiped
         bit_synchronizer = _advance_secondary_phase(signal, bit_synchronizer, num_bit_synchronizer_code_periods)
     end
-    overshoot = is_bit_or_secondary_code_synced(bit_synchronizer_before) &&
-        !is_bit_or_secondary_code_synced(bit_synchronizer)
-    return bit_synchronizer,
-    cn0_estimator,
-    post_corr_filter,
-    prompt,
-    filtered_correlator_bank,
-    num_bit_synchronizer_code_periods,
-    num_code_periods,
-    overshoot,
-    _carrier_phase_polarity(signal, bit_synchronizer_before, secondary_code_wiped)
+    new_state = PostCorrelationState(
+        bit_synchronizer, cn0_estimator, post_corr_filter, prompt, num_code_periods,
+        _carrier_phase_polarity(signal, bit_synchronizer_before, secondary_code_wiped),
+    )
+    new_state, filtered_correlator_bank
 end
 
 """
@@ -343,20 +340,10 @@ and its polarity is `0`.
 )
     was_synced = is_bit_or_secondary_code_synced(state.bit_synchronizer)
     num_soft_bits = Base.length(state.bit_synchronizer.soft_bits)
-    bit_synchronizer,
-    cn0_estimator,
-    post_corr_filter,
-    prompt,
-    filtered_correlator_bank,
-    _,
-    num_code_periods,
-    overshoot,
-    carrier_phase_polarity = _process_correlator_bank_output!(
+    new_state, filtered_correlator_bank = _process_correlator_bank_output!(
+        state,
         signal,
         prn,
-        state.bit_synchronizer,
-        state.cn0_estimator,
-        state.post_corr_filter,
         output,
         sampling_frequency,
         noise_density,
@@ -364,16 +351,16 @@ and its polarity is `0`.
         driver_carrier_phase_offset;
         secondary_code_wiped,
     )
+    (; bit_synchronizer, cn0_estimator) = new_state
+    num_code_periods = new_state.last_num_code_periods
+    carrier_phase_polarity = new_state.last_carrier_phase_polarity
     is_synced = is_bit_or_secondary_code_synced(bit_synchronizer)
     sync_change =
         !was_synced && is_synced ? SYNC_FOUND :
         was_synced && !is_synced ? SYNC_LOST : SYNC_UNCHANGED
+    # The FLL cannot compare prompts of different carrier phase polarities.
     previous_prompt = carrier_phase_polarity == state.last_carrier_phase_polarity ?
         state.last_filtered_prompt : zero(ComplexF64)
-    new_state = PostCorrelationState(
-        bit_synchronizer, cn0_estimator, post_corr_filter, prompt,
-        num_code_periods, carrier_phase_polarity,
-    )
     integration = CoherentIntegration(
         signal, filtered_correlator_bank, previous_prompt,
         output.num_integrated_samples,

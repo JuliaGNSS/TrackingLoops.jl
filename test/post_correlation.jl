@@ -245,12 +245,12 @@ end
         10230,
         10230,
     )
+    state = PostCorrelationState(PostCorrelationState(signal; cn0_estimator = NoCN0Estimator());
+        bit_synchronizer = synced)
     process(secondary_code_wiped) = TrackingLoops._process_correlator_bank_output!(
+        state,
         signal,
         1,
-        synced,
-        NoCN0Estimator(),
-        DefaultPostCorrFilter(),
         output,
         10.23e6Hz,
         1.0 / Hz,
@@ -258,8 +258,8 @@ end
         get_carrier_phase_offset(signal);
         secondary_code_wiped,
     )
-    wiped = first(process(true))
-    unwiped = first(process(false))
+    wiped = first(process(true)).bit_synchronizer
+    unwiped = first(process(false)).bit_synchronizer
     # Wiped, the prompt joins the bit's coherent sum; not yet wiped, only its
     # period counts, and the secondary-code anchor moves along.
     @test wiped.bit_prompt_sum != 0
@@ -270,17 +270,15 @@ end
     @test unwiped.secondary_code_phase == 4
     # By default the integration follows the sync with its overlay wiped.
     @test first(TrackingLoops._process_correlator_bank_output!(
+        state,
         signal,
         1,
-        synced,
-        NoCN0Estimator(),
-        DefaultPostCorrFilter(),
         output,
         10.23e6Hz,
         1.0 / Hz,
         true,
         get_carrier_phase_offset(signal),
-    )).bit_prompt_sum == wiped.bit_prompt_sum
+    )).bit_synchronizer.bit_prompt_sum == wiped.bit_prompt_sum
 end
 
 @testset "The dataless signals with a secondary code" begin
