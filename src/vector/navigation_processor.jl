@@ -836,7 +836,8 @@ function _measurement_update!(nav_processor::NavigationProcessor, Δt_nav)
             R[num_observations+k, num_observations+k] = pseudorange_rate_noise_variance(member, Δt_nav)
         end
     end
-    # Each time-offset constraint is one extra row after the pseudorange and rate rows.
+    # Each clock constraint (a broadcast inter-system bias) is one extra row after the
+    # pseudorange and rate rows.
     offset = num_observations + num_rate_rows
     for (i, (_, _, isb)) in enumerate(constraints)
         z[offset+i] = isb
@@ -859,8 +860,9 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Loop closure
 
-# Every member's predictions at the updated `nav_processor.x`, and post-fit residuals.
-function _predict_members!(nav_processor::NavigationProcessor)
+# Every member's pseudorange and rate predicted at the updated `nav_processor.x`, which its NCO
+# commands follow (`_assign_commands!`), and post-fit residuals.
+function _predict_nco_commands!(nav_processor::NavigationProcessor)
     buffers = nav_processor.buffers
     members = buffers.members
     num_members = length(members)
@@ -1074,7 +1076,7 @@ function _seed!(nav_processor::NavigationProcessor, groups, update_interval)
     # reference one starting at zero, taken from `pvt.time`.
     reference_epoch = something(pvt.time)
     _measure_pseudoranges!(nav_processor, prepared.ionospheric_model, reference_epoch)
-    _predict_members!(nav_processor)
+    _predict_nco_commands!(nav_processor)
     resize!(buffers.above_horizon, length(members))
     fill!(buffers.above_horizon, true)
     _fold_groups_with_buffers(_assign_commands!, 0, groups, buffers.signal_observations, 1, nav_processor)
@@ -1087,10 +1089,12 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # One update
 
-# One filter update: manage membership, predict, fuse the accumulated discriminators as
-# pseudorange (and, for VDFLL, rate) measurements, and assign the commands or fall
-# back to scalar tracking. Returns `(released, fell_back)`.
-function _run_cycle!(nav_processor::NavigationProcessor, groups, update_interval)
+# One update of the navigation filter, a linear Kalman time update and an unscented
+# measurement update: manage membership, predict (time update), fuse the accumulated
+# discriminators as pseudorange (and, for VDFLL, rate) measurements (measurement update),
+# and assign the NCO commands or fall back to scalar tracking. Returns
+# `(released, fell_back)`.
+function _nav_filter_update!(nav_processor::NavigationProcessor, groups, update_interval)
     config = nav_processor.filter_config
     buffers = nav_processor.buffers
     model = nav_processor.model
@@ -1100,7 +1104,8 @@ function _run_cycle!(nav_processor::NavigationProcessor, groups, update_interval
     # Advance the receive epoch: its time of week crosses into the next week by itself.
     reference_epoch = nav_processor.reference_epoch + Δt_nav
 
-    # Admission and the elevation mask are judged at the update's starting solution.
+    # 1. Membership: admission and the elevation mask, judged at the update's starting
+    #    solution.
     enu_from_ecef = ENUfromECEF(_ecef(first(nav_filter_states(nav_processor.x, idxs))), wgs84)
     released =
         _fold_groups_with_buffers(_update_membership!, false, groups, buffers.signal_observations, 1, enu_from_ecef)
@@ -1117,15 +1122,19 @@ function _run_cycle!(nav_processor::NavigationProcessor, groups, update_interval
     end
     released = _fold_groups_with_buffers(_release_below_horizon!, released, groups, buffers.signal_observations, 1, nav_processor)
 
+    # 2. Time update (prediction) to the measurement epoch: x⁻ = F·x⁺, P⁻ = F·P⁺·Fᵀ + Q.
     time_update!(buffers.time_update, nav_processor.x, nav_processor.P, model.F, model.Q)
+
+    # 3. Measurements: each member's pseudorange from its snapshot, corrected by its
+    #    accumulated code discriminator in the update below.
     _measure_pseudoranges!(nav_processor, prepared.ionospheric_model, reference_epoch)
 
-    # Used measurements: members above the horizon with an available signal (an
-    # obscured one carries no information).
-    # No measurement gate selects among them yet: planned filtering (an innovation or
-    # NIS gate, RAIM/FDE, C/N₀ or lock thresholds, health and URA flags, multipath and
-    # NLOS detection, satellite subset selection) would take these as its input,
-    # `candidates`, and keep `used` for its output.
+    # 4. Used measurements: members above the horizon with an available signal (an
+    #    obscured one carries no information), and the clock and bias states they determine.
+    #    No measurement gate selects among them yet: planned filtering (an innovation or
+    #    NIS gate, RAIM/FDE, C/N₀ or lock thresholds, health and URA flags, multipath and
+    #    NLOS detection, satellite subset selection) would take these as its input,
+    #    `candidates`, and keep `used` for its output.
     used = empty!(buffers.used)
     for (j, member) in enumerate(members)
         member.available && above_horizon[j] && push!(used, j)
@@ -1135,20 +1144,25 @@ function _run_cycle!(nav_processor::NavigationProcessor, groups, update_interval
     used_observations = view(buffers.measurements, used)
     solvable = decide_bias_layout!(buffers.bias_layout, used_observations, prepared.inter_system_time_offsets)
     clock_constraints!(buffers.clock_constraints, nav_processor.layout, buffers.bias_layout)
-    # No innovation gate: the measurement deficit watchdog catches divergence, and a gate
-    # could release a healthy satellite whose large but explained innovation the update
-    # would absorb (e.g. a constellation's first measurements).
+    # 5. Measurement update (unscented): the predicted measurements from sigma points
+    #    through h, then x⁺ = x⁻ + K·(z − ẑ) and P⁺.
+    #    No innovation gate: the measurement deficit watchdog catches divergence, and a gate could
+    #    release a healthy satellite whose large but explained innovation the update would
+    #    absorb (e.g. a constellation's first measurements).
     isempty(used) || _measurement_update!(nav_processor, Δt_nav)
 
-    _predict_members!(nav_processor)
+    # 6. Loop closure: every member's pseudorange and rate predicted at the updated state,
+    #    which the NCO commands follow.
+    _predict_nco_commands!(nav_processor)
 
-    # Measurement deficit watchdog (see `VectorTrackingStatus`): solvability only; the solution's
+    # 7. Measurement deficit watchdog (see `VectorTrackingStatus`): solvability only; the solution's
     # certainty is reported as `position_std`, not policed.
     measurement_deficit_duration =
         solvable ?
         max(0.0s, nav_processor.measurement_deficit_duration - update_interval / 2) :
         nav_processor.measurement_deficit_duration + update_interval
 
+    # 8. The NCO commands, or the fallback to scalar tracking.
     fell_back = measurement_deficit_duration > config.measurement_deficit_timeout || num_above_horizon == 0
     if fell_back
         released = _fold_groups_with_buffers(_release_all!, released, groups, buffers.signal_observations, 1, VT_FALLBACK)
@@ -1157,6 +1171,7 @@ function _run_cycle!(nav_processor::NavigationProcessor, groups, update_interval
         _fold_groups_with_buffers(_assign_commands!, 0, groups, buffers.signal_observations, 1, nav_processor)
     end
 
+    # 9. The solution, dated by the reference system's clock.
     nav_processor.reference_clock_index =
         select_reference_clock_index(nav_processor.layout, buffers.bias_layout, nav_processor.reference_clock_index)
     nav_processor.reference_epoch = reference_epoch
