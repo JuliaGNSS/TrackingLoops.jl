@@ -630,7 +630,7 @@ end
 #
 #   - Not running: the scalar PVT. A fresh fix seeds the filter, puts its satellites
 #     into the vector loop and closes their loops a first time at the seeded state.
-#   - Running: one filter cycle (`_run_cycle!`) — admission and release, the members'
+#   - Running: one filter cycle (`_nav_filter_cycle!`) — admission and release, the members'
 #     accumulated discriminators fused, commands for every member. Admitted are
 #     satellites decoded, healthy, in lock and `ADMISSION_ELEVATION` above the
 #     horizon; members out of lock stay in the loop unmeasured. After
@@ -649,7 +649,7 @@ function _navigation_cycle!(nav::NavFilterState, now)
     dropped = _fold_groups(_prepare_slots!, false, groups, nav, now)
     seeded = released = fell_back = false
     if nav.enabled && nav.vector_tracking_active
-        released, fell_back = _run_cycle!(nav, groups, cycle_time)
+        released, fell_back = _nav_filter_cycle!(nav, groups, cycle_time)
     else
         # Scalar solve: no per-member report.
         empty_keeping_capacity!(nav.vector_tracking_members)

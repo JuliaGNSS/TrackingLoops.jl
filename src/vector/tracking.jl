@@ -862,7 +862,8 @@ function _measurement_update!(nav::NavFilterState, T)
             R[num_observations+k, num_observations+k] = pseudorange_rate_noise_variance(member, T)
         end
     end
-    # Each time-offset constraint is one extra row after the pseudorange and rate rows.
+    # Each clock constraint (a broadcast inter-system bias) is one extra row after the
+    # pseudorange and rate rows.
     offset = num_observations + num_rate_rows
     for (i, (_, _, isb)) in enumerate(constraints)
         z[offset+i] = isb
@@ -885,8 +886,9 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Loop closure
 
-# Every member's predictions at the updated `nav.x`, and post-fit residuals.
-function _predict_members!(nav::NavFilterState)
+# Every member's pseudorange and rate predicted at the updated `nav.x`, which its NCO
+# commands follow (`_assign_commands!`), and post-fit residuals.
+function _predict_nco_commands!(nav::NavFilterState)
     buffers = nav.buffers
     members = buffers.members
     num_members = length(members)
@@ -1095,7 +1097,7 @@ function _seed!(nav::NavFilterState, groups, cycle_time)
     # reference one starting at zero, taken from `pvt.time`.
     reference_epoch = something(pvt.time)
     _measure_pseudoranges!(nav, prepared.ionospheric_model, reference_epoch)
-    _predict_members!(nav)
+    _predict_nco_commands!(nav)
     resize!(buffers.above_horizon, length(members))
     fill!(buffers.above_horizon, true)
     _fold_groups_with_buffers(_assign_commands!, 0, groups, buffers.signal_observations, 1, nav)
@@ -1108,10 +1110,11 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # One cycle
 
-# One filter cycle: manage membership, predict, fuse the accumulated discriminators as
-# pseudorange (and, for VDFLL, rate) measurements, and assign the commands or fall
-# back to scalar tracking. Returns `(released, fell_back)`.
-function _run_cycle!(nav::NavFilterState, groups, cycle_time)
+# One navigation filter cycle, an extended Kalman filter's: manage membership, predict
+# (time update), fuse the accumulated discriminators as pseudorange (and, for VDFLL, rate)
+# measurements (measurement update), and assign the NCO commands or fall back to scalar
+# tracking. Returns `(released, fell_back)`.
+function _nav_filter_cycle!(nav::NavFilterState, groups, cycle_time)
     config = nav.filter_config
     buffers = nav.buffers
     model = nav.model
@@ -1121,7 +1124,8 @@ function _run_cycle!(nav::NavFilterState, groups, cycle_time)
     # Advance the receive epoch: its time of week crosses into the next week by itself.
     reference_epoch = nav.reference_epoch + T
 
-    # Admission and the elevation mask are judged at the cycle's starting solution.
+    # 1. Membership: admission and the elevation mask, judged at the cycle's starting
+    #    solution.
     enu_from_ecef = ENUfromECEF(_ecef(first(nav_filter_states(nav.x, idxs))), wgs84)
     released =
         _fold_groups_with_buffers(_update_membership!, false, groups, buffers.signal_observations, 1, enu_from_ecef)
@@ -1138,11 +1142,15 @@ function _run_cycle!(nav::NavFilterState, groups, cycle_time)
     end
     released = _fold_groups_with_buffers(_release_below_horizon!, released, groups, buffers.signal_observations, 1, nav)
 
+    # 2. Time update (prediction) to the cycle's epoch: x⁻ = F·x⁺, P⁻ = F·P⁺·Fᵀ + Q.
     time_update!(buffers.time_update, nav.x, nav.P, model.F, model.Q)
+
+    # 3. Measurements: each member's pseudorange from its snapshot, corrected by its
+    #    accumulated code discriminator in the update below.
     _measure_pseudoranges!(nav, prepared.ionospheric_model, reference_epoch)
 
-    # Candidates: members above the horizon with an available signal (an obscured one
-    # carries no information).
+    # 4. Candidates: members above the horizon with an available signal (an obscured one
+    #    carries no information), and the clock and bias states they determine.
     candidates = empty!(buffers.candidates)
     for (j, member) in enumerate(members)
         member.available && above_horizon[j] && push!(candidates, j)
@@ -1152,20 +1160,24 @@ function _run_cycle!(nav::NavFilterState, groups, cycle_time)
     candidate_observations = view(buffers.measurements, candidates)
     solvable = decide_bias_layout!(buffers.bias_layout, candidate_observations, prepared.inter_system_time_offsets)
     clock_constraints!(buffers.clock_constraints, nav.layout, buffers.bias_layout)
-    # No innovation gate: the starvation watchdog catches divergence, and a gate
-    # could release a healthy satellite whose large but explained innovation the update
-    # would absorb (e.g. a constellation's first measurements).
+    # 5. Measurement update (correction): x⁺ = x⁻ + K·(z − h(x⁻)), and P⁺.
+    #    No innovation gate: the starvation watchdog catches divergence, and a gate could
+    #    release a healthy satellite whose large but explained innovation the update would
+    #    absorb (e.g. a constellation's first measurements).
     isempty(candidates) || _measurement_update!(nav, T)
 
-    _predict_members!(nav)
+    # 6. Loop closure: every member's pseudorange and rate predicted at the updated state,
+    #    which the NCO commands follow.
+    _predict_nco_commands!(nav)
 
-    # Starvation watchdog (see `VectorTrackingStatus`): solvability only; the solution's
+    # 7. Starvation watchdog (see `VectorTrackingStatus`): solvability only; the solution's
     # certainty is reported as `position_std`, not policed.
     measurement_deficit_duration =
         solvable ?
         max(0.0s, nav.measurement_deficit_duration - cycle_time / 2) :
         nav.measurement_deficit_duration + cycle_time
 
+    # 8. The NCO commands, or the fallback to scalar tracking.
     fell_back = measurement_deficit_duration > config.measurement_deficit_timeout || num_above_horizon == 0
     if fell_back
         released = _fold_groups_with_buffers(_release_all!, released, groups, buffers.signal_observations, 1, VT_FALLBACK)
@@ -1174,6 +1186,7 @@ function _run_cycle!(nav::NavFilterState, groups, cycle_time)
         _fold_groups_with_buffers(_assign_commands!, 0, groups, buffers.signal_observations, 1, nav)
     end
 
+    # 9. The solution, dated by the reference system's clock.
     nav.reference_clock_index =
         select_reference_clock_index(nav.layout, buffers.bias_layout, nav.reference_clock_index)
     nav.reference_epoch = reference_epoch

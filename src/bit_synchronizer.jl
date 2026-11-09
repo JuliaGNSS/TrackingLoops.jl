@@ -838,11 +838,12 @@ function _update_sync_search(
             "The number of code periods must be equal to 1 if bit or secondary code hasn't been found yet.",
         )
     end
+    # 1. The prompt's sign, onto the history the hard detectors search.
     prompt_sign_history = (bit_synchronizer.prompt_sign_history << 1) + B(real(prompt) > 0)
     num_prompt_signs = bit_synchronizer.num_prompt_signs + 1
 
-    # Soft detectors share `phase_accumulators`; the rest take the hard path. Folds at
-    # compile time.
+    # 2. The detection of the bit edge or the secondary-code phase. Soft detectors
+    #    share `phase_accumulators`; the rest take the hard path. Folds at compile time.
     phase_accumulators = bit_synchronizer.phase_accumulators
     if uses_soft_bit_edge_detection(signal)
         code_periods_per_bit = num_code_periods_per_bit
@@ -886,6 +887,7 @@ function _update_sync_search(
             num_prompt_signs,
         )
     end
+    # 3. Not found yet: keep searching.
     if !sync.found
         return BitSynchronizer{B}(
             prompt_sign_history,
@@ -899,6 +901,7 @@ function _update_sync_search(
             phase_accumulators,
         )
     end
+    # 4. Found: synced from here on, with the bits the history already holds recovered.
     if get_secondary_code_length(signal) > 1
         # Pre-sync signs carry the overlay, not data: no bits to recover. The hard
         # search can lock `sync.phase` code periods into a bit, so seed the period count
