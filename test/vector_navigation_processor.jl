@@ -12,7 +12,7 @@ using Geodesy: ENUfromECEF, wgs84
     @test all(group -> length(group.slots) == 4, nav_processor.groups)
     @test all(group -> all(slot -> !slot.occupied && slot.slot_generation == 0, group.slots), nav_processor.groups)
     @test nav_processor.navigation_filter_update_interval == 0.1s
-    @test nav_processor.min_tracking_cn0 == 30.0
+    @test nav_processor.min_tracking_cn0 == 30.0dBHz
     @test get_navigation_status(tracking_loop) == VectorTrackingStatus()
     @test !get_navigation_status(tracking_loop).vector_tracking_active
     @test get_navigation_solution(tracking_loop) === nav_processor.pvt
@@ -22,7 +22,7 @@ using Geodesy: ENUfromECEF, wgs84
     @test (state.slot_index, state.slot_generation, state.update_index) == (0, 0, -1)
     @test !state.vector_controlled
     @test VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = 20ms).navigation_processor.navigation_filter_update_interval == 0.02s
-    @test VectorTrackingLoop(GPSL1CA(); min_tracking_cn0 = 35dBHz).navigation_processor.min_tracking_cn0 == 35.0
+    @test VectorTrackingLoop(GPSL1CA(); min_tracking_cn0 = 35dBHz).navigation_processor.min_tracking_cn0 == 35dBHz
     paired = VectorTrackingLoop(GPSL1CA(), BeiDouB1C_P() => BeiDouB1C_D(); scalar_loop = DelayCompensatedTrackingLoop())
     pairs = get_signal_pairs(paired)
     @test map(pair -> typeof(first(pair)) => typeof(last(pair)), pairs) ==
@@ -150,8 +150,8 @@ end
         @test sat.state.code_frequency_correction ≈
               TL.calc_nco_code_correction(predicted[j], measured, member.chip_rate, Δt_nav) * Hz atol = 1e-6Hz
         @test sat.state.ramp.doppler ≈
-              TL.predict_carrier_doppler(rate_at_epoch, member.wavelength) atol = 1e-6
-        @test sat.state.ramp.reference_time ≈ TL._epoch_time(vt, vt.update_epoch_index)
+              TL.predict_carrier_doppler(rate_at_epoch, member.wavelength) * Hz atol = 1e-6Hz
+        @test sat.state.ramp.reference_time ≈ TL._epoch_time(vt, vt.update_epoch_index) * s
         # The post-fit rate is predicted at the measurement's own instant.
         @test buffers.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.nav_filter.x, idxs, member) atol = 1e-9
         @test sat.state.feedback_delay == 0.0s
@@ -176,13 +176,13 @@ end
     at_epoch = TL._commands_at_application(vt, rx.group, slot, post_correlation_state, nco_history, Int64(sample))
     @test at_epoch[3] == 0.0
     @test at_epoch[1] ≈ ustrip(Hz, sat.state.code_frequency_correction) atol = 1e-9
-    @test at_epoch[2].doppler ≈ sat.state.ramp.doppler atol = 1e-9
+    @test at_epoch[2].doppler ≈ sat.state.ramp.doppler atol = 1e-9Hz
     # 20 ms on, under the same commands: the range has moved on with the replica, so the
     # code correction barely changes, the ramp carries on, and the lead is the 20 ms.
     later = TL._commands_at_application(vt, rx.group, slot, post_correlation_state, nco_history, Int64(sample + 80_000))
     @test later[3] ≈ 0.02
     @test later[1] ≈ at_epoch[1] atol = 0.05
-    @test later[2].doppler ≈ TL._doppler_at(at_epoch[2], later[2].reference_time) atol = 1e-3
+    @test ustrip(Hz, later[2].doppler) ≈ TL._doppler_at(at_epoch[2], ustrip(s, later[2].reference_time)) atol = 1e-3
     # It must take effect within 2.5 update intervals of the epoch.
     @test_throws ArgumentError TL._commands_at_application(vt, rx.group, slot, post_correlation_state, nco_history,
         Int64(sample + 1_100_000))

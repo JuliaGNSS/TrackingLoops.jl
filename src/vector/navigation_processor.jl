@@ -48,7 +48,7 @@ signal (see
     that signal's last integration;
   - at its latest snapshot (`snapshot_time`, on the navigation-epoch grid, a multiple of
     `navigation_filter_update_interval`, `nothing` before
-    the first): `cn0_dbhz` (the driver's, from the host's C/N₀ estimator),
+    the first): `cn0` (the driver's, from the host's C/N₀ estimator),
     `measurement_ready` (decoding signal synced and the driver's C/N₀ at least the lock
     threshold) and `positioning_ready` (in lock, decoded for positioning and healthy);
   - `vector_controlled` and `release_reason`: the latest update's decision.
@@ -60,7 +60,7 @@ struct SatelliteReport
     prn::Int
     bit_or_secondary_code_synced::Bool
     snapshot_time::Union{Nothing,typeof(1.0s)}
-    cn0_dbhz::Float64
+    cn0::typeof(1.0dBHz)
     measurement_ready::Bool
     positioning_ready::Bool
     vector_controlled::Bool
@@ -122,7 +122,7 @@ struct SatelliteSnapshot{D,E}
     driver_code_phase::Float64
     carrier_doppler::typeof(1.0Hz)
     code_doppler::typeof(1.0Hz)
-    cn0_dbhz::Float64
+    cn0::typeof(1.0dBHz)
     coherent_integration_time::typeof(1.0s)
     early_late_spacing::Float64
     # The decoding signal's half: the decoder at its last integration end before the
@@ -143,7 +143,7 @@ SatelliteSnapshot(
     driver_code_phase = snapshot.driver_code_phase,
     carrier_doppler = snapshot.carrier_doppler,
     code_doppler = snapshot.code_doppler,
-    cn0_dbhz = snapshot.cn0_dbhz,
+    cn0 = snapshot.cn0,
     coherent_integration_time = snapshot.coherent_integration_time,
     early_late_spacing = snapshot.early_late_spacing,
     decoder = snapshot.decoder,
@@ -156,7 +156,7 @@ SatelliteSnapshot(
     driver_code_phase,
     carrier_doppler,
     code_doppler,
-    cn0_dbhz,
+    cn0,
     coherent_integration_time,
     early_late_spacing,
     decoder,
@@ -202,7 +202,7 @@ function VectorTrackingSlot(
     prompt_history_length::Int,
 )
     decoder = GNSSDecoderState(decoding_signal, prn)
-    snapshot = SatelliteSnapshot(loop_state, NaN, 0.0Hz, 0.0Hz, NaN, 0.001s, 0.5, decoder, false, 0.0, false, false)
+    snapshot = SatelliteSnapshot(loop_state, NaN, 0.0Hz, 0.0Hz, -Inf * dBHz, 0.001s, 0.5, decoder, false, 0.0, false, false)
     VectorTrackingSlot(
         Int(prn),
         false,
@@ -452,7 +452,7 @@ mutable struct NavigationProcessor{G<:Tuple,SB<:Tuple}
     const buffers::VectorTrackingWorkspace{SB}
     const groups::G
     const navigation_filter_update_interval::typeof(1.0s)
-    const min_tracking_cn0::Float64
+    const min_tracking_cn0::typeof(1.0dBHz)
     # The epoch (in `navigation_filter_update_interval`s on the integrations' time grid) the slots snapshot
     # next, and how many have.
     pending_epoch_index::Int
@@ -468,7 +468,7 @@ function NavigationProcessor(
     pairs::Tuple,
     scalar_loop::AbstractTrackingLoop;
     navigation_filter_update_interval,
-    min_tracking_cn0::Float64,
+    min_tracking_cn0::typeof(1.0dBHz),
     satellite_capacity_per_signal::Int,
     approximate_year::Integer,
     enable_ionospheric_correction::Bool,
@@ -572,7 +572,7 @@ function _satellite_report(nav_processor, groups::Tuple, signal::S, prn) where {
         slot.prn,
         slot.decoding.bit_synced,
         snapshot_time,
-        slot.snapshot.cn0_dbhz,
+        slot.snapshot.cn0,
         slot.snapshot.measurement_ready,
         slot.snapshot.positioning_ready,
         slot.vector_controlled,
@@ -767,7 +767,7 @@ function _collect_members!(j, group, group_index, buffer, nav_processor, Δt_nav
                 calc_mean_code_disc_at_epoch(loop_state, Δt_nav),
                 -wavelength *
                 (ustrip(Hz, slot.snapshot.carrier_doppler) + calc_mean_fll_disc(loop_state)),
-                calc_linear_cn0_floor(slot.snapshot.cn0_dbhz),
+                calc_linear_cn0_floor(ustrip(slot.snapshot.cn0)),
                 slot.snapshot.early_late_spacing,
                 ustrip(s, slot.snapshot.coherent_integration_time),
             ),
