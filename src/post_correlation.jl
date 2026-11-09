@@ -189,6 +189,12 @@ function PostCorrelationState(
     )
 end
 
+# The latest integration's coherent integration time, first sample and centre sample, on
+# the band's sample count.
+_coherent_integration_time(state::PostCorrelationState) = state.last_num_integrated_samples / state.sampling_frequency
+_integration_start(state::PostCorrelationState) = state.last_sample_index - state.last_num_integrated_samples
+_integration_center(state::PostCorrelationState) = state.last_sample_index - state.last_num_integrated_samples / 2
+
 # A sampling frequency in Hz, as the state keeps it.
 _sampling_frequency(sampling_frequency) = Float64(ustrip(Hz, sampling_frequency)) * Hz
 
