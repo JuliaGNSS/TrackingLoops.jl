@@ -395,7 +395,7 @@ end
     @test groups[1].driver_signal isa GPSL1CA && groups[1].decoding_signal isa GPSL1CA
     @test groups[2].driver_signal isa GalileoE1C && groups[2].decoding_signal isa GalileoE1B
     @test groups[2].slots[1].running_decoder isa typeof(GNSSDecoderState(GalileoE1B(), 1))
-    @test pair.navigation_processor.layout.signal_id_by_group == [:GPSL1CA, :GalileoE1C]
+    @test pair.navigation_processor.nav_filter.layout.signal_id_by_group == [:GPSL1CA, :GalileoE1C]
     # A dataless driver needs a data component to decode; that one must carry data and
     # have the driver's chip rate, and no signal may be given twice.
     @test_throws "pair it with its data component" VectorTrackingLoop(GalileoE1C())
