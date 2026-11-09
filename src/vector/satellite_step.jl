@@ -78,7 +78,7 @@ function VectorTrackingLoop(
         pairs,
         scalar_loop;
         navigation_filter_update_interval = Δt_nav,
-        min_tracking_cn0 = Float64(ustrip(min_tracking_cn0)),
+        min_tracking_cn0 = convert(typeof(1.0dBHz), min_tracking_cn0),
         satellite_capacity_per_signal = Int(satellite_capacity_per_signal),
         approximate_year,
         enable_ionospheric_correction,
@@ -226,6 +226,9 @@ end
 
 _update_interval_seconds(nav_processor::NavigationProcessor) = ustrip(s, nav_processor.navigation_filter_update_interval)
 _sampling_frequency_hz(post_correlation_state::PostCorrelationState) = Float64(ustrip(Hz, post_correlation_state.sampling_frequency))
+# Whether a C/N₀ reaches `threshold`, compared in dB-Hz as the estimators report it: a NaN
+# estimate never does.
+_cn0_at_least(cn0, threshold) = ustrip(cn0) >= ustrip(threshold)
 # Where the latest integration ended (s) on the integrations' time grid.
 _end_time(post_correlation_state::PostCorrelationState) = post_correlation_state.last_sample_index / _sampling_frequency_hz(post_correlation_state)
 _epoch_time(nav_processor::NavigationProcessor, epoch_index::Int) = epoch_index * _update_interval_seconds(nav_processor)
@@ -420,7 +423,7 @@ function _commands_at_application(
     code_update, doppler = _member_commands(nav_processor, slot, slot.member_index, reference_system, reference_tow, feedback_delay, chips)
     _, next_doppler =
         _member_commands(nav_processor, slot, slot.member_index, reference_system, reference_tow, feedback_delay + Δt_nav, chips + Δt_nav * (chip_rate + code_command))
-    code_update, CarrierDopplerRamp(doppler, (next_doppler - doppler) / Δt_nav, application_sample_index / fs), feedback_delay
+    code_update, CarrierDopplerRamp(doppler * Hz, (next_doppler - doppler) / Δt_nav * Hz / s, application_sample_index / fs * s), feedback_delay
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -473,7 +476,7 @@ function _snapshot_driver!(
         driver_code_phase = slot.driver.last_code_phase + chips_to_epoch,
         carrier_doppler = carrier_doppler * Hz,
         code_doppler = code_doppler * Hz,
-        cn0_dbhz = min(Float64(ustrip(estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time))), MAX_CN0_DBHZ),
+        cn0 = _capped_cn0(estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time)),
         coherent_integration_time = slot.driver.last_coherent_integration_time,
         early_late_spacing = slot.driver.last_early_late_spacing,
     )
@@ -520,7 +523,7 @@ function _complete_snapshot!(nav_processor::NavigationProcessor, group::VectorTr
     pending = slot.pending_snapshot
     chip_rate = ustrip(Hz, get_chip_rate(group.decoding_signal))
     decoder, code_phase = _decoder_at_code_phase(pending.decoder, _code_phase_on_driver(group, pending), chip_rate)
-    measurement_ready = pending.bit_synced && pending.cn0_dbhz >= nav_processor.min_tracking_cn0
+    measurement_ready = pending.bit_synced && _cn0_at_least(pending.cn0, nav_processor.min_tracking_cn0)
     slot.snapshot = SatelliteSnapshot(
         pending;
         decoder,
@@ -553,7 +556,9 @@ end
 
 # Cap on the weighting C/N₀: the moments estimator reads a noise-free (simulated) signal
 # as infinite, which would give the filter a noiseless measurement.
-const MAX_CN0_DBHZ = 80.0
+const MAX_CN0 = 80.0dBHz
+# A C/N₀ estimate capped at `MAX_CN0` (a NaN estimate stays NaN).
+_capped_cn0(cn0) = ustrip(cn0) > ustrip(MAX_CN0) ? MAX_CN0 : cn0
 
 # Whether some satellite of the group can still complete its snapshot of the pending
 # epoch: tracked, not stale, due, and with its missing halves' signals not yet past it

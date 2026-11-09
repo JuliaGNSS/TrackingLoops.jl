@@ -491,7 +491,7 @@ TL.estimate_cn0(estimator::FixedCN0Estimator, coherent_integration_time) = estim
         slot = nav_processor.groups[1].slots[1]
         @test slot.snapshot_epoch_index == 1
         # Capped at 80 dB-Hz, and out of lock without the bit sync.
-        @test slot.snapshot.cn0_dbhz == read
+        @test slot.snapshot.cn0 == read * dBHz
         @test !slot.snapshot.measurement_ready
     end
 end

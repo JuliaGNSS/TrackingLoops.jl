@@ -375,7 +375,7 @@ function fill_slot!(slot, sat::SimSat, epoch_sample_index, application_sample_in
         code_phase = epoch_state.code_phase,
         carrier_doppler = carrier * Hz,
         code_doppler = code * Hz,
-        cn0_dbhz = 45.0,
+        cn0 = 45.0dBHz,
         coherent_integration_time = integration_ms(sat.signal) * 1.0ms,
         early_late_spacing = TrackingLoops.calc_early_late_sample_spacing(
             EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0, 0, 0), 0.5),

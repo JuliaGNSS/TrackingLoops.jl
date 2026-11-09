@@ -313,7 +313,7 @@ function _hand_over_to_scalar_loop(loop_state::VectorLoopState, nco_history, app
     code_doppler = code_command * Hz
     time = application_sample_index / fs
     ramp, residual_pll = loop_state.ramp, loop_state.residual_pll
-    rate = ramp.doppler_rate
+    rate = ustrip(Hz / s, ramp.doppler_rate)
     if residual_pll.lock.locked && !isnan(residual_pll.last_prompt_sample_index)
         dt = (application_sample_index - residual_pll.last_prompt_sample_index) / fs
         carrier_doppler =
@@ -359,7 +359,7 @@ function _set_vector_commands(
         _residual_pll_on_new_ramp(loop_state.residual_pll, loop_state.ramp, ramp, fs)
     else
         scalar_doppler = get_nco_command(nco_history, application_sample_index).carrier_doppler
-        _initialized_residual_pll(loop_state.residual_pll, ramp, scalar_doppler, ramp.reference_time, loop_state.scalar_state.staging)
+        _initialized_residual_pll(loop_state.residual_pll, ramp, scalar_doppler, ustrip(s, ramp.reference_time), loop_state.scalar_state.staging)
     end
     VectorLoopState(
         loop_state;
@@ -442,7 +442,7 @@ end
     nco_history,
     application_sample_index::Union{Nothing,Int64},
     replica_halves,
-    min_tracking_cn0::Float64,
+    min_tracking_cn0::typeof(1.0dBHz),
 )
     scalar_state = loop_state.scalar_state
     application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_sample_index : application_sample_index
@@ -477,7 +477,7 @@ end
     post_correlation_state::PostCorrelationState,
     nco_history,
     replica_halves,
-    min_tracking_cn0::Float64,
+    min_tracking_cn0::typeof(1.0dBHz),
 )
     fs = _sampling_frequency_hz(post_correlation_state)
     coherent_integration_time = post_correlation_state.last_num_integrated_samples / fs
@@ -505,14 +505,14 @@ end
     )
     residual_pll, wiped_prompt =
         _step_residual_pll(loop_state, post_correlation_state, previous_cycles + gap_cycles + first_cycles)
-    host_cn0_dbhz = Float64(ustrip(estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time * s)))
+    host_cn0 = estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time * s)
     residual_pll = _with_lock_test(
         residual_pll,
         wiped_prompt,
         coherent_integration_time,
         _phase_lock_time_constant(post_correlation_state.signal, post_correlation_state.last_num_code_periods),
         min_tracking_cn0,
-        host_cn0_dbhz >= min_tracking_cn0,
+        _cn0_at_least(host_cn0, min_tracking_cn0),
     )
     residual_pll, _accumulate_fll(loop_state.fll_disc_sum, fll_discriminator, post_correlation_state)
 end

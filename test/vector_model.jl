@@ -786,7 +786,7 @@ end
     Δt_nav = 0.1
     # Without an NCO delay the advance is the correction's `c·Δt_nav/2`, bit for bit.
     for c_new in (0.37, -2.5, 1e-3), c_old in (0.0, 4.0, -1.1)
-        state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0, 1e6), c_new * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0, 1e6)
+        state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierDopplerRamp(20.0 * Hz, 0.0 * Hz / s, 0.0 * s), 0.0s, ConstantNCOCommand(20.0, 0.0), 0, 1e6), c_new * Hz, TL.CarrierDopplerRamp(20.0 * Hz, 0.0 * Hz / s, 0.0 * s), 0.0s, ConstantNCOCommand(20.0, 0.0), 0, 1e6)
         @test state.code_frequency_correction_history == (c_new * Hz, c_old * Hz, 0.0Hz)
         @test TL.code_phase_advance(state, Δt_nav) === c_new * Δt_nav / 2
         state = VectorLoopState(state; code_disc_sum = (4, 0.2))
@@ -796,7 +796,7 @@ end
     # the newest took effect: on `c₁` while the newest takes effect inside it or after the epoch, and
     # on `c₂` while `c₁` itself takes effect only after mid-interval (`L > 1.5Δt_nav`).
     c₂, c₁, c₀ = 0.5, 1.0, 2.0
-    older = TL._set_vector_commands(TL._set_vector_commands(base, c₂ * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0, 1e6), c₁ * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), 0.0s, ConstantNCOCommand(20.0, 0.0), 0, 1e6)
+    older = TL._set_vector_commands(TL._set_vector_commands(base, c₂ * Hz, TL.CarrierDopplerRamp(20.0 * Hz, 0.0 * Hz / s, 0.0 * s), 0.0s, ConstantNCOCommand(20.0, 0.0), 0, 1e6), c₁ * Hz, TL.CarrierDopplerRamp(20.0 * Hz, 0.0 * Hz / s, 0.0 * s), 0.0s, ConstantNCOCommand(20.0, 0.0), 0, 1e6)
     for (L, expected) in (
         (0.03, c₀ * 0.05),
         (0.075, c₀ * 0.025 + c₁ * 0.025),
@@ -806,7 +806,7 @@ end
         (0.2, c₂ * 0.05),
         (0.25, c₂ * 0.05),
     )
-        state = TL._set_vector_commands(older, c₀ * Hz, TL.CarrierDopplerRamp(20.0, 0.0, 0.0), L * s, ConstantNCOCommand(20.0, 0.0), 0, 1e6)
+        state = TL._set_vector_commands(older, c₀ * Hz, TL.CarrierDopplerRamp(20.0 * Hz, 0.0 * Hz / s, 0.0 * s), L * s, ConstantNCOCommand(20.0, 0.0), 0, 1e6)
         @test TL.code_phase_advance(state, Δt_nav) ≈ expected
     end
 end

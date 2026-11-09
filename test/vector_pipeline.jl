@@ -45,7 +45,7 @@ end
         @test slot.decoding.bit_synced
         @test TL.has_positioning_data(slot.decoding.decoder)
         @test slot.snapshot.measurement_ready && slot.snapshot.positioning_ready
-        @test 40 < slot.snapshot.cn0_dbhz < 50
+        @test 40dBHz < slot.snapshot.cn0 < 50dBHz
     end
     seed = findfirst(r -> r.status.seeded, results)
     @test 26.0 < results[seed].time - rx.truth.t0 < 27.0
@@ -82,7 +82,7 @@ end
         @test report.vector_controlled
         @test report.release_reason == VT_NOT_RELEASED
         @test report.snapshot_time ≈ get_navigation_elapsed_time(tracking_loop)
-        @test 40 < report.cn0_dbhz < 50
+        @test 40dBHz < report.cn0 < 50dBHz
         @test TL.has_positioning_data(get_decoder(tracking_loop, GPSL1CA(), sat.decoder.prn))
         @test get_broadcast_ephemeris(get_decoder(tracking_loop, GPSL1CA(), sat.decoder.prn)) == get_broadcast_ephemeris(sat.decoder)
     end
@@ -97,11 +97,11 @@ end
     slot = only(filter(slot -> slot.prn == prn, tracking_loop.navigation_processor.groups[1].slots))
     @test get_decoder(tracking_loop, signal, prn) === slot.decoding.decoder
     @test !hasproperty(snapshot, :decoder)
-    original_cn0 = slot.snapshot.cn0_dbhz
-    slot.snapshot = TL.SatelliteSnapshot(slot.snapshot; cn0_dbhz = original_cn0 + 1)
-    @test snapshot.cn0_dbhz == original_cn0
-    @test get_satellite_report(tracking_loop, signal, prn).cn0_dbhz == original_cn0 + 1
-    slot.snapshot = TL.SatelliteSnapshot(slot.snapshot; cn0_dbhz = original_cn0)
+    original_cn0 = slot.snapshot.cn0
+    slot.snapshot = TL.SatelliteSnapshot(slot.snapshot; cn0 = original_cn0 + 1u"dB")
+    @test snapshot.cn0 == original_cn0
+    @test get_satellite_report(tracking_loop, signal, prn).cn0 == original_cn0 + 1u"dB"
+    slot.snapshot = TL.SatelliteSnapshot(slot.snapshot; cn0 = original_cn0)
 end
 
 @testset "From integrations alone, on a clean signal" begin
@@ -404,7 +404,7 @@ first_fix(results) = results[findfirst(r -> r.status.seeded, results)]
         @test slot.snapshot.measurement_ready && slot.snapshot.positioning_ready
         report = get_satellite_report(tracking_loop, GPSL1C_P(), sat.decoder.prn)
         @test report.bit_or_secondary_code_synced && report.vector_controlled
-        @test report.cn0_dbhz ≈ ustrip(estimate_cn0(sat.loop, 1ms)) atol = 1.0
+        @test ustrip(report.cn0) ≈ ustrip(estimate_cn0(sat.loop, 1ms)) atol = 1.0
         @test get_satellite_report(tracking_loop, GPSL1CA(), sat.decoder.prn) === nothing
         @test get_satellite_report(tracking_loop, GPSL1C_P(), sat.decoder.prn).release_reason == VT_NOT_RELEASED
     end
@@ -527,7 +527,7 @@ end
         @test sat.loop.cn0_estimator isa typeof(cn0_estimator())
         report = get_satellite_report(rx.tracking_loop, GPSL1CA(), sat.decoder.prn)
         @test report.measurement_ready
-        @test 40 < report.cn0_dbhz < 50
+        @test 40dBHz < report.cn0 < 50dBHz
     end
 end
 
@@ -542,7 +542,7 @@ end
     for sat in rx.sats
         report = get_satellite_report(rx.tracking_loop, GPSL1CA(), sat.decoder.prn)
         @test report.bit_or_secondary_code_synced && !report.measurement_ready && !report.positioning_ready
-        @test report.cn0_dbhz == -Inf
+        @test ustrip(report.cn0) == -Inf
         @test TL.has_positioning_data(get_decoder(rx.tracking_loop, GPSL1CA(), sat.decoder.prn))
     end
     results, _, diverged = run_pipeline!(rx, 1.0; start_sample = sample)
