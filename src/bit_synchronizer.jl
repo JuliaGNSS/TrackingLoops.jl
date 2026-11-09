@@ -588,6 +588,34 @@ function BitSynchronizer{B}() where {B<:Unsigned}
     )
 end
 
+# A copy of `bit_synchronizer` with the given fields replaced; the soft bits are the same
+# vector.
+function BitSynchronizer(
+    bit_synchronizer::BitSynchronizer{B};
+    prompt_sign_history::Maybe{B} = nothing,
+    num_prompt_signs::Maybe{Integer} = nothing,
+    bit_or_secondary_code_synced::Maybe{Bool} = nothing,
+    secondary_code_phase::Maybe{Integer} = nothing,
+    bit_polarity::Maybe{Integer} = nothing,
+    bit_prompt_sum::Maybe{Number} = nothing,
+    num_code_periods_into_bit::Maybe{Integer} = nothing,
+    phase_accumulators::Maybe{SyncHypothesisAccumulators} = nothing,
+) where {B<:Unsigned}
+    BitSynchronizer{B}(
+        isnothing(prompt_sign_history) ? bit_synchronizer.prompt_sign_history : prompt_sign_history,
+        isnothing(num_prompt_signs) ? bit_synchronizer.num_prompt_signs : Int(num_prompt_signs),
+        isnothing(bit_or_secondary_code_synced) ? bit_synchronizer.bit_or_secondary_code_synced :
+        bit_or_secondary_code_synced,
+        isnothing(secondary_code_phase) ? bit_synchronizer.secondary_code_phase : Int(secondary_code_phase),
+        isnothing(bit_polarity) ? bit_synchronizer.bit_polarity : Int8(bit_polarity),
+        isnothing(bit_prompt_sum) ? bit_synchronizer.bit_prompt_sum : ComplexF64(bit_prompt_sum),
+        isnothing(num_code_periods_into_bit) ? bit_synchronizer.num_code_periods_into_bit :
+        Int(num_code_periods_into_bit),
+        bit_synchronizer.soft_bits,
+        isnothing(phase_accumulators) ? bit_synchronizer.phase_accumulators : phase_accumulators,
+    )
+end
+
 # For tests and benchmarks: zero phase / polarity, empty accumulators; `soft_bits`
 # is aliased, not copied.
 function BitSynchronizer(
@@ -783,28 +811,18 @@ function update_bit_sync!(
         bit_acc =
             bit_synchronizer.bit_polarity < 0 ? -real(bit_prompt_sum) : real(bit_prompt_sum)
         push!(bit_synchronizer.soft_bits, Float32(bit_acc))
-        return BitSynchronizer{B}(
-            bit_synchronizer.prompt_sign_history,
-            bit_synchronizer.num_prompt_signs,
-            true,
-            bit_synchronizer.secondary_code_phase,
-            bit_synchronizer.bit_polarity,
-            zero(bit_prompt_sum),
-            0,
-            bit_synchronizer.soft_bits,
-            bit_synchronizer.phase_accumulators,
+        return BitSynchronizer(
+            bit_synchronizer;
+            bit_or_secondary_code_synced = true,
+            bit_prompt_sum = zero(bit_prompt_sum),
+            num_code_periods_into_bit = 0,
         )
     else
-        return BitSynchronizer{B}(
-            bit_synchronizer.prompt_sign_history,
-            bit_synchronizer.num_prompt_signs,
-            true,
-            bit_synchronizer.secondary_code_phase,
-            bit_synchronizer.bit_polarity,
+        return BitSynchronizer(
+            bit_synchronizer;
+            bit_or_secondary_code_synced = true,
             bit_prompt_sum,
             num_code_periods_into_bit,
-            bit_synchronizer.soft_bits,
-            bit_synchronizer.phase_accumulators,
         )
     end
 end
@@ -888,15 +906,15 @@ function _update_sync_search(
     end
     # 3. Not found yet: keep searching.
     if !sync.found
-        return BitSynchronizer{B}(
+        return BitSynchronizer(
+            bit_synchronizer;
             prompt_sign_history,
             num_prompt_signs,
-            false,
-            0,
-            Int8(0),
-            complex(0.0, 0.0),
-            0,
-            bit_synchronizer.soft_bits,
+            bit_or_secondary_code_synced = false,
+            secondary_code_phase = 0,
+            bit_polarity = Int8(0),
+            bit_prompt_sum = complex(0.0, 0.0),
+            num_code_periods_into_bit = 0,
             phase_accumulators,
         )
     end
@@ -905,29 +923,29 @@ function _update_sync_search(
         # Pre-sync signs carry the overlay, not data: no bits to recover. The hard
         # search can lock `sync.phase` code periods into a bit, so seed the period count
         # with it and the first bit ends on the boundary (JuliaGNSS/Tracking.jl#125).
-        return BitSynchronizer{B}(
+        return BitSynchronizer(
+            bit_synchronizer;
             prompt_sign_history,
             num_prompt_signs,
-            true,
-            sync.phase,
-            sync.polarity,
-            complex(0.0, 0.0),
-            sync.phase,
-            bit_synchronizer.soft_bits,
+            bit_or_secondary_code_synced = true,
+            secondary_code_phase = sync.phase,
+            bit_polarity = sync.polarity,
+            bit_prompt_sum = complex(0.0, 0.0),
+            num_code_periods_into_bit = sync.phase,
             phase_accumulators,
         )
     end
     if num_code_periods_per_bit == 0
         # Dataless, no overlay (Galileo E5a-QP): avoid dividing by zero below.
-        return BitSynchronizer{B}(
+        return BitSynchronizer(
+            bit_synchronizer;
             prompt_sign_history,
             num_prompt_signs,
-            true,
-            0,
-            sync.polarity,
-            complex(0.0, 0.0),
-            0,
-            bit_synchronizer.soft_bits,
+            bit_or_secondary_code_synced = true,
+            secondary_code_phase = 0,
+            bit_polarity = sync.polarity,
+            bit_prompt_sum = complex(0.0, 0.0),
+            num_code_periods_into_bit = 0,
             phase_accumulators,
         )
     end
@@ -949,15 +967,15 @@ function _update_sync_search(
         # Sign votes scaled to soft-bit units (see `get_soft_bits`).
         push!(bit_synchronizer.soft_bits, Float32(bit_sum * abs(prompt)))
     end
-    return BitSynchronizer{B}(
+    return BitSynchronizer(
+        bit_synchronizer;
         prompt_sign_history,
         num_prompt_signs,
-        true,
-        sync.phase,
-        sync.polarity,
-        complex(0, 0),
-        0,
-        bit_synchronizer.soft_bits,
+        bit_or_secondary_code_synced = true,
+        secondary_code_phase = sync.phase,
+        bit_polarity = sync.polarity,
+        bit_prompt_sum = complex(0, 0),
+        num_code_periods_into_bit = 0,
         phase_accumulators,
     )
 end
@@ -980,16 +998,9 @@ the replica applies the wrong overlay chip (cf. JuliaGNSS/Tracking.jl#219).
 ) where {B<:Unsigned}
     secondary_code_length = get_secondary_code_length(signal)
     secondary_code_length > 1 || return bit_synchronizer
-    BitSynchronizer{B}(
-        bit_synchronizer.prompt_sign_history,
-        bit_synchronizer.num_prompt_signs,
-        bit_synchronizer.bit_or_secondary_code_synced,
-        mod(bit_synchronizer.secondary_code_phase + Int(num_code_periods), secondary_code_length),
-        bit_synchronizer.bit_polarity,
-        bit_synchronizer.bit_prompt_sum,
-        bit_synchronizer.num_code_periods_into_bit,
-        bit_synchronizer.soft_bits,
-        bit_synchronizer.phase_accumulators,
+    BitSynchronizer(
+        bit_synchronizer;
+        secondary_code_phase = mod(bit_synchronizer.secondary_code_phase + Int(num_code_periods), secondary_code_length),
     )
 end
 
