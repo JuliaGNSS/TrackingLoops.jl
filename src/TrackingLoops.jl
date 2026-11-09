@@ -204,7 +204,7 @@ lives with the satellite. Hosts drive every tracking loop through one interface:
     tracking loop picks out the ones it uses and, for the rest, returns the state
     unchanged and the command in force;
   - [`reinit_loop_state`](@ref)`(tracking_loop, state, carrier_doppler,
-    code_doppler)` re-seeds it from converged Dopplers, keeping what the
+    code_doppler)` re-initialises it at converged Dopplers, keeping what the
     tracking loop chooses to keep.
 
 A host may also ask a tracking loop [`get_decoder`](@ref); its fallback, `nothing`,

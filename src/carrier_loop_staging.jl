@@ -30,7 +30,7 @@ FLL's last correction risks the lock.
 Each driver integration's prompt advances the indicator, and the stage it reaches applies
 from the next integration. Stages only advance: a loop that loses lock keeps the narrow
 PLL. [`init_loop_state`](@ref) starts them over, as does a satellite's release
-from the vector loop; [`reinit_loop_state`](@ref) keeps them (a handoff to a
+from the vector loop; [`reinit_loop_state`](@ref) keeps them (a handover to a
 new integration length, say, keeps the lock). In the vector loop the staging stands
 still.
 """

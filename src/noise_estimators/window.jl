@@ -431,8 +431,8 @@ end
 Draw the next [`NoiseProbe`](@ref) for `signal` on a band at `intermediate_frequency`:
 the next PRN of the rotation (carried in the newest observation of the window, so two
 draws before an append share it), a random code phase and a carrier within
-±`carrier_dither`, from the estimator's `rng`. A hardware host draws one per arm of its
-noise channel and appends every dump with [`append_noise_correlator_outputs!`](@ref); see
+±`carrier_dither`, from the estimator's `rng`. A hardware host draws one per redraw,
+programs its noise channel with it and appends every dump with [`append_noise_correlator_outputs!`](@ref); see
 [A hardware noise channel](@ref) for how often to redraw.
 """
 draw_noise_probe(estimator::CorrelatorNoiseDensityEstimator, signal::AbstractGNSSSignal, intermediate_frequency) =
