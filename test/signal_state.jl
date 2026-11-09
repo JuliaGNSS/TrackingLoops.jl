@@ -47,7 +47,7 @@ end
     @test is_bit_or_secondary_code_synced(state)
 end
 
-@testset "Re-arming a channel forgets the previous satellite" begin
+@testset "Re-initialising a channel forgets the previous satellite" begin
     for cn0_estimator in (NWPRCN0Estimator(; num_averaged_integrations = 20), MomentsCN0Estimator(; num_averaged_integrations = 20), NoiseReferencedCN0Estimator(; num_averaged_integrations = 20))
         state = synced_l1ca_state(; cn0_estimator)
         fresh = reset_post_correlation!(state)
@@ -73,12 +73,12 @@ end
 
 struct HistoryCN0Estimator <: AbstractCN0Estimator end
 
-@testset "Re-arming a channel for another satellite" begin
+@testset "Re-initialising a channel for another satellite" begin
     state = synced_l1ca_state()
     @test reset_post_correlation!(state; prn = 9).prn == 9
 end
 
-@testset "Re-arming refuses a C/N₀ estimator it cannot reset" begin
+@testset "Re-initialising refuses a C/N₀ estimator it cannot reset" begin
     state = PostCorrelationState(GPSL1CA(), 7; cn0_estimator = HistoryCN0Estimator())
     @test_throws ArgumentError reset_post_correlation!(state)
 end

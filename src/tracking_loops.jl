@@ -105,7 +105,7 @@ state records the driver by its signal id, so [`step_loop!`](@ref) tells its int
 from the satellite's other signals', and starts the [`CarrierLoopStage`](@ref) staging. A
 satellite's signals must therefore have distinct ids: two signals of the driver's id would
 both close the loop.
-Must be **pure**: Tracking.jl also calls it for template states and re-seeding.
+Must be **pure**: Tracking.jl also calls it for template states and re-initialisation.
 """
 function init_loop_state(
     tracking_loop::ScalarTrackingLoop{CA,CO},
@@ -120,11 +120,11 @@ end
 """
     reinit_loop_state(tracking_loop, loop_state, carrier_doppler, code_doppler)
 
-Re-seed `loop_state` at the given Dopplers with zeroed loop filters, keeping the
-bandwidths and the carrier loop's staging (see [`CarrierLoopStage`](@ref)): a reset
-is a handoff, not a re-acquisition, so after a change of integration length, say,
-the loop holds its stage, the phase-lock indicator reads on, and the bandwidths are
-capped for the new length.
+Re-initialise `loop_state` at the given Dopplers with zeroed loop filters, keeping the
+bandwidths and the carrier loop's staging (see [`CarrierLoopStage`](@ref)): a
+re-initialisation is a handover, not a re-acquisition, so after a change of
+integration length, say, the loop holds its stage, the phase-lock indicator reads on,
+and the bandwidths are capped for the new length.
 """
 reinit_loop_state(::AbstractTrackingLoop, loop_state::ScalarLoopState, carrier_doppler, code_doppler) =
     _reinit_scalar_loop_state(loop_state, carrier_doppler, code_doppler)
