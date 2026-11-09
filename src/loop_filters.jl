@@ -169,6 +169,15 @@ _init_loop_filter(::Type{<:ThirdOrderBilinearLF}) = ThirdOrderBilinearLF()
 _init_loop_filter(::Type{<:ThirdOrderAssistedBilinearLF}) = ThirdOrderAssistedBilinearLF()
 _init_loop_filter(::Type{<:ThirdOrderBoxcarLF}) = ThirdOrderBoxcarLF()
 
+# The carrier filter's Doppler estimate at the centre of an integration of
+# `coherent_integration_time`: a second-order filter's Doppler state, a third-order one's
+# moved on by half the integration at its Doppler-rate state.
+_doppler_estimate_at_center(filter::Union{SecondOrderBilinearLF,SecondOrderBoxcarLF}, coherent_integration_time) = filter.x
+_doppler_estimate_at_center(
+    filter::Union{ThirdOrderBilinearLF,ThirdOrderAssistedBilinearLF,ThirdOrderBoxcarLF},
+    coherent_integration_time,
+) = filter.x1 + coherent_integration_time / 2 * filter.x2
+
 _reset_loop_filter(filter::F) where {F<:AbstractLoopFilter} = F()
 _reset_loop_filter(filter::F) where {F<:Union{SecondOrderBilinearLF,SecondOrderBoxcarLF}} =
     F(zero(filter.x))

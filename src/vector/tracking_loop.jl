@@ -336,9 +336,9 @@ _reinit_scalar_state(loop_state::ScalarLoopState, carrier_doppler, code_doppler,
     )
 # A fresh carrier filter of `filter`'s type at the Doppler rate `rate` (Hz/s), kept in
 # `x2` by a third-order one; one of lower order starts at zero.
-_carrier_filter_at_rate(filter, rate) =
-    hasfield(typeof(filter), :x2) ? typeof(filter)(zero(filter.x1), rate * Hz^2) :
-    _reset_loop_filter(filter)
+_carrier_filter_at_rate(filter::F, rate) where {F<:Union{ThirdOrderBilinearLF,ThirdOrderAssistedBilinearLF,ThirdOrderBoxcarLF}} =
+    F(zero(filter.x1), rate * Hz^2)
+_carrier_filter_at_rate(filter::AbstractLoopFilter, rate) = _reset_loop_filter(filter)
 
 # Set the latest update's command, applied `feedback_delay` after the measurement epoch: the
 # code correction (pushed onto `code_frequency_correction_history`) and the carrier `ramp`. A
