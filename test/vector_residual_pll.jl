@@ -14,7 +14,7 @@ noise_std_at(cn0_dbhz) = sqrt(1 / (2 * 10^(cn0_dbhz / 10) * 1e-3))
 # does: a host's C/N₀ estimator that does not notice a fade.
 reporting(cn0_dbhz) =
     (slot, sat, epoch, application_sample_index, nav_processor; measurement_ready = sat.in_view) ->
-        (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor; measurement_ready); set_snapshot!(slot; cn0_dbhz))
+        (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor; measurement_ready); set_snapshot!(slot; cn0 = cn0_dbhz * dBHz))
 
 # Run `num_updates` updates, 100 ms apart, of 1 ms ticks, each channel's noise σ set by
 # `noise(update_index, i)` before the update. `on_integration(update_index, i, sat, phase_error_before,
@@ -201,13 +201,13 @@ end
 # replica's command, the ramp's, is `residual(t)` (cycles), at amplitude `amplitude(t)` plus
 # noise of σ `noise_std`, the host reading no signal while the amplitude is zero; the
 # integrations end at `ends` (samples). `on_integration(state, k)` after the `k`-th.
-function step_residual(residual, ends; ramp = TL.CarrierDopplerRamp(100.0, 0.0, 0.0), scalar_doppler = ramp.doppler,
+function step_residual(residual, ends; ramp = TL.CarrierDopplerRamp(100.0 * Hz, 0.0 * Hz / s, 0.0 * s), scalar_doppler = ustrip(Hz, ramp.doppler),
         unlocked = false, amplitude = t -> 1.0, noise_std = 0.0, on_integration = (state, k) -> nothing)
     rng = Xoshiro(1)
     tracking_loop = VectorTrackingLoop(GPSL1CA())
-    state = commanded(init_loop_state(tracking_loop, GPSL1CA(), ramp.doppler * Hz, 0.0Hz), ramp; scalar_doppler)
+    state = commanded(init_loop_state(tracking_loop, GPSL1CA(), ramp.doppler, 0.0Hz), ramp; scalar_doppler)
     unlocked && (state = TL.VectorLoopState(state; residual_pll = TL.ResidualPLL(state.residual_pll; lock = TL.ResidualPLLLock())))
-    nco_history = ConstantNCOCommand(ramp.doppler, 0.0)
+    nco_history = ConstantNCOCommand(ustrip(Hz, ramp.doppler), 0.0)
     previous_prompt = complex(0.0)
     for (k, sample_index) in enumerate(ends)
         center = (sample_index - 500) / 1e6
@@ -319,7 +319,7 @@ end
     application_time = sample / ustrip(Hz, SIM_FS)
     estimate = TL._doppler_at(sat.state.ramp, application_time) + TL._residual_doppler(residual_pll) +
                TL._residual_doppler_rate(residual_pll) * (application_time - t)
-    rate = sat.state.ramp.doppler_rate + TL._residual_doppler_rate(residual_pll)
+    rate = ustrip(Hz / s, sat.state.ramp.doppler_rate) + TL._residual_doppler_rate(residual_pll)
     TL._mark_release!(slot, VT_INELIGIBLE)
     rx.vt.update_index += 1
     sat.state = TL._apply_filter_feedback(rx.vt, rx.group, slot, sat.state, feedback_integration(sat, sample),
@@ -352,7 +352,7 @@ end
 # A residual PLL of a satellite in the vector loop that wiped its latest prompt, at the
 # sample index `center`, with `predicted_prompt_phase`, its loop filter putting out `carrier_frequency_correction`.
 residual_pll_at(center, predicted_prompt_phase; carrier_frequency_correction = 0.0) = TL.ResidualPLL(
-    10.0Hz, carrier_frequency_correction, TL._residual_pll_loop_filter(carrier_frequency_correction, 0.0), center, Int8(0), predicted_prompt_phase,
+    10.0Hz, carrier_frequency_correction * Hz, TL._residual_pll_loop_filter(carrier_frequency_correction, 0.0), center, Int8(0), predicted_prompt_phase,
     TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
 
 @testset "The navigation processor decodes the prompts it rotated onto the incoming carrier" begin
@@ -416,7 +416,7 @@ end
     history = TL.PromptHistory(8)
     TL._push_prompt!(history, residual_pll_at(2000, 0.2))
     TL._push_prompt!(history, residual_pll)
-    ramp = TL.CarrierDopplerRamp(1000.0, 0.0, 0.0)
+    ramp = TL.CarrierDopplerRamp(1000.0 * Hz, 0.0 * Hz / s, 0.0 * s)
     nco_history = ConstantNCOCommand(1000.0, 0.0)
     half = (1000.0 * 0.0005, 0.0005s)
     state = TL.VectorLoopState(TL.VectorLoopState(init_loop_state(ScalarTrackingLoop(), signal, 1000.0Hz, 0.0Hz), true);
