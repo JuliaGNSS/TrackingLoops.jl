@@ -224,17 +224,16 @@ end
     period = 5
     # Fewer than two bins on any hypothesis: no runner-up can exist yet.
     @test _cfar_decide([10.0, 1.0, 1.0, 1.0, 1.0], zeros(5), 2 * period - 1, period, 0.999) ==
-          (false, -1, 0)
+          (false, -1)
     # Noiseless separation locks at the peak.
-    accepted, peak, count = _cfar_decide([10.0, 1.0, 1.0, 1.0, 1.0], zeros(5), 2 * period, period, 0.999)
+    accepted, peak = _cfar_decide([10.0, 1.0, 1.0, 1.0, 1.0], zeros(5), 2 * period, period, 0.999)
     @test accepted
     @test peak == 0
-    @test count == 2
     # No separation never locks.
     @test !_cfar_decide(fill(5.0, 5), zeros(5), 2 * period, period, 0.999)[1]
     # The peak need not be the hypothesis with the most energy overall: the
     # best one with a single bin is the runner-up of the best with two bins.
-    accepted, peak, _ = _cfar_decide([1.0, 2.0, 1.0, 1.0, 10.0], zeros(5), 2 * period + 3, period, 0.999)
+    accepted, peak = _cfar_decide([1.0, 2.0, 1.0, 1.0, 10.0], zeros(5), 2 * period + 3, period, 0.999)
     @test peak == 1
     @test !accepted
     # A large peak variance suppresses the lock.
