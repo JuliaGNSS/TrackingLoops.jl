@@ -269,7 +269,7 @@ function calc_carrier_phase_correction(loop_state::VectorLoopState, nco_history,
     isnan(residual_pll.last_prompt_sample_index) && return 0.0
     isnan(first(loop_state.previous_replica_tail)) && return 0.0
     fs = Float64(ustrip(Hz, sampling_frequency))
-    _residual_phase_after(residual_pll, loop_state.ramp, loop_state.previous_replica_tail, sample_index, fs, nco_history)
+    _residual_phase_after(loop_state, sample_index, fs, nco_history)
 end
 
 
@@ -511,7 +511,7 @@ end
         polarity = post_correlation_state.last_carrier_phase_polarity,
     )
     residual_pll, wiped_prompt =
-        _step_residual_pll(loop_state.residual_pll, loop_state.ramp, post_correlation_state, previous_cycles + gap_cycles + first_cycles)
+        _step_residual_pll(loop_state, post_correlation_state, previous_cycles + gap_cycles + first_cycles)
     host_cn0_dbhz = Float64(ustrip(estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time * s)))
     residual_pll = _with_lock_test(
         residual_pll,
