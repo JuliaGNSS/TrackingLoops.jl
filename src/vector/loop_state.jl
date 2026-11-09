@@ -235,7 +235,7 @@ init_loop_state(
 """
     reinit_loop_state(loop::VectorTrackingLoop, state, carrier_doppler, code_doppler)
 
-Re-seed the scalar loop from the converged Dopplers, zero the accumulators and drop
+Re-initialise the scalar loop at the converged Dopplers, zero the accumulators and drop
 the code correction, keeping `vector_controlled`, the carrier ramp, the residual PLL and
 the satellite's place in the navigation engine. The converged Dopplers already contain
 the code correction, so keeping it would apply it twice; the replica was still steered
@@ -292,7 +292,7 @@ _add_to_vector_loop(state::VectorLoopState) =
     )
 
 # Out of the vector loop with the vector interface cleared and the scalar loop as it
-# stands, not re-seeded: it marks the release on the slot's copy of the state
+# stands, not re-initialised: it marks the release on the slot's copy of the state
 # (`_mark_release!`; the satellite's own state hands over in `_take_up_cycle`) and
 # registers a satellite out of the loop.
 _release_from_vector_loop(state::VectorLoopState) =
@@ -306,7 +306,7 @@ _release_from_vector_loop(state::VectorLoopState) =
         residual_pll_loop_filter_bandwidth = state.residual_pll.bandwidth,
     )
 
-# `_release_from_vector_loop` with the scalar loop re-seeded at the sample `application_sample_index`
+# `_release_from_vector_loop` with the scalar loop re-initialised at the sample `application_sample_index`
 # (integrations' grid at `fs`, Hz) where the release takes effect: at the residual PLL's estimate of
 # the incoming Doppler (ramp plus residual) and its rate, which a third-order carrier
 # filter starts from. A residual PLL out of lock (or never stepped) knows no better than
@@ -441,7 +441,7 @@ end
 # One integration of a member: the DLL accumulated, the carrier measured
 # (`_measure_carrier`), and the next command: the ramp at the middle of the integration it
 # takes effect on and, carrier-aided, the code correction. The scalar loop and its staging
-# stand still; a release re-seeds them.
+# stand still; a release re-initialises them.
 @inline function _step_vector_loop(
     state::VectorLoopState,
     integration::CoherentIntegration,

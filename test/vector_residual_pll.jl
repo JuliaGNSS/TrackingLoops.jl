@@ -311,7 +311,7 @@ end
     t = residual_pll.prompt_time
     @test abs(TL._doppler_at(sat.state.ramp, t) + TL._residual_doppler(residual_pll) -
               true_doppler(sat, rx.truth, sim_time(rx, round(Int, t * ustrip(Hz, SIM_FS))))) < 0.5
-    # The scalar loop is re-seeded at the residual PLL's estimate of the incoming Doppler
+    # The scalar loop is re-initialised at the residual PLL's estimate of the incoming Doppler
     # where the release takes effect — on the truth — and at its Doppler rate, and its staging
     # restarts.
     @test residual_pll.lock.locked

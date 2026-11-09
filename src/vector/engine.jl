@@ -312,7 +312,7 @@ function _reset_slot!(nav::NavFilterState, slot::VectorTrackingSlot, prn::Int, s
     slot.epoch_decoder = slot.running_decoder
     slot.epoch_bit_synced = false
     # Registered out of the vector loop; a state still in it takes up the release in
-    # `_take_up_cycle`, re-seeding its scalar loop.
+    # `_take_up_cycle`, re-initialising its scalar loop.
     slot.loop_state = _release_from_vector_loop(state)
     slot.measurement_ready = false
     slot.positioning_ready = false
@@ -325,7 +325,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Taking up a cycle
 
-# Take up the latest cycle's decisions once: admission, release (re-seeding the scalar
+# Take up the latest cycle's decisions once: admission, release (re-initialising the scalar
 # loop at the application sample) and commands sized for it.
 function _take_up_cycle(
     nav::NavFilterState,
