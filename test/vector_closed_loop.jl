@@ -89,7 +89,7 @@ end
     # The receiver flags every satellite out of lock (and so not ready for a scalar
     # solve), while the signals stay: nothing can be measured.
     unlocked!(slot, sat, epoch, application_sample_index, nav_processor) =
-        (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor; measurement_ready = false); slot.positioning_ready = false)
+        (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor; measurement_ready = false); set_snapshot!(slot; positioning_ready = false))
     results, sample, diverged = run_simulation!(rx, 105; start_sample = sample, fill! = unlocked!)
     @test !diverged
     timers = [r.status.measurement_deficit_duration for r in results]

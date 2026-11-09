@@ -350,41 +350,52 @@ end
 # every satellite take it up. This is the cycle the tracking_loop runs by itself (see the
 # pipeline below), on decoders that need no bits: the fixtures of every constellation.
 
+# Replace fields of a slot's snapshot, as a test fills or alters it by hand.
+# A snapshot set by hand, as `_complete_snapshot!` sets one: membership follows its state.
+function set_snapshot!(slot; kwargs...)
+    slot.snapshot = TrackingLoops.SatelliteSnapshot(slot.snapshot; kwargs...)
+    haskey(kwargs, :loop_state) && (slot.in_vector_loop = slot.snapshot.loop_state.vector_controlled)
+    slot
+end
+
 # Fill the slot of a channel at the cycle epoch (device sample `epoch_sample_index`), as the
 # satellite's snapshot would: the replica at the epoch, from the fixture decoder.
 function fill_slot!(slot, sat::SimSat, epoch_sample_index, application_sample_index, nav_processor; measurement_ready = sat.in_view)
     fs = ustrip(Hz, SIM_FS)
     epoch_state = replica_satellite_state(sat, sat.replica_time)
     slot.occupied = true
-    slot.decoder = epoch_state.decoder
-    slot.loop_state = sat.state
+    loop_state = sat.state
     sat.state = TrackingLoops._reset_discriminator_accumulators(sat.state)
-    slot.code_phase = epoch_state.code_phase
     nco_command = calc_mean_nco_command(sim_nco_history(sat, application_sample_index), epoch_sample_index, epoch_sample_index)
     carrier, code = nco_command.carrier_doppler, nco_command.code_doppler
-    slot.carrier_doppler = carrier * Hz
-    slot.code_doppler = code * Hz
-    slot.cn0_dbhz = 45.0
-    slot.coherent_integration_time = integration_ms(sat.signal) * 1.0ms
-    slot.early_late_spacing =
-        TrackingLoops.calc_early_late_sample_spacing(
+    set_snapshot!(
+        slot;
+        loop_state,
+        decoder = epoch_state.decoder,
+        code_phase = epoch_state.code_phase,
+        carrier_doppler = carrier * Hz,
+        code_doppler = code * Hz,
+        cn0_dbhz = 45.0,
+        coherent_integration_time = integration_ms(sat.signal) * 1.0ms,
+        early_late_spacing = TrackingLoops.calc_early_late_sample_spacing(
             EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0, 0, 0), 0.5),
             SIM_FS,
             get_chip_rate(sat.signal),
-        ) * sat.code_frequency / fs
-    slot.measurement_ready = measurement_ready
-    slot.positioning_ready = measurement_ready
+        ) * sat.code_frequency / fs,
+        measurement_ready,
+        positioning_ready = measurement_ready,
+    )
     slot.snapshot_epoch_index = nav_processor.pending_epoch_index
-    slot.driver_last_end_sample_index = slot.decoding_last_end_sample_index = epoch_sample_index
-    slot.driver_last_end_time = slot.decoding_last_end_time = epoch_sample_index / fs
-    slot.chips_since_epoch = 0.0
+    slot.driver.last_end_sample_index = slot.decoding.last_end_sample_index = epoch_sample_index
+    slot.driver.sampling_frequency = slot.decoding.sampling_frequency = fs
+    slot.driver.chips_since_epoch = 0.0
     slot
 end
 
 # A channel no longer tracked: its slot has not seen an integration for longer than two
 # cycles, so the cycle drops it.
 function drop_slot!(slot)
-    slot.driver_last_end_time = slot.decoding_last_end_time = -Inf
+    slot.driver.last_end_sample_index = slot.decoding.last_end_sample_index = typemin(Int)
     slot.snapshot_epoch_index = typemin(Int)
     slot
 end
@@ -457,8 +468,7 @@ function SimReceiver(;
         slot.prn = sat.decoder.prn
         slot.occupied = true
         slot.slot_generation = nav_processor.next_slot_generation
-        slot.loop_state = sat.state
-        slot.decoder = sat.decoder
+        set_snapshot!(slot; loop_state = sat.state, decoder = sat.decoder)
     end
     SimReceiver(channels, tracking_loop, truth, integrations_per_cycle, nominal_integrations, delay_integrations, polarity)
 end

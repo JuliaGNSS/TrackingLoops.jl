@@ -196,7 +196,7 @@ function _step_vector_integration(
     is_driver && (loop_state = _take_up_cycle(nav_processor, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index))
     # 3. Latch the measurements at the measurement epoch: the integration's half of the
     #    satellite's snapshot, complete once both signals' halves are in.
-    _move_past_gap!(nav_processor, is_driver ? slot.driver_last_end_time : slot.decoding_last_end_time, post_correlation_state)
+    _move_past_gap!(nav_processor, is_driver ? _last_end_time(slot.driver) : _last_end_time(slot.decoding), post_correlation_state)
     is_driver && (loop_state = _snapshot_driver!(nav_processor, group, slot, loop_state, post_correlation_state, nco_history))
     is_decoding && _snapshot_decoding!(nav_processor, group, slot, post_correlation_state, nco_history)
     _complete_snapshot!(nav_processor, group, slot)
@@ -211,8 +211,8 @@ function _step_vector_integration(
         loop_state, carrier_doppler, code_doppler = _step_satellite(tracking_loop, loop_state, post_correlation_state, nco_history, application_sample_index)
         # In the vector loop the residual PLL stepped on this prompt (`_measure_carrier`);
         # out of it, the history starts afresh when the satellite is added again.
-        loop_state.vector_controlled ? _push_prompt!(slot.prompt_history, loop_state.residual_pll) :
-        _clear_prompts!(slot.prompt_history)
+        loop_state.vector_controlled ? _push_prompt!(slot.bit_accumulator.prompt_history, loop_state.residual_pll) :
+        _clear_prompts!(slot.bit_accumulator.prompt_history)
     else
         carrier_doppler, code_doppler = _command_in_force(post_correlation_state, nco_history, application_sample_index)
     end
@@ -225,6 +225,8 @@ end
 _update_interval_seconds(nav_processor::NavigationProcessor) = ustrip(s, nav_processor.navigation_filter_update_interval)
 _sampling_frequency_hz(post_correlation_state::PostCorrelationState) = Float64(ustrip(Hz, post_correlation_state.sampling_frequency))
 _epoch_time(nav_processor::NavigationProcessor, epoch_index::Int) = epoch_index * _update_interval_seconds(nav_processor)
+# Where a signal's last integration ended (s) on the integrations' time grid.
+_last_end_time(role::Union{DriverState,DecodingState}) = role.last_end_sample_index / role.sampling_frequency
 
 # The first epoch whose `_epoch_time` is not before `t`, compared exactly as
 # `_crosses_pending_epoch` does (`t / T` may round to either side).
@@ -284,49 +286,52 @@ end
 # keeping the decoded data only for the same PRN; both signals start at the integration's
 # start.
 function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, prn::Int, loop_state, post_correlation_state::PostCorrelationState)
-    slot.running_decoder =
-        slot.prn == prn && slot.slot_generation > 0 ? reset_decoder_state!(slot.running_decoder) :
-        reset_decoder_state!(slot.running_decoder, prn)
+    slot.decoding.decoder =
+        slot.prn == prn && slot.slot_generation > 0 ? reset_decoder_state!(slot.decoding.decoder) :
+        reset_decoder_state!(slot.decoding.decoder, prn)
     slot.prn = prn
     slot.occupied = true
     slot.slot_generation = nav_processor.next_slot_generation
     slot.in_cycle = false
     fs = _sampling_frequency_hz(post_correlation_state)
     start = post_correlation_state.last_sample_index - post_correlation_state.last_num_integrated_samples
-    slot.driver_last_end_sample_index = start
-    slot.driver_last_end_time = start / fs
-    slot.last_code_phase = NaN
-    slot.last_coherent_integration_time = uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
-    slot.chips_since_epoch = 0.0
-    slot.decoding_last_end_sample_index = start
-    slot.decoding_last_end_time = start / fs
-    slot.decoding_bit_synced = false
-    slot.decoding_num_code_periods_into_bit = 0
-    slot.decoding_code_phase_fraction = NaN
-    slot.sync_command_issue_sample_index = typemin(Int)
-    slot.bit_accumulator = zero(ComplexF64)
-    slot.bit_from_edge = false
-    _clear_prompts!(slot.prompt_history)
+    slot.driver.last_end_sample_index = start
+    slot.driver.sampling_frequency = fs
+    slot.driver.last_code_phase = NaN
+    slot.driver.last_coherent_integration_time = uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
+    slot.driver.chips_since_epoch = 0.0
+    slot.decoding.last_end_sample_index = start
+    slot.decoding.sampling_frequency = fs
+    slot.decoding.bit_synced = false
+    slot.decoding.num_code_periods_into_bit = 0
+    slot.decoding.code_phase_fraction = NaN
+    slot.decoding.sync_command_issue_sample_index = typemin(Int)
+    slot.bit_accumulator.prompt_sum = zero(ComplexF64)
+    slot.bit_accumulator.from_edge = false
+    _clear_prompts!(slot.bit_accumulator.prompt_history)
     if nav_processor.pending_epoch_index == typemin(Int)
-        nav_processor.pending_epoch_index = _epoch_at_or_after(nav_processor, slot.driver_last_end_time)
+        nav_processor.pending_epoch_index = _epoch_at_or_after(nav_processor, _last_end_time(slot.driver))
     end
     # A snapshot the slot held is gone with it.
     slot.snapshot_epoch_index == nav_processor.pending_epoch_index && (nav_processor.num_snapshots -= 1)
     # An integration starting exactly at an epoch crosses it, so that epoch is the first; if
     # it is not pending yet, the slot is past it by the time it is, and the cycle does
     # not wait for it (`_all_snapshotted`).
-    slot.first_epoch_index = _epoch_at_or_after(nav_processor, slot.driver_last_end_time)
+    slot.first_epoch_index = _epoch_at_or_after(nav_processor, _last_end_time(slot.driver))
     slot.driver_epoch_index = typemin(Int)
     slot.decoding_epoch_index = typemin(Int)
     slot.snapshot_epoch_index = typemin(Int)
-    slot.decoder = slot.running_decoder
-    slot.epoch_decoder = slot.running_decoder
-    slot.epoch_bit_synced = false
+    slot.pending_snapshot = SatelliteSnapshot(slot.pending_snapshot; decoder = slot.decoding.decoder, bit_synced = false)
     # Registered out of the vector loop; a state still in it takes up the release in
     # `_take_up_cycle`, re-initialising its scalar loop.
-    slot.loop_state = _release_from_vector_loop(loop_state)
-    slot.measurement_ready = false
-    slot.positioning_ready = false
+    slot.snapshot = SatelliteSnapshot(
+        slot.snapshot;
+        loop_state = _release_from_vector_loop(loop_state),
+        decoder = slot.decoding.decoder,
+        measurement_ready = false,
+        positioning_ready = false,
+    )
+    slot.in_vector_loop = false
     slot.release_reason = VT_NOT_RELEASED
     slot.command_cycle_index = -1
     slot.member_index = 0
@@ -349,7 +354,7 @@ function _take_up_cycle(
 )
     id = nav_processor.cycle_index
     loop_state.cycle_index == id && return loop_state
-    slot_in_loop = slot.loop_state.vector_controlled
+    slot_in_loop = slot.in_vector_loop
     if slot_in_loop && !loop_state.vector_controlled
         loop_state = _add_to_vector_loop(loop_state)
     elseif !slot_in_loop && loop_state.vector_controlled
@@ -386,9 +391,9 @@ function _commands_at_application(
     lead = max(lead, 0.0)
     T = _update_interval_seconds(nav_processor)
     code_frequency = ustrip(Hz, get_chip_rate(group.driver_signal))
-    code_command = calc_mean_nco_command(nco_history, slot.driver_last_end_sample_index, application_sample_index).code_doppler
+    code_command = calc_mean_nco_command(nco_history, slot.driver.last_end_sample_index, application_sample_index).code_doppler
     chips =
-        slot.chips_since_epoch + (application_sample_index - slot.driver_last_end_sample_index) / fs * (code_frequency + code_command)
+        slot.driver.chips_since_epoch + (application_sample_index - slot.driver.last_end_sample_index) / fs * (code_frequency + code_command)
     code_update, doppler = _member_commands(nav_processor, slot, slot.member_index, lead, chips)
     _, next_doppler =
         _member_commands(nav_processor, slot, slot.member_index, lead + T, chips + T * (code_frequency + code_command))
@@ -410,14 +415,14 @@ function _move_past_gap!(nav_processor::NavigationProcessor, start_time, post_co
     nothing
 end
 
-# Whether an integration of one of the slot's signals (last integration ended at
-# `driver_last_end_time`, its snapshot half taken at `half_epoch`) crosses the pending
+# Whether an integration of one of the slot's signals (its last integration ended at
+# `last_end_time`, its snapshot half taken at `half_epoch_index`) crosses the pending
 # epoch still to snapshot.
-function _crosses_pending_epoch(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, half_epoch_index, driver_last_end_time, post_correlation_state::PostCorrelationState)
+function _crosses_pending_epoch(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, half_epoch_index, last_end_time, post_correlation_state::PostCorrelationState)
     epoch_index = nav_processor.pending_epoch_index
     epoch_time = _epoch_time(nav_processor, epoch_index)
     end_time = post_correlation_state.last_sample_index / _sampling_frequency_hz(post_correlation_state)
-    half_epoch_index < epoch_index && slot.first_epoch_index <= epoch_index && driver_last_end_time <= epoch_time < end_time
+    half_epoch_index < epoch_index && slot.first_epoch_index <= epoch_index && last_end_time <= epoch_time < end_time
 end
 
 # The driver's half of the snapshot at the pending epoch if this integration crosses it:
@@ -432,25 +437,27 @@ function _snapshot_driver!(
     post_correlation_state::PostCorrelationState,
     nco_history,
 )
-    _crosses_pending_epoch(nav_processor, slot, slot.driver_epoch_index, slot.driver_last_end_time, post_correlation_state) ||
+    _crosses_pending_epoch(nav_processor, slot, slot.driver_epoch_index, _last_end_time(slot.driver), post_correlation_state) ||
         return loop_state
     fs = _sampling_frequency_hz(post_correlation_state)
     epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch_index)
     code_frequency = ustrip(Hz, get_chip_rate(group.driver_signal))
     epoch_sample_index = epoch_time * fs
-    code_command = calc_mean_nco_command(nco_history, slot.driver_last_end_sample_index, epoch_sample_index).code_doppler
-    chips_to_epoch = (epoch_time - slot.driver_last_end_time) * (code_frequency + code_command)
+    code_command = calc_mean_nco_command(nco_history, slot.driver.last_end_sample_index, epoch_sample_index).code_doppler
+    chips_to_epoch = (epoch_time - _last_end_time(slot.driver)) * (code_frequency + code_command)
     (; carrier_doppler, code_doppler) = calc_mean_nco_command(nco_history, epoch_sample_index, epoch_sample_index)
     coherent_integration_time = uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
-    slot.cn0_dbhz =
-        min(Float64(ustrip(estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time))), MAX_CN0_DBHZ)
-    slot.loop_state = loop_state
-    slot.epoch_driver_code_phase = slot.last_code_phase + chips_to_epoch
-    slot.carrier_doppler = carrier_doppler * Hz
-    slot.code_doppler = code_doppler * Hz
-    slot.coherent_integration_time = slot.last_coherent_integration_time
-    slot.early_late_spacing = slot.last_early_late_spacing
-    slot.chips_since_epoch = -chips_to_epoch
+    slot.pending_snapshot = SatelliteSnapshot(
+        slot.pending_snapshot;
+        loop_state = loop_state,
+        driver_code_phase = slot.driver.last_code_phase + chips_to_epoch,
+        carrier_doppler = carrier_doppler * Hz,
+        code_doppler = code_doppler * Hz,
+        cn0_dbhz = min(Float64(ustrip(estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time))), MAX_CN0_DBHZ),
+        coherent_integration_time = slot.driver.last_coherent_integration_time,
+        early_late_spacing = slot.driver.last_early_late_spacing,
+    )
+    slot.driver.chips_since_epoch = -chips_to_epoch
     slot.driver_epoch_index = nav_processor.pending_epoch_index
     _reset_discriminator_accumulators(loop_state)
 end
@@ -459,40 +466,44 @@ end
 # crosses it: the decoder and bit sync at its last integration end, and the code phase at
 # the epoch from the last bit edge, in the decoding signal's own code.
 function _snapshot_decoding!(nav_processor::NavigationProcessor, group::VectorTrackingSlotGroup, slot::VectorTrackingSlot, post_correlation_state::PostCorrelationState, nco_history)
-    _crosses_pending_epoch(nav_processor, slot, slot.decoding_epoch_index, slot.decoding_last_end_time, post_correlation_state) ||
+    _crosses_pending_epoch(nav_processor, slot, slot.decoding_epoch_index, _last_end_time(slot.decoding), post_correlation_state) ||
         return nothing
     fs = _sampling_frequency_hz(post_correlation_state)
     epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch_index)
     signal = group.decoding_signal
     code_frequency = ustrip(Hz, get_chip_rate(signal))
-    code_command = calc_mean_nco_command(nco_history, slot.decoding_last_end_sample_index, epoch_time * fs).code_doppler
-    chips_to_epoch = (epoch_time - slot.decoding_last_end_time) * (code_frequency + code_command)
-    slot.epoch_decoder = slot.running_decoder
-    slot.epoch_bit_synced = slot.decoding_bit_synced
-    slot.epoch_code_phase = _code_phase_from_bit_edge(signal, slot) + chips_to_epoch
+    code_command = calc_mean_nco_command(nco_history, slot.decoding.last_end_sample_index, epoch_time * fs).code_doppler
+    chips_to_epoch = (epoch_time - _last_end_time(slot.decoding)) * (code_frequency + code_command)
+    slot.pending_snapshot = SatelliteSnapshot(
+        slot.pending_snapshot;
+        decoder = slot.decoding.decoder,
+        bit_synced = slot.decoding.bit_synced,
+        code_phase = _code_phase_from_bit_edge(signal, slot.decoding) + chips_to_epoch,
+    )
     slot.decoding_epoch_index = nav_processor.pending_epoch_index
     nothing
 end
 
-# Complete the slot's snapshot once both halves are in: the decoder and code phase
-# from its last bit edge (see `_code_phase_on_driver`), and the lock (driver's
-# C/N₀ at least the threshold and decoding signal's bit sync).
+# Complete the slot's snapshot once both halves are in: the pending snapshot with the
+# decoder and code phase moved onto the driver's bit (see `_code_phase_on_driver`), and
+# the lock (driver's C/N₀ at least the threshold and decoding signal's bit sync).
 function _complete_snapshot!(nav_processor::NavigationProcessor, group::VectorTrackingSlotGroup, slot::VectorTrackingSlot)
     epoch_index = nav_processor.pending_epoch_index
     slot.snapshot_epoch_index < epoch_index && slot.driver_epoch_index == epoch_index && slot.decoding_epoch_index == epoch_index ||
         return nothing
+    pending = slot.pending_snapshot
     code_frequency = ustrip(Hz, get_chip_rate(group.decoding_signal))
-    decoder, code_phase = _decoder_at_code_phase(
-        slot.epoch_decoder,
-        _code_phase_on_driver(group, slot),
-        code_frequency,
+    decoder, code_phase = _decoder_at_code_phase(pending.decoder, _code_phase_on_driver(group, pending), code_frequency)
+    measurement_ready = pending.bit_synced && pending.cn0_dbhz >= nav_processor.min_tracking_cn0_dbhz
+    slot.snapshot = SatelliteSnapshot(
+        pending;
+        decoder,
+        code_phase,
+        measurement_ready,
+        positioning_ready = measurement_ready && has_positioning_data(decoder) && is_sat_healthy(decoder),
     )
-    measurement_ready = slot.epoch_bit_synced && slot.cn0_dbhz >= nav_processor.min_tracking_cn0_dbhz
-    slot.decoder = decoder
-    slot.code_phase = code_phase
-    slot.measurement_ready = measurement_ready
-    slot.positioning_ready =
-        measurement_ready && has_positioning_data(decoder) && is_sat_healthy(decoder)
+    # Membership follows the satellite's state until the cycle decides.
+    slot.in_vector_loop = pending.loop_state.vector_controlled
     slot.snapshot_epoch_index = epoch_index
     nav_processor.num_snapshots += 1
     nothing
@@ -504,10 +515,10 @@ end
 # phase is the code phase modulo the shorter of its code period and a data bit; the
 # count moves to the nearest phase that agrees. A plain signal agrees already; before
 # bit sync nothing reads it.
-function _code_phase_on_driver(group::VectorTrackingSlotGroup, slot::VectorTrackingSlot)
-    code_phase = slot.epoch_code_phase
-    driver_phase = slot.epoch_driver_code_phase
-    slot.epoch_bit_synced && !isnan(driver_phase) || return code_phase
+function _code_phase_on_driver(group::VectorTrackingSlotGroup, snapshot::SatelliteSnapshot)
+    code_phase = snapshot.code_phase
+    driver_phase = snapshot.driver_code_phase
+    snapshot.bit_synced && !isnan(driver_phase) || return code_phase
     decoding = group.decoding_signal
     chips_per_bit = get_code_periods_per_bit(decoding) * get_code_length(decoding)
     period = min(Float64(get_code_length(group.driver_signal)), chips_per_bit)
@@ -527,8 +538,8 @@ function _can_reach_epoch(acc, group::VectorTrackingSlotGroup, nav_processor::Na
     for slot in group.slots
         slot.occupied && !_is_stale(nav_processor, slot, time) && slot.first_epoch_index <= epoch_index &&
             slot.snapshot_epoch_index < epoch_index &&
-            (slot.driver_epoch_index == epoch_index || slot.driver_last_end_time <= epoch_time) &&
-            (slot.decoding_epoch_index == epoch_index || slot.decoding_last_end_time <= epoch_time) &&
+            (slot.driver_epoch_index == epoch_index || _last_end_time(slot.driver) <= epoch_time) &&
+            (slot.decoding_epoch_index == epoch_index || _last_end_time(slot.decoding) <= epoch_time) &&
             return true
     end
     false
@@ -537,9 +548,9 @@ end
 # The decoding signal's code phase (chips) at its last integration end from the last
 # data-bit edge: the bit clock's whole code periods plus the phase past the code period
 # boundary. Meaningless (and unread) before bit sync.
-function _code_phase_from_bit_edge(signal::AbstractGNSSSignal, slot::VectorTrackingSlot)
-    code_periods = slot.decoding_bit_synced ? slot.decoding_num_code_periods_into_bit : 0
-    fraction = slot.decoding_code_phase_fraction
+function _code_phase_from_bit_edge(signal::AbstractGNSSSignal, decoding::DecodingState)
+    code_periods = decoding.bit_synced ? decoding.num_code_periods_into_bit : 0
+    fraction = decoding.code_phase_fraction
     code_periods * get_code_length(signal) + (isnan(fraction) ? 0.0 : fraction)
 end
 
@@ -610,14 +621,14 @@ end
 function _latest_integration_end(latest, group::VectorTrackingSlotGroup)
     for slot in group.slots
         slot.occupied || continue
-        latest = max(latest, slot.driver_last_end_time, slot.decoding_last_end_time)
+        latest = max(latest, _last_end_time(slot.driver), _last_end_time(slot.decoding))
     end
     latest
 end
 
 # Stale: no integration of the driver, or of the decoding signal, for two cycles.
 _is_stale(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, time) =
-    min(slot.driver_last_end_time, slot.decoding_last_end_time) <
+    min(_last_end_time(slot.driver), _last_end_time(slot.decoding)) <
     time - 2 * _update_interval_seconds(nav_processor)
 
 # Before a cycle: mark the slots it reads, clear release reasons, and free stale slots
@@ -628,7 +639,7 @@ function _prepare_slots!(released, group::VectorTrackingSlotGroup, nav_processor
         slot.in_cycle = slot.occupied && slot.snapshot_epoch_index == nav_processor.pending_epoch_index
         if slot.occupied && !slot.in_cycle && _is_stale(nav_processor, slot, time)
             slot.occupied = false
-            if slot.loop_state.vector_controlled
+            if slot.in_vector_loop
                 _mark_release!(slot, VT_INELIGIBLE)
                 released = true
             end
@@ -708,15 +719,15 @@ function _advance_driver!(group::VectorTrackingSlotGroup, slot::VectorTrackingSl
     signal = group.driver_signal
     fs = _sampling_frequency_hz(post_correlation_state)
     code_frequency = ustrip(Hz, get_chip_rate(signal))
-    code_command = calc_mean_nco_command(nco_history, slot.driver_last_end_sample_index, post_correlation_state.last_sample_index).code_doppler
-    slot.chips_since_epoch +=
-        (post_correlation_state.last_sample_index - slot.driver_last_end_sample_index) / fs * (code_frequency + code_command)
-    slot.driver_last_end_sample_index = post_correlation_state.last_sample_index
-    slot.driver_last_end_time = post_correlation_state.last_sample_index / fs
-    slot.last_code_phase = post_correlation_state.last_code_phase
-    slot.last_coherent_integration_time =
+    code_command = calc_mean_nco_command(nco_history, slot.driver.last_end_sample_index, post_correlation_state.last_sample_index).code_doppler
+    slot.driver.chips_since_epoch +=
+        (post_correlation_state.last_sample_index - slot.driver.last_end_sample_index) / fs * (code_frequency + code_command)
+    slot.driver.last_end_sample_index = post_correlation_state.last_sample_index
+    slot.driver.sampling_frequency = fs
+    slot.driver.last_code_phase = post_correlation_state.last_code_phase
+    slot.driver.last_coherent_integration_time =
         uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
-    slot.last_early_late_spacing =
+    slot.driver.last_early_late_spacing =
         calc_early_late_sample_spacing(
             post_correlation_state.last_filtered_correlator_bank,
             post_correlation_state.sampling_frequency,
@@ -739,20 +750,20 @@ function _advance_decoding!(
     is_driver::Bool,
 )
     if post_correlation_state.last_sync_change == SYNC_FOUND
-        slot.sync_command_issue_sample_index = post_correlation_state.last_command_issue_sample_index
+        slot.decoding.sync_command_issue_sample_index = post_correlation_state.last_command_issue_sample_index
     elseif !is_bit_or_secondary_code_synced(post_correlation_state)
-        slot.sync_command_issue_sample_index = typemin(Int)
+        slot.decoding.sync_command_issue_sample_index = typemin(Int)
     end
     unwiped_after_sync =
-        post_correlation_state.last_sync_change != SYNC_FOUND && post_correlation_state.last_command_issue_sample_index == slot.sync_command_issue_sample_index
+        post_correlation_state.last_sync_change != SYNC_FOUND && post_correlation_state.last_command_issue_sample_index == slot.decoding.sync_command_issue_sample_index
     _decode_integration!(group, slot, post_correlation_state, loop_state, nco_history, is_driver, unwiped_after_sync)
     code_length = get_code_length(group.decoding_signal)
     fs = _sampling_frequency_hz(post_correlation_state)
-    slot.decoding_last_end_sample_index = post_correlation_state.last_sample_index
-    slot.decoding_last_end_time = post_correlation_state.last_sample_index / fs
-    slot.decoding_bit_synced = is_bit_or_secondary_code_synced(post_correlation_state) && !unwiped_after_sync
-    slot.decoding_num_code_periods_into_bit = get_num_code_periods_into_bit(post_correlation_state)
-    slot.decoding_code_phase_fraction =
+    slot.decoding.last_end_sample_index = post_correlation_state.last_sample_index
+    slot.decoding.sampling_frequency = fs
+    slot.decoding.bit_synced = is_bit_or_secondary_code_synced(post_correlation_state) && !unwiped_after_sync
+    slot.decoding.num_code_periods_into_bit = get_num_code_periods_into_bit(post_correlation_state)
+    slot.decoding.code_phase_fraction =
         isnan(post_correlation_state.last_code_phase) ? NaN :
         mod(post_correlation_state.last_code_phase + code_length / 2, code_length) - code_length / 2
     nothing
@@ -786,30 +797,30 @@ function _decode_integration!(
         loop_state.vector_controlled && is_bit_or_secondary_code_synced(post_correlation_state) && post_correlation_state.last_sync_change == SYNC_UNCHANGED && !unwiped_after_sync ?
         _bit_prompt_phase(
             loop_state,
-            slot.prompt_history,
+            slot.bit_accumulator.prompt_history,
             post_correlation_state,
             nco_history,
             is_driver,
         ) :
         NaN
     if isnan(phase)
-        slot.bit_accumulator = zero(ComplexF64)
-        slot.bit_from_edge = false
+        slot.bit_accumulator.prompt_sum = zero(ComplexF64)
+        slot.bit_accumulator.from_edge = false
     else
         rotation =
             2π * (get_carrier_phase_offset(group.driver_signal) - get_carrier_phase_offset(group.decoding_signal) -
             phase)
-        slot.bit_accumulator += ComplexF64(get_prompt(post_correlation_state.last_filtered_correlator_bank)) * cis(rotation)
+        slot.bit_accumulator.prompt_sum += ComplexF64(get_prompt(post_correlation_state.last_filtered_correlator_bank)) * cis(rotation)
     end
     isempty(soft_bits) && return nothing
-    if !isnan(phase) && slot.bit_from_edge && Base.length(soft_bits) == 1
-        bit = real(slot.bit_accumulator)
-        slot.soft_bit[1] = Float32(get_bit_polarity(post_correlation_state) < 0 ? -bit : bit)
-        slot.running_decoder = decode!(slot.running_decoder, slot.soft_bit, 1)
+    if !isnan(phase) && slot.bit_accumulator.from_edge && Base.length(soft_bits) == 1
+        bit = real(slot.bit_accumulator.prompt_sum)
+        slot.bit_accumulator.soft_bit[1] = Float32(get_bit_polarity(post_correlation_state) < 0 ? -bit : bit)
+        slot.decoding.decoder = decode!(slot.decoding.decoder, slot.bit_accumulator.soft_bit, 1)
     else
-        slot.running_decoder = decode!(slot.running_decoder, soft_bits, Base.length(soft_bits))
+        slot.decoding.decoder = decode!(slot.decoding.decoder, soft_bits, Base.length(soft_bits))
     end
-    slot.bit_accumulator = zero(ComplexF64)
-    slot.bit_from_edge = !isnan(phase)
+    slot.bit_accumulator.prompt_sum = zero(ComplexF64)
+    slot.bit_accumulator.from_edge = !isnan(phase)
     nothing
 end
