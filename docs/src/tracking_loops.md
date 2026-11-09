@@ -4,18 +4,15 @@ CurrentModule = TrackingLoops
 
 # Tracking loops and loop filters
 
-A tracking loop steps once per coherent integration of one signal, ahead of the
-discriminators (one hardware dump or a sum of dumps): the latest integration of the
-signal's [`PostCorrelationState`](@ref), with the bookkeeping the loop needs.
+A tracking loop closes the carrier and code loops of one satellite, stepping once per
+coherent integration of one of its signals: Kaplan and Hegarty's predetection
+integration (one hardware dump or a sum of dumps), which the loop reads from the
+signal's [`PostCorrelationState`](@ref) (see the [Glossary](@ref)).
 
-A tracking loop closes the carrier and code loops. Scalar loop configuration
-(loop-filter types and bandwidths) is a plain value. A [`VectorTrackingLoop`](@ref)
-implements the same interface and owns the shared navigation processor. Scalar loops
-keep per-satellite state with the satellite. The scalar state
-`previous_prompt_sample_index` records the last driver prompt center and its
-`driver_key` selects the integrations that close the loops. The state is created with
-[`init_loop_state`](@ref). Every loop is stepped with the
-same call,
+A scalar loop's configuration (loop-filter types and bandwidths) is a plain value; its
+per-satellite loop state lives with the satellite and is created with
+[`init_loop_state`](@ref). A [`VectorTrackingLoop`](@ref) implements the same interface
+and owns the shared navigation processor. Every loop is stepped with the same call,
 
 ```julia
 loop_state, carrier_doppler, code_doppler =

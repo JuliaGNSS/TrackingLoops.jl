@@ -31,101 +31,20 @@ behaves identically on the others.
 
 ## What is in it
 
-- **Correlator banks** — `EarlyPromptLateCorrelatorBank`, `VeryEarlyPromptLateCorrelatorBank`
-  for one or several antennas, with their correlator output accessors and the sample
-  shifts each correlator is placed at.
-- **Discriminators and loop filters** — `TrackingLoops.pll_disc`, `TrackingLoops.fll_disc`
-  and `TrackingLoops.dll_disc`, the bandwidth rules that keep a loop stable for a given integration time, and the
-  code-Doppler aiding from the carrier.
-- **Tracking loops** — `ScalarTrackingLoop`, optionally using an FLL-assisted
-  carrier filter, and `DelayCompensatedTrackingLoop`, which stays
-  stable when the correction it computes only takes effect several integrations
-  later, as it does with a hardware NCO. Both are stepped with one call,
-  `step_loop!(tracking_loop, loop_state, integration, nco_history, application_sample_index)`.
-- **NCO timelines** — `NCOTimeline` records which replica frequency ran over
-  which samples, so an integration can be attributed to the command it was really
-  produced under rather than the one that was last requested.
-- **Bit and secondary-code synchronisation** — the `TrackingLoops.BitSynchronizer` with the
-  bit-edge and overlay-code detectors for every GPS, Galileo and BeiDou signal
-  GNSSSignals.jl models.
-- **C/N₀ estimation** — moments, NWPR and noise-reference estimators, plus the
-  noise-density window a noise-referenced estimator reads.
-- **Post-correlation processing** — `process_correlator_bank_output!` advances a signal component's prompt
-  filter, C/N₀ estimator and bit synchronizer in one step, so every caller does it the
-  same way.
-- **Vector tracking** — `VectorTrackingLoop` is another tracking loop, stepped
-  with the same `step_loop!`; its navigation processor does the
-  whole pipeline from the integrations it is handed: it decodes every satellite's
-  navigation bits, solves the PVT, and then closes every satellite's code and
-  carrier loops at once with a navigation filter — an unscented Kalman filter
-  over position, velocity, one clock per GNSS time system and the
-  inter-frequency biases.
-
-Everything is a plain value or a small mutable state that is preallocated once,
-so a loop can be stepped for hours without allocating — provided the consumer
-drains the demodulated soft bits (`get_soft_bits`) as they arrive; the bit synchronizer
-has room for 64 of them before its vector grows.
-
-## Example
+Correlator banks, discriminators and loop filters, the scalar tracking loops
+(`ScalarTrackingLoop`, `DelayCompensatedTrackingLoop`), NCO timelines, bit and
+secondary-code synchronisation, C/N₀ and noise-density estimation, post-correlation
+processing, and vector tracking (`VectorTrackingLoop`, a navigation filter closing every
+satellite's loops). Every loop is stepped with one call,
 
 ```julia
-using TrackingLoops, GNSSSignals, Unitful
-using TrackingLoopFilters: ThirdOrderAssistedBilinearLF
-
-signal = GPSL1CA()
-fs = 4e6u"Hz"
-tracking_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)
-loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
-post_correlation_state = PostCorrelationState(signal, prn)  # bit synchronizer, C/N₀ estimator, post-correlation filter
-
-# For every coherent integration's `correlator_bank_output::CorrelatorBankOutput` the correlator bank produced:
-post_correlation_state =
-    process_correlator_bank_output!(post_correlation_state, correlator_bank_output, fs, noise_density, noise_density_ready)
-post_correlation_state.last_sync_change == TrackingLoops.SYNC_LOST &&
-    @warn "integration crossed a navigation-bit boundary; bit sync restarted"
-loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, post_correlation_state,
-    ConstantNCOCommand(carrier_hz, code_hz), nothing)
-# program the next replica with carrier_doppler and code_doppler
-```
-
-See the [documentation](https://JuliaGNSS.github.io/TrackingLoops.jl/stable)
-for the full API reference.
-
-## Vector tracking
-
-Build one `VectorTrackingLoop` for all the ranging signals the receiver tracks, and
-step every satellite with it like any other loop. Each signal state names its
-satellite (`prn`), the correlator bank outputs report the replica's code phase at their end
-(`code_phase` on the `CorrelatorBankOutput`) and share one time grid (`sample_index_offset`):
-
-```julia
-tracking_loop = VectorTrackingLoop(GPSL1CA(), GalileoE1B())   # scalar_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)
-loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
-
-# For every integration, as above, on the receiver's shared sample grid:
-post_correlation_state = process_correlator_bank_output!(post_correlation_state, correlator_bank_output, fs, noise_density,
-    noise_density_ready; sample_index_offset)
 loop_state, carrier_doppler, code_doppler =
     step_loop!(tracking_loop, loop_state, post_correlation_state, nco_history, application_sample_index)
-
-get_navigation_solution(tracking_loop)   # the latest `PVTSolution`
-get_navigation_status(tracking_loop)     # what the latest navigation filter update did
-get_satellite_report(tracking_loop, signal, prn)  # immutable snapshot
-get_decoder(tracking_loop, signal, prn)   # borrowed, read-only decoder until the next integration
 ```
 
-Each satellite runs its scalar loop until the filter takes it over. `process_correlator_bank_output!`
-handles bit synchronization, demodulation and C/N₀ estimation. `step_loop!` decodes
-the navigation data and snapshots host C/N₀ at every navigation epoch; the integration that brings the
-last satellite past an epoch runs that epoch's update — the scalar PVT until its
-first fix seeds the filter, a filter iteration after that — and each satellite
-applies the update's admission, release and corrections on its next integration,
-sized for where its command takes effect (at `application_sample_index` with a hardware NCO).
-Nothing is logged: `get_navigation_status` reports the events, a satellite's report (`get_satellite_report`)
-why it was handed back. Storage is preallocated for
-`satellite_capacity_per_signal` satellites per signal and reused as satellites come
-and go; once warm, integrations and updates allocate nothing and compile with
-`juliac --trim=safe` (see `test/trim`).
+and a warm loop allocates nothing. The
+[documentation](https://JuliaGNSS.github.io/TrackingLoops.jl/stable) walks through a
+host's calls, each part of the package, the API reference and a glossary of its terms.
 
 ## Platforms
 

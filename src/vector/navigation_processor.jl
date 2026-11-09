@@ -19,8 +19,8 @@ Why the latest navigation filter update handed a satellite back to its scalar lo
 (a [`get_satellite_report`](@ref)'s `release_reason`):
 
   - `VT_NOT_RELEASED`: it was not;
-  - `VT_INELIGIBLE`: no longer tracked (no integration for two navigation filter updates),
-    decoded for positioning, or healthy;
+  - `VT_INELIGIBLE`: no longer tracked (no integration for two navigation filter
+    updates), no longer decoded for positioning, or no longer healthy;
   - `VT_BELOW_HORIZON`: below the horizon at the solution the update starts
     from, so not measured in that update; re-admitted only `ADMISSION_ELEVATION`
     (1°) above it (hysteresis);
