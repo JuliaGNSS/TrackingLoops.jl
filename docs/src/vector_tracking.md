@@ -152,7 +152,7 @@ every satellite starts on its scalar loop:
 4. A member is released when it is no longer eligible ([`VT_INELIGIBLE`](@ref
    TrackingLoops.VectorTrackingReleaseReason); this includes a satellite without an integration for two cycles,
    whose slot is freed) or drops below the horizon
-   ([`VT_BELOW_HORIZON`](@ref TrackingLoops.VectorTrackingReleaseReason)). Its scalar loop is re-seeded at
+   ([`VT_BELOW_HORIZON`](@ref TrackingLoops.VectorTrackingReleaseReason)). Its scalar loop is re-initialised at
    the vector loop's estimate of the Doppler and its rate (see
    [The carrier in the vector loop](@ref vector-carrier)) and its carrier-loop
    staging restarts, so it pulls in afresh, FLL-assisted at the wide bandwidth.

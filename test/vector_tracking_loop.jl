@@ -367,7 +367,7 @@ end
     @test reset.code_disc_sum == (0, 0.0)
     @test reset.fll_disc_sum == (0, 0.0Hz)
     @test reset.previous_replica_tail == state.previous_replica_tail
-    # The re-seeded Dopplers carry the last code correction, so it is no longer applied…
+    # The re-initialised Dopplers carry the last code correction, so it is no longer applied…
     @test reset.code_frequency_correction == 0.0Hz
     # …but the replica is still steered by it, so the next code measurement is moved to
     # the epoch exactly as without the reset.
@@ -383,14 +383,14 @@ end
     @test get_carrier_loop_stage(reset) == VECTOR_LOOP
     @test reset.scalar_state.reference_carrier_doppler == 150.0Hz
     @test reset.scalar_state.reference_code_doppler == 0.2Hz
-    # With no code correction, the code Doppler is the re-seeded one plus the carrier aiding.
+    # With no code correction, the code Doppler is the re-initialised one plus the carrier aiding.
     _, carrier_doppler, code_doppler =
         step_satellite(tracking_loop, reset, post_correlation_state, ConstantNCOCommand(150.0, 0.2), nothing)
     @test carrier_doppler == 104.0Hz
     @test code_doppler ≈ 0.2Hz + (carrier_doppler - 150.0Hz) * get_chip_rate_to_center_frequency_ratio(GPSL1CA())
 end
 
-@testset "Releasing re-seeds the inner loop, with $(nameof(typeof(inner)))" for inner in (
+@testset "Releasing re-initialises the inner loop, with $(nameof(typeof(inner)))" for inner in (
     ScalarTrackingLoop(ThirdOrderAssistedBilinearLF; narrow_carrier_loop_filter_bandwidth = 12.0Hz),
     DelayCompensatedTrackingLoop(; narrow_carrier_loop_filter_bandwidth = 12.0Hz),
 )
@@ -439,7 +439,7 @@ end
     @test released.code_frequency_correction == 0.0Hz
     @test released.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test !TL._has_carrier_ramp(released)
-    # Out of the vector loop it steps exactly as the re-seeded inner loop.
+    # Out of the vector loop it steps exactly as the re-initialised inner loop.
     @test step_satellite(tracking_loop, released, post_correlation_state, ConstantNCOCommand(150.0, 0.2), nothing)[2:3] ==
           step_satellite(inner, released.scalar_state, post_correlation_state, ConstantNCOCommand(150.0, 0.2), nothing)[2:3]
 end

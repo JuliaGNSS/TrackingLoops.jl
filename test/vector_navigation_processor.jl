@@ -258,7 +258,7 @@ end
     @test haskey(get_vector_tracking_members(rx.tracking_loop), key)
     @test results[1].status.num_vector_tracking_members == length(rx.sats)
     @test !results[1].status.released
-    # No integration for two cycles: dropped, released as ineligible, and re-seeded from the
+    # No integration for two cycles: dropped, released as ineligible, and re-initialised at the
     # replica's Dopplers where its command takes effect.
     dropped = rx.group.slots[2]
     drop!(v, sat, epoch, application_sample_index, nav_processor) =
@@ -272,7 +272,7 @@ end
     @test !dropped.loop_state.vector_controlled
     @test !sat.state.vector_controlled
     @test sat.state.code_frequency_correction == 0.0Hz
-    # Re-seeded at its residual PLL's estimate, a hair off the replica's command, which
+    # Re-initialised at its residual PLL's estimate, a hair off the replica's command, which
     # the filter's ramp keeps on the carrier.
     @test sat.state.scalar_state.reference_carrier_doppler ≈ sat.carrier_doppler * Hz atol = 0.01Hz
     @test sat.state.scalar_state.reference_code_doppler == sat.code_doppler * Hz
@@ -313,7 +313,7 @@ end
 
 @testset "A released satellite takes over from the replica at application_sample_index" begin
     # Under an NCO delay the commands committed until the application sample are the vector loop's,
-    # so the scalar loop re-seeds from the replica there, not from the epoch's: the
+    # so the scalar loop re-initialises at the replica's there, not from the epoch's: the
     # code from its command, the carrier from the residual PLL's estimate on the ramp there.
     rx = SimReceiver(; inner = DelayCompensatedTrackingLoop(), integrations_per_cycle = 20, delay_integrations = 15)
     _, sample, diverged = run_simulation!(rx, 20)

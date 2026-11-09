@@ -107,7 +107,7 @@ function PostCorrelationState(
     # So the first soft bits after sync do not grow the vector.
     sizehint!(bit_synchronizer.soft_bits, 64)
     # Seed the sync accumulators at the detector's length so no later integration,
-    # re-arm or bit-clock restart (they zero in place) allocates.
+    # re-initialisation or bit-clock restart (they zero in place) allocates.
     if uses_soft_bit_edge_detection(signal)
         _seed_phase_accumulators!(bit_synchronizer.phase_accumulators, get_code_periods_per_bit(signal))
     elseif uses_soft_secondary_code_detection(signal)
@@ -463,9 +463,9 @@ end
 """
     reset_post_correlation!(state::PostCorrelationState; prn = state.prn) -> PostCorrelationState
 
-The state a freshly armed channel starts from (no sync, no soft bits, empty C/N₀
-estimator, no latest integration), reusing the old vectors so a re-arm allocates
-nothing. Pass `prn` for a channel given another satellite of the same signal. The
+The state a channel starts tracking from (no sync, no soft bits, empty C/N₀
+estimator, no latest integration), reusing the old vectors so a re-initialisation
+allocates nothing. Pass `prn` for a channel given another satellite of the same signal. The
 post-correlation filter is kept: it is configuration, not history;
 an adaptive beamformer must be reset by its owner.
 
