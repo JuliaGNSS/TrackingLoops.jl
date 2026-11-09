@@ -185,22 +185,30 @@ function _step_vector_integration(
     is_driver::Bool,
     is_decoding::Bool,
 )
+    # 1. Channel assignment: the satellite's slot, registered on the integration's PRN.
     loop_state, slot = _register!(nav_processor, group, group_index, loop_state, post_correlation_state)
     application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_sample_index : application_sample_index
+    # 2. Apply the navigation filter's feedback: after a navigation filter update overdue
+    #    at the pending epoch (`_run_overdue_cycle!`), the satellite takes up the latest
+    #    cycle, its membership and NCO commands. Only a satellite that latched the pending
+    #    epoch runs an overdue update, and it took up every earlier cycle then.
+    _run_overdue_cycle!(nav_processor, slot, post_correlation_state)
     is_driver && (loop_state = _take_up_cycle(nav_processor, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index))
-    if _run_overdue_cycle!(nav_processor, slot, post_correlation_state) && is_driver
-        loop_state = _take_up_cycle(nav_processor, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index)
-    end
+    # 3. Latch the measurements at the measurement epoch: the integration's half of the
+    #    satellite's snapshot, complete once both signals' halves are in.
     _move_past_gap!(nav_processor, is_driver ? slot.driver_last_end_time : slot.decoding_last_end_time, post_correlation_state)
     is_driver && (loop_state = _snapshot_driver!(nav_processor, group, slot, loop_state, post_correlation_state, nco_history))
     is_decoding && _snapshot_decoding!(nav_processor, group, slot, post_correlation_state, nco_history)
     _complete_snapshot!(nav_processor, group, slot)
+    # 4. The navigation filter update at the measurement epoch, once every satellite that
+    #    can has latched it; its feedback applies from this integration on.
     if _run_cycle_if_due!(nav_processor, post_correlation_state) && is_driver
         loop_state = _take_up_cycle(nav_processor, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index)
     end
+    # 5. The tracking-loop update: in the vector loop the residual PLL and the
+    #    discriminators' accumulation, out of it the scalar loop.
     if is_driver
         loop_state, carrier_doppler, code_doppler = _step_satellite(tracking_loop, loop_state, post_correlation_state, nco_history, application_sample_index)
-        _advance_driver!(group, slot, post_correlation_state, nco_history)
         # In the vector loop the residual PLL stepped on this prompt (`_measure_carrier`);
         # out of it, the history starts afresh when the satellite is added again.
         loop_state.vector_controlled ? _push_prompt!(slot.prompt_history, loop_state.residual_pll) :
@@ -208,6 +216,8 @@ function _step_vector_integration(
     else
         carrier_doppler, code_doppler = _command_in_force(post_correlation_state, nco_history, application_sample_index)
     end
+    # 6. Record the integration's timing and decode the navigation data.
+    is_driver && _advance_driver!(group, slot, post_correlation_state, nco_history)
     is_decoding && _advance_decoding!(group, slot, post_correlation_state, loop_state, nco_history, is_driver)
     loop_state, carrier_doppler, code_doppler
 end
@@ -631,7 +641,7 @@ end
 #
 #   - Not running: the scalar PVT. A fresh fix seeds the filter, puts its satellites
 #     into the vector loop and closes their loops a first time at the seeded state.
-#   - Running: one filter cycle (`_run_cycle!`) — admission and release, the members'
+#   - Running: one filter cycle (`_nav_filter_cycle!`) — admission and release, the members'
 #     accumulated discriminators fused, commands for every member. Admitted are
 #     satellites decoded, healthy, in lock and `ADMISSION_ELEVATION` above the
 #     horizon; members out of lock stay in the loop unmeasured. After
@@ -650,7 +660,7 @@ function _navigation_cycle!(nav_processor::NavigationProcessor, time)
     dropped = _fold_groups(_prepare_slots!, false, groups, nav_processor, time)
     seeded = released = fell_back = false
     if nav_processor.enabled && nav_processor.vector_tracking_active
-        released, fell_back = _run_cycle!(nav_processor, groups, cycle_time)
+        released, fell_back = _nav_filter_cycle!(nav_processor, groups, cycle_time)
     else
         # Scalar solve: no per-member report.
         empty_keeping_capacity!(nav_processor.vector_tracking_members)

@@ -685,6 +685,7 @@ function initial_nav_state!(x, P, layout::NavFilterLayout, idxs::NavFilterIndice
     init_std_seeded_ifb = 1.0         # m
     init_std_unseeded_ifb = 30.0      # m — RF-chain delays are below ~100 ns
 
+    # Position, velocity (and acceleration) from the fix.
     fill!(x, 0.0)
     fill!(P, 0.0)
     position = SVector(pvt.position.x, pvt.position.y, pvt.position.z)
@@ -703,11 +704,14 @@ function initial_nav_state!(x, P, layout::NavFilterLayout, idxs::NavFilterIndice
             P[a, a] = init_std_acc^2
         end
     end
+    # The receiver clock drift.
     if idxs.clock_drift != 0
         x[idxs.clock_drift] = ustrip(m / s, pvt.clock_drift)
         P[idxs.clock_drift, idxs.clock_drift] = init_std_clock_drift^2
     end
 
+    # The clock biases: the reference one at zero, the others at the fix's inter-system
+    # biases where it observed them.
     reference_system = pvt.reference_system
     # A reference system the layout lacks falls back to the first clock.
     reference_clock_index =
@@ -724,6 +728,7 @@ function initial_nav_state!(x, P, layout::NavFilterLayout, idxs::NavFilterIndice
             P[state_index, state_index] = init_std_unseeded_clock_bias^2
         end
     end
+    # The inter-frequency biases, likewise.
     for index in eachindex(layout.extra_bands)
         state_index = idxs.ifb[index]
         if _fix_seeds_ifb(pvt, layout, index)
