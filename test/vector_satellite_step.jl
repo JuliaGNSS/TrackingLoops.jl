@@ -114,8 +114,9 @@ function take_snapshot!(nav_processor, group, slot, decoder, epoch_sample_index;
     slot.driver.sampling_frequency = fs * Hz
     nco_history = ConstantNCOCommand(0.0, code_doppler)
     post_correlation_state = nav_processor_integration(3, epoch_sample_index + 4000; signal = group.driver_signal)
-    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, nco_history)
-    TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, nco_history)
+    times = (TL._epoch_time(nav_processor, nav_processor.pending_epoch_index), TL._end_time(post_correlation_state))
+    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, nco_history, times...)
+    TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, nco_history, times...)
     TL._complete_snapshot!(nav_processor, group, slot)
     slot.snapshot.decoder.num_bits_since_time_reference, slot.snapshot.code_phase
 end
@@ -164,8 +165,9 @@ end
     slot.driver_epoch_index = slot.decoding_epoch_index = slot.snapshot_epoch_index = typemin(Int)
     slot.driver.last_end_sample_index = slot.decoding.last_end_sample_index = 300_000
     post_correlation_state = nav_processor_integration(3, 304_000)
-    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, ConstantNCOCommand(0.0, 0.0))
-    TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, ConstantNCOCommand(0.0, 0.0))
+    times = (TL._epoch_time(nav_processor, nav_processor.pending_epoch_index), TL._end_time(post_correlation_state))
+    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, ConstantNCOCommand(0.0, 0.0), times...)
+    TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, ConstantNCOCommand(0.0, 0.0), times...)
     TL._complete_snapshot!(nav_processor, group, slot)
     @test nav_processor.num_snapshots == 0
     @test slot.driver_epoch_index == slot.decoding_epoch_index == typemin(Int)

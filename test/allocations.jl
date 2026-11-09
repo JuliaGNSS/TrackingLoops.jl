@@ -116,10 +116,10 @@ end
             sig = Tuple{typeof(tracking_loop),typeof(state),typeof(post_correlation_state),words_type,Int64}
             @test isempty(AllocCheck.check_allocs(TrackingLoops._step_satellite, sig; ignore_throw = true))
             @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_driver!,
-                Tuple{typeof(nav_processor),typeof(group),typeof(slot),typeof(state),typeof(post_correlation_state),words_type};
+                Tuple{typeof(nav_processor),typeof(group),typeof(slot),typeof(state),typeof(post_correlation_state),words_type,Float64,Float64};
                 ignore_throw = true))
             @test isempty(AllocCheck.check_allocs(TrackingLoops._snapshot_decoding!,
-                Tuple{typeof(nav_processor),typeof(group),typeof(slot),typeof(post_correlation_state),words_type};
+                Tuple{typeof(nav_processor),typeof(group),typeof(slot),typeof(post_correlation_state),words_type,Float64,Float64};
                 ignore_throw = true))
             @test isempty(AllocCheck.check_allocs(TrackingLoops._advance_driver!,
                 Tuple{typeof(group),typeof(slot),typeof(post_correlation_state),words_type};
