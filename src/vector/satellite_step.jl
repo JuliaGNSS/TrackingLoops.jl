@@ -785,9 +785,7 @@ function _decode_integration!(
     phase =
         loop_state.vector_controlled && is_bit_or_secondary_code_synced(post_correlation_state) && post_correlation_state.last_sync_change == SYNC_UNCHANGED && !unwiped_after_sync ?
         _bit_prompt_phase(
-            loop_state.residual_pll,
-            loop_state.ramp,
-            loop_state.previous_replica_tail,
+            loop_state,
             slot.prompt_history,
             post_correlation_state,
             nco_history,

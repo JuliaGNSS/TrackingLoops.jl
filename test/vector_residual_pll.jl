@@ -419,17 +419,19 @@ end
     ramp = TL.CarrierDopplerRamp(1000.0, 0.0, 0.0)
     nco_history = ConstantNCOCommand(1000.0, 0.0)
     half = (1000.0 * 0.0005, 0.0005s)
+    state = TL.VectorLoopState(TL.VectorLoopState(init_loop_state(ScalarTrackingLoop(), signal, 1000.0Hz, 0.0Hz), true);
+        residual_pll, ramp, previous_replica_tail = half)
     spanning(start, stop) = PostCorrelationState(
         decoding_integration(signal, cis(0.0), stop; command_issue_sample_index = stop);
         last_num_integrated_samples = stop - start,
     )
     phase(start, stop; history = history) =
-        TL._bit_prompt_phase(residual_pll, ramp, half, history, spanning(start, stop), nco_history, false)
+        TL._bit_prompt_phase(state, history, spanning(start, stop), nco_history, false)
     @test phase(16000, 20000) ≈ 0.31
     @test phase(0, 4000) ≈ 0.2
     @test phase(0, 8000) ≈ 0.2 + 2.0 * 0.0005
     # The driver's own integration is the prediction it was wiped with.
-    @test TL._bit_prompt_phase(residual_pll, ramp, half, history, spanning(16000, 20000), nco_history, true) == 0.31
+    @test TL._bit_prompt_phase(state, history, spanning(16000, 20000), nco_history, true) == 0.31
     # Past the latest prompt: the residual Doppler carries it on, the replica on the ramp.
     @test phase(20000, 24000) ≈ 0.31 + 2.0 * 0.001
     # Older than the history reaches by more than a driver integration: no phase, rather than
