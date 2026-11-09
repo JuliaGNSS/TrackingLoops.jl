@@ -187,7 +187,7 @@ function _step_vector_integration(
 )
     # 1. Channel assignment: the satellite's slot, registered on the integration's PRN.
     loop_state, slot = _assign_slot!(nav_processor, group, group_index, loop_state, post_correlation_state)
-    application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_sample_index : application_sample_index
+    application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_end_sample_index : application_sample_index
     # 2. Apply the navigation filter's feedback: after a navigation filter update overdue
     #    at the pending epoch (`_run_overdue_update!`), the satellite applies the latest
     #    update, its membership and NCO commands. Only a satellite that latched the pending
@@ -302,11 +302,11 @@ function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSl
     slot.slot_generation = nav_processor.next_slot_generation
     slot.in_update = false
     fs = _sampling_frequency_hz(post_correlation_state)
-    start = post_correlation_state.last_sample_index - post_correlation_state.last_num_integrated_samples
+    start = _integration_start(post_correlation_state)
     slot.driver.last_end_sample_index = start
     slot.driver.sampling_frequency = post_correlation_state.sampling_frequency
     slot.driver.last_code_phase = NaN
-    slot.driver.last_coherent_integration_time = uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
+    slot.driver.last_coherent_integration_time = uconvert(s, _coherent_integration_time(post_correlation_state))
     slot.driver.chips_since_epoch = 0.0
     slot.decoding.last_end_sample_index = start
     slot.decoding.sampling_frequency = post_correlation_state.sampling_frequency
@@ -418,7 +418,7 @@ end
 function _move_past_gap!(nav_processor::NavigationProcessor, start_time, post_correlation_state::PostCorrelationState)
     epoch_time = _epoch_time(nav_processor, nav_processor.pending_epoch_index)
     nav_processor.num_snapshots == 0 && start_time > epoch_time || return nothing
-    end_time = post_correlation_state.last_sample_index / _sampling_frequency_hz(post_correlation_state)
+    end_time = post_correlation_state.last_end_sample_index / _sampling_frequency_hz(post_correlation_state)
     _fold_groups(_can_reach_epoch, false, nav_processor.groups, nav_processor, epoch_time, end_time) &&
         return nothing
     nav_processor.pending_epoch_index = _epoch_at_or_after(nav_processor, start_time)
@@ -431,7 +431,7 @@ end
 function _crosses_pending_epoch(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, half_epoch_index, last_end_time, post_correlation_state::PostCorrelationState)
     epoch_index = nav_processor.pending_epoch_index
     epoch_time = _epoch_time(nav_processor, epoch_index)
-    end_time = post_correlation_state.last_sample_index / _sampling_frequency_hz(post_correlation_state)
+    end_time = post_correlation_state.last_end_sample_index / _sampling_frequency_hz(post_correlation_state)
     half_epoch_index < epoch_index && slot.first_epoch_index <= epoch_index && last_end_time <= epoch_time < end_time
 end
 
@@ -456,7 +456,7 @@ function _snapshot_driver!(
     code_command = calc_mean_nco_command(nco_history, slot.driver.last_end_sample_index, epoch_sample_index).code_doppler
     chips_to_epoch = (epoch_time - _last_end_time(slot.driver)) * (chip_rate + code_command)
     (; carrier_doppler, code_doppler) = get_nco_command(nco_history, epoch_sample_index)
-    coherent_integration_time = uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
+    coherent_integration_time = uconvert(s, _coherent_integration_time(post_correlation_state))
     slot.pending_snapshot = SatelliteSnapshot(
         slot.pending_snapshot;
         loop_state = loop_state,
@@ -593,7 +593,7 @@ end
 # an overdue update. Neither locks it out for more than that epoch.
 function _run_update_if_due!(nav_processor::NavigationProcessor, post_correlation_state::PostCorrelationState)
     nav_processor.num_snapshots == 0 && return false
-    time = post_correlation_state.last_sample_index / _sampling_frequency_hz(post_correlation_state)
+    time = post_correlation_state.last_end_sample_index / _sampling_frequency_hz(post_correlation_state)
     _fold_groups(_all_snapshotted, true, nav_processor.groups, nav_processor, time) || return false
     _navigation_update!(nav_processor, time)
     true
@@ -606,7 +606,7 @@ end
 # the satellites stepped before (`_next_pending_epoch`), so the next one runs as due.
 function _run_overdue_update!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, post_correlation_state::PostCorrelationState)
     slot.snapshot_epoch_index == nav_processor.pending_epoch_index || return false
-    time = post_correlation_state.last_sample_index / _sampling_frequency_hz(post_correlation_state)
+    time = post_correlation_state.last_end_sample_index / _sampling_frequency_hz(post_correlation_state)
     time > _epoch_time(nav_processor, nav_processor.pending_epoch_index + 1) || return false
     _navigation_update!(nav_processor, time)
     true
@@ -726,14 +726,14 @@ function _advance_driver!(group::VectorTrackingSlotGroup, slot::VectorTrackingSl
     signal = group.driver_signal
     fs = _sampling_frequency_hz(post_correlation_state)
     chip_rate = ustrip(Hz, get_chip_rate(signal))
-    code_command = calc_mean_nco_command(nco_history, slot.driver.last_end_sample_index, post_correlation_state.last_sample_index).code_doppler
+    code_command = calc_mean_nco_command(nco_history, slot.driver.last_end_sample_index, post_correlation_state.last_end_sample_index).code_doppler
     slot.driver.chips_since_epoch +=
-        (post_correlation_state.last_sample_index - slot.driver.last_end_sample_index) / fs * (chip_rate + code_command)
-    slot.driver.last_end_sample_index = post_correlation_state.last_sample_index
+        (post_correlation_state.last_end_sample_index - slot.driver.last_end_sample_index) / fs * (chip_rate + code_command)
+    slot.driver.last_end_sample_index = post_correlation_state.last_end_sample_index
     slot.driver.sampling_frequency = post_correlation_state.sampling_frequency
     slot.driver.last_code_phase = post_correlation_state.last_code_phase
     slot.driver.last_coherent_integration_time =
-        uconvert(s, post_correlation_state.last_num_integrated_samples / post_correlation_state.sampling_frequency)
+        uconvert(s, _coherent_integration_time(post_correlation_state))
     slot.driver.last_early_late_spacing =
         calc_early_late_sample_spacing(
             post_correlation_state.last_filtered_correlator_bank,
@@ -766,7 +766,7 @@ function _advance_decoding!(
     _decode_integration!(group, slot, post_correlation_state, loop_state, nco_history, is_driver, unwiped_after_sync)
     code_length = get_code_length(group.decoding_signal)
     fs = _sampling_frequency_hz(post_correlation_state)
-    slot.decoding.last_end_sample_index = post_correlation_state.last_sample_index
+    slot.decoding.last_end_sample_index = post_correlation_state.last_end_sample_index
     slot.decoding.sampling_frequency = post_correlation_state.sampling_frequency
     slot.decoding.bit_synced = is_bit_or_secondary_code_synced(post_correlation_state) && !unwiped_after_sync
     slot.decoding.num_code_periods_into_bit = get_num_code_periods_into_bit(post_correlation_state)

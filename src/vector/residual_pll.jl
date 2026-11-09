@@ -230,7 +230,7 @@ function _step_residual_pll(loop_state, post_correlation_state::PostCorrelationS
     fs = _sampling_frequency_hz(post_correlation_state)
     num_samples = post_correlation_state.last_num_integrated_samples
     coherent_integration_time = num_samples / fs
-    center = post_correlation_state.last_sample_index - num_samples / 2
+    center = post_correlation_state.last_end_sample_index - num_samples / 2
     polarity = post_correlation_state.last_carrier_phase_polarity
 
     # The scalar loop hands over phase-locked: the first prompt is read as is.
@@ -319,7 +319,7 @@ function _bit_prompt_phase(
     isnan(residual_pll.last_prompt_sample_index) && return NaN
     is_driver && return residual_pll.predicted_prompt_phase
     fs = _sampling_frequency_hz(post_correlation_state)
-    center = post_correlation_state.last_sample_index - post_correlation_state.last_num_integrated_samples / 2
+    center = _integration_center(post_correlation_state)
     center > residual_pll.last_prompt_sample_index + 0.5 &&
         return _residual_phase_after(loop_state, center, fs, nco_history)
     history.count == 0 && return NaN

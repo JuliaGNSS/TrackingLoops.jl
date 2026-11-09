@@ -120,7 +120,7 @@ tracking loop must carry what only the correlator knows:
   sample (some 75 m at 4 MHz). Only its part past the nearest code-period
   boundary is read, so any wrap convention works; without it (`NaN`) the integration
   is taken to end on a code period boundary;
-- a common time grid: `last_sample_index / sampling_frequency` must be the time since
+- a common time grid: `last_end_sample_index / sampling_frequency` must be the time since
   one origin shared by all satellites. A host whose correlator restarts its
   sample count passes the offset as `sample_index_offset` to
   [`process_correlator_bank_output!`](@ref).

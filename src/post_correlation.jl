@@ -41,13 +41,13 @@ integration:
   - `last_num_integrated_samples`, `last_num_code_periods`: its span. `last_num_code_periods`
     is at least 1: the carrier-loop staging sizes its phase-lock indicator's averages in
     integrations of that length and divides by it.
-  - `last_sample_index`: the device sample index at its end, on the band's
+  - `last_end_sample_index`: the device sample index at its end, on the band's
     `sampling_frequency`. For a tracking loop with shared navigation state
-    ([`VectorTrackingLoop`](@ref)) `last_sample_index / sampling_frequency` must be the time
+    ([`VectorTrackingLoop`](@ref)) `last_end_sample_index / sampling_frequency` must be the time
     since an origin shared by every satellite of the band; a host whose correlator
     restarts its sample count passes the offset as `sample_index_offset`.
   - `last_command_issue_sample_index`: where the loop issues its command, the
-    `last_sample_index` of the last integration of its batch (the integrations a host
+    `last_end_sample_index` of the last integration of its batch (the integrations a host
     steps before its next command takes effect), from which the command's delay to its
     application sample is measured.
   - `last_code_phase`: the replica's code phase (chips) at its end, from the
@@ -81,7 +81,7 @@ struct PostCorrelationState{
     last_filtered_correlator_bank::C
     previous_filtered_prompt::ComplexF64
     last_num_integrated_samples::Int
-    last_sample_index::Int
+    last_end_sample_index::Int
     last_command_issue_sample_index::Int
     last_num_code_periods::Int
     last_code_phase::Float64
@@ -137,7 +137,7 @@ end
 """
     PostCorrelationState(state::PostCorrelationState; prn, sampling_frequency, bit_synchronizer,
                     cn0_estimator, post_corr_filter, last_filtered_correlator_bank,
-                    previous_filtered_prompt, last_num_integrated_samples, last_sample_index,
+                    previous_filtered_prompt, last_num_integrated_samples, last_end_sample_index,
                     last_command_issue_sample_index, last_num_code_periods, last_code_phase,
                     last_sync_event, last_num_new_soft_bits, last_carrier_phase_polarity)
 
@@ -155,7 +155,7 @@ function PostCorrelationState(
     last_filtered_correlator_bank::Maybe{AbstractCorrelatorBank} = nothing,
     previous_filtered_prompt::Maybe{Number} = nothing,
     last_num_integrated_samples::Maybe{Integer} = nothing,
-    last_sample_index::Maybe{Integer} = nothing,
+    last_end_sample_index::Maybe{Integer} = nothing,
     last_command_issue_sample_index::Maybe{Integer} = nothing,
     last_num_code_periods::Maybe{Integer} = nothing,
     last_code_phase::Maybe{Real} = nothing,
@@ -177,7 +177,7 @@ function PostCorrelationState(
         ComplexF64(previous_filtered_prompt),
         isnothing(last_num_integrated_samples) ? state.last_num_integrated_samples :
         Int(last_num_integrated_samples),
-        isnothing(last_sample_index) ? state.last_sample_index : Int(last_sample_index),
+        isnothing(last_end_sample_index) ? state.last_end_sample_index : Int(last_end_sample_index),
         isnothing(last_command_issue_sample_index) ? state.last_command_issue_sample_index :
         Int(last_command_issue_sample_index),
         isnothing(last_num_code_periods) ? state.last_num_code_periods : Int(last_num_code_periods),
@@ -188,6 +188,12 @@ function PostCorrelationState(
         Int8(last_carrier_phase_polarity),
     )
 end
+
+# The latest integration's coherent integration time, first sample and centre sample, on
+# the band's sample count.
+_coherent_integration_time(state::PostCorrelationState) = state.last_num_integrated_samples / state.sampling_frequency
+_integration_start(state::PostCorrelationState) = state.last_end_sample_index - state.last_num_integrated_samples
+_integration_center(state::PostCorrelationState) = state.last_end_sample_index - state.last_num_integrated_samples / 2
 
 # A sampling frequency in Hz, as the state keeps it.
 _sampling_frequency(sampling_frequency) = Float64(ustrip(Hz, sampling_frequency)) * Hz
