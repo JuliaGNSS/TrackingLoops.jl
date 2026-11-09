@@ -13,14 +13,17 @@ The carrier Doppler the navigation filter commands a member with: `doppler` (Hz)
 the middle of the integration it takes effect on.
 """
 struct CarrierDopplerRamp
-    doppler::Float64
-    doppler_rate::Float64
-    reference_time::Float64
+    doppler::typeof(1.0Hz)
+    doppler_rate::typeof(1.0Hz / s)
+    reference_time::typeof(1.0s)
 end
 
-CarrierDopplerRamp() = CarrierDopplerRamp(NaN, 0.0, NaN)
+CarrierDopplerRamp() = CarrierDopplerRamp(NaN * Hz, 0.0Hz / s, NaN * s)
 
-@inline _doppler_at(ramp::CarrierDopplerRamp, t) = ramp.doppler + ramp.doppler_rate * (t - ramp.reference_time)
+# The ramp's Doppler (Hz) at `t` (s, integrations' grid), unit-free as the residual PLL's
+# states it is added to.
+@inline _doppler_at(ramp::CarrierDopplerRamp, t) =
+    ustrip(Hz, ramp.doppler) + ustrip(Hz / s, ramp.doppler_rate) * (t - ustrip(s, ramp.reference_time))
 
 """
 $(SIGNATURES)
@@ -72,7 +75,7 @@ it at the ramp while the host's C/N₀ says there is no signal.
 """
 struct ResidualPLL
     bandwidth::typeof(1.0Hz)
-    carrier_frequency_correction::Float64
+    carrier_frequency_correction::typeof(1.0Hz)
     loop_filter::ResidualPLLLoopFilter
     # The latest prompt's centre (a sample index on the integrations' grid, half-way
     # between two samples for an odd count; `NaN` until the first integration) and the
@@ -96,7 +99,7 @@ _residual_doppler_rate(residual_pll) = ustrip(Hz^2, residual_pll.loop_filter.x2)
 
 ResidualPLL(bandwidth) = ResidualPLL(
     bandwidth,
-    0.0,
+    0.0Hz,
     _residual_pll_loop_filter(0.0, 0.0),
     NaN,
     Int8(0),
@@ -106,7 +109,7 @@ ResidualPLL(bandwidth) = ResidualPLL(
 
 ResidualPLL(
     residual_pll::ResidualPLL;
-    carrier_frequency_correction::Maybe{Float64} = nothing,
+    carrier_frequency_correction::Maybe{typeof(1.0Hz)} = nothing,
     loop_filter::Maybe{ResidualPLLLoopFilter} = nothing,
     last_prompt_sample_index::Maybe{Float64} = nothing,
     carrier_phase_polarity::Maybe{Integer} = nothing,
@@ -135,7 +138,7 @@ _initialized_residual_pll(
 ) =
     ResidualPLL(
         residual_pll.bandwidth,
-        scalar_doppler - _doppler_at(ramp, time),
+        (scalar_doppler - _doppler_at(ramp, time)) * Hz,
         _residual_pll_loop_filter(scalar_doppler - _doppler_at(ramp, time), 0.0),
         NaN,
         Int8(0),
@@ -147,14 +150,14 @@ _initialized_residual_pll(
 # incoming Doppler at its latest prompt (before the first: where the old ramp took
 # over) and of its rate unmoved; `fs` (Hz) dates the prompt.
 function _residual_pll_on_new_ramp(residual_pll::ResidualPLL, old::CarrierDopplerRamp, new::CarrierDopplerRamp, fs)
-    time = isnan(residual_pll.last_prompt_sample_index) ? old.reference_time : residual_pll.last_prompt_sample_index / fs
+    time = isnan(residual_pll.last_prompt_sample_index) ? ustrip(s, old.reference_time) : residual_pll.last_prompt_sample_index / fs
     step = _doppler_at(new, time) - _doppler_at(old, time)
     ResidualPLL(
         residual_pll;
-        carrier_frequency_correction = residual_pll.carrier_frequency_correction - step,
+        carrier_frequency_correction = residual_pll.carrier_frequency_correction - step * Hz,
         loop_filter = _residual_pll_loop_filter(
             _residual_doppler(residual_pll) - step,
-            _residual_doppler_rate(residual_pll) - (new.doppler_rate - old.doppler_rate),
+            _residual_doppler_rate(residual_pll) - ustrip(Hz / s, new.doppler_rate - old.doppler_rate),
         ),
     )
 end
@@ -185,7 +188,7 @@ function _with_lock_test(
     signal_power = _signal_power(lock_detector)
     noise_power = max(lock_detector.power - signal_power, eps(lock_detector.power))
     cn0_dbhz = 10 * log10(max(signal_power / (noise_power * coherent_integration_time), 1e-3))
-    good = lock_detector.indicator >= _PHASE_LOCK_THRESHOLD && cn0_dbhz >= min_tracking_cn0 - RESIDUAL_PLL_CN0_MARGIN
+    good = lock_detector.indicator >= _PHASE_LOCK_THRESHOLD && cn0_dbhz >= ustrip(min_tracking_cn0) - RESIDUAL_PLL_CN0_MARGIN
     num_locked_integrations = good ? lock.num_locked_integrations + 1 : 0
     locked = lock.locked ? good : num_locked_integrations >= time_constant
     lock = ResidualPLLLock(lock_detector, locked, num_locked_integrations)
@@ -194,7 +197,7 @@ end
 
 # With `lock`, and the residual Doppler and rate held at the ramp.
 _reset_to_ramp(residual_pll::ResidualPLL, lock::ResidualPLLLock) =
-    ResidualPLL(residual_pll; carrier_frequency_correction = 0.0, loop_filter = _residual_pll_loop_filter(0.0, 0.0), lock)
+    ResidualPLL(residual_pll; carrier_frequency_correction = 0.0Hz, loop_filter = _residual_pll_loop_filter(0.0, 0.0), lock)
 
 # The residual phase (cycles) predicted at the sample index `center` (at `fs`, Hz), after
 # the latest prompt: the incoming phase advances at the ramp plus the loop filter's
@@ -203,7 +206,7 @@ _reset_to_ramp(residual_pll::ResidualPLL, lock::ResidualPLLLock) =
     dt = (center - residual_pll.last_prompt_sample_index) / fs
     # The ramp's mean Doppler since that prompt is its value halfway there.
     mean_doppler = _doppler_at(ramp, (residual_pll.last_prompt_sample_index + center) / 2 / fs)
-    residual_pll.predicted_prompt_phase + (mean_doppler + residual_pll.carrier_frequency_correction) * dt - replica_cycles
+    residual_pll.predicted_prompt_phase + (mean_doppler + ustrip(Hz, residual_pll.carrier_frequency_correction)) * dt - replica_cycles
 end
 
 # The residual phase (cycles) of a `VectorLoopState`'s residual PLL predicted at the sample
@@ -252,7 +255,7 @@ function _step_residual_pll(loop_state, post_correlation_state::PostCorrelationS
     carrier_frequency_correction, loop_filter = filter_loop(residual_pll.loop_filter, phase_error, coherent_integration_time * s, bandwidth)
     ResidualPLL(
         residual_pll;
-        carrier_frequency_correction = ustrip(Hz, carrier_frequency_correction),
+        carrier_frequency_correction = uconvert(Hz, carrier_frequency_correction),
         loop_filter,
         last_prompt_sample_index = center,
         carrier_phase_polarity = polarity,
@@ -332,5 +335,5 @@ function _bit_prompt_phase(
     oldest = history.centers[mod1(history.newest - history.count + 1, n)]
     num_driver_samples = 2 * Float64(ustrip(s, last(loop_state.previous_replica_tail))) * fs
     oldest - center > max(num_driver_samples, post_correlation_state.last_num_integrated_samples) && return NaN
-    history.phases[nearest] + residual_pll.carrier_frequency_correction * (center - history.centers[nearest]) / fs
+    history.phases[nearest] + ustrip(Hz, residual_pll.carrier_frequency_correction) * (center - history.centers[nearest]) / fs
 end
