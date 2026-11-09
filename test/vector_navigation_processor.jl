@@ -326,10 +326,10 @@ end
     # Eligible and in lock, but below the mask: not admitted, so a satellite at the
     # horizon is not admitted and released every update. A member stays a member; the
     # elevation mask of the running update releases it.
-    @test !TL._update_membership!(false, group, 1, nothing, antipode)
+    @test !TL._update_membership!(false, group, antipode)
     @test !slot.in_vector_loop
     @test all(v -> v.in_vector_loop, channel_slots(group, rx.sats)[2:end])
-    TL._update_membership!(false, group, 1, nothing, here)
+    TL._update_membership!(false, group, here)
     @test slot.in_vector_loop
     # A running update admits it back at the filter's own position, and the satellite
     # applies the admission.

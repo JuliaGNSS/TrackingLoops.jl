@@ -636,16 +636,10 @@ get_vector_tracking_members(tracking_loop::VectorTrackingLoop) = tracking_loop.n
 # Fold `f(acc, group, group_index, buffer, args...)` over the groups in order, `group_index` the group's
 # index and `buffer` its entry of `buffers`. Recursing over the tuples keeps every
 # call statically dispatched, however heterogeneous the groups.
-@inline _fold_groups_with_buffers(f::F, acc, ::Tuple{}, ::Tuple{}, group_index, args...) where {F} = acc
-@inline _fold_groups_with_buffers(f::F, acc, groups::Tuple, buffers::Tuple, group_index, args...) where {F} =
-    _fold_groups_with_buffers(
-        f,
-        f(acc, first(groups), group_index, first(buffers), args...),
-        Base.tail(groups),
-        Base.tail(buffers),
-        group_index + 1,
-        args...,
-    )
+# The groups with their indices, or with their indices and observation buffers, for
+# `_fold_groups` to hand `f` as `group, group_index[, buffer]`.
+_indexed(groups::Tuple) = map(tuple, groups, ntuple(identity, length(groups)))
+_with_buffers(groups::Tuple, buffers::Tuple) = map(tuple, groups, ntuple(identity, length(groups)), buffers)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Scalar observation collection
@@ -704,7 +698,7 @@ end
 # satellite whose code phase is still tens of metres out may then enter the filter.
 # `measurement_ready` also decides the members' measurement eligibility, so a stricter gate would
 # withhold discriminators from existing members; the two uses need separating first.
-function _update_membership!(released, group, group_index, buffer, enu_from_ecef)
+function _update_membership!(released, group, enu_from_ecef)
     for slot in group.slots
         slot.in_update || continue
         eligible = _is_eligible(slot)
@@ -784,7 +778,7 @@ end
 # observations, as `prepare_observations!` does.
 function _gather_members!(nav_processor::NavigationProcessor, groups, Δt_nav)
     buffers = nav_processor.buffers
-    _fold_groups_with_buffers(_collect_member_states!, nothing, groups, buffers.signal_observations, 1)
+    _fold_groups(_collect_member_states!, nothing, _with_buffers(groups, buffers.signal_observations))
     prepared = prepare_observations!(
         buffers.measurements,
         buffers.signal_observations;
@@ -801,7 +795,7 @@ function _gather_members!(nav_processor::NavigationProcessor, groups, Δt_nav)
         ),
     )
     empty!(buffers.members)
-    _fold_groups_with_buffers(_collect_members!, 0, groups, buffers.signal_observations, 1, nav_processor, Δt_nav)
+    _fold_groups(_collect_members!, 0, _with_buffers(groups, buffers.signal_observations), nav_processor, Δt_nav)
     members = buffers.members
     resize!(buffers.positions, num_members)
     for j in eachindex(members)
@@ -951,7 +945,7 @@ end
 
 # Point every member above the horizon at this update's commands; the satellite
 # evaluates them where its command takes effect, on its next integration (`_commands_at_application`).
-function _assign_commands!(acc, group, group_index, buffer, nav_processor)
+function _assign_commands!(acc, group, group_index, nav_processor)
     buffers = nav_processor.buffers
     for (j, member) in enumerate(buffers.members)
         member.group == group_index && buffers.above_horizon[j] || continue
@@ -1028,7 +1022,7 @@ function _predict_after_epoch(nav_processor::NavigationProcessor, slot::VectorTr
 end
 
 # Release the group's members below the horizon; returns whether any was.
-function _release_below_horizon!(released, group, group_index, buffer, nav_processor)
+function _release_below_horizon!(released, group, group_index, nav_processor)
     buffers = nav_processor.buffers
     for (j, member) in enumerate(buffers.members)
         member.group == group_index && !buffers.above_horizon[j] || continue
@@ -1040,7 +1034,7 @@ end
 
 # Release every satellite of the group still in the loop, members and those that
 # missed the epoch alike, for `reason`; returns whether any was.
-function _release_all!(released, group, group_index, buffer, reason::VectorTrackingReleaseReason)
+function _release_all!(released, group, reason::VectorTrackingReleaseReason)
     for slot in group.slots
         slot.in_vector_loop || continue
         _mark_release!(slot, reason)
@@ -1049,7 +1043,7 @@ function _release_all!(released, group, group_index, buffer, reason::VectorTrack
     released
 end
 
-function _count_members(n, group, group_index, buffer)
+function _count_members(n, group)
     for slot in group.slots
         _is_member(slot) && (n += 1)
     end
@@ -1059,7 +1053,7 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Seeding from a scalar fix
 
-function _add_fix_satellites!(num_added, group, group_index, buffer, nav_processor)
+function _add_fix_satellites!(num_added, group, group_index, nav_processor)
     signal_id = nav_processor.nav_filter.layout.signal_id_by_group[group_index]
     observations = nav_processor.pvt.observations
     for slot in group.slots
@@ -1136,7 +1130,7 @@ function _seed!(nav_processor::NavigationProcessor, groups, update_interval)
     Δt_nav = ustrip(s, model.update_interval)
     pvt = nav_processor.pvt
     nav_filter.reference_clock_index = initial_nav_state!(nav_filter.x, nav_filter.P, nav_filter.layout, model.idxs, pvt)
-    _fold_groups_with_buffers(_add_fix_satellites!, 0, groups, buffers.signal_observations, 1, nav_processor)
+    _fold_groups(_add_fix_satellites!, 0, _indexed(groups), nav_processor)
     prepared = _gather_members!(nav_processor, groups, Δt_nav)
     _seed_fix_covariance!(nav_processor, prepared.inter_system_time_offsets)
     members = buffers.members
@@ -1147,7 +1141,7 @@ function _seed!(nav_processor::NavigationProcessor, groups, update_interval)
     _predict_nco_commands!(nav_processor)
     resize!(buffers.above_horizon, length(members))
     fill!(buffers.above_horizon, true)
-    _fold_groups_with_buffers(_assign_commands!, 0, groups, buffers.signal_observations, 1, nav_processor)
+    _fold_groups(_assign_commands!, 0, _indexed(groups), nav_processor)
     nav_processor.vector_tracking_active = true
     nav_filter.reference_epoch = reference_epoch
     nav_processor.measurement_deficit_duration = 0.0s
@@ -1177,7 +1171,7 @@ function _nav_filter_update!(nav_processor::NavigationProcessor, groups, update_
     #    solution.
     enu_from_ecef = ENUfromECEF(_ecef(first(nav_filter_states(nav_filter.x, idxs))), wgs84)
     released =
-        _fold_groups_with_buffers(_update_membership!, false, groups, buffers.signal_observations, 1, enu_from_ecef)
+        _fold_groups(_update_membership!, false, groups, enu_from_ecef)
     prepared = _gather_members!(nav_processor, groups, Δt_nav)
     members = buffers.members
     num_members = length(members)
@@ -1189,7 +1183,7 @@ function _nav_filter_update!(nav_processor::NavigationProcessor, groups, update_
         above_horizon[j] = first(calc_elevation_and_azimuth(enu_from_ecef, member.sat_pos)) >= 0
         above_horizon[j] && (num_above_horizon += 1)
     end
-    released = _fold_groups_with_buffers(_release_below_horizon!, released, groups, buffers.signal_observations, 1, nav_processor)
+    released = _fold_groups(_release_below_horizon!, released, _indexed(groups), nav_processor)
 
     # 2. Time update (prediction) to the measurement epoch: x⁻ = F·x⁺, P⁻ = F·P⁺·Fᵀ + Q.
     time_update!(buffers.time_update, nav_filter.x, nav_filter.P, model.F, model.Q)
@@ -1234,10 +1228,10 @@ function _nav_filter_update!(nav_processor::NavigationProcessor, groups, update_
     # 8. The NCO commands, or the fallback to scalar tracking.
     fell_back = measurement_deficit_duration > config.measurement_deficit_timeout || num_above_horizon == 0
     if fell_back
-        released = _fold_groups_with_buffers(_release_all!, released, groups, buffers.signal_observations, 1, VT_FALLBACK)
+        released = _fold_groups(_release_all!, released, groups, VT_FALLBACK)
         nav_processor.vector_tracking_active = false
     else
-        _fold_groups_with_buffers(_assign_commands!, 0, groups, buffers.signal_observations, 1, nav_processor)
+        _fold_groups(_assign_commands!, 0, _indexed(groups), nav_processor)
     end
 
     # 9. The solution, dated by the reference system's clock.

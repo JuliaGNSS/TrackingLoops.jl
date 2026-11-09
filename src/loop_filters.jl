@@ -233,9 +233,3 @@ function calc_carrier_aided_dopplers(
         code_frequency_correction + carrier_doppler * get_chip_rate_to_center_frequency_ratio(signal)
     initial_carrier_doppler + carrier_doppler, initial_code_doppler + code_doppler
 end
-
-# Rotates a component's bit synchronizer prompt onto the real axis, given the loops lock
-# the driver there: a bit-identical no-op (`cispi(0)`) for an in-phase component,
-# `±90°` for a quadrature one (GPS L5 / Galileo E5a I vs Q). The offsets are in cycles.
-@inline _carrier_phase_derotation(driver_carrier_phase_offset::Real, signal) =
-    cispi(2 * (driver_carrier_phase_offset - get_carrier_phase_offset(signal)))
