@@ -42,7 +42,7 @@ end
     # A skipped epoch rebuilds the process model in place.
     sample += 2samples_per_update
     @test measure_navigation(rx, sample) == 0
-    @test rx.vt.model.update_interval == 0.2s
+    @test rx.vt.nav_filter.model.update_interval == 0.2s
     apply_feedback!(rx, sample)
 
     slot = rx.group.slots[2]

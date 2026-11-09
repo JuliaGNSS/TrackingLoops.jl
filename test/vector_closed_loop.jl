@@ -55,7 +55,7 @@ end
         truth_kw = (; clock_drift = 600.0))
     results, _, diverged = run_simulation!(rx, 60)
     @test !diverged
-    @test rx.vt.model.update_interval ≈ 200.0ms
+    @test rx.vt.nav_filter.model.update_interval ≈ 200.0ms
     tail = results[31:end]
     @test tail_errors(rx, tail) < 0.2
     @test tail_code_errors(tail) < 0.005
@@ -267,7 +267,7 @@ end
     # GPS L1 C/A and L2CM from the same satellites, with a 4 m hardware delay on L2.
     rx = SimReceiver(; signals = (GPSL1CA(), GPSL2CM()), range_biases = (0.0, 4.0))
     num_sats = sum(length, rx.channels)
-    @test rx.vt.layout.extra_bands == [:L2]
+    @test rx.vt.nav_filter.layout.extra_bands == [:L2]
     results, _, diverged = run_simulation!(rx, 100)
     @test !diverged
     @test all(r -> r.status.vector_tracking_active && r.status.num_vector_tracking_members == num_sats, results)

@@ -97,9 +97,9 @@ end
         @test slot.release_reason == VT_NOT_RELEASED
     end
     # The reference epoch is the fix's, with the reference clock starting at zero.
-    @test vt.reference_epoch == seed.pvt.time
+    @test vt.nav_filter.reference_epoch == seed.pvt.time
     # The seeded state is the fix.
-    user_pos, _, _ = TL.nav_filter_states(vt.x, vt.model.idxs)
+    user_pos, _, _ = TL.nav_filter_states(vt.nav_filter.x, vt.nav_filter.model.idxs)
     @test user_pos == SVector(seed.pvt.position.x, seed.pvt.position.y, seed.pvt.position.z)
 
     # Without a satellite ready for the scalar solve there is no fix and nothing to seed.
@@ -136,20 +136,20 @@ end
     vt = rx.vt
     buffers = vt.buffers
     members = buffers.members
-    idxs = vt.model.idxs
+    idxs = vt.nav_filter.model.idxs
     Δt_nav = 0.1
     # The corrections the update left, recomputed from the updated state the way
     # GNSSReceiver computed them: all members at once, from the epoch's measurements.
-    ξ = position_and_bias_vector(vt.x, idxs)
+    ξ = position_and_bias_vector(vt.nav_filter.x, idxs)
     predicted = predict_pseudoranges!(zeros(length(members)), [m.sat_pos for m in members], ξ,
-        member_bias_columns(members, vt.layout))
-    user_pos, user_vel, user_drift = TL.nav_filter_states(vt.x, idxs)
+        member_bias_columns(members, vt.nav_filter.layout))
+    user_pos, user_vel, user_drift = TL.nav_filter_states(vt.nav_filter.x, idxs)
     for (j, member) in enumerate(members)
         sat = rx.sats[member.slot_index]
         slot = rx.group.slots[member.slot_index]
         @test slot.member_index == j
-        reference_system = TL._reference_system(vt)
-        measured = TL.calc_pseudorange(get_time_of_week(reference_system, vt.reference_epoch), member.transmit_tow,
+        reference_system = TL._reference_system(vt.nav_filter)
+        measured = TL.calc_pseudorange(get_time_of_week(reference_system, vt.nav_filter.reference_epoch), member.transmit_tow,
                        get_time_system_offset(buffers.measurements[j].time_system, reference_system)) -
                    buffers.delays[j]
         # The carrier NCO is commanded the Doppler of the rate predicted where the
@@ -170,7 +170,7 @@ end
               TL.predict_carrier_doppler(rate_at_epoch, member.wavelength) atol = 1e-6
         @test sat.state.ramp.reference_time ≈ TL._epoch_time(vt, vt.update_epoch_index)
         # The post-fit rate is predicted at the measurement's own instant.
-        @test buffers.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.x, idxs, member) atol = 1e-9
+        @test buffers.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.nav_filter.x, idxs, member) atol = 1e-9
         @test sat.state.feedback_delay == 0.0s
         # The accumulators were emptied at the epoch's snapshot.
         @test sat.state.code_disc_sum == (0, 0.0)
@@ -335,7 +335,7 @@ end
     group = rx.group
     sat = group.slots[1]
     sat.loop_state = TL._release_from_vector_loop(sat.loop_state)
-    user_pos = first(TL.nav_filter_states(vt.x, vt.model.idxs))
+    user_pos = first(TL.nav_filter_states(vt.nav_filter.x, vt.nav_filter.model.idxs))
     here = ENUfromECEF(ECEF(user_pos...), wgs84)
     antipode = ENUfromECEF(ECEF((-user_pos)...), wgs84)
     @test TL._is_above_admission_mask(group.driver_signal, sat, here)
@@ -363,8 +363,8 @@ end
     # left the loop falls back.
     rx = SimReceiver()
     _, sample, _ = run_simulation!(rx, 5)
-    pos = rx.vt.model.idxs.pos
-    rx.vt.x[pos] .= -rx.vt.x[pos]
+    pos = rx.vt.nav_filter.model.idxs.pos
+    rx.vt.nav_filter.x[pos] .= -rx.vt.nav_filter.x[pos]
     results, _, _ = run_simulation!(rx, 1; start_sample = sample)
     @test all(==(VT_BELOW_HORIZON), results[1].reasons)
     @test isempty(results[1].measured)
@@ -391,7 +391,7 @@ end
     before = results[end].pvt.time
     # The scalar solve takes over from a receive epoch a week off, which the re-seed must
     # not carry over.
-    rx.vt.reference_epoch -= GNSSSignals.SECONDS_PER_WEEK
+    rx.vt.nav_filter.reference_epoch -= GNSSSignals.SECONDS_PER_WEEK
     foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
     rx.vt.vector_tracking_active = false
     results, _, _ = run_simulation!(rx, 2; start_sample = sample)
@@ -405,7 +405,7 @@ end
     run_simulation!(rx, 2)
     buffers = rx.vt.buffers
     n = length(buffers.measurement_updates)
-    num_states = length(rx.vt.x)
+    num_states = length(rx.vt.nav_filter.x)
     @test size(TL._measurement_buffers!(buffers, num_states, n + 3).z) == (n + 3,)
     @test size(TL._measurement_buffers!(buffers, num_states, n + 1).z) == (n + 1,)
     @test length(buffers.measurement_updates) == n + 3

@@ -397,8 +397,8 @@ function _commands_at_application(
     code_command = calc_mean_nco_command(nco_history, slot.driver_last_end_sample_index, application_sample_index).code_doppler
     chips =
         slot.chips_since_epoch + (application_sample_index - slot.driver_last_end_sample_index) / fs * (chip_rate + code_command)
-    reference_system = _reference_system(nav_processor)
-    reference_tow = get_time_of_week(reference_system, nav_processor.reference_epoch)
+    reference_system = _reference_system(nav_processor.nav_filter)
+    reference_tow = get_time_of_week(reference_system, nav_processor.nav_filter.reference_epoch)
     code_update, doppler = _member_commands(nav_processor, slot, slot.member_index, reference_system, reference_tow, feedback_delay, chips)
     _, next_doppler =
         _member_commands(nav_processor, slot, slot.member_index, reference_system, reference_tow, feedback_delay + Δt_nav, chips + Δt_nav * (chip_rate + code_command))
