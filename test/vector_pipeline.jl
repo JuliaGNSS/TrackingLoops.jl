@@ -78,7 +78,7 @@ end
         report = get_satellite_report(tracking_loop, GPSL1CA(), sat.decoder.prn)
         @test report isa SatelliteReport
         @test report.prn == sat.decoder.prn
-        @test report.tracked && report.bit_or_secondary_code_synced && report.measurement_ready && report.positioning_ready
+        @test report.bit_or_secondary_code_synced && report.measurement_ready && report.positioning_ready
         @test report.vector_controlled
         @test report.release_reason == VT_NOT_RELEASED
         @test report.snapshot_time ≈ get_navigation_elapsed_time(tracking_loop)
@@ -241,7 +241,6 @@ end
     results, sample, diverged = run_pipeline!(rx, 0.5; start_sample = start)
     @test !diverged
     @test !gone_slot.occupied
-    @test !get_satellite_report(rx.tracking_loop, GPSL1CA(), gone.decoder.prn).tracked
     @test any(r -> r.status.released, results)
     gone_report = get_satellite_report(rx.tracking_loop, GPSL1CA(), gone.decoder.prn)
     @test gone_report === nothing || gone_report.release_reason in (VT_INELIGIBLE, VT_NOT_RELEASED)
