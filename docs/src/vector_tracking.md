@@ -41,10 +41,10 @@ processor, which
 
 - decodes each satellite's navigation data from the demodulated soft bits its
   integrations carry;
-- snapshots each satellite at every navigation epoch (every `navigation_filter_update_interval`
+- snapshots each satellite at every navigation epoch (every `navigation_update_interval`
   on the integrations' time grid): code phase from the last data-bit edge, decoder,
   Dopplers, C/N₀ and the discriminators accumulated since the last epoch;
-- runs the epoch's navigation filter update on the integration that completes the last
+- runs the epoch's navigation update on the integration that completes the last
   satellite's snapshot: the scalar PVT until the filter is seeded, a filter
   iteration after that;
 - leaves the update's decisions (admission, release, commands) for each
@@ -146,7 +146,7 @@ every satellite starts on its scalar loop:
    its residual PLL follows the carrier, whatever [Carrier-loop staging](@ref)
    stage its scalar loop had reached.
 3. While it runs, a satellite is admitted once it is decoded, healthy, in lock
-   and 1° (`ADMISSION_ELEVATION`) above the horizon. A member out of lock (C/N₀
+   and 1° (`ADMISSION_ELEVATION_MASK`) above the horizon. A member out of lock (C/N₀
    or bit sync) stays in the loop, unmeasured, and is predicted through the
    outage. A member that misses an epoch sits that update out.
 4. A member is released when it is no longer eligible ([`VT_INELIGIBLE`](@ref
@@ -347,7 +347,7 @@ step_loop!(::VectorTrackingLoop, ::VectorLoopState, ::PostCorrelationState, ::An
 TrackingLoops.default_residual_pll_loop_bandwidth()
 ```
 
-## The navigation filter update
+## The navigation update
 
 ```@docs
 TrackingLoops.VectorTrackingStatus

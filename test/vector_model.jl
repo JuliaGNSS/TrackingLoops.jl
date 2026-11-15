@@ -220,7 +220,7 @@ end
     config = NavFilterConfig()
     Δt_nav = 0.1
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
-    nav_processor = TL.NavFilterModel(config, layout, 100.0ms)
+    nav_processor = TL.NavFilterProcessModel(config, layout, 100.0ms)
     @test size(nav_processor.F) == (9, 9)
     # Per-axis constant-velocity blocks propagate x += Δt_nav * ẋ.
     for i in [1, 3, 5]
@@ -242,7 +242,7 @@ end
     @test nav_processor.Q[7, 8] > 0
 
     # Position-only, bias-only model: pure identity dynamics.
-    nav1 = TL.NavFilterModel(
+    nav1 = TL.NavFilterProcessModel(
         NavFilterConfig(; motion_model_order = 1, clock_model_order = 1),
         TL.NavFilterLayout((GPSL1CA(),)),
         100.0ms,
@@ -251,14 +251,14 @@ end
     @test size(nav1.Q) == (4, 4)
 
     # An inter-frequency bias state is (nearly) constant.
-    nav_ifb = TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(), GPSL5I())), 100.0ms)
+    nav_ifb = TL.NavFilterProcessModel(config, TL.NavFilterLayout((GPSL1CA(), GPSL5I())), 100.0ms)
     ifb_index = nav_ifb.idxs.ifb[1]
     @test nav_ifb.F[ifb_index, ifb_index] == 1.0
     @test all(nav_ifb.F[ifb_index, 1:end .!= ifb_index] .== 0.0)
     # The IFB random walk is driven by the configured density (m/√s), so a front end whose
     # bands drift apart can be described without touching the source.
     @test nav_ifb.Q[ifb_index, ifb_index] ≈ ustrip(u"m/sqrt(s)", config.ifb_noise_density)^2 * Δt_nav
-    loose_ifb = TL.NavFilterModel(
+    loose_ifb = TL.NavFilterProcessModel(
         NavFilterConfig(; ifb_noise_density = 0.05u"m/sqrt(s)"),
         TL.NavFilterLayout((GPSL1CA(), GPSL5I())),
         100.0ms,
@@ -268,7 +268,7 @@ end
     # Integration-time management: the process model follows the measured interval,
     # however small the deviation (a chunk's 4 ms on 100 ms is metres of clock bias at a
     # TCXO's drift), rebuilt in place.
-    nav_processor = TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 100.0ms)
+    nav_processor = TL.NavFilterProcessModel(config, TL.NavFilterLayout((GPSL1CA(),)), 100.0ms)
     F = nav_processor.F
     Q = copy(nav_processor.Q)
     TL.ensure_nav_filter_propagation_interval!(nav_processor, config, 100.0ms)
@@ -276,7 +276,7 @@ end
     TL.ensure_nav_filter_propagation_interval!(nav_processor, config, 0.104s)
     @test nav_processor.propagation_interval == 0.104s
     @test nav_processor.F[1, 2] == 0.104
-    @test nav_processor.Q == TL.NavFilterModel(config, TL.NavFilterLayout((GPSL1CA(),)), 0.104s).Q
+    @test nav_processor.Q == TL.NavFilterProcessModel(config, TL.NavFilterLayout((GPSL1CA(),)), 0.104s).Q
     TL.ensure_nav_filter_propagation_interval!(nav_processor, config, 0.2s)
     @test nav_processor.propagation_interval == 0.2s
     @test nav_processor.F[1, 2] ≈ 0.2
@@ -287,7 +287,7 @@ end
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B(), GPSL5I()))
     for motion_model_order in 1:3, clock_model_order in 1:2
         config = NavFilterConfig(; motion_model_order, clock_model_order)
-        nav_processor = TL.NavFilterModel(config, layout, 0.25s)
+        nav_processor = TL.NavFilterProcessModel(config, layout, 0.25s)
         x = collect(1.0:TL.num_nav_states(config, layout))
         @test length(nav_processor.idxs.vel) == (motion_model_order == 1 ? 0 : 3)
         @test length(nav_processor.idxs.acc) == (motion_model_order == 3 ? 3 : 0)
@@ -309,7 +309,7 @@ end
     Δt_nav = 0.1
     layout = TL.NavFilterLayout((GPSL1CA(),))
     config(order) = NavFilterConfig(; motion_model_order = order, acceleration_noise_std = acc)
-    axis_block(order) = TL.NavFilterModel(config(order), layout, Δt_nav * s).Q[1:order, 1:order]
+    axis_block(order) = TL.NavFilterProcessModel(config(order), layout, Δt_nav * s).Q[1:order, 1:order]
 
     @test TL.MANOEUVRE_TIME == 2.0s
     @test axis_block(1) ≈ [Δt_nav] * [Δt_nav]' * σ_v^2
@@ -329,7 +329,7 @@ end
     # at 1 s.
     for (order, expected) in ((1, σ_v), (2, σ_a), (3, σ_j))
         recovered(interval) = let
-            nav_processor = TL.NavFilterModel(config(order), layout, interval)
+            nav_processor = TL.NavFilterProcessModel(config(order), layout, interval)
             # The last modelled derivative's own gain is `Δt_nav` at every order.
             sqrt(nav_processor.Q[order, order]) / ustrip(s, interval)
         end
@@ -363,7 +363,7 @@ end
 @testset "Measurement prediction" begin
     config = NavFilterConfig()
     layout = TL.NavFilterLayout((GPSL1CA(), GalileoE1B()))
-    nav_processor = TL.NavFilterModel(config, layout, 100.0ms)
+    nav_processor = TL.NavFilterProcessModel(config, layout, 100.0ms)
     idxs = nav_processor.idxs
 
     # One GPS satellite along +x, one Galileo along +z: each pseudorange
@@ -716,7 +716,7 @@ end
     # A predicted pseudorange 10 m beyond the measured one must speed the code
     # NCO up by f_code · 10 m / (Δt_nav · c): the replica is 10 m late. A predicted
     # rate of 105 m/s is a carrier Doppler of −105/λ Hz.
-    @test TL.calc_nco_code_correction(1000.0 + 10.0, 1000.0, member.chip_rate, 0.1) ≈
+    @test TL.calc_code_frequency_correction(1000.0 + 10.0, 1000.0, member.chip_rate, 0.1) ≈
           -10.0 * member.chip_rate / (0.1 * c)
     @test TL.predict_carrier_doppler(105.0, member.wavelength) ≈ -105.0 / member.wavelength
 
@@ -734,7 +734,7 @@ end
     columns = member_bias_columns([member], layout)
     predict(x) = predict_pseudoranges!(zeros(1), [member.sat_pos], position_and_bias_vector(x, idxs), columns)[1]
     @test predict(x_updated) - predict(x) ≈ -10.0 rtol = 1e-3
-    @test TL.calc_nco_code_correction(predict(x_updated), predict(x), member.chip_rate, 0.1) ≈
+    @test TL.calc_code_frequency_correction(predict(x_updated), predict(x), member.chip_rate, 0.1) ≈
           10.0 * member.chip_rate / (0.1 * c) rtol = 1e-3
 end
 

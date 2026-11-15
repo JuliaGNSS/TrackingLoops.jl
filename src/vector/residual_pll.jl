@@ -211,12 +211,12 @@ end
 
 # The residual phase (cycles) of a `VectorLoopState`'s residual PLL predicted
 # `samples_since_end` samples (at `fs`, Hz) after the end of the latest prompt's integration:
-# the replica advancing by the second half of that integration (`previous_replica_tail`),
+# the replica advancing by the second half of that integration (`last_replica_tail`),
 # then by the commands it ran on from its end. `NaN` while that half is unknown. Exact from
 # the integration's end on; within the half it takes the later commands to have run there.
 @inline function _residual_phase_after(loop_state, samples_since_end, fs, nco_history)
     (; residual_pll, ramp) = loop_state
-    previous_cycles = loop_state.previous_replica_tail
+    previous_cycles = loop_state.last_replica_tail
     isnan(previous_cycles) && return NaN
     previous_span = residual_pll.last_prompt_span
     previous_end_sample_index = previous_span.end_sample_index
@@ -289,12 +289,12 @@ end
 PromptHistory(length::Int) = PromptHistory(fill(IntegrationSpan(), length), fill(NaN, length), 0, 0)
 
 # A slot's history length for a group ranging on `driver` and decoding `decoding`: half
-# a `navigation_filter_update_interval` of the driver's shortest (one-code-period) integrations, as the host
+# a `navigation_update_interval` of the driver's shortest (one-code-period) integrations, as the host
 # steps every signal at least once per half update interval, plus one for the straddling integration,
 # counted in chips as `_phase_lock_time_constant` counts. None for a plain signal.
-function _prompt_history_length(driver::AbstractGNSSSignal, decoding::AbstractGNSSSignal, navigation_filter_update_interval)
+function _prompt_history_length(driver::AbstractGNSSSignal, decoding::AbstractGNSSSignal, navigation_update_interval)
     typeof(driver) == typeof(decoding) && return 0
-    chips = round(Int, get_chip_rate(driver) * navigation_filter_update_interval / 2)
+    chips = round(Int, get_chip_rate(driver) * navigation_update_interval / 2)
     cld(chips, get_code_length(driver)) + 1
 end
 
@@ -314,7 +314,7 @@ _clear_prompts!(history::PromptHistory) = (history.count = 0; history)
 # (driver) integration: the phase it was wiped with, a prediction that prompt did not correct.
 # A passenger integration at or before the latest prompt: the nearest prompt's phase in
 # `history`, moved on at the loop filter's output. One after it: the prediction, the
-# replica advancing by `previous_replica_tail` and the commands from there. `NaN` before
+# replica advancing by `last_replica_tail` and the commands from there. `NaN` before
 # the first prompt, and for an integration more than a driver integration older than the oldest
 # prompt held, rather than a phase moved back over integrations that output did not hold for.
 function _bit_prompt_phase(

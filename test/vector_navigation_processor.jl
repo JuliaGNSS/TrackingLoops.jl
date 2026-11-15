@@ -11,7 +11,7 @@ using Geodesy: ENUfromECEF, wgs84
     @test nav_processor.groups[1].driver_signal isa GPSL1CA
     @test all(group -> length(group.slots) == 4, nav_processor.groups)
     @test all(group -> all(slot -> !slot.occupied && slot.slot_generation == 0, group.slots), nav_processor.groups)
-    @test nav_processor.navigation_filter_update_interval == 0.1s
+    @test nav_processor.update_interval == 0.1s
     @test nav_processor.min_tracking_cn0 == 30.0dBHz
     @test get_navigation_status(tracking_loop) == VectorTrackingStatus()
     @test !get_navigation_status(tracking_loop).vector_tracking_active
@@ -19,9 +19,9 @@ using Geodesy: ENUfromECEF, wgs84
     @test isempty(get_vector_tracking_members(tracking_loop))
     @test get_satellite_report(tracking_loop, GPSL1CA(), 5) === nothing
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
-    @test (state.slot_index, state.slot_generation, state.update_index) == (0, 0, -1)
+    @test (state.slot_index, state.slot_generation, state.applied_update_index) == (0, 0, -1)
     @test !state.vector_controlled
-    @test VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = 20ms).navigation_processor.navigation_filter_update_interval == 0.02s
+    @test VectorTrackingLoop(GPSL1CA(); navigation_update_interval = 20ms).navigation_processor.update_interval == 0.02s
     @test VectorTrackingLoop(GPSL1CA(); min_tracking_cn0 = 35dBHz).navigation_processor.min_tracking_cn0 == 35dBHz
     paired = VectorTrackingLoop(GPSL1CA(), BeiDouB1C_P() => BeiDouB1C_D(); scalar_loop = DelayCompensatedTrackingLoop())
     pairs = get_signal_pairs(paired)
@@ -36,9 +36,9 @@ end
     # A dataless pilot carries no bits to decode.
     @test_throws ArgumentError VectorTrackingLoop(GPSL1C_P())
     @test_throws ArgumentError VectorTrackingLoop(GalileoE1C())
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = 0.0s)
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = -0.1s)
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = Inf * s)
+    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); navigation_update_interval = 0.0s)
+    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); navigation_update_interval = -0.1s)
+    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); navigation_update_interval = Inf * s)
     @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); satellite_capacity_per_signal = 0)
     # An integration of no satellite, or of a driver it was not built for.
     tracking_loop = VectorTrackingLoop(GPSL1CA())
@@ -65,7 +65,7 @@ end
     seed = results[1]
     @test seed.status.seeded
     @test seed.status.vector_tracking_active
-    @test !seed.status.solution_from_filter
+    @test !seed.status.solution_from_nav_filter
     @test vt.vector_tracking_active
     @test seed.status.num_vector_tracking_members == length(rx.sats)
     # The emitted solution is the scalar fix, with no per-member report of the filter.
@@ -77,14 +77,14 @@ end
         @test sat.state.vector_controlled
         @test sat.state.code_disc_sum == (0, 0.0)
         @test isfinite(sat.state.code_frequency_correction)
-        @test sat.state.update_index == vt.update_index
-        @test slot.command_update_index == vt.update_index
+        @test sat.state.applied_update_index == vt.update_index
+        @test slot.commanded_update_index == vt.update_index
         @test slot.release_reason == VT_NOT_RELEASED
     end
-    # The reference epoch is the fix's, with the reference clock starting at zero.
-    @test vt.nav_filter.reference_epoch == seed.pvt.time
+    # The receive epoch is the fix's, with the reference clock starting at zero.
+    @test vt.nav_filter.receive_epoch == seed.pvt.time
     # The seeded state is the fix.
-    user_pos, _, _ = TL.nav_filter_states(vt.nav_filter.x, vt.nav_filter.model.idxs)
+    user_pos, _, _ = TL.nav_filter_states(vt.nav_filter.x, vt.nav_filter.process_model.idxs)
     @test user_pos == SVector(seed.pvt.position.x, seed.pvt.position.y, seed.pvt.position.z)
 
     # Without a satellite ready for the scalar solve there is no fix and nothing to seed.
@@ -119,7 +119,7 @@ end
     vt = rx.vt
     workspace = vt.workspace
     members = workspace.members
-    idxs = vt.nav_filter.model.idxs
+    idxs = vt.nav_filter.process_model.idxs
     Δt_nav = 0.1
     # The corrections the update left, recomputed from the updated state the way
     # GNSSReceiver computed them: all members at once, from the epoch's measurements.
@@ -132,7 +132,7 @@ end
         slot = rx.group.slots[member.slot_index]
         @test slot.member_index == j
         reference_system = TL._reference_system(vt.nav_filter)
-        measured = TL.calc_pseudorange(get_time_of_week(reference_system, vt.nav_filter.reference_epoch), member.transmit_time,
+        measured = TL.calc_pseudorange(get_time_of_week(reference_system, vt.nav_filter.receive_epoch), member.transmit_time,
                        get_time_system_offset(workspace.prepared_observations[j].time_system, reference_system)) -
                    workspace.atmospheric_delays[j]
         # The carrier NCO is commanded the Doppler of the rate predicted where the
@@ -148,17 +148,17 @@ end
         # The satellite applied the corrections where its command takes effect, at the epoch:
         # the range from the orbit evaluated there is the epoch's.
         @test sat.state.code_frequency_correction ≈
-              TL.calc_nco_code_correction(predicted[j], measured, member.chip_rate, Δt_nav) * Hz atol = 1e-6Hz
+              TL.calc_code_frequency_correction(predicted[j], measured, member.chip_rate, Δt_nav) * Hz atol = 1e-6Hz
         @test sat.state.ramp.doppler ≈
               TL.predict_carrier_doppler(rate_at_epoch, member.wavelength) * Hz atol = 1e-6Hz
-        @test sat.state.ramp.reference_time ≈ vt.update_epoch_index * TL._update_interval_seconds(vt) * s
+        @test sat.state.ramp.reference_time ≈ vt.last_update_epoch_index * TL._update_interval_seconds(vt) * s
         # The post-fit rate is predicted at the measurement's own instant.
         @test workspace.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.nav_filter.x, idxs, member) atol = 1e-9
         @test sat.state.feedback_delay == 0.0s
         # The accumulators were emptied at the epoch's snapshot.
         @test sat.state.code_disc_sum == (0, 0.0)
         # Applied once: applying it again changes nothing.
-        @test TL._apply_filter_feedback(rx.tracking_loop, rx.group, slot, sat.state, feedback_integration(sat, 0),
+        @test TL._apply_nav_filter_feedback(rx.tracking_loop, rx.group, slot, sat.state, feedback_integration(sat, 0),
             sim_nco_history(sat, nothing), Int64(0)) === sat.state
     end
 end
@@ -196,7 +196,7 @@ end
     result = results[end]
     pvt = result.pvt
     @test result.status.vector_tracking_active
-    @test result.status.solution_from_filter
+    @test result.status.solution_from_nav_filter
     @test !result.status.seeded
     @test pvt.time isa TAITime
     @test pvt.reference_system === GPST()
@@ -272,7 +272,7 @@ end
     @test late.occupied
     @test !late.in_update
     @test late.release_reason == VT_NOT_RELEASED
-    @test late.command_update_index != rx.vt.update_index
+    @test late.commanded_update_index != rx.vt.update_index
     @test rx.sats[3].state.vector_controlled
     @test results[1].status.num_vector_tracking_members == length(rx.sats) - 1
     @test !results[1].status.released
@@ -318,7 +318,7 @@ end
     group = rx.group
     slot = group.slots[1]
     set_snapshot!(slot; loop_state = TL._release_from_vector_loop(slot.snapshot.loop_state))
-    user_pos = first(TL.nav_filter_states(vt.nav_filter.x, vt.nav_filter.model.idxs))
+    user_pos = first(TL.nav_filter_states(vt.nav_filter.x, vt.nav_filter.process_model.idxs))
     here = ENUfromECEF(ECEF(user_pos...), wgs84)
     antipode = ENUfromECEF(ECEF((-user_pos)...), wgs84)
     @test TL._is_above_admission_mask(group.driver_signal, slot, here)
@@ -346,13 +346,13 @@ end
     # left the loop falls back.
     rx = SimReceiver()
     _, sample, _ = run_simulation!(rx, 5)
-    pos = rx.vt.nav_filter.model.idxs.pos
+    pos = rx.vt.nav_filter.process_model.idxs.pos
     rx.vt.nav_filter.x[pos] .= -rx.vt.nav_filter.x[pos]
     results, _, _ = run_simulation!(rx, 1; start_sample = sample)
     @test all(==(VT_BELOW_HORIZON), results[1].reasons)
     @test isempty(results[1].measured)
     @test results[1].status.fell_back
-    @test results[1].status.solution_from_filter
+    @test results[1].status.solution_from_nav_filter
 end
 
 @testset "Biases are reported only for what was measured" begin
@@ -374,7 +374,7 @@ end
     before = results[end].pvt.time
     # The scalar solve takes over from a receive epoch a week off, which the re-seed must
     # not carry over.
-    rx.vt.nav_filter.reference_epoch -= GNSSSignals.SECONDS_PER_WEEK
+    rx.vt.nav_filter.receive_epoch -= GNSSSignals.SECONDS_PER_WEEK
     foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
     rx.vt.vector_tracking_active = false
     results, _, _ = run_simulation!(rx, 2; start_sample = sample)

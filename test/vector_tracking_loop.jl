@@ -48,7 +48,7 @@ end
     @test state.vector_controlled == false
     @test state.code_disc_sum == (0, 0.0)
     @test state.fll_disc_sum == (0, 0.0Hz)
-    @test isnan(state.previous_replica_tail)
+    @test isnan(state.last_replica_tail)
     @test state.code_frequency_correction == 0.0Hz
     @test state.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test state.feedback_delay == 0.0s
@@ -163,7 +163,7 @@ end
     @test new_vector_state.fll_disc_sum == (0, 0.0Hz)
     # The replica's last half integration is kept, for the span a later vector loop opens
     # with: half of the 1 ms integration on the 100 Hz command.
-    @test new_vector_state.previous_replica_tail == 100.0 * 0.0005
+    @test new_vector_state.last_replica_tail == 100.0 * 0.0005
     @test new_vector_state.code_frequency_correction == 0.5Hz
     @test vector_carrier != 120.0Hz
 end
@@ -200,7 +200,7 @@ end
     @test TL._has_carrier_ramp(state)
     @test TL._center(state.residual_pll.last_prompt_span) ≈ 0.0005 * ustrip(Hz, sampling_frequency)
     # The replica's second half integration is kept for the next span.
-    @test state.previous_replica_tail == ustrip(Hz, carrier_doppler) * 0.0005
+    @test state.last_replica_tail == ustrip(Hz, carrier_doppler) * 0.0005
     @test state.code_frequency_correction == -0.25Hz
     # The residual PLL reads the phase lock on the prompts it rotated, carrying on from the
     # scalar loop's averages; the staging stands still.
@@ -210,7 +210,7 @@ end
     state = TL._reset_discriminator_accumulators(state)
     @test state.code_disc_sum == (0, 0.0)
     @test state.fll_disc_sum == (0, 0.0Hz)
-    @test state.previous_replica_tail == ustrip(Hz, carrier_doppler) * 0.0005
+    @test state.last_replica_tail == ustrip(Hz, carrier_doppler) * 0.0005
     @test TL._disc_mean(state.code_disc_sum) === nothing
     @test TL._disc_mean(state.fll_disc_sum) === nothing
     @test state.vector_controlled
@@ -233,13 +233,13 @@ end
     @test state.fll_disc_sum == (2, fll + fll)
     @test TL._disc_mean(state.fll_disc_sum) == (fll + fll) / 2
     # The replica's last half integration, which the residual PLL propagates by.
-    @test state.previous_replica_tail == 120.0 * 0.0005
+    @test state.last_replica_tail == 120.0 * 0.0005
     # An integration without a previous prompt (a changed carrier phase polarity) has no
     # frequency measurement, so it is left out rather than taken as 0 Hz.
     no_prompt = vector_integration(signal, correlator_outputs, 5000, fs; sample_index = 15000)
     skipped, = step_satellite(tracking_loop, state, no_prompt, ConstantNCOCommand(160.0Hz, 0.1Hz), nothing)
     @test skipped.fll_disc_sum == state.fll_disc_sum
-    @test skipped.previous_replica_tail == 160.0 * 0.0005
+    @test skipped.last_replica_tail == 160.0 * 0.0005
 end
 
 @testset "The vector loop accumulates the FLL discriminator in Hz from a MHz sampling frequency" begin
@@ -309,7 +309,7 @@ end
         TL._set_vector_commands(joined, 1.0Hz, ramp, 0.02s, ConstantNCOCommand(100.0Hz, 0.0Hz), 0, 1e6);
         code_disc_sum = (3, 0.3),
         fll_disc_sum = (3, 0.3Hz),
-        previous_replica_tail = 0.1,
+        last_replica_tail = 0.1,
     )
     @test TL._add_to_vector_loop(steered) === steered
     # The first ramp starts the residual PLL from the scalar loop's command, against the ramp.
@@ -347,8 +347,8 @@ end
     @test isnan(released.ramp.reference_time)
     @test !TL._has_carrier_ramp(released)
     # The replica's last half integration is the replica's: it survives the hand-over both ways.
-    @test released.previous_replica_tail == 0.1
-    @test TL._add_to_vector_loop(released).previous_replica_tail == 0.1
+    @test released.last_replica_tail == 0.1
+    @test TL._add_to_vector_loop(released).last_replica_tail == 0.1
     @test TL._add_to_vector_loop(released).code_frequency_correction == 0.0Hz
 end
 
@@ -365,7 +365,7 @@ end
     @test reset.vector_controlled
     @test reset.code_disc_sum == (0, 0.0)
     @test reset.fll_disc_sum == (0, 0.0Hz)
-    @test reset.previous_replica_tail == state.previous_replica_tail
+    @test reset.last_replica_tail == state.last_replica_tail
     # The re-initialised Dopplers carry the last code correction, so it is no longer applied…
     @test reset.code_frequency_correction == 0.0Hz
     # …but the replica is still steered by it, so the next code measurement is moved to
@@ -434,7 +434,7 @@ end
     # Nothing the vector loop owned survives.
     @test released.code_disc_sum == (0, 0.0)
     @test released.fll_disc_sum == (0, 0.0Hz)
-    @test released.previous_replica_tail == state.previous_replica_tail
+    @test released.last_replica_tail == state.last_replica_tail
     @test released.code_frequency_correction == 0.0Hz
     @test released.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test !TL._has_carrier_ramp(released)

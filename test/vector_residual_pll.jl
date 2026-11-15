@@ -324,7 +324,7 @@ end
     rate = ustrip(Hz / s, sat.state.ramp.doppler_rate) + TL._residual_doppler_rate(residual_pll)
     TL._mark_release!(slot, VT_INELIGIBLE)
     rx.vt.update_index += 1
-    sat.state = TL._apply_filter_feedback(rx.tracking_loop, rx.group, slot, sat.state, feedback_integration(sat, sample),
+    sat.state = TL._apply_nav_filter_feedback(rx.tracking_loop, rx.group, slot, sat.state, feedback_integration(sat, sample),
         sim_nco_history(sat, nothing), Int64(sample))
     @test !sat.state.vector_controlled
     @test sat.state.scalar_state.initial_carrier_doppler ≈ estimate * Hz
@@ -423,7 +423,7 @@ end
     nco_history = ConstantNCOCommand(1000.0Hz, 0.0Hz)
     half = 1000.0 * 0.0005
     state = TL.VectorLoopState(TL.VectorLoopState(init_loop_state(ScalarTrackingLoop(), signal, 1000.0Hz, 0.0Hz), true);
-        residual_pll, ramp, previous_replica_tail = half)
+        residual_pll, ramp, last_replica_tail = half)
     spanning(start, stop) = PostCorrelationState(
         decoding_integration(signal, cis(0.0), stop; command_issue_sample_index = stop);
         last_num_integrated_samples = stop - start,
