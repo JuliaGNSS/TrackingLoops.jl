@@ -544,8 +544,8 @@ estimate of the incoming carrier phase, the carrier-phase measurement a host
 reports (RINEX `L`).
 
 A scalar loop steers its replica onto the incoming carrier, so the replica's
-phase is its estimate and this is `0.0`; so is a [`VectorTrackingLoop`](@ref)'s
-out of the vector loop. In it the navigation filter sets the carrier NCO and
+phase is its estimate and this is `0.0`, as for any loop state without a method of
+its own; so is a [`VectorTrackingLoop`](@ref)'s out of the vector loop. In it the navigation filter sets the carrier NCO and
 the residual PLL follows the carrier the NCO leaves without steering it, so
 the replica's phase alone drifts off the carrier, by whole cycles over time:
 this is the residual PLL's prediction at `sample_index`, from its latest prompt on,
@@ -570,13 +570,13 @@ A satellite added to the vector loop keeps its phase: the residual PLL starts
 at zero on the phase-locked scalar loop's replica.
 """
 calc_carrier_phase_correction(
-    ::ScalarLoopState,
+    loop_state,
     nco_history,
     sample_index,
     sampling_frequency,
 ) = 0.0
 
-"The loop-state type a tracking loop produces (for slot typing)."
+"The loop-state type a tracking loop produces (for slot typing), from `init_loop_state`, which must be pure for it."
 loop_state_type(tracking_loop::AbstractTrackingLoop, driver_signal::AbstractGNSSSignal) =
     typeof(init_loop_state(tracking_loop, driver_signal, 0.0Hz, 0.0Hz))
 

@@ -100,6 +100,8 @@ end
     end
     scalar = init_loop_state(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA(), 100.0Hz, 0.0Hz)
     @test calc_carrier_phase_correction(scalar, ConstantNCOCommand(100.0, 0.0), 0, SIM_FS) == 0.0
+    # So is a custom loop's state without a method of its own.
+    @test calc_carrier_phase_correction((; carrier_doppler = 100.0Hz), ConstantNCOCommand(100.0, 0.0), 0, SIM_FS) == 0.0
 end
 
 @testset "The residual PLL's phase jitter at 40 dB-Hz is the scalar PLL's or less, on $(nameof(typeof(signal)))" for signal in (
