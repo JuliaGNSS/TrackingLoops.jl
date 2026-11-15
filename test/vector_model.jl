@@ -482,10 +482,10 @@ end
     @test TL.pseudorange_noise_variance(narrow, 0.1) ≈ range_var(narrow, 0.1)
     @test TL.pseudorange_noise_variance(narrow, 0.1) < range_var(ca, 0.1)
 
-    # The C/N₀ floor keeps a starved or NaN estimate from degenerating the weights.
-    @test TL.calc_linear_cn0_floor(45.0) ≈ 10^4.5
-    @test TL.calc_linear_cn0_floor(-10.0) == 1.0
-    @test TL.calc_linear_cn0_floor(NaN) == 1.0
+    # The C/N₀ floor keeps a starved estimate or none from degenerating the weights.
+    @test TL.calc_linear_cn0_floor(45.0dBHz) ≈ 10^4.5
+    @test TL.calc_linear_cn0_floor(-10.0dBHz) == 1.0
+    @test TL.calc_linear_cn0_floor(-Inf * dBHz) == 1.0
 end
 
 # A decoder with a decoded broadcast offset, set by hand.
