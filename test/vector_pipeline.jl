@@ -485,7 +485,7 @@ end
     @test findfirst(r -> r.status.seeded, results) !== nothing
     group = rx.vt.groups[1]
     slots = [group.slots[sat.state.slot_index] for sat in rx.sats]
-    @test all(slot -> length(slot.bit_accumulator.prompt_history.centers) == 6, slots)
+    @test all(slot -> length(slot.bit_accumulator.prompt_history.spans) == 6, slots)
     dropped = Ref(0)
     results, _, diverged = run_pipeline!(rx, 4.0; start_sample = sample, on_tick = _ ->
         (dropped[] += count(slot -> slot.vector_controlled && !slot.bit_accumulator.from_edge, slots)))

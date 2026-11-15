@@ -104,7 +104,7 @@ end
     @test state.bandwidths.narrow_carrier == 18.0Hz
     @test state.bandwidths.fll_assist == 5.0Hz
     @test get_carrier_loop_stage(state) == FLL_ASSISTED_PLL
-    @test isnan(state.previous_prompt_sample_index)
+    @test !TrackingLoops._has_span(state.last_prompt_span)
     narrow = DelayCompensatedTrackingLoop(;
         wide_carrier_loop_bandwidth = 30.0Hz,
         narrow_carrier_loop_bandwidth = 12.0Hz,
@@ -133,7 +133,7 @@ end
     @test loop_state_type(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA()) === typeof(conv)
     @test typeof(state) === typeof(conv)
     @test isbitstype(typeof(state))
-    @test isnan(conv.previous_prompt_sample_index)
+    @test !TrackingLoops._has_span(conv.last_prompt_span)
     # The state records its driver by key, so it is of one type whatever the driver.
     @test conv.driver_key == TrackingLoops._signal_key(GalileoE1B()) != TrackingLoops._signal_key(GPSL1CA())
     @test ScalarLoopState(; initial_carrier_doppler = 0.0Hz, initial_code_doppler = 0.0Hz).driver_key == 0
@@ -187,8 +187,8 @@ end
     @test reset.bandwidths.narrow_carrier == state.bandwidths.narrow_carrier
     @test reset.bandwidths.fll_assist == state.bandwidths.fll_assist
     @test reset.bandwidths.code == 0.5Hz
-    @test state.previous_prompt_sample_index == LOOP_N / 2
-    @test isnan(reset.previous_prompt_sample_index)
+    @test state.last_prompt_span == TrackingLoops.IntegrationSpan(LOOP_N, LOOP_N)
+    @test !TrackingLoops._has_span(reset.last_prompt_span)
     @test reset.driver_key == state.driver_key
     @test reset.staging === state.staging
 end
@@ -281,7 +281,7 @@ measured_discriminators(loop_state, post_correlation_state, nco_history; form_fl
     TrackingLoops._measure_discriminators(
         post_correlation_state,
         TrackingLoops._replica_command(post_correlation_state, nco_history),
-        loop_state.previous_prompt_sample_index;
+        loop_state.last_prompt_span;
         form_fll,
     )
 
@@ -313,19 +313,19 @@ end
     ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
     DelayCompensatedTrackingLoop(),
 )
-    # The prompt 0.1 cycles ahead of the previous one, centred at `LOOP_N / 2`; this
+    # The prompt 0.1 cycles ahead of the previous one, integrated over `[0, LOOP_N)`; this
     # integration starts half an integration after the previous one ended.
     output = CorrelatorBankOutput(loop_epl(0.5, cis(0.2π), 0.5), LOOP_N, 5 * LOOP_N ÷ 2)
     coherent_integration_time = LOOP_N / LOOP_FS
-    frequency_error(previous_center) = measured_discriminators(
-        ScalarLoopState(init_loop_state(tracking_loop, LOOP_SIGNAL, 0.0Hz, 0.0Hz); previous_prompt_sample_index = previous_center),
+    frequency_error(previous_span) = measured_discriminators(
+        ScalarLoopState(init_loop_state(tracking_loop, LOOP_SIGNAL, 0.0Hz, 0.0Hz); last_prompt_span = previous_span),
         processed_state(LOOP_SIGNAL, output.correlator_bank, complex(1.0), output, 1, LOOP_FS),
         ConstantNCOCommand(0.0Hz, 0.0Hz);
         form_fll = true,
     ).carrier_frequency_error
-    @test frequency_error(LOOP_N / 2) ≈ 0.1 / (1.5 * coherent_integration_time)
-    # Without a previous prompt centre, the integrations are taken to be back to back.
-    @test frequency_error(NaN) ≈ 0.1 / coherent_integration_time
+    @test frequency_error(TrackingLoops.IntegrationSpan(LOOP_N, LOOP_N)) ≈ 0.1 / (1.5 * coherent_integration_time)
+    # Without a previous integration, the integrations are taken to be back to back.
+    @test frequency_error(TrackingLoops.IntegrationSpan()) ≈ 0.1 / coherent_integration_time
 end
 
 @testset "A phase error is folded into the PLL discriminator's range" begin

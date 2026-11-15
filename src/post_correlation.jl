@@ -194,6 +194,23 @@ end
 _coherent_integration_time(state::PostCorrelationState) = state.last_num_integrated_samples / state.sampling_frequency
 _integration_start(state::PostCorrelationState) = state.last_sample_index - state.last_num_integrated_samples
 _integration_center(state::PostCorrelationState) = state.last_sample_index - state.last_num_integrated_samples / 2
+
+# A coherent integration's place on the integrations' grid: the sample index it ended at
+# and the samples it integrated, `IntegrationSpan()` for none. Integers, so the time
+# between two integrations' centres stays exact however long a session runs.
+struct IntegrationSpan
+    end_sample_index::Int
+    num_samples::Int
+end
+IntegrationSpan() = IntegrationSpan(typemin(Int), 0)
+_integration_span(state::PostCorrelationState) = IntegrationSpan(state.last_sample_index, state.last_num_integrated_samples)
+_has_span(span::IntegrationSpan) = span.end_sample_index != typemin(Int)
+# The centre, a sample index half-way between two samples for an odd count.
+_center(span::IntegrationSpan) = span.end_sample_index - span.num_samples / 2
+# The samples from `span`'s centre to `sample_index`, or to `later`'s centre.
+_samples_since_center(span::IntegrationSpan, sample_index) = (sample_index - span.end_sample_index) + span.num_samples / 2
+_samples_since_center(span::IntegrationSpan, later::IntegrationSpan) =
+    (later.end_sample_index - span.end_sample_index) - (later.num_samples - span.num_samples) / 2
 _sampling_frequency_hz(post_correlation_state::PostCorrelationState) = Float64(ustrip(Hz, post_correlation_state.sampling_frequency))
 # Where the latest integration ended (s) on the integrations' time grid.
 _end_time(post_correlation_state::PostCorrelationState) = post_correlation_state.last_sample_index / _sampling_frequency_hz(post_correlation_state)
