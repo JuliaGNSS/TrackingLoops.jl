@@ -28,7 +28,7 @@ function simulate_delayed_loop(tracking_loop, d; f_true = 130.0, handover = 100.
     code_doppler = handover * Hz * get_chip_rate_to_center_frequency_ratio(LOOP_SIGNAL)
     state = init_loop_state(tracking_loop, LOOP_SIGNAL, handover * Hz, code_doppler)
     timeline = NCOTimeline()
-    reset_timeline!(timeline, handover, ustrip(Hz, code_doppler))
+    reset_timeline!(timeline, handover * Hz, code_doppler)
     dt = LOOP_N / ustrip(Hz, LOOP_FS)
     phase = phi0
     phases = Float64[]
@@ -37,7 +37,7 @@ function simulate_delayed_loop(tracking_loop, d; f_true = 130.0, handover = 100.
     for k = 0:steps-1
         a = k * LOOP_N
         b = a + LOOP_N
-        w = get_nco_command(timeline, a).carrier_doppler
+        w = ustrip(Hz, get_nco_command(timeline, a).carrier_doppler)
         mean_phase = phase + π * (f_true - w) * dt
         phase += 2π * (f_true - w) * dt
         # In radians, folded as the Costas discriminator reads it.
@@ -49,7 +49,7 @@ function simulate_delayed_loop(tracking_loop, d; f_true = 130.0, handover = 100.
         post_correlation_state = processed_state(LOOP_SIGNAL, output.correlator_bank, previous_prompt, output, 1, LOOP_FS; prn = 1)
         state, carrier, code = step_loop!(tracking_loop, state, post_correlation_state, timeline, application_sample_index)
         previous_prompt = p
-        schedule_command!(timeline, application_sample_index, ustrip(Hz, carrier), ustrip(Hz, code))
+        schedule_command!(timeline, application_sample_index, carrier, code)
         advance_timeline!(timeline, b - LOOP_N)
     end
     phases, nco_history
@@ -153,7 +153,7 @@ end
         p = cis(0.3 + 0.002k)
         output = CorrelatorBankOutput(loop_epl(0.45p, p, 0.55p), LOOP_N, LOOP_N * k)
         post_correlation_state = processed_state(signal, output.correlator_bank, previous_prompt, output, 1, LOOP_FS)
-        nco_history = ConstantNCOCommand(carrier, code)
+        nco_history = ConstantNCOCommand(carrier * Hz, code * Hz)
         conv_state, conv_carrier, conv_code = step_loop!(conventional, conv_state, post_correlation_state, nco_history, nothing)
         ref_state, ref_carrier, ref_code = step_loop!(referenced, ref_state, post_correlation_state, nco_history, nothing)
         @test ref_carrier == conv_carrier
@@ -175,7 +175,7 @@ end
     state = init_loop_state(tracking_loop, LOOP_SIGNAL, 0.0Hz, 0.0Hz)
     output = CorrelatorBankOutput(loop_epl(0.4, cis(0.2), 0.6), LOOP_N, LOOP_N)
     post_correlation_state = processed_state(LOOP_SIGNAL, output.correlator_bank, cis(0.1), output, 1, LOOP_FS)
-    state, = step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(0.0, 0.0), nothing)
+    state, = step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(0.0Hz, 0.0Hz), nothing)
     @test state.carrier_loop_filter.x1 != 0.0Hz
     reset = reinit_loop_state(tracking_loop, state, 42.0Hz, 0.02Hz)
     @test reset isa typeof(state)
@@ -206,7 +206,7 @@ end
     # The integration names its satellite, which the vector loop's navigation processor needs.
     post_correlation_state = processed_state(LOOP_SIGNAL, output.correlator_bank, complex(0.0, 0.0), output, 1, LOOP_FS; prn = 5)
     stepped, carrier_doppler, code_doppler =
-        @inferred step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(100.0, 0.0), nothing)
+        @inferred step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(100.0Hz, 0.0Hz), nothing)
     @test stepped isa typeof(state)
     @test carrier_doppler isa typeof(1.0Hz)
     @test code_doppler isa typeof(1.0Hz)
@@ -238,13 +238,13 @@ end
     output = CorrelatorBankOutput(loop_epl(0.5, 1.0, 0.5), n, n)
     post_correlation_state = processed_state(passenger, output.correlator_bank, complex(0.0), output, 1, fs; prn = 5)
     # The state unchanged, and the command in force…
-    stepped, carrier, code = step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(123.0, 0.12), nothing)
+    stepped, carrier, code = step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(123.0Hz, 0.12Hz), nothing)
     @test stepped === state
     @test (carrier, code) == (123.0Hz, 0.12Hz)
     # …at the application sample.
     timeline = NCOTimeline()
-    reset_timeline!(timeline, 100.0, 0.1)
-    schedule_command!(timeline, 2n, 130.0, 0.13)
+    reset_timeline!(timeline, 100.0Hz, 0.1Hz)
+    schedule_command!(timeline, 2n, 130.0Hz, 0.13Hz)
     @test step_loop!(tracking_loop, state, post_correlation_state, timeline, Int64(3n))[2:3] == (130.0Hz, 0.13Hz)
     @test step_loop!(tracking_loop, state, post_correlation_state, timeline, Int64(n))[2:3] == (100.0Hz, 0.1Hz)
     # Passenger integrations interleaved with the driver's leave its Doppler sequence as it
@@ -259,10 +259,10 @@ end
             output = CorrelatorBankOutput(loop_epl(0.45p, p, 0.55p), n, n * k)
             if with_passengers
                 passenger_integration = processed_state(passenger, output.correlator_bank, complex(0.0), output, 1, fs)
-                state, = step_loop!(tracking_loop, state, passenger_integration, ConstantNCOCommand(carrier, code), nothing)
+                state, = step_loop!(tracking_loop, state, passenger_integration, ConstantNCOCommand(carrier * Hz, code * Hz), nothing)
             end
             post_correlation_state = processed_state(driver, output.correlator_bank, previous_prompt, output, 1, fs)
-            state, c, d = step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(carrier, code), nothing)
+            state, c, d = step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(carrier * Hz, code * Hz), nothing)
             push!(sequence, (c, d))
             carrier, code = ustrip(Hz, c), ustrip(Hz, d)
             previous_prompt = p
@@ -288,7 +288,7 @@ end
         tracking_loop,
         state,
         processed_state(LOOP_SIGNAL, output.correlator_bank, complex(1.0), output, 1, LOOP_FS; kwargs...),
-        ConstantNCOCommand(0.0, 0.0),
+        ConstantNCOCommand(0.0Hz, 0.0Hz),
         nothing;
         form_fll = true,
     )
@@ -314,7 +314,7 @@ end
         tracking_loop,
         ScalarLoopState(init_loop_state(tracking_loop, LOOP_SIGNAL, 0.0Hz, 0.0Hz); previous_prompt_sample_index = previous_center),
         processed_state(LOOP_SIGNAL, output.correlator_bank, complex(1.0), output, 1, LOOP_FS),
-        ConstantNCOCommand(0.0, 0.0),
+        ConstantNCOCommand(0.0Hz, 0.0Hz),
         nothing;
         form_fll = true,
     ).frequency_error
@@ -355,12 +355,12 @@ end
             tracking_loop,
             state,
             post_correlation_state,
-            ConstantNCOCommand(carrier_command, 0.0),
+            ConstantNCOCommand(carrier_command * Hz, 0.0Hz),
             nothing;
             form_fll = uses_fll,
         )
         uses_fll || @test discriminators.frequency_error == 0.0Hz
-        state, carrier, = step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(carrier_command, 0.0), nothing)
+        state, carrier, = step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(carrier_command * Hz, 0.0Hz), nothing)
         push!(stages, get_carrier_loop_stage(state))
         carrier_command = ustrip(Hz, carrier)
         previous_prompt = p

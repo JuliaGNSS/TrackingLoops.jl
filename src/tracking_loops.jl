@@ -126,14 +126,9 @@ end
 # A passenger integration through a loop it does not close: the state unchanged and the
 # command in force where this integration's command would take effect.
 @inline function _step_passenger(loop_state, post_correlation_state::PostCorrelationState, nco_history, application_sample_index::Union{Nothing,Integer})
-    carrier_doppler, code_doppler = _command_in_force(post_correlation_state, nco_history, application_sample_index)
+    (; carrier_doppler, code_doppler) =
+        get_nco_command(nco_history, something(application_sample_index, post_correlation_state.last_sample_index))
     loop_state, carrier_doppler, code_doppler
-end
-
-@inline function _command_in_force(post_correlation_state::PostCorrelationState, nco_history, application_sample_index::Union{Nothing,Integer})
-    application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_sample_index : application_sample_index
-    (; carrier_doppler, code_doppler) = get_nco_command(nco_history, application_sample_index)
-    carrier_doppler * Hz, code_doppler * Hz
 end
 
 # One integration's discriminators plus its integration time and centre sample.
@@ -163,7 +158,7 @@ end
     )
 end
 
-# An integration's carrier discriminators under the carrier command `applied_carrier` (Hz)
+# An integration's carrier discriminators under the carrier command `applied_carrier`
 # it ran on, with its coherent integration time and centre sample. The FLL reads the
 # rotation since the prompt centred on `previous_center` (`NaN` for none) over the
 # time between the two centres, which spans any gap before the integration.
@@ -195,11 +190,11 @@ end
     (center - previous_center) / post_correlation_state.sampling_frequency
 
 # An integration's DLL output (chips), normalised with the code command `applied_code`
-# (Hz) the replica ran on.
+# the replica ran on.
 @inline _calc_code_discriminator(post_correlation_state::PostCorrelationState, applied_code) = dll_disc(
     post_correlation_state.signal,
     post_correlation_state.last_filtered_correlator_bank,
-    applied_code * Hz,
+    applied_code,
     post_correlation_state.sampling_frequency,
 )
 
@@ -396,18 +391,10 @@ reinit_loop_state(
     coherent_integration_time,
     sampling_frequency,
 )
-    sampling_freq_hz = Float64(ustrip(Hz, uconvert(Hz, sampling_frequency)))
-    carrier_loop_filter = loop_state.carrier_loop_filter
-    f_hat = ustrip(
-        Hz,
-        uconvert(
-            Hz,
-            loop_state.initial_carrier_doppler +
-            _doppler_estimate_at_center(carrier_loop_filter, coherent_integration_time),
-        ),
-    )
+    f_hat = loop_state.initial_carrier_doppler +
+        _doppler_estimate_at_center(loop_state.carrier_loop_filter, coherent_integration_time)
     ramp_command = calc_mean_nco_command(nco_history, center, center + shift).carrier_doppler
-    wrap_phase_error(phase_error + shift * (f_hat - ramp_command) / sampling_freq_hz; polarity)
+    wrap_phase_error(phase_error + ustrip(NoUnits, shift * (f_hat - ramp_command) / sampling_frequency); polarity)
 end
 
 """
@@ -476,7 +463,7 @@ integration's end under `nothing`), so applying it changes nothing.
             calc_mean_nco_command(nco_history, previous_center, center).carrier_doppler
         application_command =
             calc_mean_nco_command(nco_history, integration_start_sample_index + shift, integration_end_sample_index + shift).carrier_doppler
-        form_fll && (frequency_error += (fll_command - application_command) * Hz)
+        form_fll && (frequency_error += fll_command - application_command)
     end
 
     (;

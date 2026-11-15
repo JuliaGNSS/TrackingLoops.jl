@@ -246,7 +246,7 @@ function SimSat(signal, decoder, tracking_loop, truth::SimTruth, t; range_bias =
         PostCorrelationState(signal, decoder.prn; cn0_estimator, driver_carrier_phase_offset,
             correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0, 0, 0), 0.5)), noise_density)
     sat.replica_time = uncorrected_time(sat, t_t)
-    reset_timeline!(sat.timeline, doppler, doppler * ratio)
+    reset_timeline!(sat.timeline, doppler * Hz, doppler * ratio * Hz)
     sat
 end
 
@@ -279,7 +279,7 @@ function simulate_correlator(sat::SimSat, truth, t_end, num_samples, sample_inde
     t_mid = t_end - dt / 2
     integration_start_sample_index = sample_index - num_samples
     nco_command = calc_mean_nco_command(nco_history, integration_start_sample_index, sample_index)
-    carrier, code = nco_command.carrier_doppler, nco_command.code_doppler
+    carrier, code = ustrip(Hz, nco_command.carrier_doppler), ustrip(Hz, nco_command.code_doppler)
     t_t, = true_transmit(sat, truth, t_mid)
     f_true = true_doppler(sat, truth, t_mid)
     u_true = uncorrected_time(sat, t_t)
@@ -314,15 +314,15 @@ function advance_replica!(sat::SimSat, f_true, carrier, code, dt, new_carrier, n
         sat.carrier_doppler = ustrip(Hz, new_carrier)
         sat.code_doppler = ustrip(Hz, new_code)
     else
-        schedule_command!(sat.timeline, application_sample_index, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
+        schedule_command!(sat.timeline, application_sample_index, new_carrier, new_code)
         advance_timeline!(sat.timeline, integration_start_sample_index)
         (; carrier_doppler, code_doppler) = get_nco_command(sat.timeline, sample_index)
-        sat.carrier_doppler, sat.code_doppler = carrier_doppler, code_doppler
+        sat.carrier_doppler, sat.code_doppler = ustrip(Hz, carrier_doppler), ustrip(Hz, code_doppler)
     end
 end
 
 sim_nco_history(sat::SimSat, application_sample_index) =
-    application_sample_index == nothing ? ConstantNCOCommand(sat.carrier_doppler, sat.code_doppler) : sat.timeline
+    application_sample_index == nothing ? ConstantNCOCommand(sat.carrier_doppler * Hz, sat.code_doppler * Hz) : sat.timeline
 
 # One integration of `num_samples` samples ending at device sample `sample_index` (receiver
 # time `t_end`), through the satellite's own loop alone — the per-integration step of the
@@ -367,7 +367,7 @@ function fill_slot!(slot, sat::SimSat, epoch_sample_index, application_sample_in
     loop_state = sat.state
     sat.state = TrackingLoops._reset_discriminator_accumulators(sat.state)
     nco_command = calc_mean_nco_command(sim_nco_history(sat, application_sample_index), epoch_sample_index, epoch_sample_index)
-    carrier, code = nco_command.carrier_doppler, nco_command.code_doppler
+    carrier, code = ustrip(Hz, nco_command.carrier_doppler), ustrip(Hz, nco_command.code_doppler)
     set_snapshot!(
         slot;
         loop_state,
@@ -714,7 +714,7 @@ function pipeline_integration!(receiver::PipelineReceiver, sat::SimSat, start_sa
         application_sample_index == nothing || advance_timeline!(sat.timeline, start_sample)
         if application_sample_index != nothing
             (; carrier_doppler, code_doppler) = get_nco_command(sat.timeline, sample_index)
-            sat.carrier_doppler, sat.code_doppler = carrier_doppler, code_doppler
+            sat.carrier_doppler, sat.code_doppler = ustrip(Hz, carrier_doppler), ustrip(Hz, code_doppler)
         end
     end
     sat.next_end_sample = next_code_period_end(sat, sample_index)
@@ -727,7 +727,7 @@ function follow_driver!(passenger::SimSat, new_carrier, new_code, application_sa
         passenger.carrier_doppler = ustrip(Hz, new_carrier)
         passenger.code_doppler = ustrip(Hz, new_code)
     else
-        schedule_command!(passenger.timeline, application_sample_index, ustrip(Hz, new_carrier), ustrip(Hz, new_code))
+        schedule_command!(passenger.timeline, application_sample_index, new_carrier, new_code)
     end
     nothing
 end

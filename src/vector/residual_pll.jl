@@ -220,7 +220,7 @@ end
     previous_cycles, previous_duration = loop_state.previous_replica_tail
     isnan(previous_cycles) && return NaN
     previous_end_sample_index = residual_pll.last_prompt_sample_index + Float64(ustrip(s, previous_duration)) * fs
-    command = calc_mean_nco_command(nco_history, previous_end_sample_index, sample_index).carrier_doppler
+    command = ustrip(Hz, calc_mean_nco_command(nco_history, previous_end_sample_index, sample_index).carrier_doppler)
     _predicted_phase(residual_pll, ramp, sample_index, fs, previous_cycles + command * (sample_index - previous_end_sample_index) / fs)
 end
 

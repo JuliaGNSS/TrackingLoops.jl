@@ -17,16 +17,16 @@
     @test processing.last_sample_index == output.sample_index == 8000
     @test processing.last_num_code_periods == 1
     timeline = NCOTimeline()
-    reset_timeline!(timeline, 100.0, 0.1)
-    schedule_command!(timeline, 6000, 110.0, 0.11)
-    schedule_command!(timeline, 12_000, 120.0, 0.12)
+    reset_timeline!(timeline, 100.0Hz, 0.1Hz)
+    schedule_command!(timeline, 6000, 110.0Hz, 0.11Hz)
+    schedule_command!(timeline, 12_000, 120.0Hz, 0.12Hz)
     for loop in (
         ScalarTrackingLoop(),
         ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
         DelayCompensatedTrackingLoop(),
     )
         state = init_loop_state(loop, signal, 100.0Hz, 0.1Hz)
-        for history in (ConstantNCOCommand(100.0, 0.1), timeline)
+        for history in (ConstantNCOCommand(100.0Hz, 0.1Hz), timeline)
             for application in (nothing, Int64(14_000))
                 @inferred step_loop!(loop, state, processing, history, application)
                 sig = Tuple{typeof(loop),typeof(state),typeof(processing),typeof(history),typeof(application)}
@@ -43,7 +43,7 @@ end
     tracking_loop = DelayCompensatedTrackingLoop()
     est_state = init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz)
     timeline = NCOTimeline()
-    reset_timeline!(timeline, 100.0, 0.1)
+    reset_timeline!(timeline, 100.0Hz, 0.1Hz)
     state_ref = Ref(PostCorrelationState(signal, 7))
     est_ref = Ref(est_state)
     # Keeps everything in `Ref`s so the loop returns nothing and the measurement
@@ -61,7 +61,7 @@ end
             output = CorrelatorBankOutput(EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5p, p, 0.5p), 0.5), 4000, 4000k)
             st = process_correlator_bank_output!(st, output, fs, density, true)
             es, carrier, code = step_loop!(tracking_loop, es, st, timeline, Int64(4000k + 8000))
-            schedule_command!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
+            schedule_command!(timeline, 4000k + 8000, carrier, code)
             advance_timeline!(timeline, 4000k - 4000)
         end
         state_ref[] = st
@@ -87,7 +87,7 @@ end
     conv_state = init_loop_state(conv, signal, 100.0Hz, 0.1Hz)
     @test isempty(AllocCheck.check_allocs(step_loop!, Tuple{typeof(conv),typeof(conv_state),typeof(post_correlation_state),ConstantNCOCommand,Int64}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(calc_mean_nco_command, Tuple{NCOTimeline,Int64,Int64}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(schedule_command!, Tuple{NCOTimeline,Int64,Float64,Float64}; ignore_throw = true))
+    @test isempty(AllocCheck.check_allocs(schedule_command!, Tuple{NCOTimeline,Int64,typeof(1.0Hz),typeof(1.0Hz)}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(confirm_command!, Tuple{NCOTimeline,Int64,Int64}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(cancel_command!, Tuple{NCOTimeline,Int64}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(advance_timeline!, Tuple{NCOTimeline,Int64}; ignore_throw = true))
@@ -130,7 +130,7 @@ end
         # A run through the whole tracking_loop, the state kept in a `Ref`: the satellite
         # registers, syncs to nothing and the navigation processor updates every 100 ms.
         timeline = NCOTimeline()
-        reset_timeline!(timeline, 100.0, 0.1)
+        reset_timeline!(timeline, 100.0Hz, 0.1Hz)
         # Each integration is set on one post-correlation state, as processing would set it.
         base = processed_state(signal, output.correlator_bank, complex(0.0), output, 1, fs; prn = 3)
         function run_vector_integrations!(state_ref, tracking_loop, timeline, first_k, n)
@@ -144,7 +144,7 @@ end
                     previous_filtered_prompt = previous, last_sample_index = 4000k,
                     last_command_issue_sample_index = 4000k, last_code_phase = 0.0)
                 st, carrier, code = step_loop!(tracking_loop, st, rec, timeline, Int64(4000k + 8000))
-                schedule_command!(timeline, 4000k + 8000, ustrip(Hz, carrier), ustrip(Hz, code))
+                schedule_command!(timeline, 4000k + 8000, carrier, code)
                 advance_timeline!(timeline, 4000k - 4000)
                 previous = p
             end

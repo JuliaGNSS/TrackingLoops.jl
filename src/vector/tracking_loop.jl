@@ -305,10 +305,7 @@ _release_from_vector_loop(loop_state::VectorLoopState) =
 # starts from the replica's code command. Unlike a reset, it restarts the staging, so the
 # scalar loop pulls in again FLL-assisted at the wide bandwidth.
 function _hand_over_to_scalar_loop(scalar_loop, loop_state::VectorLoopState, nco_history, application_sample_index, fs)
-    nco_command = get_nco_command(nco_history, application_sample_index)
-    carrier_command, code_command = nco_command.carrier_doppler, nco_command.code_doppler
-    carrier_doppler = carrier_command * Hz
-    code_doppler = code_command * Hz
+    (; carrier_doppler, code_doppler) = get_nco_command(nco_history, application_sample_index)
     time = application_sample_index / fs
     ramp, residual_pll = loop_state.ramp, loop_state.residual_pll
     rate = ustrip(Hz / s, ramp.doppler_rate)
@@ -347,7 +344,7 @@ function _set_vector_commands(
     residual_pll = if _has_carrier_ramp(loop_state)
         _residual_pll_on_new_ramp(loop_state.residual_pll, loop_state.ramp, ramp, fs)
     else
-        scalar_doppler = get_nco_command(nco_history, application_sample_index).carrier_doppler
+        scalar_doppler = ustrip(Hz, get_nco_command(nco_history, application_sample_index).carrier_doppler)
         _initialized_residual_pll(loop_state.residual_pll, ramp, scalar_doppler, ustrip(s, ramp.reference_time), loop_state.scalar_state.staging)
     end
     VectorLoopState(
@@ -391,8 +388,8 @@ has_disc_sums(loop_state::VectorLoopState) = first(loop_state.code_disc_sum) > 0
     first_command = calc_mean_nco_command(nco_history, _integration_start(post_correlation_state), center).carrier_doppler
     second_command = calc_mean_nco_command(nco_history, center, integration_end_sample_index).carrier_doppler
     half_duration = convert(typeof(1.0s), half_samples / fs)
-    first_cycles = Float64(uconvert(NoUnits, first_command * Hz * half_duration))
-    second_cycles = Float64(uconvert(NoUnits, second_command * Hz * half_duration))
+    first_cycles = Float64(uconvert(NoUnits, first_command * half_duration))
+    second_cycles = Float64(uconvert(NoUnits, second_command * half_duration))
     (first = (first_cycles, half_duration), second = (second_cycles, half_duration))
 end
 
@@ -490,7 +487,7 @@ end
     num_gap_samples = max(0, integration_start_sample_index - previous_end_sample_index)
     gap = num_gap_samples / fs
     gap_cycles = num_gap_samples == 0 ? 0.0 :
-        calc_mean_nco_command(nco_history, previous_end_sample_index, integration_start_sample_index).carrier_doppler * gap
+        ustrip(Hz, calc_mean_nco_command(nco_history, previous_end_sample_index, integration_start_sample_index).carrier_doppler) * gap
     # The incoming carrier against the replica between the prompts' centres; the replica
     # runs on the filter's command alone, so only the signal moves this.
     fll_discriminator = fll_disc(

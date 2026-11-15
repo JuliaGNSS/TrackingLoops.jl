@@ -205,7 +205,7 @@ function _step_vector_integration(
         loop_state.vector_controlled ? _push_prompt!(slot.bit_accumulator.prompt_history, loop_state.residual_pll) :
         _clear_prompts!(slot.bit_accumulator.prompt_history)
     else
-        carrier_doppler, code_doppler = _command_in_force(post_correlation_state, nco_history, application_sample_index)
+        (; carrier_doppler, code_doppler) = get_nco_command(nco_history, application_sample_index)
     end
     # 6. Record the integration's timing and decode the navigation data.
     is_driver && _advance_driver!(group, slot, post_correlation_state, nco_history)
@@ -213,10 +213,10 @@ function _step_vector_integration(
     loop_state, carrier_doppler, code_doppler
 end
 
-# The chips the replica advances over device samples `[from, to)` at `fs` (Hz): the
-# nominal chip rate plus the mean code command it ran on.
+# The chips the replica advances over device samples `[from, to)` at the sampling
+# frequency `fs`: the nominal `chip_rate` plus the mean code command it ran on.
 _replica_chips(nco_history, from, to, fs, chip_rate) =
-    (to - from) / fs * (chip_rate + calc_mean_nco_command(nco_history, from, to).code_doppler)
+    ustrip(NoUnits, (to - from) / fs * (chip_rate + calc_mean_nco_command(nco_history, from, to).code_doppler))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Registration
@@ -372,18 +372,18 @@ function _snapshot_driver!(
 )
     _crosses_pending_epoch(nav_processor, slot, slot.driver_epoch_index, _last_end_time(slot.driver), epoch_time, end_time) ||
         return loop_state
-    fs = _sampling_frequency_hz(post_correlation_state)
-    chip_rate = ustrip(Hz, get_chip_rate(group.driver_signal))
-    epoch_sample_index = epoch_time * fs
-    chips_to_epoch = _replica_chips(nco_history, slot.driver.last_end_sample_index, epoch_sample_index, fs, chip_rate)
+    fs = post_correlation_state.sampling_frequency
+    epoch_sample_index = epoch_time * _sampling_frequency_hz(post_correlation_state)
+    chips_to_epoch =
+        _replica_chips(nco_history, slot.driver.last_end_sample_index, epoch_sample_index, fs, get_chip_rate(group.driver_signal))
     (; carrier_doppler, code_doppler) = get_nco_command(nco_history, epoch_sample_index)
     coherent_integration_time = uconvert(s, _coherent_integration_time(post_correlation_state))
     slot.pending_snapshot = SatelliteSnapshot(
         slot.pending_snapshot;
         loop_state = loop_state,
         driver_code_phase = slot.driver.last_code_phase + chips_to_epoch,
-        carrier_doppler = carrier_doppler * Hz,
-        code_doppler = code_doppler * Hz,
+        carrier_doppler,
+        code_doppler,
         cn0 = _capped_cn0(estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time)),
         coherent_integration_time = slot.driver.last_coherent_integration_time,
         early_late_spacing = slot.driver.last_early_late_spacing,
@@ -407,10 +407,11 @@ function _snapshot_decoding!(
 )
     _crosses_pending_epoch(nav_processor, slot, slot.decoding_epoch_index, _last_end_time(slot.decoding), epoch_time, end_time) ||
         return nothing
-    fs = _sampling_frequency_hz(post_correlation_state)
+    fs = post_correlation_state.sampling_frequency
     signal = group.decoding_signal
-    chip_rate = ustrip(Hz, get_chip_rate(signal))
-    chips_to_epoch = _replica_chips(nco_history, slot.decoding.last_end_sample_index, epoch_time * fs, fs, chip_rate)
+    epoch_sample_index = epoch_time * _sampling_frequency_hz(post_correlation_state)
+    chips_to_epoch =
+        _replica_chips(nco_history, slot.decoding.last_end_sample_index, epoch_sample_index, fs, get_chip_rate(signal))
     slot.pending_snapshot = SatelliteSnapshot(
         slot.pending_snapshot;
         decoder = slot.decoding.decoder,
@@ -544,10 +545,13 @@ _all_snapshotted(ready, group::VectorTrackingSlotGroup, nav_processor::Navigatio
 # After the driver's loop step: move the replica to the integration's end.
 function _advance_driver!(group::VectorTrackingSlotGroup, slot::VectorTrackingSlot, post_correlation_state::PostCorrelationState, nco_history)
     signal = group.driver_signal
-    fs = _sampling_frequency_hz(post_correlation_state)
-    chip_rate = ustrip(Hz, get_chip_rate(signal))
-    slot.driver.chips_since_epoch +=
-        _replica_chips(nco_history, slot.driver.last_end_sample_index, post_correlation_state.last_sample_index, fs, chip_rate)
+    slot.driver.chips_since_epoch += _replica_chips(
+        nco_history,
+        slot.driver.last_end_sample_index,
+        post_correlation_state.last_sample_index,
+        post_correlation_state.sampling_frequency,
+        get_chip_rate(signal),
+    )
     slot.driver.last_end_sample_index = post_correlation_state.last_sample_index
     slot.driver.sampling_frequency = post_correlation_state.sampling_frequency
     slot.driver.last_code_phase = post_correlation_state.last_code_phase
@@ -558,7 +562,7 @@ function _advance_driver!(group::VectorTrackingSlotGroup, slot::VectorTrackingSl
             post_correlation_state.last_filtered_correlator_bank,
             post_correlation_state.sampling_frequency,
             get_chip_rate(signal),
-        ) * chip_rate / fs
+        ) * (get_chip_rate(signal) / post_correlation_state.sampling_frequency)
     nothing
 end
 
