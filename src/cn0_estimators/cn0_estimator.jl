@@ -9,6 +9,9 @@ parameter — pass any subtype instance as the `cn0_estimator` keyword of
 pick when. Custom estimators subtype this and implement `TrackingLoops.update!` and
 [`estimate_cn0`](@ref), plus [`requires_noise_density`](@ref) if they read a
 measured noise floor.
+
+`estimate_cn0` returns the C/N₀ in dB-Hz, and `-Inf` dB-Hz for no estimate (an empty
+window, or no detectable signal), never `NaN`: see [`NoCN0Estimator`](@ref) for why.
 """
 abstract type AbstractCN0Estimator end
 

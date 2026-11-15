@@ -422,12 +422,9 @@ function calc_mean_fll_disc(loop_state::VectorLoopState)
     isnothing(mean) ? 0.0 : ustrip(Hz, mean)
 end
 
-# Linear C/N₀ (Hz) from dB-Hz, floored to 1 against a degenerate weight; a NaN estimate
-# (empty correlator bank) maps to 1 so it cannot corrupt the Kalman update.
-function calc_linear_cn0_floor(cn0_dbhz)
-    cn0_lin = 10^(cn0_dbhz / 10)
-    isnan(cn0_lin) ? 1.0 : max(cn0_lin, 1.0)
-end
+# Linear C/N₀ (Hz, a plain number) of a C/N₀ in dB-Hz, floored to 1 against a degenerate
+# weight; no estimate (`-Inf` dB-Hz) maps to 1 so it cannot corrupt the Kalman update.
+calc_linear_cn0_floor(cn0) = max(ustrip(Hz, cn0), 1.0)
 
 # Cap on the weighting C/N₀: the moments estimator reads a noise-free (simulated) signal
 # as infinite, which would give the filter a noiseless measurement.
