@@ -173,20 +173,20 @@ end
     member = vt.buffers.members[j]
     nco_history = sim_nco_history(sat, nothing)
     post_correlation_state = feedback_integration(sat, sample)
-    at_epoch = TL._commands_at_application(vt, rx.group, slot, post_correlation_state, nco_history, Int64(sample))
+    at_epoch = TL._commands_at_application(vt, rx.group, slot, TL._sampling_frequency_hz(post_correlation_state), nco_history, Int64(sample))
     @test at_epoch[3] == 0.0
     @test at_epoch[1] ≈ ustrip(Hz, sat.state.code_frequency_correction) atol = 1e-9
     @test at_epoch[2].doppler ≈ sat.state.ramp.doppler atol = 1e-9Hz
     # 20 ms on, under the same commands: the range has moved on with the replica, so the
     # code correction barely changes, the ramp carries on, and the lead is the 20 ms.
-    later = TL._commands_at_application(vt, rx.group, slot, post_correlation_state, nco_history, Int64(sample + 80_000))
+    later = TL._commands_at_application(vt, rx.group, slot, TL._sampling_frequency_hz(post_correlation_state), nco_history, Int64(sample + 80_000))
     @test later[3] ≈ 0.02
     @test later[1] ≈ at_epoch[1] atol = 0.05
     @test ustrip(Hz, later[2].doppler) ≈ TL._doppler_at(at_epoch[2], ustrip(s, later[2].reference_time)) atol = 1e-3
     # It must take effect within 2.5 update intervals of the epoch.
-    @test_throws ArgumentError TL._commands_at_application(vt, rx.group, slot, post_correlation_state, nco_history,
+    @test_throws ArgumentError TL._commands_at_application(vt, rx.group, slot, TL._sampling_frequency_hz(post_correlation_state), nco_history,
         Int64(sample + 1_100_000))
-    @test_throws ArgumentError TL._commands_at_application(vt, rx.group, slot, post_correlation_state, nco_history,
+    @test_throws ArgumentError TL._commands_at_application(vt, rx.group, slot, TL._sampling_frequency_hz(post_correlation_state), nco_history,
         Int64(sample - 4000))
 end
 

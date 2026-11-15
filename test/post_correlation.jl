@@ -195,7 +195,7 @@ end
                 # not one half a cycle off. The noise spreads it by ~0.006 cycles RMS,
                 # so the bound is about 9σ over the few hundred integrations per run.
                 @test state.last_carrier_phase_polarity == sign
-                @test pll_disc(signal, filtered; polarity = state.last_carrier_phase_polarity) ≈
+                @test pll_disc(filtered; polarity = state.last_carrier_phase_polarity) ≈
                       0.05 / 2π atol = 0.05
                 # The first wiped-off integration does not chain from a prompt correlated
                 # before the sync.

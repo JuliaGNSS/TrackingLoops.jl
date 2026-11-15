@@ -496,7 +496,6 @@ end
     # The incoming carrier against the replica between the prompts' centres; the replica
     # runs on the filter's command alone, so only the signal moves this.
     fll_discriminator = fll_disc(
-        post_correlation_state.signal,
         post_correlation_state.last_filtered_correlator_bank,
         post_correlation_state.previous_filtered_prompt,
         _prompt_interval(post_correlation_state, loop_state.residual_pll.last_prompt_sample_index, _integration_center(post_correlation_state));

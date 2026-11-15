@@ -93,7 +93,7 @@ end
     @test isempty(AllocCheck.check_allocs(advance_timeline!, Tuple{NCOTimeline,Int64}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(confirm_command!, Tuple{NCOTimeline,Int64,Int64}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(cancel_command!, Tuple{NCOTimeline,Int64}; ignore_throw = true))
-    @test isempty(AllocCheck.check_allocs(pll_disc, Tuple{typeof(signal),typeof(output.correlator_bank)}; ignore_throw = true))
+    @test isempty(AllocCheck.check_allocs(pll_disc, Tuple{typeof(output.correlator_bank)}; ignore_throw = true))
     @test isempty(AllocCheck.check_allocs(dll_disc, Tuple{typeof(signal),typeof(output.correlator_bank),typeof(0.1Hz),typeof(fs)}; ignore_throw = true))
 end
 

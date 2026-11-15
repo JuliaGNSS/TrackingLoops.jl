@@ -194,14 +194,12 @@ end
 # rotation since the prompt centred on `previous_center` (`NaN` for none) over the
 # time between the two centres, which spans any gap before the integration.
 @inline function _calc_carrier_discriminators(post_correlation_state::PostCorrelationState, applied_carrier, previous_center; form_fll::Bool)
-    signal = post_correlation_state.signal
     coherent_integration_time = _coherent_integration_time(post_correlation_state)
     filtered_correlator_bank = post_correlation_state.last_filtered_correlator_bank
     center = _integration_center(post_correlation_state)
     frequency_error =
         form_fll ?
         fll_disc(
-            signal,
             filtered_correlator_bank,
             post_correlation_state.previous_filtered_prompt,
             _prompt_interval(post_correlation_state, previous_center, center);
@@ -210,7 +208,7 @@ end
     (;
         coherent_integration_time,
         applied_carrier,
-        phase_error = pll_disc(signal, filtered_correlator_bank; polarity = post_correlation_state.last_carrier_phase_polarity),
+        phase_error = pll_disc(filtered_correlator_bank; polarity = post_correlation_state.last_carrier_phase_polarity),
         frequency_error,
         center,
     )
