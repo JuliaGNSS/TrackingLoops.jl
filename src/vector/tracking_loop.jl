@@ -105,9 +105,9 @@ struct VectorLoopState{S}
     #   - `code_disc_sum` / `fll_disc_sum`: `(count, sum)` of the DLL output (chips) and
     #     the FLL discriminator (Hz, integrations with a previous prompt only) since the
     #     filter last read them.
-    #   - `previous_replica_tail`: `(cycles, duration)` of the replica's carrier over the
-    #     second half of the driver's last integration (`NaN` before the first), which the
-    #     residual PLL propagates its phase by, across a hand-over too.
+    #   - `previous_replica_tail`: the cycles of the replica's carrier over the second half
+    #     of the driver's last integration (`NaN` before the first), which the residual PLL
+    #     propagates its phase by, across a hand-over too.
     #   - `code_frequency_correction`: the code correction from the latest update.
     #   - `code_frequency_correction_history` / `feedback_delay`: the last three code
     #     corrections, newest first, and how long after the measurement epoch the newest
@@ -122,7 +122,7 @@ struct VectorLoopState{S}
     vector_controlled::Bool
     code_disc_sum::Tuple{Int,Float64}
     fll_disc_sum::Tuple{Int,typeof(1.0Hz)}
-    previous_replica_tail::Tuple{Float64,typeof(1.0s)}
+    previous_replica_tail::Float64
     code_frequency_correction::typeof(1.0Hz)
     code_frequency_correction_history::NTuple{3,typeof(1.0Hz)}
     feedback_delay::typeof(1.0s)
@@ -147,7 +147,7 @@ VectorLoopState(
     slot_index::Int = 0,
     slot_generation::Int = 0,
     update_index::Int = -1;
-    previous_replica_tail::Tuple{Float64,typeof(1.0s)} = (NaN, NaN * s),
+    previous_replica_tail::Float64 = NaN,
     residual_pll_loop_bandwidth::typeof(1.0Hz) = default_residual_pll_loop_bandwidth(),
 ) =
     VectorLoopState(
@@ -172,7 +172,7 @@ function VectorLoopState(
     vector_controlled::Maybe{Bool} = nothing,
     code_disc_sum::Maybe{Tuple{Int,Float64}} = nothing,
     fll_disc_sum::Maybe{Tuple{Int,typeof(1.0Hz)}} = nothing,
-    previous_replica_tail::Maybe{Tuple{Float64,typeof(1.0s)}} = nothing,
+    previous_replica_tail::Maybe{Float64} = nothing,
     code_frequency_correction::Maybe{typeof(1.0Hz)} = nothing,
     code_frequency_correction_history::Maybe{NTuple{3,typeof(1.0Hz)}} = nothing,
     feedback_delay::Maybe{typeof(1.0s)} = nothing,
@@ -259,10 +259,10 @@ function calc_carrier_phase_correction(loop_state::VectorLoopState, nco_history,
     residual_pll = loop_state.residual_pll
     loop_state.vector_controlled || return 0.0
     # Both are set by the first driver integration.
-    isnan(residual_pll.last_prompt_sample_index) && return 0.0
-    isnan(first(loop_state.previous_replica_tail)) && return 0.0
+    _has_span(residual_pll.last_prompt_span) || return 0.0
+    isnan(loop_state.previous_replica_tail) && return 0.0
     fs = Float64(ustrip(Hz, sampling_frequency))
-    _residual_phase_after(loop_state, sample_index, fs, nco_history)
+    _residual_phase_after(loop_state, sample_index - residual_pll.last_prompt_span.end_sample_index, fs, nco_history)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -309,8 +309,8 @@ function _hand_over_to_scalar_loop(scalar_loop, loop_state::VectorLoopState, nco
     time = application_sample_index / fs
     ramp, residual_pll = loop_state.ramp, loop_state.residual_pll
     rate = ustrip(Hz / s, ramp.doppler_rate)
-    if residual_pll.lock.locked && !isnan(residual_pll.last_prompt_sample_index)
-        dt = (application_sample_index - residual_pll.last_prompt_sample_index) / fs
+    if residual_pll.lock.locked && _has_span(residual_pll.last_prompt_span)
+        dt = _samples_since_center(residual_pll.last_prompt_span, application_sample_index) / fs
         carrier_doppler =
             (_doppler_at(ramp, time) + _residual_doppler(residual_pll) + _residual_doppler_rate(residual_pll) * dt) * Hz
         rate += _residual_doppler_rate(residual_pll)
@@ -378,8 +378,8 @@ _disc_mean((count, disc_sum)) = count == 0 ? nothing : disc_sum / count
 # update whose only integration is the first after a (re)start); that member is withheld too.
 has_disc_sums(loop_state::VectorLoopState) = first(loop_state.code_disc_sum) > 0 && first(loop_state.fll_disc_sum) > 0
 
-# `(cycles, duration)` the replica's carrier advanced by over each half of `integration`,
-# from the commands it ran on, and the mean command over the whole integration (`command`).
+# The cycles the replica's carrier advanced by over each half of `integration`, from the
+# commands it ran on, and the mean command over the whole integration (`command`).
 @inline function _replica_halves(post_correlation_state::PostCorrelationState, nco_history)
     fs = post_correlation_state.sampling_frequency
     integration_end_sample_index = post_correlation_state.last_end_sample_index
@@ -394,7 +394,7 @@ has_disc_sums(loop_state::VectorLoopState) = first(loop_state.code_disc_sum) > 0
         (first_command.carrier_doppler + second_command.carrier_doppler) / 2,
         (first_command.code_doppler + second_command.code_doppler) / 2,
     )
-    (first = (first_cycles, half_duration), second = (second_cycles, half_duration), command)
+    (first = first_cycles, second = second_cycles, command)
 end
 
 # The FLL accumulator with `integration`'s discriminator added. An integration without a previous
@@ -438,7 +438,7 @@ end
 )
     scalar_state = loop_state.scalar_state
     application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_end_sample_index : application_sample_index
-    measured = _measure_discriminators(post_correlation_state, replica_halves.command, loop_state.residual_pll.last_prompt_sample_index; form_fll = true)
+    measured = _measure_discriminators(post_correlation_state, replica_halves.command, loop_state.residual_pll.last_prompt_span; form_fll = true)
     residual_pll, fll_disc_sum =
         _measure_carrier(loop_state, post_correlation_state, nco_history, replica_halves, measured.carrier_frequency_error, min_tracking_cn0)
     # The command takes effect on an integration taken to be this one's length.
@@ -477,20 +477,17 @@ end
 )
     fs = _sampling_frequency_hz(post_correlation_state)
     coherent_integration_time = post_correlation_state.last_num_integrated_samples / fs
-    previous_cycles, previous_duration = loop_state.previous_replica_tail
-    first_cycles, _ = replica_halves.first
+    previous_cycles = loop_state.previous_replica_tail
     integration_start_sample_index = _integration_start(post_correlation_state)
-    # The previous integration's end, known once the residual PLL has stepped on its prompt:
-    # its prompt's sample index plus the replica's second half, a sample index up to rounding.
-    previous_end = loop_state.residual_pll.last_prompt_sample_index + ustrip(s, previous_duration) * fs
-    previous_end_sample_index = isnan(previous_end) ? integration_start_sample_index :
-        round(Int, previous_end)
+    # The previous integration's end, known once the residual PLL has stepped on its prompt.
+    previous_span = loop_state.residual_pll.last_prompt_span
+    previous_end_sample_index = _has_span(previous_span) ? previous_span.end_sample_index : integration_start_sample_index
     num_gap_samples = max(0, integration_start_sample_index - previous_end_sample_index)
     gap = num_gap_samples / fs
     gap_cycles = num_gap_samples == 0 ? 0.0 :
         ustrip(Hz, calc_mean_nco_command(nco_history, previous_end_sample_index, integration_start_sample_index).carrier_doppler) * gap
     residual_pll, wiped_prompt =
-        _step_residual_pll(loop_state, post_correlation_state, previous_cycles + gap_cycles + first_cycles)
+        _step_residual_pll(loop_state, post_correlation_state, previous_cycles + gap_cycles + replica_halves.first)
     host_cn0 = estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time * s)
     residual_pll = _with_lock_test(
         residual_pll,

@@ -63,7 +63,7 @@ residual_pll_error(sat, before) =
         # The replica's command is the filter's ramp at the middle of the next integration…
         T = integration_ms(sat.signal) * 1e-3
         @test sat.carrier_doppler ≈
-              TL._doppler_at(state.ramp, state.residual_pll.last_prompt_sample_index / ustrip(Hz, SIM_FS) + T) atol = 1e-4
+              TL._doppler_at(state.ramp, TL._center(state.residual_pll.last_prompt_span) / ustrip(Hz, SIM_FS) + T) atol = 1e-4
         # …which the residual PLL's residual brings onto the incoming carrier.
         @test abs(TL._residual_doppler(state.residual_pll)) < 0.1
         @test get_phase_lock_indicator(state) > 0.9 && is_phase_locked(state)
@@ -256,7 +256,7 @@ end
         noise_std = noise_std_at(40.0))
     @test state.residual_pll.lock.locked
     @test TL._residual_doppler(state.residual_pll) ≈ 8.0 atol = 0.1
-    @test abs(rem(state.residual_pll.predicted_prompt_phase - (0.1 + 8.0 * state.residual_pll.last_prompt_sample_index / 1e6), 0.5, RoundNearest)) < 0.05
+    @test abs(rem(state.residual_pll.predicted_prompt_phase - (0.1 + 8.0 * TL._center(state.residual_pll.last_prompt_span) / 1e6), 0.5, RoundNearest)) < 0.05
 end
 
 @testset "Without the signal the residual PLL holds at the ramp" begin
@@ -270,7 +270,7 @@ end
     state = step_residual(residual, 1000:1000:7_000_000; scalar_doppler = 102.0,
         amplitude = t -> outage(t) ? 0.0 : 1.0, noise_std = noise_std_at(40.0),
         on_integration = (state, k) -> begin
-            t = state.residual_pll.last_prompt_sample_index / 1e6
+            t = TL._center(state.residual_pll.last_prompt_span) / 1e6
             1.5 <= t < 5.0 && push!(during, TL._residual_doppler(state.residual_pll))
             t >= 5.0 && isnan(relock[]) && state.residual_pll.lock.locked && (relock[] = t - 5.0)
         end)
@@ -290,7 +290,7 @@ end
     fll = Float64[]
     previous_acc = Ref((0, 0.0Hz))
     step_residual(residual, ends; scalar_doppler = 102.0, on_integration = (state, k) -> begin
-        push!(errors, rem(state.residual_pll.predicted_prompt_phase - residual(state.residual_pll.last_prompt_sample_index / 1e6), 0.5, RoundNearest))
+        push!(errors, rem(state.residual_pll.predicted_prompt_phase - residual(TL._center(state.residual_pll.last_prompt_span) / 1e6), 0.5, RoundNearest))
         count, total = state.fll_disc_sum
         count > previous_acc[][1] && push!(fll, ustrip(Hz, total - previous_acc[][2]))
         previous_acc[] = state.fll_disc_sum
@@ -311,7 +311,7 @@ end
     # Doppler continued the scalar loop's (here both on the truth).
     residual_pll = sat.state.residual_pll
     @test TL._has_carrier_ramp(sat.state)
-    t = residual_pll.last_prompt_sample_index / ustrip(Hz, SIM_FS)
+    t = TL._center(residual_pll.last_prompt_span) / ustrip(Hz, SIM_FS)
     @test abs(TL._doppler_at(sat.state.ramp, t) + TL._residual_doppler(residual_pll) -
               true_doppler(sat, rx.truth, sim_time(rx, round(Int, t * ustrip(Hz, SIM_FS))))) < 0.5
     # The scalar loop is re-initialised at the residual PLL's estimate of the incoming Doppler
@@ -351,10 +351,11 @@ function decoding_integration(signal, prompt, sample_index; host_bits = Float32[
     )
 end
 
-# A residual PLL of a satellite in the vector loop that wiped its latest prompt, at the
-# sample index `center`, with `predicted_prompt_phase`, its loop filter putting out `carrier_frequency_correction`.
-residual_pll_at(center, predicted_prompt_phase; carrier_frequency_correction = 0.0) = TL.ResidualPLL(
-    10.0Hz, carrier_frequency_correction * Hz, TL._residual_pll_loop_filter(carrier_frequency_correction, 0.0), center, Int8(0), predicted_prompt_phase,
+# A residual PLL of a satellite in the vector loop that wiped its latest prompt, of an
+# integration of `num_samples` centred at the sample index `center`, with `predicted_prompt_phase`, its loop filter putting out `carrier_frequency_correction`.
+residual_pll_at(center, predicted_prompt_phase; carrier_frequency_correction = 0.0, num_samples = 4000) = TL.ResidualPLL(
+    10.0Hz, carrier_frequency_correction * Hz, TL._residual_pll_loop_filter(carrier_frequency_correction, 0.0),
+    TL.IntegrationSpan(center + num_samples ÷ 2, num_samples), Int8(0), predicted_prompt_phase,
     TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
 
 @testset "The navigation processor decodes the prompts it rotated onto the incoming carrier" begin
@@ -420,7 +421,7 @@ end
     TL._push_prompt!(history, residual_pll)
     ramp = TL.CarrierDopplerRamp(1000.0 * Hz, 0.0 * Hz / s, 0.0 * s)
     nco_history = ConstantNCOCommand(1000.0Hz, 0.0Hz)
-    half = (1000.0 * 0.0005, 0.0005s)
+    half = 1000.0 * 0.0005
     state = TL.VectorLoopState(TL.VectorLoopState(init_loop_state(ScalarTrackingLoop(), signal, 1000.0Hz, 0.0Hz), true);
         residual_pll, ramp, previous_replica_tail = half)
     spanning(start, stop) = PostCorrelationState(
@@ -455,14 +456,14 @@ end
     # A plain signal decodes its own integrations.
     @test TL._prompt_history_length(GPSL1CA(), GPSL1CA(), 100.0ms) == 0
     tracking_loop = VectorTrackingLoop(GPSL5Q() => GPSL5I(), GPSL1CA())
-    @test [length(group.slots[1].bit_accumulator.prompt_history.centers) for group in tracking_loop.navigation_processor.groups] == [51, 0]
+    @test [length(group.slots[1].bit_accumulator.prompt_history.spans) for group in tracking_loop.navigation_processor.groups] == [51, 0]
     # A ring: the newest prompts are kept.
     history = TL.PromptHistory(3)
     for k = 1:5
         TL._push_prompt!(history, residual_pll_at(1000k, 0.1k))
     end
     @test history.count == 3
-    @test sort(history.centers) ≈ [3000, 4000, 5000]
+    @test sort(TL._center.(history.spans)) ≈ [3000, 4000, 5000]
     @test history.phases[history.newest] ≈ 0.5
 end
 
