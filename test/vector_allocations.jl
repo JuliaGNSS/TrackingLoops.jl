@@ -13,13 +13,13 @@ function measure_navigation(rx::SimReceiver, sample; fill! = fill_slot!)
         fill!(group.slots[i], sat, sample, nothing, nav_processor)
     end
     now = sample / ustrip(Hz, SIM_FS)
-    @allocated TL._navigation_update!(nav_processor, now)
+    @allocated TL._run_navigation_update!(nav_processor, now)
 end
 
 # The satellites apply the latest update, as they would on their next integration.
 function apply_feedback!(rx::SimReceiver, sample)
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
-        sat.state = TL._apply_filter_feedback(rx.tracking_loop, group, group.slots[i], sat.state,
+        sat.state = TL._apply_nav_filter_feedback(rx.tracking_loop, group, group.slots[i], sat.state,
             feedback_integration(sat, sample), sim_nco_history(sat, nothing), Int64(sample))
     end
 end
@@ -38,7 +38,7 @@ end
     # A skipped epoch rebuilds the process model in place.
     sample += 2samples_per_update
     @test measure_navigation(rx, sample) == 0
-    @test rx.vt.nav_filter.model.propagation_interval == 0.2s
+    @test rx.vt.nav_filter.process_model.propagation_interval == 0.2s
     apply_feedback!(rx, sample)
 
     slot = rx.group.slots[2]
@@ -104,7 +104,7 @@ end
     post_correlation_state = feedback_integration(sat, sample)
     nco_history = sim_nco_history(sat, nothing)
     state = sat.state
-    apply_feedback(state) = @allocated TL._apply_filter_feedback(rx.tracking_loop, group, slot, state, post_correlation_state, nco_history, Int64(sample))
+    apply_feedback(state) = @allocated TL._apply_nav_filter_feedback(rx.tracking_loop, group, slot, state, post_correlation_state, nco_history, Int64(sample))
     apply_feedback(state)
     @test apply_feedback(state) == 0
 end

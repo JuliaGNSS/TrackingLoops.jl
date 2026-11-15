@@ -38,8 +38,8 @@ end
 function VectorTrackingLoop(
     signals::Union{AbstractGNSSSignal,Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}}...;
     scalar_loop::Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop} = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
-    filter_config::NavFilterConfig = NavFilterConfig(),
-    navigation_filter_update_interval = 100.0ms,
+    nav_filter_config::NavFilterConfig = NavFilterConfig(),
+    navigation_update_interval = 100.0ms,
     min_tracking_cn0 = 30.0dBHz,
     residual_pll_loop_bandwidth = default_residual_pll_loop_bandwidth(),
     satellite_capacity_per_signal::Integer = 16,
@@ -60,16 +60,16 @@ function VectorTrackingLoop(
     foreach(_check_ranging_pair, pairs)
     satellite_capacity_per_signal >= 1 ||
         throw(ArgumentError("`satellite_capacity_per_signal` must be at least 1"))
-    Δt_nav = Float64(ustrip(s, navigation_filter_update_interval)) * s
+    Δt_nav = Float64(ustrip(s, navigation_update_interval)) * s
     0.0s < Δt_nav < Inf * s ||
-        throw(ArgumentError("`navigation_filter_update_interval` must be positive and finite"))
+        throw(ArgumentError("`navigation_update_interval` must be positive and finite"))
     residual_pll_loop_bandwidth > 0.0Hz ||
         throw(ArgumentError("`residual_pll_loop_bandwidth` must be positive"))
     navigation_processor = NavigationProcessor(
-        filter_config,
+        nav_filter_config,
         pairs,
         scalar_loop;
-        navigation_filter_update_interval = Δt_nav,
+        navigation_update_interval = Δt_nav,
         min_tracking_cn0 = convert(typeof(1.0dBHz), min_tracking_cn0),
         satellite_capacity_per_signal = Int(satellite_capacity_per_signal),
         approximate_year,
@@ -177,23 +177,23 @@ function _step_vector_integration(
     # 1. Channel assignment: the satellite's slot, registered on the integration's PRN.
     loop_state, slot = _assign_slot!(nav_processor, group, loop_state, post_correlation_state)
     application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_end_sample_index : application_sample_index
-    # 2. Apply the navigation filter's feedback: after a navigation filter update overdue
-    #    at the pending epoch (`_run_overdue_update!`), the satellite applies the latest
+    # 2. Apply the navigation filter's feedback: after a navigation update overdue
+    #    at the pending epoch (`_run_overdue_navigation_update!`), the satellite applies the latest
     #    update, its membership and NCO commands. Only a satellite that latched the pending
     #    epoch runs an overdue update, and it applied every earlier update then.
     end_time = _end_time(post_correlation_state)
-    _run_overdue_update!(nav_processor, slot, post_correlation_state)
-    is_driver && (loop_state = _apply_filter_feedback(tracking_loop, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index))
+    _run_overdue_navigation_update!(nav_processor, slot, post_correlation_state)
+    is_driver && (loop_state = _apply_nav_filter_feedback(tracking_loop, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index))
     # 3. Latch the measurements at the measurement epoch: the integration's half of the
     #    satellite's snapshot, complete once both signals' halves are in.
     _move_past_gap!(nav_processor, is_driver ? slot.driver : slot.decoding, end_time)
     is_driver && (loop_state = _snapshot_driver!(nav_processor, group, slot, loop_state, post_correlation_state, nco_history))
     is_decoding && _snapshot_decoding!(nav_processor, group, slot, post_correlation_state, nco_history)
     _complete_snapshot!(nav_processor, group, slot)
-    # 4. The navigation filter update at the measurement epoch, once every satellite that
+    # 4. The navigation update at the measurement epoch, once every satellite that
     #    can has latched it; its feedback applies from this integration on.
-    if _run_update_if_due!(nav_processor, end_time) && is_driver
-        loop_state = _apply_filter_feedback(tracking_loop, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index)
+    if _run_navigation_update_if_due!(nav_processor, end_time) && is_driver
+        loop_state = _apply_nav_filter_feedback(tracking_loop, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index)
     end
     # 5. The tracking-loop update: in the vector loop the residual PLL and the
     #    discriminators' accumulation, out of it the scalar loop.
@@ -286,7 +286,7 @@ function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSl
     slot.snapshot_epoch_index = typemin(Int)
     slot.pending_snapshot = SatelliteSnapshot(slot.pending_snapshot; decoder = slot.decoding.decoder, bit_synced = false)
     # Registered out of the vector loop; a state still in it applies the release in
-    # `_apply_filter_feedback`, re-initialising its scalar loop.
+    # `_apply_nav_filter_feedback`, re-initialising its scalar loop.
     slot.snapshot = SatelliteSnapshot(
         slot.snapshot;
         loop_state = _release_from_vector_loop(loop_state),
@@ -296,7 +296,7 @@ function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSl
     )
     slot.vector_controlled = false
     slot.release_reason = VT_NOT_RELEASED
-    slot.command_update_index = -1
+    slot.commanded_update_index = -1
     slot.member_index = 0
     nothing
 end
@@ -306,7 +306,7 @@ end
 
 # Apply the latest update's decisions once: admission, release (re-initialising the scalar
 # loop at the application sample) and commands sized for it.
-function _apply_filter_feedback(
+function _apply_nav_filter_feedback(
     tracking_loop::VectorTrackingLoop,
     group::VectorTrackingSlotGroup,
     slot::VectorTrackingSlot,
@@ -317,7 +317,7 @@ function _apply_filter_feedback(
 )
     nav_processor = tracking_loop.navigation_processor
     id = nav_processor.update_index
-    loop_state.update_index == id && return loop_state
+    loop_state.applied_update_index == id && return loop_state
     fs = _sampling_frequency_hz(post_correlation_state)
     slot_in_loop = slot.vector_controlled
     if slot_in_loop && !loop_state.vector_controlled
@@ -325,12 +325,12 @@ function _apply_filter_feedback(
     elseif !slot_in_loop && loop_state.vector_controlled
         loop_state = _hand_over_to_scalar_loop(tracking_loop.scalar_loop, loop_state, nco_history, application_sample_index, fs)
     end
-    if slot_in_loop && slot.command_update_index == id
-        code_update, ramp, feedback_delay =
+    if slot_in_loop && slot.commanded_update_index == id
+        code_frequency_correction, ramp, feedback_delay =
             _commands_at_application(nav_processor, group, slot, fs, nco_history, application_sample_index)
-        loop_state = _set_vector_commands(loop_state, code_update * Hz, ramp, feedback_delay * s, nco_history, application_sample_index, fs)
+        loop_state = _set_vector_commands(loop_state, code_frequency_correction * Hz, ramp, feedback_delay * s, nco_history, application_sample_index, fs)
     end
-    VectorLoopState(loop_state; update_index = id)
+    VectorLoopState(loop_state; applied_update_index = id)
 end
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -510,15 +510,15 @@ end
 #
 # Invariant: every live satellite can snapshot the pending epoch unless it got past it
 # before it was pending. Such a satellite sits that update out, and the update moves the
-# pending epoch on to one no live satellite is past (see `_navigation_update!`). The host
+# pending epoch on to one no live satellite is past (see `_run_navigation_update!`). The host
 # steps the satellites one after another through each chunk, so one stepped early in a
 # chunk can cross an epoch that becomes pending only when one stepped later runs the
 # update before it: after a re-registration on an integration starting at the epoch, or after
 # an overdue update. Neither locks it out for more than that epoch.
-function _run_update_if_due!(nav_processor::NavigationProcessor, time)
+function _run_navigation_update_if_due!(nav_processor::NavigationProcessor, time)
     nav_processor.num_snapshots == 0 && return false
     _can_any_reach_epoch(nav_processor, time) && return false
-    _navigation_update!(nav_processor, time)
+    _run_navigation_update!(nav_processor, time)
     true
 end
 
@@ -526,13 +526,13 @@ end
 # the pending one still waits for others, run that update now with the satellites that
 # made it. Returns whether it ran. Only a satellite behind by more than an update interval, yet
 # not stale, holds an epoch up; the update then moves the pending epoch past
-# the satellites stepped before (see `_navigation_update!`), so the next one runs as due.
-function _run_overdue_update!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, post_correlation_state::PostCorrelationState)
+# the satellites stepped before (see `_run_navigation_update!`), so the next one runs as due.
+function _run_overdue_navigation_update!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, post_correlation_state::PostCorrelationState)
     slot.snapshot_epoch_index == nav_processor.pending_epoch_index || return false
     next_epoch_sample_index =
         _epoch_sample_index(nav_processor, nav_processor.pending_epoch_index + 1, _sampling_frequency_hz(post_correlation_state))
     post_correlation_state.last_end_sample_index > next_epoch_sample_index || return false
-    _navigation_update!(nav_processor, _end_time(post_correlation_state))
+    _run_navigation_update!(nav_processor, _end_time(post_correlation_state))
     true
 end
 

@@ -36,10 +36,11 @@ section numbers come from; Misra & Enge, *Global Positioning System*; Spilker et
   candidates.
 - **Snapshot**: what a satellite latches at a measurement epoch for the next
   update: replica code phase, Dopplers, C/N₀, decoder and bit clock, and its loop state.
-- **Measurement epoch**: the time point a navigation filter update estimates the state
+- **Measurement epoch**: the time point a navigation update estimates the state
   at, a multiple of the update interval `Δt_nav` on the integrations' sample grid.
-- **Update**: one navigation filter update (time update and measurement update) at a
-  measurement epoch; `Δt_nav` is the interval between two. *Cycles* are carrier-phase
+- **Update**: one navigation update at a measurement epoch: the navigation filter's time
+  update and measurement update, or the scalar PVT while the filter does not run;
+  `Δt_nav` is the interval between two. *Cycles* are carrier-phase
   cycles only.
 - **Feedback delay**: how long after the measurement epoch an update's NCO commands
   take effect; a hardware NCO applies a command at an *application sample index*,
