@@ -48,13 +48,13 @@ Below 40 dB-Hz, where lock and loss are decided, it sits under NWPR's own
 
 # Fields / configuration
 
-  - `num_averaged_integrations` — how many integrations the estimate averages over, i.e. the memory
-    of the estimator (100 by default, ~100 ms at GPS L1 C/A).
+  - `num_averaged_integrations` (keyword) — how many integrations the estimate averages
+    over, i.e. the memory of the estimator (100 by default, ~100 ms at GPS L1 C/A): the
+    length of the ring.
   - `buffered_cn0`, `newest_index`, `num_buffered` — the ring of per-integration
     C/N₀ terms in **linear Hz**, written in place, plus its position and fill.
 """
 struct NoiseReferencedCN0Estimator <: AbstractCN0Estimator
-    num_averaged_integrations::Int
     buffered_cn0::Vector{Float64}
     newest_index::Int
     num_buffered::Int
@@ -69,7 +69,7 @@ Construct a fresh [`NoiseReferencedCN0Estimator`](@ref) averaging over the last
 function NoiseReferencedCN0Estimator(; num_averaged_integrations::Int = 100)
     num_averaged_integrations >= 1 ||
         throw(ArgumentError("num_averaged_integrations must be at least 1, got $num_averaged_integrations"))
-    NoiseReferencedCN0Estimator(num_averaged_integrations, zeros(Float64, num_averaged_integrations), 0, 0)
+    NoiseReferencedCN0Estimator(zeros(Float64, num_averaged_integrations), 0, 0)
 end
 
 length(estimator::NoiseReferencedCN0Estimator) = estimator.num_buffered
@@ -98,7 +98,6 @@ function update!(estimator::NoiseReferencedCN0Estimator, prompt, context::CN0Upd
     next_index = mod(estimator.newest_index, buffer_length) + 1
     estimator.buffered_cn0[next_index] = cn0
     NoiseReferencedCN0Estimator(
-        estimator.num_averaged_integrations,
         estimator.buffered_cn0,
         next_index,
         min(estimator.num_buffered + 1, buffer_length),
@@ -193,4 +192,4 @@ function estimate_cn0(estimator::NoiseReferencedCN0Estimator, coherent_integrati
 end
 
 reset_cn0_estimator!(e::NoiseReferencedCN0Estimator) =
-    (fill!(e.buffered_cn0, 0.0); NoiseReferencedCN0Estimator(e.num_averaged_integrations, e.buffered_cn0, 0, 0))
+    (fill!(e.buffered_cn0, 0.0); NoiseReferencedCN0Estimator(e.buffered_cn0, 0, 0))

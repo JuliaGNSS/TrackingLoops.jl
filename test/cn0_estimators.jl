@@ -73,12 +73,11 @@ end
 @testset "default_cn0_estimator is a noise-referenced one" begin
     default = default_cn0_estimator(GPSL1CA(), 40)
     @test default isa NoiseReferencedCN0Estimator
-    @test default.num_averaged_integrations == 40
     @test Base.length(default.buffered_cn0) == 40
     @test requires_noise_density(default)
     @test requires_noise_density(default_cn0_estimator(GPSL1C_P(), 100))
-    @test default_cn0_estimator(GPSL1CA()).num_averaged_integrations ==
-          NoiseReferencedCN0Estimator().num_averaged_integrations == 100
+    @test Base.length(default_cn0_estimator(GPSL1CA()).buffered_cn0) ==
+          Base.length(NoiseReferencedCN0Estimator().buffered_cn0) == 100
     @test requires_noise_density(NoiseReferencedCN0Estimator)
 end
 
