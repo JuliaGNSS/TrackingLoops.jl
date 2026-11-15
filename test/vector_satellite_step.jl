@@ -17,7 +17,7 @@ nav_processor_integration(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0
     @test TL._epoch_at_or_after(nav_processor, 1_199_999, 4e6) == 3
     @test TL._epoch_sample_index(nav_processor, 7, 4e6) == 2_800_000
     # In seconds, 129 × 30 ms came out short of 3.87 s; in samples the epochs are exact.
-    nav_processor = VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = 30ms).navigation_processor
+    nav_processor = VectorTrackingLoop(GPSL1CA(); navigation_update_interval = 30ms).navigation_processor
     @test TL._samples_per_update(nav_processor, 4e6) === 120_000.0
     @test TL._epoch_sample_index(nav_processor, 129, 4e6) == 15_480_000
     @test TL._epoch_at_or_after(nav_processor, 15_480_000, 4e6) == 129
@@ -27,7 +27,7 @@ nav_processor_integration(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0
     end
     # An update interval spans the whole samples it is configured for, though 70 ms at
     # 5 MHz is a hair over 350000 in binary.
-    @test TL._samples_per_update(VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = 70ms).navigation_processor, 5e6) ===
+    @test TL._samples_per_update(VectorTrackingLoop(GPSL1CA(); navigation_update_interval = 70ms).navigation_processor, 5e6) ===
           350_000.0
     # Exact a year into the session at 100 MHz, where seconds would round apart.
     nav_processor = VectorTrackingLoop(GPSL1CA()).navigation_processor
@@ -49,7 +49,7 @@ end
     # The integration started at sample 0: the first epoch it can snapshot is the one there,
     # and as the only satellite it ran that epoch's update at once.
     @test slot.first_epoch_index == 0
-    @test nav_processor.update_epoch_index == 0 && nav_processor.pending_epoch_index == 1
+    @test nav_processor.last_update_epoch_index == 0 && nav_processor.pending_epoch_index == 1
     @test slot.driver.last_end_sample_index == 4000
     # Later integrations keep the slot.
     state, = step_loop!(tracking_loop, state, nav_processor_integration(7, 8000), nco_history, nothing)
@@ -271,17 +271,17 @@ end
         states[i], = step_loop!(tracking_loop, states[i], nav_processor_integration(prns[i], 4000k), nco_history, nothing)
     end
     # The first epoch is at sample 0, the start of the first integrations; the next at 0.1 s.
-    @test nav_processor.update_index == 1 && nav_processor.update_epoch_index == 0
+    @test nav_processor.update_index == 1 && nav_processor.last_update_epoch_index == 0
     for i = 1:2
         states[i], = step_loop!(tracking_loop, states[i], nav_processor_integration(prns[i], 400_000 + 4000), nco_history, nothing)
         @test nav_processor.update_index == 1
         @test nav_processor.num_snapshots == i
     end
     states[3], = step_loop!(tracking_loop, states[3], nav_processor_integration(prns[3], 400_000 + 4000), nco_history, nothing)
-    @test nav_processor.update_index == 2 && nav_processor.update_epoch_index == 1 && nav_processor.pending_epoch_index == 2
+    @test nav_processor.update_index == 2 && nav_processor.last_update_epoch_index == 1 && nav_processor.pending_epoch_index == 2
     # The last one applied its update on the spot; the others do on their next integration.
-    @test states[3].update_index == 2
-    @test states[1].update_index == 1
+    @test states[3].applied_update_index == 2
+    @test states[1].applied_update_index == 1
     # A satellite that falls behind holds the update up until the others are past the
     # epoch after: then the overdue update runs without it.
     for k = 102:300, i = 1:2
@@ -290,7 +290,7 @@ end
     @test nav_processor.update_index == 2
     @test nav_processor.num_snapshots == 2
     states[1], = step_loop!(tracking_loop, states[1], nav_processor_integration(prns[1], 4000 * 301), nco_history, nothing)
-    @test nav_processor.update_index == 3 && nav_processor.update_epoch_index == 2
+    @test nav_processor.update_index == 3 && nav_processor.last_update_epoch_index == 2
     @test !nav_processor.groups[1].slots[3].in_update
 end
 
@@ -310,13 +310,13 @@ end
     @test nav_processor.groups[1].slots[2].first_epoch_index == 2
     # …and the satellite that was due at it still runs it.
     a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000 * 101), nco_history, nothing)
-    @test nav_processor.update_epoch_index == 1 && nav_processor.pending_epoch_index == 2
+    @test nav_processor.last_update_epoch_index == 1 && nav_processor.pending_epoch_index == 2
     # After a gap in every satellite's integrations the epochs move on to where they resume.
     a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000 * 1000), nco_history, nothing)
     b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 1000), nco_history, nothing)
     a, = step_loop!(tracking_loop, a, nav_processor_integration(3, 4000 * 1001), nco_history, nothing)
     b, = step_loop!(tracking_loop, b, nav_processor_integration(5, 4000 * 1001), nco_history, nothing)
-    @test nav_processor.update_epoch_index == 10
+    @test nav_processor.last_update_epoch_index == 10
 end
 
 @testset "Satellites stepped past an epoch before it is pending are not locked out" begin
@@ -334,11 +334,11 @@ end
             id = nav_processor.update_index
             states[i], = step_loop!(tracking_loop, states[i], nav_processor_integration(prns[i], 4000j), nco_history, nothing)
             nav_processor.update_index == id ||
-                push!(updates, (; epoch = nav_processor.update_epoch_index, time = j / 1000, in_update = [s.in_update for s in slots[1:3]]))
+                push!(updates, (; epoch = nav_processor.last_update_epoch_index, time = j / 1000, in_update = [s.in_update for s in slots[1:3]]))
         end
     end
     foreach(step_chunk!, 4:4:500)
-    @test nav_processor.update_epoch_index == 4 && nav_processor.pending_epoch_index == 5
+    @test nav_processor.last_update_epoch_index == 4 && nav_processor.pending_epoch_index == 5
     # The first two lose their signal for an epoch; the third snapshots it, and its
     # update waits for them…
     foreach(k -> step_chunk!(k, 3:3), 504:4:600)
@@ -348,7 +348,7 @@ end
     states[1] = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     states[2] = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     step_chunk!(604)
-    @test nav_processor.update_epoch_index == 5
+    @test nav_processor.last_update_epoch_index == 5
     @test slots[1].first_epoch_index == slots[2].first_epoch_index == 6
     # By then the first is past the next epoch, which it can no longer snapshot: the
     # epochs move on to the one after, which no satellite is past. Every satellite
@@ -356,7 +356,7 @@ end
     # satellite crosses its epoch, not an epoch late.
     @test nav_processor.pending_epoch_index == 7
     foreach(step_chunk!, 608:4:1500)
-    @test nav_processor.update_epoch_index == 14
+    @test nav_processor.last_update_epoch_index == 14
     recovered = filter(c -> c.epoch > 5, updates)
     @test [c.epoch for c in recovered] == 7:14
     @test all(c -> all(c.in_update), recovered)
@@ -473,7 +473,7 @@ end
     @test !any(slot -> slot.occupied, nav_processor.groups[2].slots)
     # The satellite keeps snapshotting the epochs, so its updates keep running: one
     # every 100 ms up to the last integration, 3 s in.
-    @test nav_processor.groups[1].slots[1].snapshot_epoch_index == nav_processor.update_epoch_index == 29
+    @test nav_processor.groups[1].slots[1].snapshot_epoch_index == nav_processor.last_update_epoch_index == 29
 end
 
 # A C/N₀ estimator that always reads the same.

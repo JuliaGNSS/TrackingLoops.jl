@@ -3,7 +3,7 @@
 
 """
     VectorTrackingLoop(signals...; scalar_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
-                    filter_config = NavFilterConfig(), navigation_filter_update_interval = 100ms,
+                    nav_filter_config = NavFilterConfig(), navigation_update_interval = 100ms,
                     min_tracking_cn0 = 30dBHz,
                     residual_pll_loop_bandwidth = default_residual_pll_loop_bandwidth(),
                     satellite_capacity_per_signal = 16,
@@ -19,7 +19,7 @@ must carry data and have its driver's chip rate. No signal may be given twice.
 All satellites stepped with this loop share one navigation processor which, inside
 [`step_loop!`](@ref), decodes the navigation data, solves the scalar PVT, seeds the
 navigation filter from its first fix and then runs one filter update every
-`navigation_filter_update_interval`, taking satellites over and handing them back. A host needs no
+`navigation_update_interval`, taking satellites over and handing them back. A host needs no
 vector-specific code: it builds a satellite's state with
 [`init_loop_state`](@ref) for its driver and steps it with every integration of the
 satellite. Read the results, keyed by the driver, with
@@ -34,7 +34,7 @@ the driver's C/N₀ is at least `min_tracking_cn0` and the decoding signal holds
 bit sync. An integration without a PRN, or of a driver not among `signals`, throws an
 `ArgumentError`; any other passenger is ignored, also the decoding signal of a pair
 that does not drive this satellite. Step every signal of every satellite at least
-once per `navigation_filter_update_interval / 2` (see [Stepping the satellites](@ref)).
+once per `navigation_update_interval / 2` (see [Stepping the satellites](@ref)).
 
 Every driver integration runs `scalar_loop` until the filter takes the satellite over, and again
 once it is released. In the vector loop (see [The carrier in the vector
@@ -105,7 +105,7 @@ struct VectorLoopState{S}
     #   - `code_disc_sum` / `fll_disc_sum`: `(count, sum)` of the DLL output (chips) and
     #     the FLL discriminator (Hz, integrations with a previous prompt only) since the
     #     filter last read them.
-    #   - `previous_replica_tail`: the cycles of the replica's carrier over the second half
+    #   - `last_replica_tail`: the cycles of the replica's carrier over the second half
     #     of the driver's last integration (`NaN` before the first), which the residual PLL
     #     propagates its phase by, across a hand-over too.
     #   - `code_frequency_correction`: the code correction from the latest update.
@@ -116,13 +116,13 @@ struct VectorLoopState{S}
     #   - `ramp` / `residual_pll`: the filter's carrier Doppler ramp and the residual
     #     PLL, set by the first command (which adds the satellite to the vector loop)
     #     and cleared out of it (`_has_carrier_ramp`).
-    #   - `slot_index`, `slot_generation`, `update_index`: where the navigation processor keeps
+    #   - `slot_index`, `slot_generation`, `applied_update_index`: where the navigation processor keeps
     #     this satellite (`0` until its first integration), and the latest update applied.
     scalar_state::S
     vector_controlled::Bool
     code_disc_sum::Tuple{Int,Float64}
     fll_disc_sum::Tuple{Int,typeof(1.0Hz)}
-    previous_replica_tail::Float64
+    last_replica_tail::Float64
     code_frequency_correction::typeof(1.0Hz)
     code_frequency_correction_history::NTuple{3,typeof(1.0Hz)}
     feedback_delay::typeof(1.0s)
@@ -130,7 +130,7 @@ struct VectorLoopState{S}
     residual_pll::ResidualPLL
     slot_index::Int
     slot_generation::Int
-    update_index::Int
+    applied_update_index::Int
 end
 
 _is_driver_integration(loop_state::VectorLoopState, post_correlation_state::PostCorrelationState) =
@@ -146,8 +146,8 @@ VectorLoopState(
     vector_controlled::Bool,
     slot_index::Int = 0,
     slot_generation::Int = 0,
-    update_index::Int = -1;
-    previous_replica_tail::Float64 = NaN,
+    applied_update_index::Int = -1;
+    last_replica_tail::Float64 = NaN,
     residual_pll_loop_bandwidth::typeof(1.0Hz) = default_residual_pll_loop_bandwidth(),
 ) =
     VectorLoopState(
@@ -155,7 +155,7 @@ VectorLoopState(
         vector_controlled,
         (0, 0.0),
         (0, 0.0Hz),
-        previous_replica_tail,
+        last_replica_tail,
         0.0Hz,
         (0.0Hz, 0.0Hz, 0.0Hz),
         0.0s,
@@ -163,7 +163,7 @@ VectorLoopState(
         ResidualPLL(residual_pll_loop_bandwidth),
         slot_index,
         slot_generation,
-        update_index,
+        applied_update_index,
     )
 
 function VectorLoopState(
@@ -172,7 +172,7 @@ function VectorLoopState(
     vector_controlled::Maybe{Bool} = nothing,
     code_disc_sum::Maybe{Tuple{Int,Float64}} = nothing,
     fll_disc_sum::Maybe{Tuple{Int,typeof(1.0Hz)}} = nothing,
-    previous_replica_tail::Maybe{Float64} = nothing,
+    last_replica_tail::Maybe{Float64} = nothing,
     code_frequency_correction::Maybe{typeof(1.0Hz)} = nothing,
     code_frequency_correction_history::Maybe{NTuple{3,typeof(1.0Hz)}} = nothing,
     feedback_delay::Maybe{typeof(1.0s)} = nothing,
@@ -180,15 +180,15 @@ function VectorLoopState(
     residual_pll::Maybe{ResidualPLL} = nothing,
     slot_index::Maybe{Int} = nothing,
     slot_generation::Maybe{Int} = nothing,
-    update_index::Maybe{Int} = nothing,
+    applied_update_index::Maybe{Int} = nothing,
 ) where {S}
     VectorLoopState{S}(
         isnothing(scalar_state) ? loop_state.scalar_state : scalar_state,
         isnothing(vector_controlled) ? loop_state.vector_controlled : vector_controlled,
         isnothing(code_disc_sum) ? loop_state.code_disc_sum : code_disc_sum,
         isnothing(fll_disc_sum) ? loop_state.fll_disc_sum : fll_disc_sum,
-        isnothing(previous_replica_tail) ? loop_state.previous_replica_tail :
-        previous_replica_tail,
+        isnothing(last_replica_tail) ? loop_state.last_replica_tail :
+        last_replica_tail,
         isnothing(code_frequency_correction) ? loop_state.code_frequency_correction : code_frequency_correction,
         isnothing(code_frequency_correction_history) ? loop_state.code_frequency_correction_history :
         code_frequency_correction_history,
@@ -198,13 +198,13 @@ function VectorLoopState(
         isnothing(residual_pll) ? loop_state.residual_pll : residual_pll,
         isnothing(slot_index) ? loop_state.slot_index : slot_index,
         isnothing(slot_generation) ? loop_state.slot_generation : slot_generation,
-        isnothing(update_index) ? loop_state.update_index : update_index,
+        isnothing(applied_update_index) ? loop_state.applied_update_index : applied_update_index,
     )
 end
 
 # The state on a fresh slot, owing the latest update's feedback.
 _registered(loop_state::VectorLoopState, slot_index::Int, slot_generation::Int) =
-    VectorLoopState(loop_state; slot_index, slot_generation, update_index = -1)
+    VectorLoopState(loop_state; slot_index, slot_generation, applied_update_index = -1)
 
 """
     init_loop_state(tracking_loop::VectorTrackingLoop, driver_signal, carrier_doppler, code_doppler)
@@ -260,7 +260,7 @@ function calc_carrier_phase_correction(loop_state::VectorLoopState, nco_history,
     loop_state.vector_controlled || return 0.0
     # Both are set by the first driver integration.
     _has_span(residual_pll.last_prompt_span) || return 0.0
-    isnan(loop_state.previous_replica_tail) && return 0.0
+    isnan(loop_state.last_replica_tail) && return 0.0
     fs = Float64(ustrip(Hz, sampling_frequency))
     _residual_phase_after(loop_state, sample_index - residual_pll.last_prompt_span.end_sample_index, fs, nco_history)
 end
@@ -278,22 +278,22 @@ _add_to_vector_loop(loop_state::VectorLoopState) =
         true,
         loop_state.slot_index,
         loop_state.slot_generation,
-        loop_state.update_index;
-        loop_state.previous_replica_tail,
+        loop_state.applied_update_index;
+        loop_state.last_replica_tail,
         residual_pll_loop_bandwidth = loop_state.residual_pll.bandwidth,
     )
 
 # Out of the vector loop with the vector interface cleared and the scalar loop as it
 # stands, not re-initialised: a satellite registering with a slot starts out of the loop
-# (the satellite's own state hands over in `_apply_filter_feedback`).
+# (the satellite's own state hands over in `_apply_nav_filter_feedback`).
 _release_from_vector_loop(loop_state::VectorLoopState) =
     VectorLoopState(
         loop_state.scalar_state,
         false,
         loop_state.slot_index,
         loop_state.slot_generation,
-        loop_state.update_index;
-        loop_state.previous_replica_tail,
+        loop_state.applied_update_index;
+        loop_state.last_replica_tail,
         residual_pll_loop_bandwidth = loop_state.residual_pll.bandwidth,
     )
 
@@ -416,7 +416,7 @@ end
     if !loop_state.vector_controlled
         scalar_state, carrier_doppler, code_doppler =
             step_loop!(tracking_loop.scalar_loop, loop_state.scalar_state, post_correlation_state, nco_history, application_sample_index)
-        return VectorLoopState(loop_state; scalar_state, previous_replica_tail = replica_halves.second),
+        return VectorLoopState(loop_state; scalar_state, last_replica_tail = replica_halves.second),
         carrier_doppler,
         code_doppler
     end
@@ -455,7 +455,7 @@ end
         loop_state;
         code_disc_sum = loop_state.code_disc_sum .+ (1, measured.code_phase_error),
         fll_disc_sum,
-        previous_replica_tail = replica_halves.second,
+        last_replica_tail = replica_halves.second,
         residual_pll,
     ),
     carrier_doppler,
@@ -477,7 +477,7 @@ end
 )
     fs = _sampling_frequency_hz(post_correlation_state)
     coherent_integration_time = post_correlation_state.last_num_integrated_samples / fs
-    previous_cycles = loop_state.previous_replica_tail
+    previous_cycles = loop_state.last_replica_tail
     integration_start_sample_index = _integration_start(post_correlation_state)
     # The previous integration's end, known once the residual PLL has stepped on its prompt.
     previous_span = loop_state.residual_pll.last_prompt_span

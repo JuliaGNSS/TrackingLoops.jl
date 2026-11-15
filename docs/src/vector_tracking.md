@@ -41,10 +41,10 @@ processor, which
 
 - decodes each satellite's navigation data from the demodulated soft bits its
   integrations carry;
-- snapshots each satellite at every navigation epoch (every `navigation_filter_update_interval`
+- snapshots each satellite at every navigation epoch (every `navigation_update_interval`
   on the integrations' time grid): code phase from the last data-bit edge, decoder,
   Dopplers, C/N₀ and the discriminators accumulated since the last epoch;
-- runs the epoch's navigation filter update on the integration that completes the last
+- runs the epoch's navigation update on the integration that completes the last
   satellite's snapshot: the scalar PVT until the filter is seeded, a filter
   iteration after that;
 - leaves the update's decisions (admission, release, commands) for each
@@ -347,7 +347,7 @@ step_loop!(::VectorTrackingLoop, ::VectorLoopState, ::PostCorrelationState, ::An
 TrackingLoops.default_residual_pll_loop_bandwidth()
 ```
 
-## The navigation filter update
+## The navigation update
 
 ```@docs
 TrackingLoops.VectorTrackingStatus

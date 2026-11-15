@@ -63,7 +63,7 @@ end
     @test 0.0u"m" < get_navigation_status(rx.tracking_loop).position_std < 3.0u"m"
     @test keys(get_vector_tracking_members(rx.tracking_loop)) == keys(get_navigation_solution(rx.tracking_loop).observations)
     # Each satellite applied every update once.
-    @test all(sat -> sat.state.update_index == nav_processor.update_index, rx.sats)
+    @test all(sat -> sat.state.applied_update_index == nav_processor.update_index, rx.sats)
     @test nav_processor.next_slot_generation == length(rx.sats)
     # What a consumer reads off the tracking_loop: the update count and its epoch on the
     # integrations' grid, the solution with its DOP, and per satellite what the navigation processor
@@ -147,7 +147,7 @@ end
     # below the 35 dB-Hz lock threshold: two measured are too few, so the loop falls back
     # to scalar tracking, whose loops keep the faded signals, and seeds anew from the
     # first scalar fix once they are back above it.
-    rx = PipelineReceiver(; num_sats = 8, filter_config = NavFilterConfig(; measurement_deficit_timeout = 1.0s),
+    rx = PipelineReceiver(; num_sats = 8, nav_filter_config = NavFilterConfig(; measurement_deficit_timeout = 1.0s),
         tracking_loop_kw = (; min_tracking_cn0 = 35dBHz))
     results, start, diverged = run_pipeline!(rx, 30.0)
     @test !diverged && results[end].status.vector_tracking_active
@@ -171,7 +171,7 @@ end
     # before the epoch the filter falls back at: the others are past the next epoch by
     # then, so the update runs without it — and it is not stale yet. It is released all
     # the same, and its scalar loop tracks it until the filter seeds anew.
-    rx = PipelineReceiver(; num_sats = 8, filter_config = NavFilterConfig(; measurement_deficit_timeout = 1.0s),
+    rx = PipelineReceiver(; num_sats = 8, nav_filter_config = NavFilterConfig(; measurement_deficit_timeout = 1.0s),
         tracking_loop_kw = (; min_tracking_cn0 = 35dBHz))
     results, start, diverged = run_pipeline!(rx, 30.0)
     @test !diverged && results[end].status.vector_tracking_active
@@ -208,7 +208,7 @@ end
     # A 20 ms navigation filter update and the delay-compensated inner loop, the commands applied
     # 15 ms after the integration that computed them: each satellite sizes its corrections
     # for its own application sample.
-    kw = (; num_sats = 8, inner = DelayCompensatedTrackingLoop(), tracking_loop_kw = (; navigation_filter_update_interval = 20ms))
+    kw = (; num_sats = 8, inner = DelayCompensatedTrackingLoop(), tracking_loop_kw = (; navigation_update_interval = 20ms))
     rx0 = PipelineReceiver(; kw...)
     results0, _, diverged0 = run_pipeline!(rx0, 33.0)
     @test !diverged0
@@ -340,14 +340,14 @@ end
         rx.sats[i].state = TL._registered(rx.sats[i].state, 0, 0)
     end
     sample = step_ticks!(sample, 0.07, others)
-    @test nav_processor.update_epoch_index == epoch
+    @test nav_processor.last_update_epoch_index == epoch
     @test all(i -> pipeline_slots(rx)[i].first_epoch_index == epoch + 1, restarting)
     # The held-back satellite catches up. Half a second on, every satellite snapshots
     # every epoch, and the updates run as the epochs are crossed, not an epoch late.
     results, sample, diverged = run_pipeline!(rx, 0.5; start_sample = sample)
     @test !diverged
-    @test nav_processor.update_epoch_index == fld(sample, round(Int, 0.1 * ustrip(Hz, SIM_FS)))
-    @test all(slot -> slot.snapshot_epoch_index == nav_processor.update_epoch_index, pipeline_slots(rx))
+    @test nav_processor.last_update_epoch_index == fld(sample, round(Int, 0.1 * ustrip(Hz, SIM_FS)))
+    @test all(slot -> slot.snapshot_epoch_index == nav_processor.last_update_epoch_index, pipeline_slots(rx))
     # Once the restarted satellites have decoded a subframe again, the filter measures
     # all eight.
     results, _, diverged = run_pipeline!(rx, 12.0; start_sample = sample)

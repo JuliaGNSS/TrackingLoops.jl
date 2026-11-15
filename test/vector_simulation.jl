@@ -433,7 +433,7 @@ integration_ms(signal) = round(Int, 1000 * get_code_length(signal) / ustrip(Hz, 
 function SimReceiver(;
     signals = (GPSL1CA(),),
     inner = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
-    filter_config = NavFilterConfig(),
+    nav_filter_config = NavFilterConfig(),
     num_sats = typemax(Int), # or one count per signal
     range_biases = map(_ -> 0.0, signals), # per signal (m)
     atmosphere = false, # delay the true ranges by the modelled atmosphere
@@ -451,8 +451,8 @@ function SimReceiver(;
     t0 = maximum(maximum(calc_transmit_time, last(f)) for f in fixtures) + 0.075
     truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0, truth_kw...)
     delays = atmosphere ? sim_atmosphere(signals, fixtures, first(gps_states), t0) : NO_ATMOSPHERE
-    tracking_loop = VectorTrackingLoop(signals...; scalar_loop = inner, filter_config, approximate_year = 2021,
-        navigation_filter_update_interval = nominal_integrations * 1.0ms,
+    tracking_loop = VectorTrackingLoop(signals...; scalar_loop = inner, nav_filter_config, approximate_year = 2021,
+        navigation_update_interval = nominal_integrations * 1.0ms,
         enable_ionospheric_correction = correct_atmosphere,
         enable_tropospheric_correction = correct_atmosphere, tracking_loop_kw...)
     nav_processor = tracking_loop.navigation_processor
@@ -494,10 +494,10 @@ function run_update!(receiver::SimReceiver, sample, fill!; ignore_delay = false)
     for (channels, group) in zip(receiver.channels, receiver.groups), (i, sat) in enumerate(channels)
         fill!(group.slots[i], sat, sample, receiver.delay_ms == 0 ? nothing : application_sample_index, nav_processor)
     end
-    TrackingLoops._navigation_update!(nav_processor, sample / ustrip(Hz, SIM_FS))
+    TrackingLoops._run_navigation_update!(nav_processor, sample / ustrip(Hz, SIM_FS))
     for (channels, group) in zip(receiver.channels, receiver.groups), (i, sat) in enumerate(channels)
         nco_history = receiver.delay_ms == 0 ? sim_nco_history(sat, nothing) : sat.timeline
-        sat.state = TrackingLoops._apply_filter_feedback(receiver.tracking_loop, group, group.slots[i], sat.state,
+        sat.state = TrackingLoops._apply_nav_filter_feedback(receiver.tracking_loop, group, group.slots[i], sat.state,
             feedback_integration(sat, sample), nco_history, sized_for)
     end
     nav_processor.pvt, nav_processor.status
@@ -620,7 +620,7 @@ function PipelineReceiver(
     ::Val{pilot};
     num_sats = typemax(Int),
     inner = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
-    filter_config = NavFilterConfig(),
+    nav_filter_config = NavFilterConfig(),
     delay_integrations = 0,
     cn0_dbhz = 45.0,
     lead = 8.0,
@@ -637,7 +637,7 @@ function PipelineReceiver(
     t0 = next_subframe1_start(maximum(calc_transmit_time, states)) - lead
     truth = SimTruth(; position = SVector(fix.position.x, fix.position.y, fix.position.z), t0)
     ranging = pilot ? (GPSL1C_P() => GPSL1CA(),) : (GPSL1CA(),)
-    tracking_loop = something(tracking_loop, VectorTrackingLoop(ranging...; scalar_loop = inner, filter_config, approximate_year = 2021,
+    tracking_loop = something(tracking_loop, VectorTrackingLoop(ranging...; scalar_loop = inner, nav_filter_config, approximate_year = 2021,
         enable_ionospheric_correction = false, enable_tropospheric_correction = false,
         tracking_loop_kw...))
     decoders = decoders[1:min(num_sats, end)]
@@ -805,7 +805,7 @@ function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
             nav_processor = receiver.vt
             pvt = nav_processor.pvt
             push!(results, (; pvt = deepcopy(pvt), status = nav_processor.status, code_errors = copy(code_errors),
-                time = receiver.truth.t0 + nav_processor.update_epoch_index * TrackingLoops._update_interval_seconds(nav_processor),
+                time = receiver.truth.t0 + nav_processor.last_update_epoch_index * TrackingLoops._update_interval_seconds(nav_processor),
                 measured = collect(keys(pvt.observations)),
                 reasons = [get_satellite_report(tracking_loop, sat.signal, sat.decoder.prn).release_reason for sat in receiver.sats]))
         end

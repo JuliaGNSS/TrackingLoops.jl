@@ -181,9 +181,9 @@ end
 
 # The carrier filter's input: the FLL-assisted filter takes both
 # discriminators, any other the phase discriminator alone.
-@inline _carrier_filter_input(::ThirdOrderAssistedBilinearLF, phase_error, frequency_error) =
+@inline _carrier_loop_filter_input(::ThirdOrderAssistedBilinearLF, phase_error, frequency_error) =
     (phase_error, frequency_error)
-@inline _carrier_filter_input(::AbstractLoopFilter, phase_error, frequency_error) =
+@inline _carrier_loop_filter_input(::AbstractLoopFilter, phase_error, frequency_error) =
     phase_error
 
 # The scalar carrier filter's bandwidth for an integration of `coherent_integration_time`: the
@@ -218,7 +218,7 @@ end
         calc_effective_code_loop_bandwidth(loop_state.bandwidths.code, coherent_integration_time)
     carrier_frequency_correction, carrier_loop_filter = filter_loop(
         loop_state.carrier_loop_filter,
-        _carrier_filter_input(
+        _carrier_loop_filter_input(
             loop_state.carrier_loop_filter,
             discriminators.carrier_phase_error,
             discriminators.carrier_frequency_error,
@@ -542,7 +542,7 @@ get_navigation_solution(::AbstractTrackingLoop) = nothing
 """
     get_navigation_status(tracking_loop) -> Union{VectorTrackingStatus,Nothing}
 
-What the latest navigation filter update did ([`VectorTrackingStatus`](@ref)), or `nothing` for a
+What the latest navigation update did ([`VectorTrackingStatus`](@ref)), or `nothing` for a
 loop without one.
 """
 get_navigation_status(::AbstractTrackingLoop) = nothing
@@ -550,7 +550,7 @@ get_navigation_status(::AbstractTrackingLoop) = nothing
 """
     get_navigation_update_index(tracking_loop) -> Union{Int,Nothing}
 
-Number of navigation filter updates run, or `nothing` without them. Advances with each
+Number of navigation updates run, or `nothing` without them. Advances with each
 attempted update and its [`get_navigation_status`](@ref).
 An unsuccessful positioning attempt retains the previous [`get_navigation_solution`](@ref),
 so a new update index does not by itself indicate a new fix.
@@ -560,9 +560,9 @@ get_navigation_update_index(::AbstractTrackingLoop) = nothing
 """
     get_navigation_elapsed_time(tracking_loop) -> Union{typeof(1.0s),Nothing}
 
-Elapsed time of the latest navigation filter update, in seconds since the shared origin
+Elapsed time of the latest navigation update, in seconds since the shared origin
 of the integrations' sample grid. Returns `nothing` before the first update or for a loop
-without navigation filter updates. This advances even when a positioning attempt fails and
+without navigation updates. This advances even when a positioning attempt fails and
 the previous solution is retained. Read `get_navigation_solution(tracking_loop).time` for
 the solution's absolute timestamp.
 """

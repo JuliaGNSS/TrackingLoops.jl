@@ -15,7 +15,7 @@
 """
     VectorTrackingReleaseReason
 
-Why the latest navigation filter update handed a satellite back to its scalar loop
+Why the latest navigation update handed a satellite back to its scalar loop
 (a [`get_satellite_report`](@ref)'s `release_reason`):
 
   - `VT_NOT_RELEASED`: it was not;
@@ -44,7 +44,7 @@ signal (see
   - `bit_or_secondary_code_synced`: whether the decoding signal's bit clock held the bit sync at
     that signal's last integration;
   - at its latest snapshot (`snapshot_time`, on the navigation-epoch grid, a multiple of
-    `navigation_filter_update_interval`, `nothing` before
+    `navigation_update_interval`, `nothing` before
     the first): `cn0` (the driver's, from the host's C/N₀ estimator),
     `measurement_ready` (decoding signal synced and the driver's C/N₀ at least the lock
     threshold) and `positioning_ready` (in lock, decoded for positioning and healthy);
@@ -188,7 +188,7 @@ mutable struct VectorTrackingSlot{D,E<:VectorLoopState}
     # was released, and the update and member index of its commands.
     vector_controlled::Bool
     release_reason::VectorTrackingReleaseReason
-    command_update_index::Int
+    commanded_update_index::Int
     member_index::Int
 end
 
@@ -237,9 +237,9 @@ function VectorTrackingSlotGroup(
     decoding_signal::AbstractGNSSSignal,
     prototype::VectorLoopState,
     capacity,
-    navigation_filter_update_interval,
+    navigation_update_interval,
 )
-    prompt_history_length = _prompt_history_length(driver_signal, decoding_signal, navigation_filter_update_interval)
+    prompt_history_length = _prompt_history_length(driver_signal, decoding_signal, navigation_update_interval)
     # Inactive slots need a valid decoder prototype; the receiver validates tracked PRNs.
     prototype_prn = first(get_supported_prns(decoding_signal))
     slots = [VectorTrackingSlot(decoding_signal, prototype_prn, prototype, prompt_history_length) for _ = 1:capacity]
@@ -249,7 +249,7 @@ end
 """
     VectorTrackingStatus
 
-What the latest navigation filter update of a [`VectorTrackingLoop`](@ref) did (see
+What the latest navigation update of a [`VectorTrackingLoop`](@ref) did (see
 [`get_navigation_status`](@ref)).
 
   - `vector_tracking_active`: vector tracking is active after this update;
@@ -264,7 +264,7 @@ What the latest navigation filter update of a [`VectorTrackingLoop`](@ref) did (
   - the events `seeded` (a fresh scalar fix seeded the filter), `fell_back`
     (vector tracking stopped) and `released` (some satellite was released; see
     the reports' `release_reason`);
-  - `solution_from_filter`: [`get_navigation_solution`](@ref) is the navigation filter's
+  - `solution_from_nav_filter`: [`get_navigation_solution`](@ref) is the navigation filter's
     this update, not a scalar fix. It differs from `vector_tracking_active` on the
     transitions: the update that seeds the filter reports the scalar fix it seeded
     from, and the update that falls back still reports the filter's last update.
@@ -280,7 +280,7 @@ struct VectorTrackingStatus
     seeded::Bool
     fell_back::Bool
     released::Bool
-    solution_from_filter::Bool
+    solution_from_nav_filter::Bool
 end
 
 VectorTrackingStatus() = VectorTrackingStatus(false, NaN * m, NaN * m, 0.0s, 0, false, false, false, false)
@@ -448,15 +448,15 @@ mutable struct NavigationProcessor{G<:Tuple,SB<:Tuple}
     const enable_tropospheric_correction::Bool
     const workspace::VectorTrackingWorkspace{SB}
     const groups::G
-    const navigation_filter_update_interval::typeof(1.0s)
+    const update_interval::typeof(1.0s)
     const min_tracking_cn0::typeof(1.0dBHz)
-    # The epoch (in `navigation_filter_update_interval`s on the integrations' time grid) the slots snapshot
+    # The epoch (in `navigation_update_interval`s on the integrations' time grid) the slots snapshot
     # next, and how many have.
     pending_epoch_index::Int
     num_snapshots::Int
     # The latest update's id and epoch.
     update_index::Int
-    update_epoch_index::Int
+    last_update_epoch_index::Int
     next_slot_generation::Int
 end
 
@@ -464,7 +464,7 @@ function NavigationProcessor(
     config::NavFilterConfig,
     pairs::Tuple,
     scalar_loop::AbstractTrackingLoop;
-    navigation_filter_update_interval,
+    navigation_update_interval,
     min_tracking_cn0::typeof(1.0dBHz),
     satellite_capacity_per_signal::Int,
     approximate_year::Integer,
@@ -473,11 +473,11 @@ function NavigationProcessor(
 )
     signals = map(first, pairs)
     layout = NavFilterLayout(signals)
-    model = NavFilterModel(config, layout, uconvert(s, navigation_filter_update_interval))
+    model = NavFilterModel(config, layout, uconvert(s, navigation_update_interval))
     n = num_nav_states(config, layout)
     groups = map(pairs) do (signal, decoding_signal)
         prototype = VectorLoopState(init_loop_state(scalar_loop, signal, 0.0Hz, 0.0Hz), false)
-        VectorTrackingSlotGroup(signal, decoding_signal, prototype, satellite_capacity_per_signal, navigation_filter_update_interval)
+        VectorTrackingSlotGroup(signal, decoding_signal, prototype, satellite_capacity_per_signal, navigation_update_interval)
     end
     max_members = satellite_capacity_per_signal * length(signals)
     signal_observations = map(_signal_observation_buffer, groups)
@@ -494,7 +494,7 @@ function NavigationProcessor(
         enable_tropospheric_correction,
         VectorTrackingWorkspace(signal_observations, n, layout, max_members),
         groups,
-        uconvert(s, navigation_filter_update_interval),
+        uconvert(s, navigation_update_interval),
         min_tracking_cn0,
         typemin(Int),
         0,
@@ -541,7 +541,7 @@ get_navigation_solution(tracking_loop::VectorTrackingLoop) = tracking_loop.navig
 """
     get_navigation_status(tracking_loop::VectorTrackingLoop) -> VectorTrackingStatus
 
-What the latest navigation filter update did (see [`VectorTrackingStatus`](@ref)).
+What the latest navigation update did (see [`VectorTrackingStatus`](@ref)).
 """
 get_navigation_status(tracking_loop::VectorTrackingLoop) = tracking_loop.navigation_processor.status
 
@@ -549,7 +549,7 @@ get_navigation_update_index(tracking_loop::VectorTrackingLoop) = tracking_loop.n
 
 function get_navigation_elapsed_time(tracking_loop::VectorTrackingLoop)
     nav_processor = tracking_loop.navigation_processor
-    nav_processor.update_epoch_index == typemin(Int) ? nothing : nav_processor.update_epoch_index * nav_processor.navigation_filter_update_interval
+    nav_processor.last_update_epoch_index == typemin(Int) ? nothing : nav_processor.last_update_epoch_index * nav_processor.update_interval
 end
 
 function get_satellite_report(tracking_loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
@@ -588,7 +588,7 @@ end
 
 function _satellite_report(nav_processor, slot::VectorTrackingSlot)
     snapshot_time = slot.snapshot_epoch_index == typemin(Int) ? nothing :
-        slot.snapshot_epoch_index * nav_processor.navigation_filter_update_interval
+        slot.snapshot_epoch_index * nav_processor.update_interval
     SatelliteReport(
         slot.prn,
         slot.decoding.bit_synced,
@@ -643,7 +643,7 @@ transmit time and post-fit residuals. One physical satellite can have several
 members, one per ranging signal. The solution's `observations` contains only the
 measured members. Empty while the scalar solve is in control.
 
-The returned dictionary is borrowed storage, reused by the next navigation filter update;
+The returned dictionary is borrowed storage, reused by the next navigation update;
 copy it to retain the current results.
 """
 get_vector_tracking_members(tracking_loop::VectorTrackingLoop) = tracking_loop.navigation_processor.vector_tracking_members
@@ -655,7 +655,7 @@ get_vector_tracking_members(tracking_loop::VectorTrackingLoop) = tracking_loop.n
 # grid, not in seconds since the origin: `sample_index / fs` and `k · Δt_nav` round apart as
 # the session grows, by nanoseconds after a year, while sample indices stay exact.
 
-_update_interval_seconds(nav_processor::NavigationProcessor) = ustrip(s, nav_processor.navigation_filter_update_interval)
+_update_interval_seconds(nav_processor::NavigationProcessor) = ustrip(s, nav_processor.update_interval)
 # Where a signal's last integration ended (s) on the integrations' time grid.
 _last_end_time(role::Union{DriverState,DecodingState}) = role.last_end_sample_index / ustrip(Hz, role.sampling_frequency)
 
@@ -730,7 +730,7 @@ _is_positioning_ready(slot::VectorTrackingSlot) = slot.in_update && slot.snapsho
 # ─────────────────────────────────────────────────────────────────────────────
 # Membership
 
-# Hand `slot` back to its scalar loop; applied on its next integration (`_apply_filter_feedback`).
+# Hand `slot` back to its scalar loop; applied on its next integration (`_apply_nav_filter_feedback`).
 function _mark_release!(slot::VectorTrackingSlot, reason::VectorTrackingReleaseReason)
     slot.vector_controlled = false
     slot.release_reason = reason
@@ -798,7 +798,7 @@ function _collect_members!(j, group, group_index, nav_processor, Δt_nav)
         _is_member(slot) || continue
         # Its loop state at the epoch, as the vector loop sees it: its snapshot's, or, for a
         # satellite this update admitted, that state with the vector interface empty (no
-        # discriminators accumulated yet), as `_apply_filter_feedback` will make it.
+        # discriminators accumulated yet), as `_apply_nav_filter_feedback` will make it.
         loop_state = _add_to_vector_loop(slot.snapshot.loop_state)
         j += 1
         measurement = workspace.measurements[j]
@@ -1007,7 +1007,7 @@ function _assign_commands!(acc, group, group_index, nav_processor)
     for (j, member) in enumerate(workspace.members)
         member.group == group_index && workspace.above_horizon[j] || continue
         slot = group.slots[member.slot_index]
-        slot.command_update_index = nav_processor.update_index
+        slot.commanded_update_index = nav_processor.update_index
         slot.member_index = j
     end
     acc
@@ -1026,11 +1026,11 @@ function _commands_at_application(
     application_sample_index::Int64,
 )
     # A command applied on the epoch itself may read a rounding error early.
-    feedback_delay = (application_sample_index - _epoch_sample_index(nav_processor, nav_processor.update_epoch_index, fs)) / fs
-    -1 / fs <= feedback_delay <= MAX_FEEDBACK_DELAY_UPDATES * _update_interval_seconds(nav_processor) || throw(
+    feedback_delay = (application_sample_index - _epoch_sample_index(nav_processor, nav_processor.last_update_epoch_index, fs)) / fs
+    -1 / fs <= feedback_delay <= MAX_FEEDBACK_DELAY_UPDATE_INTERVALS * _update_interval_seconds(nav_processor) || throw(
         ArgumentError(
-            "a command must take effect between zero and 2.5 navigation filter updates after the " *
-            "epoch whose commands it carries",
+            "a command must take effect between zero and $(MAX_FEEDBACK_DELAY_UPDATE_INTERVALS) navigation " *
+            "update intervals after the epoch whose commands it carries",
         ),
     )
     feedback_delay = max(feedback_delay, 0.0)
@@ -1044,7 +1044,7 @@ function _commands_at_application(
     # atmosphere-corrected, no discriminator term); the carrier is the predicted Doppler itself,
     # there and one update interval later for the ramp's end.
     predicted_pseudorange, predicted_rate, replica_pseudorange = _predict_after_epoch(nav_processor, slot, feedback_delay, chips)
-    code_update = calc_nco_code_correction(
+    code_frequency_correction = calc_code_frequency_correction(
         predicted_pseudorange,
         replica_pseudorange,
         member.chip_rate,
@@ -1053,7 +1053,7 @@ function _commands_at_application(
     doppler = predict_carrier_doppler(predicted_rate, member.wavelength)
     _, next_rate, _ = _predict_after_epoch(nav_processor, slot, feedback_delay + Δt_nav, chips + Δt_nav * (chip_rate + code_command))
     next_doppler = predict_carrier_doppler(next_rate, member.wavelength)
-    code_update, CarrierDopplerRamp(doppler * Hz, (next_doppler - doppler) / Δt_nav * Hz / s, application_sample_index / fs * s), feedback_delay
+    code_frequency_correction, CarrierDopplerRamp(doppler * Hz, (next_doppler - doppler) / Δt_nav * Hz / s, application_sample_index / fs * s), feedback_delay
 end
 
 # The slot's member's predicted pseudorange and rate `τ` after the epoch, from the filter's `x`
@@ -1208,7 +1208,7 @@ end
 # reset). A fresh fix has satellites, all in the update (only those enter the scalar
 # solve), so there is always a member to seed from. None is in the loop yet:
 # slot_generation puts a satellite out of it, and the fallback releases every one in it.
-function _seed!(nav_processor::NavigationProcessor, groups, update_interval)
+function _seed_nav_filter!(nav_processor::NavigationProcessor, groups, update_interval)
     nav_filter = nav_processor.nav_filter
     workspace = nav_processor.workspace
     model = nav_filter.model
@@ -1269,29 +1269,29 @@ function _prepare_slots!(released, group::VectorTrackingSlotGroup, nav_processor
     released
 end
 
-# One navigation filter update at the pending epoch.
+# One navigation update at the pending epoch.
 #
 #   - Not running: the scalar PVT. A fresh fix seeds the filter, puts its satellites
 #     into the vector loop and closes their loops a first time at the seeded state.
-#   - Running: one filter update (`_nav_filter_update!`) — admission and release, the members'
+#   - Running: one filter update (`_update_nav_filter!`) — admission and release, the members'
 #     accumulated discriminators fused, commands for every member. Admitted are
 #     satellites decoded, healthy, in lock and `ADMISSION_ELEVATION` above the
 #     horizon; members out of lock stay in the loop unmeasured. After
 #     `measurement_deficit_timeout` of unsolvable epochs, or with no member left, every
 #     satellite in the loop is released (those that missed the epoch too) and the next
 #     update solves the scalar PVT.
-function _navigation_update!(nav_processor::NavigationProcessor, time)
+function _run_navigation_update!(nav_processor::NavigationProcessor, time)
     groups = nav_processor.groups
     workspace = nav_processor.workspace
     epoch_index = nav_processor.pending_epoch_index
     update_interval =
-        nav_processor.update_epoch_index == typemin(Int) ? nav_processor.navigation_filter_update_interval :
-        (epoch_index - nav_processor.update_epoch_index) * nav_processor.navigation_filter_update_interval
+        nav_processor.last_update_epoch_index == typemin(Int) ? nav_processor.update_interval :
+        (epoch_index - nav_processor.last_update_epoch_index) * nav_processor.update_interval
     nav_processor.update_index += 1
     dropped = _fold_groups(_prepare_slots!, false, groups, nav_processor, time)
     seeded = released = fell_back = false
     if nav_processor.vector_tracking_active
-        released, fell_back = _nav_filter_update!(nav_processor, groups, update_interval)
+        released, fell_back = _update_nav_filter!(nav_processor, groups, update_interval)
     else
         # Scalar solve: no per-member report.
         empty_keeping_capacity!(nav_processor.vector_tracking_members)
@@ -1308,7 +1308,7 @@ function _navigation_update!(nav_processor::NavigationProcessor, time)
         if result.status == PositionVelocityTime.solved
             nav_processor.pvt = result.solution
             seeded = true
-            _seed!(nav_processor, groups, update_interval)
+            _seed_nav_filter!(nav_processor, groups, update_interval)
         end
     end
     num_members = _fold_groups(_count_members, 0, groups)
@@ -1323,9 +1323,9 @@ function _navigation_update!(nav_processor::NavigationProcessor, time)
         released || dropped,
         nav_processor.vector_tracking_active && !seeded || fell_back,
     )
-    nav_processor.update_epoch_index = epoch_index
+    nav_processor.last_update_epoch_index = epoch_index
     # The epoch to snapshot next: the next one, or, if a satellite is past it already (see
-    # `_run_update_if_due!`), the first no satellite is past. The update after skipped
+    # `_run_navigation_update_if_due!`), the first no satellite is past. The update after skipped
     # epochs is longer, as after a gap. The host steps every satellite through each chunk, which
     # is shorter than an update interval, so in step no satellite is past the next epoch.
     nav_processor.pending_epoch_index =
@@ -1342,7 +1342,7 @@ end
 # discriminators as pseudorange (and, for VDFLL, rate) measurements (measurement update),
 # and assign the NCO commands or fall back to scalar tracking. Returns
 # `(released, fell_back)`.
-function _nav_filter_update!(nav_processor::NavigationProcessor, groups, update_interval)
+function _update_nav_filter!(nav_processor::NavigationProcessor, groups, update_interval)
     nav_filter = nav_processor.nav_filter
     config = nav_filter.config
     workspace = nav_processor.workspace

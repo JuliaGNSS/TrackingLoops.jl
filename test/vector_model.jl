@@ -716,7 +716,7 @@ end
     # A predicted pseudorange 10 m beyond the measured one must speed the code
     # NCO up by f_code · 10 m / (Δt_nav · c): the replica is 10 m late. A predicted
     # rate of 105 m/s is a carrier Doppler of −105/λ Hz.
-    @test TL.calc_nco_code_correction(1000.0 + 10.0, 1000.0, member.chip_rate, 0.1) ≈
+    @test TL.calc_code_frequency_correction(1000.0 + 10.0, 1000.0, member.chip_rate, 0.1) ≈
           -10.0 * member.chip_rate / (0.1 * c)
     @test TL.predict_carrier_doppler(105.0, member.wavelength) ≈ -105.0 / member.wavelength
 
@@ -734,7 +734,7 @@ end
     columns = member_bias_columns([member], layout)
     predict(x) = predict_pseudoranges!(zeros(1), [member.sat_pos], position_and_bias_vector(x, idxs), columns)[1]
     @test predict(x_updated) - predict(x) ≈ -10.0 rtol = 1e-3
-    @test TL.calc_nco_code_correction(predict(x_updated), predict(x), member.chip_rate, 0.1) ≈
+    @test TL.calc_code_frequency_correction(predict(x_updated), predict(x), member.chip_rate, 0.1) ≈
           10.0 * member.chip_rate / (0.1 * c) rtol = 1e-3
 end
 

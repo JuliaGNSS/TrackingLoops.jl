@@ -382,7 +382,7 @@ end
 # `∫_{Δt_nav/2}^{Δt_nav} c(t) dt`: moves the mean code discriminator from mid-interval to the epoch.
 # `c₀, c₁, c₂` are the last three corrections, newest first, each reaching the replica
 # `L` after its measurement epoch; `L = 0` gives `c₀·Δt_nav/2`. Valid for `L ≤ 2.5Δt_nav`
-# (`MAX_FEEDBACK_DELAY_UPDATES`).
+# (`MAX_FEEDBACK_DELAY_UPDATE_INTERVALS`).
 function code_phase_advance(loop_state::VectorLoopState, Δt_nav)
     c₀, c₁, c₂ = map(c -> ustrip(Hz, c), loop_state.code_frequency_correction_history)
     L = ustrip(s, loop_state.feedback_delay)
@@ -391,7 +391,7 @@ function code_phase_advance(loop_state::VectorLoopState, Δt_nav)
 end
 
 # Longest NCO delay (update intervals) `code_phase_advance` covers; longer ones throw.
-const MAX_FEEDBACK_DELAY_UPDATES = 2.5
+const MAX_FEEDBACK_DELAY_UPDATE_INTERVALS = 2.5
 
 # Mean DLL discriminator (chips), advanced to the epoch by `code_phase_advance`; negated
 # because `dll_disc`'s sense is reversed. Zero when nothing was accumulated (see
@@ -597,7 +597,7 @@ end
 # from the measured rate, which reaches the NCO only through the updated state. Predict
 # from the *updated* state only: adding the update's projected state correction too
 # would double-count it (loop gain 2, oscillation).
-calc_nco_code_correction(predicted_pseudorange, replica_pseudorange, chip_rate, Δt_nav) =
+calc_code_frequency_correction(predicted_pseudorange, replica_pseudorange, chip_rate, Δt_nav) =
     -(predicted_pseudorange - replica_pseudorange) * chip_rate / (Δt_nav * SPEED_OF_LIGHT)
 
 # The carrier Doppler (Hz, positive closing) of a pseudorange rate (m/s, positive receding).
@@ -630,7 +630,7 @@ end
 # system has a measurement and no broadcast offset ties it to a better-observed system
 # (no flicker; the filter keeps a sparsely observed clock determined). Picking only
 # present systems keeps a week number, and so a timestamp, available. Without
-# measurements it is kept; `_seed!` sets it before the first update.
+# measurements it is kept; `_seed_nav_filter!` sets it before the first update.
 function select_reference_clock_index(layout::NavFilterLayout, bias_layout, current_index)
     isempty(bias_layout.clock_systems) && return current_index
     prev_reference_system = layout.time_systems[current_index]

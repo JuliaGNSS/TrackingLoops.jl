@@ -46,7 +46,7 @@ for (name, signals) in (("GPS L1 C/A", (GPSL1CA(),)), ("GPS L1 C/A and L2C", (GP
     now = epoch / ustrip(Hz, SIM_FS)
     num_satellites = sum(length, rx.channels)
     SUITE["navigation filter update"]["$num_satellites satellites, $name"] =
-        @benchmarkable TrackingLoops._navigation_update!(nav_processor, $now) setup = (nav_processor = deepcopy($(rx.vt))) evals = 1
+        @benchmarkable TrackingLoops._run_navigation_update!(nav_processor, $now) setup = (nav_processor = deepcopy($(rx.vt))) evals = 1
 
     # One integration of every member, stepped from its state at the update's end as the
     # satellite's own loop steps it in the vector loop; one vector per signal, so that
