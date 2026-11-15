@@ -413,8 +413,8 @@ function estimate_cn0(estimator::NWPRCN0Estimator, coherent_integration_time)
     iszero(total_wideband_power) &&
         return estimate_cn0(estimator.fallback, coherent_integration_time)
     mean_ratio = sum(get_buffered_narrowband_powers(estimator)) / total_wideband_power
-    mean_ratio <= 1 && return dBHz(0.0 / coherent_integration_time)
-    mean_ratio >= M && return dBHz(Inf / coherent_integration_time)
+    mean_ratio <= 1 && return -Inf * dBHz
+    mean_ratio >= M && return Inf * dBHz
     SNR = (mean_ratio - 1) / (M - mean_ratio)
     dBHz(SNR / coherent_integration_time)
 end

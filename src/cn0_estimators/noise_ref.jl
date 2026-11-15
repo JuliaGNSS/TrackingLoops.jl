@@ -182,13 +182,13 @@ floor is already kept out of the ring by [`get_noise_density_and_ready`](@ref)).
 """
 function estimate_cn0(estimator::NoiseReferencedCN0Estimator, coherent_integration_time)
     filled = length(estimator)
-    filled == 0 && return dBHz(0.0Hz)
+    filled == 0 && return -Inf * dBHz
     total = 0.0
     @inbounds for i = 1:filled
         total += estimator.buffered_cn0[i]
     end
     mean_cn0 = total / filled
-    isfinite(mean_cn0) && mean_cn0 > 0 || return dBHz(0.0Hz)
+    isfinite(mean_cn0) && mean_cn0 > 0 || return -Inf * dBHz
     dBHz(mean_cn0 * Hz)
 end
 
