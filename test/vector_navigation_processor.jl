@@ -158,7 +158,7 @@ end
         # The accumulators were emptied at the epoch's snapshot.
         @test sat.state.code_disc_sum == (0, 0.0)
         # Applied once: applying it again changes nothing.
-        @test TL._apply_filter_feedback(vt, rx.group, slot, sat.state, feedback_integration(sat, 0),
+        @test TL._apply_filter_feedback(rx.tracking_loop, rx.group, slot, sat.state, feedback_integration(sat, 0),
             sim_nco_history(sat, nothing), Int64(0)) === sat.state
     end
 end

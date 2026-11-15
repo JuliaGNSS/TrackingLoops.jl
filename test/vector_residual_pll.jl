@@ -322,7 +322,7 @@ end
     rate = ustrip(Hz / s, sat.state.ramp.doppler_rate) + TL._residual_doppler_rate(residual_pll)
     TL._mark_release!(slot, VT_INELIGIBLE)
     rx.vt.update_index += 1
-    sat.state = TL._apply_filter_feedback(rx.vt, rx.group, slot, sat.state, feedback_integration(sat, sample),
+    sat.state = TL._apply_filter_feedback(rx.tracking_loop, rx.group, slot, sat.state, feedback_integration(sat, sample),
         sim_nco_history(sat, nothing), Int64(sample))
     @test !sat.state.vector_controlled
     @test sat.state.scalar_state.initial_carrier_doppler ≈ estimate * Hz

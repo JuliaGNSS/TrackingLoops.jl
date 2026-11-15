@@ -19,7 +19,7 @@ end
 # The satellites apply the latest update, as they would on their next integration.
 function apply_feedback!(rx::SimReceiver, sample)
     for (channels, group) in zip(rx.channels, rx.groups), (i, sat) in enumerate(channels)
-        sat.state = TL._apply_filter_feedback(rx.vt, group, group.slots[i], sat.state,
+        sat.state = TL._apply_filter_feedback(rx.tracking_loop, group, group.slots[i], sat.state,
             feedback_integration(sat, sample), sim_nco_history(sat, nothing), Int64(sample))
     end
 end
@@ -104,7 +104,7 @@ end
     post_correlation_state = feedback_integration(sat, sample)
     nco_history = sim_nco_history(sat, nothing)
     state = sat.state
-    apply_feedback(state) = @allocated TL._apply_filter_feedback(rx.vt, group, slot, state, post_correlation_state, nco_history, Int64(sample))
+    apply_feedback(state) = @allocated TL._apply_filter_feedback(rx.tracking_loop, group, slot, state, post_correlation_state, nco_history, Int64(sample))
     apply_feedback(state)
     @test apply_feedback(state) == 0
 end
