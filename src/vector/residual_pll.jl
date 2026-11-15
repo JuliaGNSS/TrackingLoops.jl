@@ -77,10 +77,9 @@ struct ResidualPLL
     bandwidth::typeof(1.0Hz)
     carrier_frequency_correction::typeof(1.0Hz)
     loop_filter::ResidualPLLLoopFilter
-    # The latest prompt's centre (a sample index on the integrations' grid, half-way
-    # between two samples for an odd count; `NaN` until the first integration) and the
-    # carrier phase polarity its discriminator ran with.
-    last_prompt_sample_index::Float64
+    # The latest prompt's integration on the integrations' grid (none until the first) and
+    # the carrier phase polarity its discriminator ran with.
+    last_prompt_span::IntegrationSpan
     carrier_phase_polarity::Int8
     # The residual phase (cycles) the latest prompt was wiped with: the prediction.
     predicted_prompt_phase::Float64
@@ -101,7 +100,7 @@ ResidualPLL(bandwidth) = ResidualPLL(
     bandwidth,
     0.0Hz,
     _residual_pll_loop_filter(0.0, 0.0),
-    NaN,
+    IntegrationSpan(),
     Int8(0),
     NaN,
     ResidualPLLLock(),
@@ -111,7 +110,7 @@ ResidualPLL(
     residual_pll::ResidualPLL;
     carrier_frequency_correction::Maybe{typeof(1.0Hz)} = nothing,
     loop_filter::Maybe{ResidualPLLLoopFilter} = nothing,
-    last_prompt_sample_index::Maybe{Float64} = nothing,
+    last_prompt_span::Maybe{IntegrationSpan} = nothing,
     carrier_phase_polarity::Maybe{Integer} = nothing,
     predicted_prompt_phase::Maybe{Float64} = nothing,
     lock::Maybe{ResidualPLLLock} = nothing,
@@ -119,7 +118,7 @@ ResidualPLL(
     residual_pll.bandwidth,
     isnothing(carrier_frequency_correction) ? residual_pll.carrier_frequency_correction : carrier_frequency_correction,
     isnothing(loop_filter) ? residual_pll.loop_filter : loop_filter,
-    isnothing(last_prompt_sample_index) ? residual_pll.last_prompt_sample_index : last_prompt_sample_index,
+    isnothing(last_prompt_span) ? residual_pll.last_prompt_span : last_prompt_span,
     isnothing(carrier_phase_polarity) ? residual_pll.carrier_phase_polarity :
     carrier_phase_polarity,
     isnothing(predicted_prompt_phase) ? residual_pll.predicted_prompt_phase : predicted_prompt_phase,
@@ -140,7 +139,7 @@ _initialized_residual_pll(
         residual_pll.bandwidth,
         (scalar_doppler - _doppler_at(ramp, time)) * Hz,
         _residual_pll_loop_filter(scalar_doppler - _doppler_at(ramp, time), 0.0),
-        NaN,
+        IntegrationSpan(),
         Int8(0),
         NaN,
         ResidualPLLLock(staging),
@@ -150,7 +149,7 @@ _initialized_residual_pll(
 # incoming Doppler at its latest prompt (before the first: where the old ramp took
 # over) and of its rate unmoved; `fs` (Hz) dates the prompt.
 function _residual_pll_on_new_ramp(residual_pll::ResidualPLL, old::CarrierDopplerRamp, new::CarrierDopplerRamp, fs)
-    time = isnan(residual_pll.last_prompt_sample_index) ? ustrip(s, old.reference_time) : residual_pll.last_prompt_sample_index / fs
+    time = _has_span(residual_pll.last_prompt_span) ? _center(residual_pll.last_prompt_span) / fs : ustrip(s, old.reference_time)
     step = _doppler_at(new, time) - _doppler_at(old, time)
     ResidualPLL(
         residual_pll;
@@ -199,29 +198,35 @@ end
 _reset_to_ramp(residual_pll::ResidualPLL, lock::ResidualPLLLock) =
     ResidualPLL(residual_pll; carrier_frequency_correction = 0.0Hz, loop_filter = _residual_pll_loop_filter(0.0, 0.0), lock)
 
-# The residual phase (cycles) predicted at the sample index `center` (at `fs`, Hz), after
-# the latest prompt: the incoming phase advances at the ramp plus the loop filter's
+# The residual phase (cycles) predicted `samples_since_prompt` samples (at `fs`, Hz) after the
+# latest prompt's centre: the incoming phase advances at the ramp plus the loop filter's
 # output, the replica by `replica_cycles` from that prompt's centre.
-@inline function _predicted_phase(residual_pll::ResidualPLL, ramp::CarrierDopplerRamp, center, fs, replica_cycles)
-    dt = (center - residual_pll.last_prompt_sample_index) / fs
+@inline function _predicted_phase(residual_pll::ResidualPLL, ramp::CarrierDopplerRamp, samples_since_prompt, fs, replica_cycles)
+    dt = samples_since_prompt / fs
     # The ramp's mean Doppler since that prompt is its value halfway there.
-    mean_doppler = _doppler_at(ramp, (residual_pll.last_prompt_sample_index + center) / 2 / fs)
+    mean_doppler = _doppler_at(ramp, _center(residual_pll.last_prompt_span) / fs + dt / 2)
     residual_pll.predicted_prompt_phase + (mean_doppler + ustrip(Hz, residual_pll.carrier_frequency_correction)) * dt - replica_cycles
 end
 
-# The residual phase (cycles) of a `VectorLoopState`'s residual PLL predicted at the sample
-# index `sample_index` (at `fs`, Hz), after the latest prompt: the replica advancing by the
-# second half of the driver's last integration (`previous_replica_tail`), then by the
-# commands it ran on from that integration's end. `NaN` while that half is unknown. Exact
-# from the integration's end on; within the half it takes the later commands to have run
-# there.
-@inline function _residual_phase_after(loop_state, sample_index, fs, nco_history)
+# The residual phase (cycles) of a `VectorLoopState`'s residual PLL predicted
+# `samples_since_end` samples (at `fs`, Hz) after the end of the latest prompt's integration:
+# the replica advancing by the second half of that integration (`previous_replica_tail`),
+# then by the commands it ran on from its end. `NaN` while that half is unknown. Exact from
+# the integration's end on; within the half it takes the later commands to have run there.
+@inline function _residual_phase_after(loop_state, samples_since_end, fs, nco_history)
     (; residual_pll, ramp) = loop_state
-    previous_cycles, previous_duration = loop_state.previous_replica_tail
+    previous_cycles = loop_state.previous_replica_tail
     isnan(previous_cycles) && return NaN
-    previous_end_sample_index = residual_pll.last_prompt_sample_index + Float64(ustrip(s, previous_duration)) * fs
-    command = ustrip(Hz, calc_mean_nco_command(nco_history, previous_end_sample_index, sample_index).carrier_doppler)
-    _predicted_phase(residual_pll, ramp, sample_index, fs, previous_cycles + command * (sample_index - previous_end_sample_index) / fs)
+    previous_span = residual_pll.last_prompt_span
+    previous_end_sample_index = previous_span.end_sample_index
+    command = ustrip(Hz, calc_mean_nco_command(nco_history, previous_end_sample_index, previous_end_sample_index + samples_since_end).carrier_doppler)
+    _predicted_phase(
+        residual_pll,
+        ramp,
+        samples_since_end + previous_span.num_samples / 2,
+        fs,
+        previous_cycles + command * samples_since_end / fs,
+    )
 end
 
 # One integration through a `VectorLoopState`'s residual PLL: predict the phase to the
@@ -232,12 +237,13 @@ function _step_residual_pll(loop_state, post_correlation_state::PostCorrelationS
     (; residual_pll, ramp) = loop_state
     fs = _sampling_frequency_hz(post_correlation_state)
     coherent_integration_time = _coherent_integration_time(post_correlation_state)
-    center = _integration_center(post_correlation_state)
+    span = _integration_span(post_correlation_state)
     polarity = post_correlation_state.last_carrier_phase_polarity
 
     # The scalar loop hands over phase-locked: the first prompt is read as is.
-    first_integration = isnan(residual_pll.last_prompt_sample_index) || isnan(replica_cycles)
-    predicted_phase = first_integration ? 0.0 : _predicted_phase(residual_pll, ramp, center, fs, replica_cycles)
+    first_integration = !_has_span(residual_pll.last_prompt_span) || isnan(replica_cycles)
+    predicted_phase = first_integration ? 0.0 :
+        _predicted_phase(residual_pll, ramp, _samples_since_center(residual_pll.last_prompt_span, span), fs, replica_cycles)
 
     wiped = _rotated(post_correlation_state.last_filtered_correlator_bank, cis(-2π * predicted_phase))
     phase_error = pll_disc(wiped; polarity)
@@ -256,7 +262,7 @@ function _step_residual_pll(loop_state, post_correlation_state::PostCorrelationS
         residual_pll;
         carrier_frequency_correction = uconvert(Hz, carrier_frequency_correction),
         loop_filter,
-        last_prompt_sample_index = center,
+        last_prompt_span = span,
         carrier_phase_polarity = polarity,
         predicted_prompt_phase = predicted_phase,
     ),
@@ -273,13 +279,13 @@ _rotated(correlator_bank, phasor) = set_correlator_outputs(correlator_bank, get_
 # cleared while the filter does not command the satellite, so it never mixes two
 # residual PLLs' prompts.
 mutable struct PromptHistory
-    const centers::Vector{Float64}
+    const spans::Vector{IntegrationSpan}
     const phases::Vector{Float64}
     newest::Int
     count::Int
 end
 
-PromptHistory(length::Int) = PromptHistory(fill(NaN, length), fill(NaN, length), 0, 0)
+PromptHistory(length::Int) = PromptHistory(fill(IntegrationSpan(), length), fill(NaN, length), 0, 0)
 
 # A slot's history length for a group ranging on `driver` and decoding `decoding`: half
 # a `navigation_filter_update_interval` of the driver's shortest (one-code-period) integrations, as the host
@@ -293,10 +299,10 @@ end
 
 # Record the residual PLL's latest prompt, and forget them all.
 function _push_prompt!(history::PromptHistory, residual_pll::ResidualPLL)
-    n = Base.length(history.centers)
+    n = Base.length(history.spans)
     n == 0 && return history
     history.newest = mod1(history.newest + 1, n)
-    history.centers[history.newest] = residual_pll.last_prompt_sample_index
+    history.spans[history.newest] = residual_pll.last_prompt_span
     history.phases[history.newest] = residual_pll.predicted_prompt_phase
     history.count = min(history.count + 1, n)
     history
@@ -318,21 +324,21 @@ function _bit_prompt_phase(
     is_driver::Bool,
 )
     residual_pll = loop_state.residual_pll
-    isnan(residual_pll.last_prompt_sample_index) && return NaN
+    latest = residual_pll.last_prompt_span
+    _has_span(latest) || return NaN
     is_driver && return residual_pll.predicted_prompt_phase
     fs = _sampling_frequency_hz(post_correlation_state)
-    center = _integration_center(post_correlation_state)
-    center > residual_pll.last_prompt_sample_index + 0.5 &&
-        return _residual_phase_after(loop_state, center, fs, nco_history)
+    span = _integration_span(post_correlation_state)
+    _samples_since_center(latest, span) > 0.5 &&
+        return _residual_phase_after(loop_state, _samples_since_center(latest, span) - latest.num_samples / 2, fs, nco_history)
     history.count == 0 && return NaN
-    n = Base.length(history.centers)
+    n = Base.length(history.spans)
     nearest = history.newest
     for k in 1:history.count
         i = mod1(history.newest - k + 1, n)
-        abs(history.centers[i] - center) < abs(history.centers[nearest] - center) && (nearest = i)
+        abs(_samples_since_center(history.spans[i], span)) < abs(_samples_since_center(history.spans[nearest], span)) && (nearest = i)
     end
-    oldest = history.centers[mod1(history.newest - history.count + 1, n)]
-    num_driver_samples = 2 * Float64(ustrip(s, last(loop_state.previous_replica_tail))) * fs
-    oldest - center > max(num_driver_samples, post_correlation_state.last_num_integrated_samples) && return NaN
-    history.phases[nearest] + ustrip(Hz, residual_pll.carrier_frequency_correction) * (center - history.centers[nearest]) / fs
+    oldest = history.spans[mod1(history.newest - history.count + 1, n)]
+    -_samples_since_center(oldest, span) > max(latest.num_samples, span.num_samples) && return NaN
+    history.phases[nearest] + ustrip(Hz, residual_pll.carrier_frequency_correction) * _samples_since_center(history.spans[nearest], span) / fs
 end
