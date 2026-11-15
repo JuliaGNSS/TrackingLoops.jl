@@ -67,7 +67,7 @@ post_correlation_state =
 post_correlation_state.last_sync_event == TrackingLoops.SYNC_LOST &&
     @warn "integration crossed a navigation-bit boundary; bit sync restarted"
 loop_state, carrier_doppler, code_doppler = step_loop!(tracking_loop, loop_state, post_correlation_state,
-    ConstantNCOCommand(carrier_hz, code_hz), nothing)
+    ConstantNCOCommand(carrier_doppler, code_doppler), nothing)
 # program the next replica with carrier_doppler and code_doppler
 ```
 

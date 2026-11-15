@@ -99,9 +99,9 @@ end
         @test calc_carrier_phase_correction(TL._release_from_vector_loop(sat.state), nco_history, sample_index, SIM_FS) == 0.0
     end
     scalar = init_loop_state(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA(), 100.0Hz, 0.0Hz)
-    @test calc_carrier_phase_correction(scalar, ConstantNCOCommand(100.0, 0.0), 0, SIM_FS) == 0.0
+    @test calc_carrier_phase_correction(scalar, ConstantNCOCommand(100.0Hz, 0.0Hz), 0, SIM_FS) == 0.0
     # So is a custom loop's state without a method of its own.
-    @test calc_carrier_phase_correction((; carrier_doppler = 100.0Hz), ConstantNCOCommand(100.0, 0.0), 0, SIM_FS) == 0.0
+    @test calc_carrier_phase_correction((; carrier_doppler = 100.0Hz), ConstantNCOCommand(100.0Hz, 0.0Hz), 0, SIM_FS) == 0.0
 end
 
 @testset "The residual PLL's phase jitter at 40 dB-Hz is the scalar PLL's or less, on $(nameof(typeof(signal)))" for signal in (
@@ -209,7 +209,7 @@ function step_residual(residual, ends; ramp = TL.CarrierDopplerRamp(100.0 * Hz, 
     tracking_loop = VectorTrackingLoop(GPSL1CA())
     state = commanded(init_loop_state(tracking_loop, GPSL1CA(), ramp.doppler, 0.0Hz), ramp; scalar_doppler)
     unlocked && (state = TL.VectorLoopState(state; residual_pll = TL.ResidualPLL(state.residual_pll; lock = TL.ResidualPLLLock())))
-    nco_history = ConstantNCOCommand(ustrip(Hz, ramp.doppler), 0.0)
+    nco_history = ConstantNCOCommand(ramp.doppler, 0.0Hz)
     previous_prompt = complex(0.0)
     for (k, sample_index) in enumerate(ends)
         center = (sample_index - 500) / 1e6
@@ -230,7 +230,7 @@ end
     # integration's end — and halfway into the next — stays where it was: no cycle, no half
     # cycle is lost.
     residual(t) = 5.0 * t
-    nco_history = ConstantNCOCommand(100.0, 0.0)
+    nco_history = ConstantNCOCommand(100.0Hz, 0.0Hz)
     offsets = Float64[]
     corrections = Float64[]
     step_residual(residual, 1000:1000:3_000_000; scalar_doppler = 105.0, on_integration = (state, k) -> begin
@@ -363,7 +363,7 @@ residual_pll_at(center, predicted_prompt_phase; carrier_frequency_correction = 0
     nav_processor = tracking_loop.navigation_processor
     group = first(nav_processor.groups)
     slot = first(group.slots)
-    nco_history = ConstantNCOCommand(100.0, 0.0)
+    nco_history = ConstantNCOCommand(100.0Hz, 0.0Hz)
     state = TL._add_to_vector_loop(init_loop_state(tracking_loop, signal, 100.0Hz, 0.0Hz))
     sentinel = 12345.0f0
     slot.bit_accumulator.soft_bit[1] = sentinel
@@ -419,7 +419,7 @@ end
     TL._push_prompt!(history, residual_pll_at(2000, 0.2))
     TL._push_prompt!(history, residual_pll)
     ramp = TL.CarrierDopplerRamp(1000.0 * Hz, 0.0 * Hz / s, 0.0 * s)
-    nco_history = ConstantNCOCommand(1000.0, 0.0)
+    nco_history = ConstantNCOCommand(1000.0Hz, 0.0Hz)
     half = (1000.0 * 0.0005, 0.0005s)
     state = TL.VectorLoopState(TL.VectorLoopState(init_loop_state(ScalarTrackingLoop(), signal, 1000.0Hz, 0.0Hz), true);
         residual_pll, ramp, previous_replica_tail = half)
