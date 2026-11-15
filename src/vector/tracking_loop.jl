@@ -266,7 +266,6 @@ function calc_carrier_phase_correction(loop_state::VectorLoopState, nco_history,
     _residual_phase_after(loop_state, sample_index, fs, nco_history)
 end
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # What the navigation processor does to a satellite's state; each keeps its place in
 # the navigation processor.
@@ -334,11 +333,6 @@ _reinit_scalar_state(loop_state::ScalarLoopState, carrier_doppler, code_doppler,
         carrier_loop_filter = _carrier_filter_at_rate(loop_state.carrier_loop_filter, rate),
         staging = CarrierLoopStaging(typeof(loop_state.carrier_loop_filter)),
     )
-# A fresh carrier filter of `filter`'s type at the Doppler rate `rate` (Hz/s), kept in
-# `x2` by a third-order one; one of lower order starts at zero.
-_carrier_filter_at_rate(filter::F, rate) where {F<:Union{ThirdOrderBilinearLF,ThirdOrderAssistedBilinearLF,ThirdOrderBoxcarLF}} =
-    F(zero(filter.x1), rate * Hz^2)
-_carrier_filter_at_rate(filter::AbstractLoopFilter, rate) = _reset_loop_filter(filter)
 
 # Set the latest update's command, applied `feedback_delay` after the measurement epoch: the
 # code correction (pushed onto `code_frequency_correction_history`) and the carrier `ramp`. A
@@ -382,6 +376,15 @@ _reset_discriminator_accumulators(loop_state::VectorLoopState) =
 
 # The mean of a discriminator sum `(count, sum)`, or `nothing` if empty.
 _disc_mean((count, disc_sum)) = count == 0 ? nothing : disc_sum / count
+
+# Whether a member accumulated both a code and a carrier measurement this update (none
+# without a full coherent integration, e.g. admitted at the update's end or starved of samples). The zero
+# `calc_mean_code_disc_at_epoch` and `calc_mean_fll_disc` substitute would be a confidently zero
+# residual at full `R` weight, pulling the state toward the NCO, so such members are
+# withheld from the measurements (still commanded, like a member out of code lock). The
+# carrier sum counts only integrations with a previous prompt, so it can be empty alone (a
+# update whose only integration is the first after a (re)start); that member is withheld too.
+has_disc_sums(loop_state::VectorLoopState) = first(loop_state.code_disc_sum) > 0 && first(loop_state.fll_disc_sum) > 0
 
 # `(cycles, duration)` the replica's carrier advanced by over each half of `integration`,
 # from the commands it ran on (Hz).

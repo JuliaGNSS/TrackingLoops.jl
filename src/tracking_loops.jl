@@ -390,16 +390,6 @@ function init_loop_state(
         ThirdOrderAssistedBilinearLF(), _init_loop_filter(CO), defaults)
 end
 
-"""
-    wrap_phase_error(phase_error; polarity = 0)
-
-Fold a carrier-phase error in cycles into the range of [`pll_disc`](@ref) with the
-same `polarity`: ±1/4 cycle for the Costas PLL (`polarity = 0`; a bit flip turns
-the prompt by half a cycle), ±1/2 for the four-quadrant one. Exact inside it.
-"""
-wrap_phase_error(phase_error; polarity::Real = 0) =
-    rem(phase_error, iszero(polarity) ? 0.5 : 1.0, RoundNearest)
-
 # The phase error (cycles) the integration would show `shift` samples later under the
 # scheduled commands, integrated from the integration's centre with the filter's Doppler
 # estimate before this integration's update, folded as by `wrap_phase_error`.

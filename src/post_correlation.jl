@@ -194,6 +194,9 @@ end
 _coherent_integration_time(state::PostCorrelationState) = state.last_num_integrated_samples / state.sampling_frequency
 _integration_start(state::PostCorrelationState) = state.last_end_sample_index - state.last_num_integrated_samples
 _integration_center(state::PostCorrelationState) = state.last_end_sample_index - state.last_num_integrated_samples / 2
+_sampling_frequency_hz(post_correlation_state::PostCorrelationState) = Float64(ustrip(Hz, post_correlation_state.sampling_frequency))
+# Where the latest integration ended (s) on the integrations' time grid.
+_end_time(post_correlation_state::PostCorrelationState) = post_correlation_state.last_end_sample_index / _sampling_frequency_hz(post_correlation_state)
 
 # A sampling frequency in Hz, as the state keeps it.
 _sampling_frequency(sampling_frequency) = Float64(ustrip(Hz, sampling_frequency)) * Hz
