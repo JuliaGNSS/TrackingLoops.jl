@@ -112,12 +112,12 @@ TrackingLoops.NoiseObservation
 TrackingLoops.NoiseUpdateContext
 append_noise_observation!(::AbstractNoiseDensityEstimator, ::NoiseObservation)
 TrackingLoops.get_noise_density(::AbstractNoiseDensityEstimator)
-TrackingLoops.get_noise_density_and_ready(::AbstractNoiseDensityEstimator)
+TrackingLoops.get_noise_density_and_status(::AbstractNoiseDensityEstimator)
+TrackingLoops.NoiseDensityStatus
 TrackingLoops.noise_density_type(::AbstractNoiseDensityEstimator)
 TrackingLoops.calc_noise_observation(::Complex, ::Any, ::Any)
 TrackingLoops.calc_noise_observation_from_correlator_powers(::Any, ::Any, ::Any, ::Any)
 TrackingLoops.calc_noise_observation_from_samples(::Any, ::Any, ::Any)
-TrackingLoops.get_noise_window_filling(::AbstractNoiseDensityEstimator)
 TrackingLoops.get_num_squared_magnitudes(::AbstractNoiseDensityEstimator)
 TrackingLoops.update_noise!(::AbstractNoiseDensityEstimator, ::Any, ::Any, ::Any)
 CorrelatorNoiseDensityEstimator
