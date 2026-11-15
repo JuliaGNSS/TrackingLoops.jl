@@ -149,7 +149,7 @@ end
     run_noisy!(rx, 400; noise = (c, i) -> noise_std_at(cn0_dbhz), fill! = reporting(cn0_dbhz),
         on_update = c -> begin
             c > 50 || return
-            for member in rx.vt.buffers.members
+            for member in rx.vt.workspace.members
                 @test member.available
                 sat = rx.sats[member.slot_index]
                 push!(residuals[member.slot_index], member.pseudorange_rate +

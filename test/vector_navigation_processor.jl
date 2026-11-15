@@ -117,8 +117,8 @@ end
     rx = SimReceiver()
     run_simulation!(rx, 3)
     vt = rx.vt
-    buffers = vt.buffers
-    members = buffers.members
+    workspace = vt.workspace
+    members = workspace.members
     idxs = vt.nav_filter.model.idxs
     Δt_nav = 0.1
     # The corrections the update left, recomputed from the updated state the way
@@ -133,8 +133,8 @@ end
         @test slot.member_index == j
         reference_system = TL._reference_system(vt.nav_filter)
         measured = TL.calc_pseudorange(get_time_of_week(reference_system, vt.nav_filter.reference_epoch), member.transmit_time,
-                       get_time_system_offset(buffers.measurements[j].time_system, reference_system)) -
-                   buffers.delays[j]
+                       get_time_system_offset(workspace.prepared_observations[j].time_system, reference_system)) -
+                   workspace.atmospheric_delays[j]
         # The carrier NCO is commanded the Doppler of the rate predicted where the
         # command takes effect — at the epoch, with the satellite there; the measured rate, a
         # mean over the past update interval, does not enter it.
@@ -144,7 +144,7 @@ end
             member.sat_pos, orbit.velocity, calc_satellite_clock_drift(ephemeris, member.transmit_time))
         @test SVector{3,Float64}(orbit.position) == member.sat_pos
         # The measurement the last update fused against the one the corrections use.
-        @test measured === buffers.measured_pseudoranges[j]
+        @test measured === workspace.measured_pseudoranges[j]
         # The satellite applied the corrections where its command takes effect, at the epoch:
         # the range from the orbit evaluated there is the epoch's.
         @test sat.state.code_frequency_correction ≈
@@ -153,7 +153,7 @@ end
               TL.predict_carrier_doppler(rate_at_epoch, member.wavelength) * Hz atol = 1e-6Hz
         @test sat.state.ramp.reference_time ≈ vt.update_epoch_index * TL._update_interval_seconds(vt) * s
         # The post-fit rate is predicted at the measurement's own instant.
-        @test buffers.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.nav_filter.x, idxs, member) atol = 1e-9
+        @test workspace.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.nav_filter.x, idxs, member) atol = 1e-9
         @test sat.state.feedback_delay == 0.0s
         # The accumulators were emptied at the epoch's snapshot.
         @test sat.state.code_disc_sum == (0, 0.0)
@@ -170,7 +170,7 @@ end
     slot = rx.group.slots[1]
     sat = rx.sats[1]
     j = slot.member_index
-    member = vt.buffers.members[j]
+    member = vt.workspace.members[j]
     nco_history = sim_nco_history(sat, nothing)
     post_correlation_state = feedback_integration(sat, sample)
     at_epoch = TL._commands_at_application(vt, rx.group, slot, TL._sampling_frequency_hz(post_correlation_state), nco_history, Int64(sample))
@@ -386,10 +386,10 @@ end
 @testset "The measurement-buffer cache grows without undefined slots" begin
     rx = SimReceiver()
     run_simulation!(rx, 2)
-    buffers = rx.vt.buffers
-    n = length(buffers.measurement_updates)
+    workspace = rx.vt.workspace
+    n = length(workspace.measurement_updates)
     num_states = length(rx.vt.nav_filter.x)
-    @test size(TL._measurement_buffers!(buffers, num_states, n + 3).z) == (n + 3,)
-    @test size(TL._measurement_buffers!(buffers, num_states, n + 1).z) == (n + 1,)
-    @test length(buffers.measurement_updates) == n + 3
+    @test size(TL._measurement_workspace!(workspace, num_states, n + 3).z) == (n + 3,)
+    @test size(TL._measurement_workspace!(workspace, num_states, n + 1).z) == (n + 1,)
+    @test length(workspace.measurement_updates) == n + 3
 end
