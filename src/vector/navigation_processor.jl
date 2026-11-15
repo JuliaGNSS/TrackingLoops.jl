@@ -654,18 +654,43 @@ get_vector_tracking_members(tracking_loop::VectorTrackingLoop) = tracking_loop.n
 # ─────────────────────────────────────────────────────────────────────────────
 # Time on the integrations' grid
 
+# The navigation epochs are compared with the integrations in samples, on each signal's own
+# grid, not in seconds since the origin: `sample_index / fs` and `k · Δt_nav` round apart as
+# the session grows, by nanoseconds after a year, while sample indices stay exact.
+
 _update_interval_seconds(nav_processor::NavigationProcessor) = ustrip(s, nav_processor.navigation_filter_update_interval)
-_epoch_time(nav_processor::NavigationProcessor, epoch_index::Int) = epoch_index * _update_interval_seconds(nav_processor)
 # Where a signal's last integration ended (s) on the integrations' time grid.
 _last_end_time(role::Union{DriverState,DecodingState}) = role.last_end_sample_index / ustrip(Hz, role.sampling_frequency)
 
-# The first epoch whose `_epoch_time` is not before `t`, compared exactly as
-# `_crosses_pending_epoch` does (`t / Δt_nav` may round to either side).
-function _epoch_at_or_after(nav_processor::NavigationProcessor, t)
-    Δt_nav = _update_interval_seconds(nav_processor)
-    epoch_index = ceil(Int, t / Δt_nav)
-    (epoch_index - 1) * Δt_nav >= t ? epoch_index - 1 : epoch_index * Δt_nav < t ? epoch_index + 1 : epoch_index
+# The samples an update interval spans at `fs` (Hz), snapped to the whole number it is
+# meant to be when it comes out within a millionth of a sample of one (70 ms at 5 MHz is a
+# hair over 350000 in binary).
+function _samples_per_update(nav_processor::NavigationProcessor, fs)
+    num_samples = _update_interval_seconds(nav_processor) * fs
+    whole = round(num_samples)
+    abs(num_samples - whole) < 1e-6 ? whole : num_samples
 end
+
+# Epoch `epoch_index` as a sample index on the grid of a signal sampled at `fs` (Hz); exact
+# where an update interval spans whole samples.
+_epoch_sample_index(nav_processor::NavigationProcessor, epoch_index::Int, fs) =
+    epoch_index * _samples_per_update(nav_processor, fs)
+
+# The first epoch not before sample index `sample_index` of a signal sampled at `fs` (Hz)
+# (`sample_index / samples_per_update` may round to either side), or not before a role's
+# last integration end.
+function _epoch_at_or_after(nav_processor::NavigationProcessor, sample_index, fs)
+    num_samples = _samples_per_update(nav_processor, fs)
+    epoch_index = ceil(Int, sample_index / num_samples)
+    (epoch_index - 1) * num_samples >= sample_index ? epoch_index - 1 :
+    epoch_index * num_samples < sample_index ? epoch_index + 1 : epoch_index
+end
+_epoch_at_or_after(nav_processor::NavigationProcessor, role::Union{DriverState,DecodingState}) =
+    _epoch_at_or_after(nav_processor, role.last_end_sample_index, ustrip(Hz, role.sampling_frequency))
+
+# Whether a role's last integration ended by epoch `epoch_index`.
+_ended_by_epoch(nav_processor::NavigationProcessor, role::Union{DriverState,DecodingState}, epoch_index::Int) =
+    role.last_end_sample_index <= _epoch_sample_index(nav_processor, epoch_index, ustrip(Hz, role.sampling_frequency))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Walking the groups
@@ -1003,7 +1028,7 @@ function _commands_at_application(
     application_sample_index::Int64,
 )
     # A command applied on the epoch itself may read a rounding error early.
-    feedback_delay = application_sample_index / fs - _epoch_time(nav_processor, nav_processor.update_epoch_index)
+    feedback_delay = (application_sample_index - _epoch_sample_index(nav_processor, nav_processor.update_epoch_index, fs)) / fs
     -1 / fs <= feedback_delay <= MAX_FEEDBACK_DELAY_UPDATES * _update_interval_seconds(nav_processor) || throw(
         ArgumentError(
             "a command must take effect between zero and 2.5 navigation filter updates after the " *
@@ -1214,21 +1239,12 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # One navigation update
 
-# The epoch to snapshot after the update at `epoch`: the next one, or, if a satellite is
-# past it already (see `_run_update_if_due!`), the first no satellite is past. The update
-# after skipped epochs is longer, as after a gap. The host steps every satellite through
-# each chunk, which is shorter than an update interval, so in step no satellite is past the next
-# epoch.
-function _next_pending_epoch(nav_processor::NavigationProcessor, epoch_index)
-    next = epoch_index + 1
-    latest = _fold_groups(_latest_integration_end, -Inf, nav_processor.groups)
-    latest > _epoch_time(nav_processor, next) ? _epoch_at_or_after(nav_processor, latest) : next
-end
-
-function _latest_integration_end(latest, group::VectorTrackingSlotGroup)
+# The latest of `latest` and the first epoch not before any occupied slot's last integration
+# end, driver or decoding.
+function _latest_epoch_at_or_after(latest, group::VectorTrackingSlotGroup, nav_processor::NavigationProcessor)
     for slot in group.slots
         slot.occupied || continue
-        latest = max(latest, _last_end_time(slot.driver), _last_end_time(slot.decoding))
+        latest = max(latest, _epoch_at_or_after(nav_processor, slot.driver), _epoch_at_or_after(nav_processor, slot.decoding))
     end
     latest
 end
@@ -1310,7 +1326,12 @@ function _navigation_update!(nav_processor::NavigationProcessor, time)
         nav_processor.vector_tracking_active && !seeded || fell_back,
     )
     nav_processor.update_epoch_index = epoch_index
-    nav_processor.pending_epoch_index = _next_pending_epoch(nav_processor, epoch_index)
+    # The epoch to snapshot next: the next one, or, if a satellite is past it already (see
+    # `_run_update_if_due!`), the first no satellite is past. The update after skipped
+    # epochs is longer, as after a gap. The host steps every satellite through each chunk, which
+    # is shorter than an update interval, so in step no satellite is past the next epoch.
+    nav_processor.pending_epoch_index =
+        _fold_groups(_latest_epoch_at_or_after, epoch_index + 1, nav_processor.groups, nav_processor)
     nav_processor.num_snapshots = 0
     nothing
 end
