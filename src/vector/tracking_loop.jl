@@ -298,14 +298,14 @@ _release_from_vector_loop(loop_state::VectorLoopState) =
         residual_pll_loop_bandwidth = loop_state.residual_pll.bandwidth,
     )
 
-# `_release_from_vector_loop` with the scalar loop re-initialised at the sample `application_sample_index`
+# `_release_from_vector_loop` with `scalar_loop`'s state re-initialised at the sample `application_sample_index`
 # (integrations' grid at `fs`, Hz) where the release takes effect: at the residual PLL's estimate of
 # the incoming Doppler (ramp plus residual) and its rate, which a third-order carrier
 # filter starts from. A residual PLL out of lock (or never stepped) knows no better than
 # the filter, so then the replica's carrier command there and the ramp's rate. The code
 # starts from the replica's code command. Unlike a reset, it restarts the staging, so the
 # scalar loop pulls in again FLL-assisted at the wide bandwidth.
-function _hand_over_to_scalar_loop(loop_state::VectorLoopState, nco_history, application_sample_index, fs)
+function _hand_over_to_scalar_loop(scalar_loop, loop_state::VectorLoopState, nco_history, application_sample_index, fs)
     nco_command = get_nco_command(nco_history, application_sample_index)
     carrier_command, code_command = nco_command.carrier_doppler, nco_command.code_doppler
     carrier_doppler = carrier_command * Hz
@@ -319,20 +319,16 @@ function _hand_over_to_scalar_loop(loop_state::VectorLoopState, nco_history, app
             (_doppler_at(ramp, time) + _residual_doppler(residual_pll) + _residual_doppler_rate(residual_pll) * dt) * Hz
         rate += _residual_doppler_rate(residual_pll)
     end
+    scalar_state = loop_state.scalar_state
     VectorLoopState(
         _release_from_vector_loop(loop_state);
-        scalar_state = _reinit_scalar_state(loop_state.scalar_state, carrier_doppler, code_doppler, rate),
+        scalar_state = ScalarLoopState(
+            reinit_loop_state(scalar_loop, scalar_state, carrier_doppler, code_doppler);
+            carrier_loop_filter = _carrier_filter_at_rate(scalar_state.carrier_loop_filter, rate),
+            staging = CarrierLoopStaging(typeof(scalar_state.carrier_loop_filter)),
+        ),
     )
 end
-
-# The scalar loop state re-initialised at the Dopplers, its carrier filter at the
-# Doppler rate `rate` (Hz/s).
-_reinit_scalar_state(loop_state::ScalarLoopState, carrier_doppler, code_doppler, rate) =
-    ScalarLoopState(
-        _reinit_scalar_loop_state(loop_state, carrier_doppler, code_doppler);
-        carrier_loop_filter = _carrier_filter_at_rate(loop_state.carrier_loop_filter, rate),
-        staging = CarrierLoopStaging(typeof(loop_state.carrier_loop_filter)),
-    )
 
 # Set the latest update's command, applied `feedback_delay` after the measurement epoch: the
 # code correction (pushed onto `code_frequency_correction_history`) and the carrier `ramp`. A

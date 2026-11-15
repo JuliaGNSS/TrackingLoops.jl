@@ -191,7 +191,7 @@ function _step_vector_integration(
     #    epoch runs an overdue update, and it applied every earlier update then.
     end_time = _end_time(post_correlation_state)
     _run_overdue_update!(nav_processor, slot, end_time)
-    is_driver && (loop_state = _apply_filter_feedback(nav_processor, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index))
+    is_driver && (loop_state = _apply_filter_feedback(tracking_loop, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index))
     # 3. Latch the measurements at the measurement epoch: the integration's half of the
     #    satellite's snapshot, complete once both signals' halves are in.
     _move_past_gap!(nav_processor, is_driver ? _last_end_time(slot.driver) : _last_end_time(slot.decoding), end_time)
@@ -202,7 +202,7 @@ function _step_vector_integration(
     # 4. The navigation filter update at the measurement epoch, once every satellite that
     #    can has latched it; its feedback applies from this integration on.
     if _run_update_if_due!(nav_processor, end_time) && is_driver
-        loop_state = _apply_filter_feedback(nav_processor, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index)
+        loop_state = _apply_filter_feedback(tracking_loop, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index)
     end
     # 5. The tracking-loop update: in the vector loop the residual PLL and the
     #    discriminators' accumulation, out of it the scalar loop.
@@ -316,7 +316,7 @@ end
 # Apply the latest update's decisions once: admission, release (re-initialising the scalar
 # loop at the application sample) and commands sized for it.
 function _apply_filter_feedback(
-    nav_processor::NavigationProcessor,
+    tracking_loop::VectorTrackingLoop,
     group::VectorTrackingSlotGroup,
     slot::VectorTrackingSlot,
     loop_state::VectorLoopState,
@@ -324,6 +324,7 @@ function _apply_filter_feedback(
     nco_history,
     application_sample_index::Int64,
 )
+    nav_processor = tracking_loop.navigation_processor
     id = nav_processor.update_index
     loop_state.update_index == id && return loop_state
     fs = _sampling_frequency_hz(post_correlation_state)
@@ -331,7 +332,7 @@ function _apply_filter_feedback(
     if slot_in_loop && !loop_state.vector_controlled
         loop_state = _add_to_vector_loop(loop_state)
     elseif !slot_in_loop && loop_state.vector_controlled
-        loop_state = _hand_over_to_scalar_loop(loop_state, nco_history, application_sample_index, fs)
+        loop_state = _hand_over_to_scalar_loop(tracking_loop.scalar_loop, loop_state, nco_history, application_sample_index, fs)
     end
     if slot_in_loop && slot.command_update_index == id
         code_update, ramp, feedback_delay =
