@@ -227,7 +227,7 @@ end
         sample += 100 * SAMPLES_PER_MS
         run_update!(rx, sample, fill_slot!)
         update_index > 50 || continue
-        for member in rx.vt.buffers.members
+        for member in rx.vt.workspace.members
             all_measured &= member.available
             sat = rx.sats[member.slot_index]
             push!(residuals[member.slot_index], member.pseudorange_rate +
@@ -293,7 +293,7 @@ end
     @test results[1].status.seeded
     @test all(r -> r.status.vector_tracking_active && r.status.num_vector_tracking_members == 4, results)
     @test all(r -> length(r.measured) == 4, results)
-    gst_clock, gpst_clock, isb = only(rx.vt.buffers.clock_constraints)
+    gst_clock, gpst_clock, isb = only(rx.vt.workspace.clock_constraints)
     @test (gst_clock, gpst_clock) == (2, 1)
     @test isb == 0.0
     # The DOP takes the layout's linked-group columns, so an epoch whose clocks a

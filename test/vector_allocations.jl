@@ -89,7 +89,7 @@ end
     galileo.decoder = with_zero_ggto(galileo.decoder)
     _, sample, _ = run_simulation!(rx, 20)
     @test rx.vt.vector_tracking_active
-    @test !isempty(rx.vt.buffers.clock_constraints)
+    @test !isempty(rx.vt.workspace.clock_constraints)
     @test measure_navigation(rx, sample + 100 * SAMPLES_PER_MS) == 0 skip = VERSION < v"1.11"
 end
 
