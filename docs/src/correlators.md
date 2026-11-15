@@ -60,8 +60,8 @@ TrackingLoops.set_correlator_outputs(::VeryEarlyPromptLateCorrelatorBank, ::Any)
 ```@docs
 TrackingLoops.dll_disc(::AbstractGNSSSignal, ::EarlyPromptLateCorrelatorBank, ::Any, ::Any)
 TrackingLoops.dll_disc(::AbstractGNSSSignal, ::VeryEarlyPromptLateCorrelatorBank, ::Any, ::Any)
-TrackingLoops.fll_disc(::AbstractGNSSSignal, ::Any, ::Any, ::Any)
-TrackingLoops.pll_disc(::AbstractGNSSSignal, ::Any)
+TrackingLoops.fll_disc(::Any, ::Any, ::Any)
+TrackingLoops.pll_disc(::Any)
 ```
 
 ## Post-correlation filter

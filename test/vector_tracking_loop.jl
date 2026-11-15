@@ -227,7 +227,7 @@ end
     correlator_outputs = (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im)
     integrations = [vector_integration(signal, correlator_outputs, 5000, fs; previous_prompt = previous, sample_index = 5000k)
                for k = 1:2]
-    fll = fll_disc(signal, integrations[1].last_filtered_correlator_bank, previous, 5000 / fs)
+    fll = fll_disc(integrations[1].last_filtered_correlator_bank, previous, 5000 / fs)
     @test fll != 0.0Hz
     state, = step_satellite(tracking_loop, state, integrations[1], ConstantNCOCommand(100.0, 0.1), nothing)
     state, = step_satellite(tracking_loop, state, integrations[2], ConstantNCOCommand(120.0, 0.1), nothing)

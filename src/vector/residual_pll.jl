@@ -241,14 +241,14 @@ function _step_residual_pll(loop_state, post_correlation_state::PostCorrelationS
     predicted_phase = first_integration ? 0.0 : _predicted_phase(residual_pll, ramp, center, fs, replica_cycles)
 
     wiped = _rotated(post_correlation_state.last_filtered_correlator_bank, cis(-2π * predicted_phase))
-    phase_error = pll_disc(post_correlation_state.signal, wiped; polarity)
+    phase_error = pll_disc(wiped; polarity)
     polarity_changed = polarity != residual_pll.carrier_phase_polarity
     if polarity_changed && !iszero(polarity) && abs(phase_error) > 0.25
         # A four-quadrant discriminator taking over from a two-quadrant one may find the
         # residual PLL half a cycle off the polarity's frame.
         predicted_phase += 0.5
         wiped = _rotated(wiped, -1)
-        phase_error = pll_disc(post_correlation_state.signal, wiped; polarity)
+        phase_error = pll_disc(wiped; polarity)
     end
 
     bandwidth = calc_effective_carrier_loop_bandwidth(residual_pll.bandwidth, coherent_integration_time * s)

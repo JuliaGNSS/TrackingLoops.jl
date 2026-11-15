@@ -636,25 +636,24 @@ get_vector_tracking_members(tracking_loop::VectorTrackingLoop) = tracking_loop.n
 # ─────────────────────────────────────────────────────────────────────────────
 # Walking the groups
 
-# Fold `f(acc, group, group_index, buffer, args...)` over the groups in order, `group_index` the group's
-# index and `buffer` its entry of `buffers`. Recursing over the tuples keeps every
-# call statically dispatched, however heterogeneous the groups.
-# The groups with their indices, or with their indices and observation buffers, for
-# `_fold_groups` to hand `f` as `group, group_index[, buffer]`.
+# The groups with their indices, or with their observation buffers, for `_fold_groups` to
+# hand `f` as `group, group_index` or `group, buffer`.
 _indexed(groups::Tuple) = map(tuple, groups, ntuple(identity, length(groups)))
-_with_buffers(groups::Tuple, buffers::Tuple) = map(tuple, groups, ntuple(identity, length(groups)), buffers)
+_with_buffers(groups::Tuple, buffers::Tuple) = map(tuple, groups, buffers)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Scalar observation collection
 
-function _collect_pvt_ready!(acc, group, group_index, buffer)
+# The observations of the group's slots that `is_collected` into its buffer.
+function _collect_signal_observations!(acc, group, buffer, is_collected::F) where {F}
     empty!(buffer)
     for slot in group.slots
-        slot.in_update && slot.snapshot.positioning_ready || continue
-        push!(buffer, _signal_observation(group.driver_signal, slot))
+        is_collected(slot) && push!(buffer, _signal_observation(group.driver_signal, slot))
     end
     acc
 end
+
+_is_positioning_ready(slot::VectorTrackingSlot) = slot.in_update && slot.snapshot.positioning_ready
 
 @inline _signal_observation(signal, slot::VectorTrackingSlot) = SignalObservation(;
     decoder = slot.snapshot.decoder,
@@ -720,21 +719,13 @@ end
 # ─────────────────────────────────────────────────────────────────────────────
 # Measurement gathering
 
-function _collect_member_states!(acc, group, group_index, buffer)
-    empty!(buffer)
-    for slot in group.slots
-        _is_member(slot) && push!(buffer, _signal_observation(group.driver_signal, slot))
-    end
-    acc
-end
-
 # A member's loop state at the epoch, as the vector loop sees it: its snapshot's, or, for a
 # satellite this update admitted, that state with the vector interface empty (no
 # discriminators accumulated yet), as `_apply_filter_feedback` will make it.
 _member_loop_state(slot::VectorTrackingSlot) = _add_to_vector_loop(slot.snapshot.loop_state)
 
 # One `VectorTrackingObservation` per satellite in the loop, from its measurement; returns the running index.
-function _collect_members!(j, group, group_index, buffer, nav_processor, Δt_nav)
+function _collect_members!(j, group, group_index, nav_processor, Δt_nav)
     layout = nav_processor.nav_filter.layout
     buffers = nav_processor.buffers
     signal = group.driver_signal
@@ -781,7 +772,7 @@ end
 # observations, as `prepare_observations!` does.
 function _gather_members!(nav_processor::NavigationProcessor, groups, Δt_nav)
     buffers = nav_processor.buffers
-    _fold_groups(_collect_member_states!, nothing, _with_buffers(groups, buffers.signal_observations))
+    _fold_groups(_collect_signal_observations!, nothing, _with_buffers(groups, buffers.signal_observations), _is_member)
     broadcast_corrections = prepare_observations!(
         buffers.measurements,
         buffers.signal_observations;
@@ -798,7 +789,7 @@ function _gather_members!(nav_processor::NavigationProcessor, groups, Δt_nav)
         ),
     )
     empty!(buffers.members)
-    _fold_groups(_collect_members!, 0, _with_buffers(groups, buffers.signal_observations), nav_processor, Δt_nav)
+    _fold_groups(_collect_members!, 0, _indexed(groups), nav_processor, Δt_nav)
     members = buffers.members
     resize!(buffers.positions, num_members)
     for j in eachindex(members)
@@ -1241,7 +1232,7 @@ function _nav_filter_update!(nav_processor::NavigationProcessor, groups, update_
         select_reference_clock_index(nav_filter.layout, buffers.bias_layout, nav_filter.reference_clock_index)
     nav_filter.reference_epoch = reference_epoch
     nav_processor.measurement_deficit_duration = measurement_deficit_duration
-    _write_solution!(nav_processor, groups)
+    _write_solution!(nav_processor)
     released, fell_back
 end
 
@@ -1250,7 +1241,7 @@ _ecef(v) = ECEF(v[1], v[2], v[3])
 # ─────────────────────────────────────────────────────────────────────────────
 # The solution
 
-function _write_solution!(nav_processor::NavigationProcessor, groups)
+function _write_solution!(nav_processor::NavigationProcessor)
     nav_filter = nav_processor.nav_filter
     buffers = nav_processor.buffers
     members = buffers.members

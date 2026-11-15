@@ -210,24 +210,6 @@ calc_noise_observation_from_correlator_powers(
     duration,
 )
 
-calc_noise_observation_from_correlator_powers(
-    accumulated_power::StaticMatrix{M,M},
-    num_squared_magnitudes,
-    total_samples,
-    sampling_frequency;
-    code_amplitude = 1,
-    prn::Integer = 0,
-    duration = total_samples / sampling_frequency,
-) where {M} = _noise_observation(
-    accumulated_power,
-    num_squared_magnitudes,
-    total_samples,
-    sampling_frequency,
-    code_amplitude,
-    prn,
-    duration,
-)
-
 """
 $(SIGNATURES)
 
@@ -248,21 +230,6 @@ calc_noise_observation_from_samples(
     sampling_frequency;
     prn::Integer = 0,
 ) = _noise_observation(
-    accumulated_power,
-    num_samples,
-    num_samples,
-    sampling_frequency,
-    1,
-    prn,
-    num_samples / sampling_frequency,
-)
-
-calc_noise_observation_from_samples(
-    accumulated_power::StaticMatrix{M,M},
-    num_samples,
-    sampling_frequency;
-    prn::Integer = 0,
-) where {M} = _noise_observation(
     accumulated_power,
     num_samples,
     num_samples,
