@@ -37,7 +37,7 @@ using GNSSDecoder:
 using Geodesy: ECEF, ENUfromECEF, wgs84
 using KalmanFilters:
     KFTUIntermediate, UKFMUIntermediate, measurement_update!, time_update!
-using LinearAlgebra: LinearAlgebra, dot, mul!, Symmetric
+using LinearAlgebra: LinearAlgebra, dot, Symmetric
 using PositionVelocityTime:
     PositionVelocityTime,
     BiasColumns,
@@ -78,7 +78,7 @@ using GNSSSignals
 using SpecialFunctions: erfinv
 using StaticArrays
 using TrackingLoopFilters
-using Unitful: upreferred, uconvert, ustrip, dimension, NoUnits, Hz, dBHz, ms, s, m
+using Unitful: upreferred, uconvert, ustrip, NoUnits, Hz, dBHz, ms, s, m
 using Random: AbstractRNG, Xoshiro
 import Base.zero, Base.length
 

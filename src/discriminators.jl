@@ -119,7 +119,7 @@ code.
 See: Kaplan & Hegarty, "Understanding GPS: Principles and Applications", 2nd ed.,
 Tables 5.2 and 5.3.
 """
-function pll_disc(signal::AbstractGNSSSignal, correlator_bank; polarity::Real = 0)
+function pll_disc(correlator_bank; polarity::Real = 0)
     p = get_prompt(correlator_bank)
     iszero(polarity) && return atan(imag(p) / real(p)) / 2π
     q = polarity * p
@@ -143,7 +143,6 @@ See: Kaplan & Hegarty, "Understanding GPS: Principles and Applications", 2nd ed.
 Table 5.4.
 """
 function fll_disc(
-    signal::AbstractGNSSSignal,
     correlator_bank,
     previous_prompt,
     prompt_interval;

@@ -104,7 +104,6 @@ end
 @testset "The carrier loop has the configured noise bandwidth" begin
     # Closed loop with white phase noise σ_n: the NCO jitter must be
     # σ² = σ_n² · 2 · BL · T. Fed radians, the loop was ≈5.6× wider.
-    gpsl1 = GPSL1CA()
     T = 1ms
     bandwidth = 18.0Hz
     σ_n = 0.05
@@ -118,7 +117,7 @@ end
         prompt = cis(φ + σ_n * randn(rng))
         correlator_bank = EarlyPromptLateCorrelatorBank(SVector(prompt, prompt, prompt), 0.5)
         freq_update, loop_filter =
-            filter_loop(loop_filter, pll_disc(gpsl1, correlator_bank), T, bandwidth)
+            filter_loop(loop_filter, pll_disc(correlator_bank), T, bandwidth)
         φ -= 2π * Float64(freq_update * T)
         i > settle && (acc += φ^2)
     end
