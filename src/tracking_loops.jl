@@ -117,32 +117,6 @@ function init_loop_state(
         _init_loop_filter(CA), _init_loop_filter(CO), LoopBandwidths(driver_signal))
 end
 
-"""
-    reinit_loop_state(tracking_loop, loop_state, carrier_doppler, code_doppler)
-
-Re-initialise `loop_state` at the given Dopplers with zeroed loop filters, keeping the
-bandwidths and the carrier loop's staging (see [`CarrierLoopStage`](@ref)): a
-re-initialisation is a handover, not a re-acquisition, so after a change of
-integration length, say, the loop holds its stage, the phase-lock indicator reads on,
-and the bandwidths are capped for the new length.
-"""
-reinit_loop_state(::AbstractTrackingLoop, loop_state::ScalarLoopState, carrier_doppler, code_doppler) =
-    _reinit_scalar_loop_state(loop_state, carrier_doppler, code_doppler)
-
-# A scalar loop state at the given Dopplers with zeroed loop filters, its bandwidths, driver
-# and staging kept: `reinit_loop_state` for the scalar loops, and the vector loop's hand-over.
-_reinit_scalar_loop_state(loop_state::ScalarLoopState, carrier_doppler, code_doppler) =
-    ScalarLoopState(
-        carrier_doppler,
-        code_doppler,
-        _reset_loop_filter(loop_state.carrier_loop_filter),
-        _reset_loop_filter(loop_state.code_loop_filter),
-        loop_state.bandwidths,
-        NaN,
-        loop_state.driver_key,
-        loop_state.staging,
-    )
-
 # Whether the integration belongs to the signal the scalar state was initialised with.
 @inline _is_driver_integration(loop_state, post_correlation_state::PostCorrelationState) = _is_driven_by(loop_state, post_correlation_state.signal)
 
@@ -389,6 +363,32 @@ function init_loop_state(
     _init_scalar_loop_state(tracking_loop, driver_signal, carrier_doppler, code_doppler,
         ThirdOrderAssistedBilinearLF(), _init_loop_filter(CO), defaults)
 end
+
+"""
+    reinit_loop_state(tracking_loop, loop_state, carrier_doppler, code_doppler)
+
+Re-initialise `loop_state` at the given Dopplers with zeroed loop filters, keeping the
+bandwidths and the carrier loop's staging (see [`CarrierLoopStage`](@ref)): a
+re-initialisation is a handover, not a re-acquisition, so after a change of
+integration length, say, the loop holds its stage, the phase-lock indicator reads on,
+and the bandwidths are capped for the new length.
+"""
+reinit_loop_state(
+    ::Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop},
+    loop_state::ScalarLoopState,
+    carrier_doppler,
+    code_doppler,
+) =
+    ScalarLoopState(
+        carrier_doppler,
+        code_doppler,
+        _reset_loop_filter(loop_state.carrier_loop_filter),
+        _reset_loop_filter(loop_state.code_loop_filter),
+        loop_state.bandwidths,
+        NaN,
+        loop_state.driver_key,
+        loop_state.staging,
+    )
 
 # The phase error (cycles) the integration would show `shift` samples later under the
 # scheduled commands, integrated from the integration's centre with the filter's Doppler

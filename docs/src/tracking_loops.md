@@ -142,7 +142,7 @@ get_navigation_solution(::AbstractTrackingLoop)
 get_navigation_status(::AbstractTrackingLoop)
 get_phase_lock_indicator(::ScalarLoopState)
 is_phase_locked(::ScalarLoopState)
-reinit_loop_state(::AbstractTrackingLoop, ::ScalarLoopState, ::Any, ::Any)
+reinit_loop_state(::Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop}, ::ScalarLoopState, ::Any, ::Any)
 get_satellite_report(::AbstractTrackingLoop, ::AbstractGNSSSignal, ::Integer)
 step_loop!(::Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop}, ::ScalarLoopState, ::PostCorrelationState, ::Any, ::Union{Nothing,Integer})
 ```

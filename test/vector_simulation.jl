@@ -497,7 +497,7 @@ function run_update!(receiver::SimReceiver, sample, fill!; ignore_delay = false)
     TrackingLoops._navigation_update!(nav_processor, sample / ustrip(Hz, SIM_FS))
     for (channels, group) in zip(receiver.channels, receiver.groups), (i, sat) in enumerate(channels)
         nco_history = receiver.delay_ms == 0 ? sim_nco_history(sat, nothing) : sat.timeline
-        sat.state = TrackingLoops._apply_filter_feedback(nav_processor, group, group.slots[i], sat.state,
+        sat.state = TrackingLoops._apply_filter_feedback(receiver.tracking_loop, group, group.slots[i], sat.state,
             feedback_integration(sat, sample), nco_history, sized_for)
     end
     nav_processor.pvt, nav_processor.status

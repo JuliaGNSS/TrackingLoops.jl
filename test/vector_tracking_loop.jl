@@ -90,7 +90,7 @@ end
         @test vector_state.scalar_state == init_loop_state(inner, GPSL1CA(), 100.0Hz, 0.0Hz)
         # A satellite keeps it across the hand-overs.
         @test TL._add_to_vector_loop(vector_state).residual_pll.bandwidth == 5.0Hz
-        @test TL._hand_over_to_scalar_loop(TL._add_to_vector_loop(vector_state), ConstantNCOCommand(1.0, 0.0), 0, 1e6).residual_pll.bandwidth == 5.0Hz
+        @test TL._hand_over_to_scalar_loop(inner, TL._add_to_vector_loop(vector_state), ConstantNCOCommand(1.0, 0.0), 0, 1e6).residual_pll.bandwidth == 5.0Hz
     end
     @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); residual_pll_loop_bandwidth = 0.0Hz)
 end
@@ -403,7 +403,7 @@ end
     # A residual PLL out of lock knows no better than the filter: the inner loop starts over
     # from the handed-over replica and the ramp's Doppler rate.
     unlocked = TL.VectorLoopState(state; residual_pll = TL.ResidualPLL(state.residual_pll; lock = TL.ResidualPLLLock()))
-    released = TL._hand_over_to_scalar_loop(unlocked, ConstantNCOCommand(150.0, 0.2), 10_000, 5e6)
+    released = TL._hand_over_to_scalar_loop(inner, unlocked, ConstantNCOCommand(150.0, 0.2), 10_000, 5e6)
     @test released isa typeof(state)
     @test !released.vector_controlled
     # The inner loop starts over with its own configuration kept: the per-satellite
@@ -423,7 +423,7 @@ end
     residual_pll = TL.ResidualPLL(residual_pll.bandwidth, 1.5Hz, TL._residual_pll_loop_filter(1.5, 0.5), residual_pll.last_prompt_sample_index,
         residual_pll.carrier_phase_polarity, residual_pll.predicted_prompt_phase,
         TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
-    locked = TL._hand_over_to_scalar_loop(TL.VectorLoopState(state; residual_pll), ConstantNCOCommand(150.0, 0.2), 10_000, 5e6)
+    locked = TL._hand_over_to_scalar_loop(inner, TL.VectorLoopState(state; residual_pll), ConstantNCOCommand(150.0, 0.2), 10_000, 5e6)
     @test locked.scalar_state.initial_carrier_doppler ≈
           (TL._doppler_at(ramp, 0.002) + 1.5 + 0.5 * (0.002 - residual_pll.last_prompt_sample_index / 5e6)) * Hz
     @test locked.scalar_state.carrier_loop_filter.x2 ≈ 2.5Hz^2
