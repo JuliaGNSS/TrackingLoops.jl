@@ -595,8 +595,8 @@ end
 # from the measured rate, which reaches the NCO only through the updated state. Predict
 # from the *updated* state only: adding the update's projected state correction too
 # would double-count it (loop gain 2, oscillation).
-calc_nco_code_correction(predicted_pseudorange, measured_pseudorange, chip_rate, Δt_nav) =
-    -(predicted_pseudorange - measured_pseudorange) * chip_rate / (Δt_nav * SPEED_OF_LIGHT)
+calc_nco_code_correction(predicted_pseudorange, replica_pseudorange, chip_rate, Δt_nav) =
+    -(predicted_pseudorange - replica_pseudorange) * chip_rate / (Δt_nav * SPEED_OF_LIGHT)
 
 # The carrier Doppler (Hz, positive closing) of a pseudorange rate (m/s, positive receding).
 predict_carrier_doppler(predicted_pseudorange_rate, wavelength) = -predicted_pseudorange_rate / wavelength
