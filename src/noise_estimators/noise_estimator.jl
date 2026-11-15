@@ -19,7 +19,7 @@ Three required methods, all with a default on this abstract type:
     Tracking.jl's `downconvert_and_correlate!`.
   - [`append_noise_observation!`](@ref) — the **hardware** fill path, parallel to
     `Tracking.append_correlator_bank_output!`.
-  - [`get_noise_density`](@ref) — the signal's current density, or `nothing`
+  - [`get_noise_density`](@ref) — the signal's current density, zero while there is none
     while nothing has been measured yet.
 
 A fourth, `TrackingLoops.get_num_squared_magnitudes`, is optional and only matters to a
@@ -119,9 +119,8 @@ Base.convert(::Type{NoiseObservation{D,T}}, o::NoiseObservation) where {D,T} =
 """
 $(SIGNATURES)
 
-The concrete type `get_noise_density` returns for `estimator` once its window
-holds anything, so the processing's density argument stays a plain scalar rather than
-a `Union{Nothing,…}`.
+The concrete type `get_noise_density` returns for `estimator`, so the processing's
+density argument stays a plain scalar.
 
 Defaults to `typeof(1.0/1.0Hz)`, which every shipped builder produces.
 """
@@ -316,13 +315,13 @@ append_noise_observation!(estimator::AbstractNoiseDensityEstimator, ::NoiseObser
 """
 $(SIGNATURES)
 
-The signal's current noise density `N₀`, or `nothing` while the window holds
-nothing yet.
+The signal's current noise density `N₀`, a zero of [`noise_density_type`](@ref) while
+there is none; [`get_noise_density_and_status`](@ref) says why.
 
 A **read, not a drain**: the window keeps sliding across chunks and `track!`
 calls. The returned quantity has dimension `1/Hz` (see [Noise estimation](@ref)).
 """
-get_noise_density(::AbstractNoiseDensityEstimator) = nothing
+get_noise_density(estimator::AbstractNoiseDensityEstimator) = zero(noise_density_type(estimator))
 
 """
 $(SIGNATURES)
@@ -352,9 +351,7 @@ struct NoiseUpdateContext{S<:AbstractGNSSSignal,DC}
     downconvert_and_correlate::DC
 end
 
-# `get_noise_density_and_ready` (below): the signal's density as a plain scalar plus a
-# "ready" flag, splitting `get_noise_density`'s `Union{Nothing,D}` once per signal per
-# chunk so everything downstream stays monomorphic.
+# `get_noise_density_and_status` (below): the signal's density plus its status.
 #
 # "Ready" also requires a finite, positive floor. A zero floor is reachable (a
 # front-end dropout gives all-zero samples) and would give a `NaN` C/N₀, which
@@ -378,9 +375,11 @@ $(SIGNATURES)
 How many squared magnitudes the estimator's current density is averaged from, or
 `nothing` if the source does not report it.
 
-Only the rank gate reads this: an `M×M` covariance averaged from fewer than `M`
-squared magnitudes is rank-deficient by construction, so post-correlation processing withholds it until there are
-enough. A source returning `nothing` is never gated.
+The status reads an empty window off it (`0`); a source that does not report it is
+empty while its density is zero. The rank gate reads it too: an `M×M` covariance
+averaged from fewer than `M` squared magnitudes is rank-deficient by construction, so
+post-correlation processing withholds it until there are enough. A source returning
+`nothing` is never gated.
 """
 get_num_squared_magnitudes(::AbstractNoiseDensityEstimator) = nothing
 
@@ -389,6 +388,9 @@ get_num_squared_magnitudes(::AbstractNoiseDensityEstimator) = nothing
 # observation, so at `M > 3` the first `⌈M/3⌉` observations are held back.
 # Without this, weights near the unmeasured subspace read a floor far too low
 # (down to 2 % at `M = 4`, ≈16 dB optimistic), with the diagonal still positive.
+@inline _is_empty_window(num_squared_magnitudes::Integer, _) = num_squared_magnitudes == 0
+@inline _is_empty_window(::Nothing, density) = iszero(density)
+
 @inline _sufficient_squared_magnitudes(::Number, num_squared_magnitudes) = true
 @inline _sufficient_squared_magnitudes(::StaticMatrix, ::Nothing) = true
 @inline _sufficient_squared_magnitudes(
@@ -397,39 +399,38 @@ get_num_squared_magnitudes(::AbstractNoiseDensityEstimator) = nothing
 ) where {M} = num_squared_magnitudes >= M
 
 """
-    get_noise_density_and_ready(estimator::AbstractNoiseDensityEstimator) -> (density, ready)
+    NoiseDensityStatus
 
-The estimator's noise density as a plain value of [`noise_density_type`](@ref), with
-whether a C/N₀ estimator may read it: `ready` only for a finite, positive floor (a
-positive diagonal for a covariance) built from enough squared magnitudes to span its dimensions
-([`get_num_squared_magnitudes`](@ref)). Not ready, `density` is a zero of the same type, so a
-host's C/N₀ path stays monomorphic. It is the gate [`NoiseReferencedCN0Estimator`](@ref)'s
-floor goes through, for a host that wires its noise estimators into its C/N₀ processing.
+Whether a C/N₀ estimator may read a noise estimator's density, from
+[`get_noise_density_and_status`](@ref):
+
+  - `NOISE_DENSITY_READY`: a finite, positive floor (a positive diagonal for a covariance)
+    built from enough squared magnitudes to span its dimensions;
+  - `NOISE_WINDOW_EMPTY`: nothing measured yet;
+  - `NOISE_WINDOW_FILLING`: a finite, positive covariance averaged from fewer squared
+    magnitudes than its dimensions ([`get_num_squared_magnitudes`](@ref)), as for the first
+    observations of a multi-antenna window, a normal start-up;
+  - `NOISE_DENSITY_INVALID`: a zero or non-finite floor, as from a front-end dropout.
 """
-@inline function get_noise_density_and_ready(estimator::AbstractNoiseDensityEstimator)
-    density = get_noise_density(estimator)
+@enum NoiseDensityStatus::Int8 NOISE_DENSITY_READY NOISE_WINDOW_EMPTY NOISE_WINDOW_FILLING NOISE_DENSITY_INVALID
+
+"""
+    get_noise_density_and_status(estimator::AbstractNoiseDensityEstimator) -> (density, status)
+
+The estimator's noise density as a plain value of [`noise_density_type`](@ref), with its
+[`NoiseDensityStatus`](@ref): a C/N₀ estimator may read it only at `NOISE_DENSITY_READY`.
+Otherwise `density` is a zero of the same type, so a host's C/N₀ path stays monomorphic.
+It is the gate [`NoiseReferencedCN0Estimator`](@ref)'s floor goes through, for a host that
+wires its noise estimators into its C/N₀ processing; a host keeps a not-ready warning
+quiet at `NOISE_WINDOW_FILLING`.
+"""
+@inline function get_noise_density_and_status(estimator::AbstractNoiseDensityEstimator)
     D = noise_density_type(estimator)
-    isnothing(density) && return (zero(D), false)
-    d = density::D
-    _finite_density(d) &&
-    _positive_density(d) &&
-    _sufficient_squared_magnitudes(d, get_num_squared_magnitudes(estimator)) || return (zero(D), false)
-    (d, true)
-end
-
-"""
-    get_noise_window_filling(estimator::AbstractNoiseDensityEstimator) -> Bool
-
-Whether [`get_noise_density_and_ready`](@ref) is not ready *only* because the squared-magnitude count is
-still short: the window is filling, as it does for the first observations of a
-multi-antenna covariance. A zero or non-finite floor is not filling. A host reads it to
-keep a not-ready warning quiet during a normal start-up.
-"""
-@inline function get_noise_window_filling(estimator::AbstractNoiseDensityEstimator)
-    density = get_noise_density(estimator)
-    isnothing(density) && return false
-    d = density::noise_density_type(estimator)
-    _finite_density(d) &&
-        _positive_density(d) &&
-        !_sufficient_squared_magnitudes(d, get_num_squared_magnitudes(estimator))
+    d = get_noise_density(estimator)::D
+    num_squared_magnitudes = get_num_squared_magnitudes(estimator)
+    _is_empty_window(num_squared_magnitudes, d) && return (zero(D), NOISE_WINDOW_EMPTY)
+    _finite_density(d) && _positive_density(d) || return (zero(D), NOISE_DENSITY_INVALID)
+    _sufficient_squared_magnitudes(d, num_squared_magnitudes) ||
+        return (zero(D), NOISE_WINDOW_FILLING)
+    (d, NOISE_DENSITY_READY)
 end

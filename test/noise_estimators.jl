@@ -119,7 +119,7 @@ end
     long = CorrelatorNoiseDensityEstimator(; window_duration = 1.0ms)
     append_noise_observation!(long, calc_noise_observation_from_samples(1.0e5, 100_000, fs))
     @test length(long) == 1
-    @test !isnothing(get_noise_density(long))
+    @test get_noise_density(long) > zero(NoiseDensity)
     # ... and is replaced once a newer one covers the window on its own.
     append_noise_observation!(long, calc_noise_observation_from_samples(2.0e5, 100_000, fs))
     @test length(long) == 1
@@ -157,26 +157,24 @@ end
 
 @testset "An empty noise window has no density" begin
     estimator = CorrelatorNoiseDensityEstimator()
-    @test isnothing(get_noise_density(estimator))
+    @test get_noise_density(estimator) == zero(NoiseDensity)
     @test length(estimator) == 0
     @test get_num_squared_magnitudes(estimator) == 0
     append_noise_observation!(
         estimator,
         calc_noise_observation_from_samples(4000.0, 4000, 4e6Hz),
     )
-    @test !isnothing(get_noise_density(estimator))
+    @test get_noise_density(estimator) > zero(NoiseDensity)
 
-    # The public reader carries the `nothing`; the internal splitter must not.
+    # The reader returns the density type, empty or not.
     D = noise_density_type(estimator)
     @test D === NoiseDensity
-    @test Base.return_types(get_noise_density, (typeof(estimator),)) == [Union{Nothing,D}]
+    @test Base.return_types(get_noise_density, (typeof(estimator),)) == [D]
     empty_one = CorrelatorNoiseDensityEstimator()
-    @test @inferred(get_noise_density_and_ready(empty_one)) == (zero(D), false)
-    @test !get_noise_window_filling(empty_one)
-    density, ready = @inferred get_noise_density_and_ready(estimator)
-    @test ready
+    @test @inferred(get_noise_density_and_status(empty_one)) == (zero(D), NOISE_WINDOW_EMPTY)
+    density, status = @inferred get_noise_density_and_status(estimator)
+    @test status == NOISE_DENSITY_READY
     @test density == get_noise_density(estimator)
-    @test !get_noise_window_filling(estimator)
 end
 
 @testset "A zero measured floor is not a floor to divide by" begin
@@ -184,14 +182,12 @@ end
     append_noise_observation!(dead, calc_noise_observation_from_samples(0.0, 4000, 4e6Hz))
     D = noise_density_type(dead)
     @test get_noise_density(dead) == zero(D)
-    @test @inferred(get_noise_density_and_ready(dead)) == (zero(D), false)
-    @test !get_noise_window_filling(dead)
+    @test @inferred(get_noise_density_and_status(dead)) == (zero(D), NOISE_DENSITY_INVALID)
 
     for bad in (NaN, Inf)
         e = CorrelatorNoiseDensityEstimator()
         append_noise_observation!(e, NoiseObservation(bad / 1.0Hz, 1, 1.0e-3s, Int16(1)))
-        @test @inferred(get_noise_density_and_ready(e)) == (zero(D), false)
-        @test !get_noise_window_filling(e)
+        @test @inferred(get_noise_density_and_status(e)) == (zero(D), NOISE_DENSITY_INVALID)
     end
 end
 
@@ -299,11 +295,10 @@ end
     @test update_noise!(estimator, nothing, 1:10, nothing) === estimator
     obs = calc_noise_observation_from_samples(4000.0, 4000, 4e6Hz)
     @test append_noise_observation!(estimator, obs) === estimator
-    @test isnothing(get_noise_density(estimator))
+    @test get_noise_density(estimator) == zero(NoiseDensity)
     @test noise_density_type(estimator) === NoiseDensity
     @test isnothing(get_num_squared_magnitudes(estimator))
-    @test get_noise_density_and_ready(estimator) == (zero(NoiseDensity), false)
-    @test !get_noise_window_filling(estimator)
+    @test get_noise_density_and_status(estimator) == (zero(NoiseDensity), NOISE_WINDOW_EMPTY)
     @test (GPSL1CA = CorrelatorNoiseDensityEstimator(), E1B = estimator) isa NoiseDensityEstimators
 end
 
@@ -512,8 +507,8 @@ end
             else
                 append_noise_observation!(estimator, observation(M, k))
             end
-            _, ready = get_noise_density_and_ready(estimator)
-            if ready && ready_at == 0
+            _, status = get_noise_density_and_status(estimator)
+            if status == NOISE_DENSITY_READY && ready_at == 0
                 ready_at = k
             end
         end
@@ -523,10 +518,9 @@ end
     estimator = CorrelatorNoiseDensityEstimator(; num_ants = NumAnts(4))
     append_noise_observation!(estimator, observation(4, 1))
     @test get_num_squared_magnitudes(estimator) == 3
-    @test !isnothing(get_noise_density(estimator))
-    @test get_noise_window_filling(estimator)
-    density, ready = get_noise_density_and_ready(estimator)
-    @test !ready
+    @test get_noise_density(estimator) != zero(noise_density_type(estimator))
+    density, status = get_noise_density_and_status(estimator)
+    @test status == NOISE_WINDOW_FILLING
     @test density == zero(noise_density_type(estimator))
 
     # A dead input at four antennas measures a zero floor, which is not filling.
@@ -535,8 +529,7 @@ end
         dead,
         calc_noise_observation_from_correlator_powers(zero(SMatrix{4,4,ComplexF64,16}), 3, 12000, fs),
     )
-    @test !get_noise_window_filling(dead)
-    @test !last(get_noise_density_and_ready(dead))
+    @test last(get_noise_density_and_status(dead)) == NOISE_DENSITY_INVALID
     # And a non-finite element is rejected outright.
     bad = CorrelatorNoiseDensityEstimator(; num_ants = NumAnts(2))
     append_noise_observation!(
@@ -548,7 +541,7 @@ end
             fs,
         ),
     )
-    @test !last(get_noise_density_and_ready(bad))
+    @test last(get_noise_density_and_status(bad)) == NOISE_DENSITY_INVALID
 
     @test TrackingLoops._sufficient_squared_magnitudes(zero(SMatrix{4,4,ComplexF64,16}), nothing)
     @test !TrackingLoops._sufficient_squared_magnitudes(zero(SMatrix{4,4,ComplexF64,16}), 3)
