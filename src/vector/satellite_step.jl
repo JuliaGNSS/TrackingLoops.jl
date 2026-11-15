@@ -37,7 +37,7 @@ end
 # The loop, built here, after the navigation processor it holds.
 function VectorTrackingLoop(
     signals::Union{AbstractGNSSSignal,Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}}...;
-    scalar_loop::AbstractTrackingLoop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
+    scalar_loop::Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop} = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
     filter_config::NavFilterConfig = NavFilterConfig(),
     navigation_filter_update_interval = 100.0ms,
     min_tracking_cn0 = 30.0dBHz,
@@ -47,14 +47,6 @@ function VectorTrackingLoop(
     enable_ionospheric_correction::Bool = true,
     enable_tropospheric_correction::Bool = true,
 )
-    _has_fll_path(scalar_loop) || throw(
-        ArgumentError(
-            "a satellite the vector loop releases pulls in again through the FLL " *
-            "path of an FLL-assisted carrier filter; use " *
-            "`ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)` or `DelayCompensatedTrackingLoop()` as " *
-            "the scalar loop",
-        ),
-    )
     isempty(signals) &&
         throw(ArgumentError("vector tracking needs at least one ranging signal"))
     pairs = map(_ranging_pair, signals)

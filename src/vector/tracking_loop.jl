@@ -72,17 +72,16 @@ The latest update's commands are applied on the next driver integration, sized f
 they take effect: at `application_sample_index`, or at the integration's end when `application_sample_index = nothing`. An
 integration of any other signal returns the command in force there.
 
-`scalar_loop` must have an FLL-assisted carrier filter, which pulls a released satellite in
-again: a `ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)` or a
-[`DelayCompensatedTrackingLoop`](@ref). Anything else throws an `ArgumentError`, as does a
-dataless signal given alone (pair a pilot such as GPS L1C-P or Galileo E1C with its
+`scalar_loop` is a [`ScalarTrackingLoop`](@ref) or a [`DelayCompensatedTrackingLoop`](@ref),
+whose per-satellite state the vector loop holds and hands over. A dataless signal given
+alone throws an `ArgumentError` (pair a pilot such as GPS L1C-P or Galileo E1C with its
 data component).
 
 Storage is allocated for `satellite_capacity_per_signal` satellites per ranging signal
 (a `pilot => data` pair is one) and grows only past that; a dropped satellite leaves
 its storage to the next one.
 """
-struct VectorTrackingLoop{E<:AbstractTrackingLoop,N} <: AbstractTrackingLoop
+struct VectorTrackingLoop{E<:Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop},N} <: AbstractTrackingLoop
     scalar_loop::E
     navigation_processor::N
     # Taken on by each satellite's state at `init_loop_state`.
