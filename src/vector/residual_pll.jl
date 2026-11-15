@@ -164,7 +164,7 @@ end
 # The residual PLL with its lock tested on the prompt it wiped to `wiped`, an integration of
 # `coherent_integration_time` (s), averaged over `time_constant` integrations: the phase-lock
 # indicator at least the scalar loop's threshold and the C/N₀ of the same moments at most
-# `RESIDUAL_PLL_CN0_MARGIN` below `min_tracking_cn0` (on noise alone the indicator's
+# `RESIDUAL_PLL_CN0_MARGIN` (6 dB) below `min_tracking_cn0` (on noise alone the indicator's
 # signal power comes out near zero now and then, and the ratio reads lock). It drops
 # lock on the first failing integration and regains it after `time_constant` (0.1 s, at
 # least 25 integrations) consecutive passing ones.
@@ -173,7 +173,7 @@ end
 # are held at the ramp. The host's estimate decides that because on bare noise these
 # moments read up to the threshold, half the time within the margin, where the default
 # noise-referenced C/N₀ estimator stays more than 5 dB below (pipeline simulation).
-const RESIDUAL_PLL_CN0_MARGIN = 6.0 # dB
+const RESIDUAL_PLL_CN0_MARGIN = 10^(-6 / 10) # 6 dB, a factor on the linear C/N₀
 function _with_lock_test(
     residual_pll::ResidualPLL,
     wiped,
@@ -186,8 +186,9 @@ function _with_lock_test(
     lock_detector = _advance_lock_detector(lock.lock_detector, wiped, time_constant)
     signal_power = _signal_power(lock_detector)
     noise_power = max(lock_detector.power - signal_power, eps(lock_detector.power))
-    cn0_dbhz = 10 * log10(max(signal_power / (noise_power * coherent_integration_time), 1e-3))
-    good = lock_detector.indicator >= _PHASE_LOCK_THRESHOLD && cn0_dbhz >= ustrip(min_tracking_cn0) - RESIDUAL_PLL_CN0_MARGIN
+    cn0 = signal_power / (noise_power * coherent_integration_time) # linear, Hz
+    good = lock_detector.indicator >= _PHASE_LOCK_THRESHOLD &&
+        cn0 >= ustrip(Hz, min_tracking_cn0) * RESIDUAL_PLL_CN0_MARGIN
     num_locked_integrations = good ? lock.num_locked_integrations + 1 : 0
     locked = lock.locked ? good : num_locked_integrations >= time_constant
     lock = ResidualPLLLock(lock_detector, locked, num_locked_integrations)

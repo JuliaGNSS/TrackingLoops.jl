@@ -53,6 +53,14 @@ section numbers come from; Misra & Enge, *Global Positioning System*; Spilker et
   ([`CarrierLoopStage`](@ref)).
 - **Loop bandwidth**: the closed-loop noise bandwidth `B_n` (Kaplan & Hegarty's
   `B_n`, one-sided), as every `*_loop_bandwidth` keyword sets it.
+- **Units**: values of the API, configuration and loop states carry linear units
+  (`Hz`, `s`, `m`), NCO commands included; the navigation filter's matrices and the
+  other numeric kernels work on plain numbers, sample indices are integers, and cycles
+  and chips are plain.
+- **C/N₀**: in dB-Hz where it is a value of the API (the estimators, the satellite
+  reports, `min_tracking_cn0`), `-Inf` dB-Hz for no estimate and never `NaN`, as
+  Unitful's comparison of a `NaN` level passes every threshold. Nothing computes on
+  the dB values: averaging, weighting and margins work on the linear C/N₀ in Hz.
 
 ## Sign conventions
 

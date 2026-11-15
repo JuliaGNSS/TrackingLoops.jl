@@ -821,7 +821,7 @@ function _collect_members!(j, group, group_index, nav_processor, Δt_nav)
                 calc_mean_code_disc_at_epoch(loop_state, Δt_nav),
                 -wavelength *
                 (ustrip(Hz, slot.snapshot.carrier_doppler) + calc_mean_fll_disc(loop_state)),
-                calc_linear_cn0_floor(ustrip(slot.snapshot.cn0)),
+                calc_linear_cn0_floor(slot.snapshot.cn0),
                 slot.snapshot.early_late_spacing,
                 ustrip(s, slot.snapshot.coherent_integration_time),
             ),
