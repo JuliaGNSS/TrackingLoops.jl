@@ -11,21 +11,29 @@ nav_processor_integration(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0
 
 @testset "The navigation epochs are the multiples of the update interval" begin
     nav_processor = VectorTrackingLoop(GPSL1CA()).navigation_processor
-    @test TL._epoch_at_or_after(nav_processor, 0.0) == 0
-    @test TL._epoch_at_or_after(nav_processor, 0.3) == 3
-    @test TL._epoch_at_or_after(nav_processor, 0.3 + 1e-9) == 4
-    @test TL._epoch_at_or_after(nav_processor, 0.3 - 1e-9) == 3
-    @test TL._epoch_time(nav_processor, 7) ≈ 0.7
-    # The first epoch whose time, as the integrations' ends are compared with it, is not
-    # before `t`: 129 × 30 ms comes out just short of 3.87 s, which 3.87 / 0.03 rounds
-    # to 129.
+    @test TL._epoch_at_or_after(nav_processor, 0, 4e6) == 0
+    @test TL._epoch_at_or_after(nav_processor, 1_200_000, 4e6) == 3
+    @test TL._epoch_at_or_after(nav_processor, 1_200_001, 4e6) == 4
+    @test TL._epoch_at_or_after(nav_processor, 1_199_999, 4e6) == 3
+    @test TL._epoch_sample_index(nav_processor, 7, 4e6) == 2_800_000
+    # In seconds, 129 × 30 ms came out short of 3.87 s; in samples the epochs are exact.
     nav_processor = VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = 30ms).navigation_processor
-    @test TL._epoch_time(nav_processor, 129) < 3.87
-    @test TL._epoch_at_or_after(nav_processor, 3.87) == 130
-    @test all((0:16_000_000) ./ 4e6) do t
-        epoch = TL._epoch_at_or_after(nav_processor, t)
-        TL._epoch_time(nav_processor, epoch - 1) < t <= TL._epoch_time(nav_processor, epoch)
+    @test TL._samples_per_update(nav_processor, 4e6) === 120_000.0
+    @test TL._epoch_sample_index(nav_processor, 129, 4e6) == 15_480_000
+    @test TL._epoch_at_or_after(nav_processor, 15_480_000, 4e6) == 129
+    @test all(0:16_000_000) do sample_index
+        epoch = TL._epoch_at_or_after(nav_processor, sample_index, 4e6)
+        TL._epoch_sample_index(nav_processor, epoch - 1, 4e6) < sample_index <= TL._epoch_sample_index(nav_processor, epoch, 4e6)
     end
+    # An update interval spans the whole samples it is configured for, though 70 ms at
+    # 5 MHz is a hair over 350000 in binary.
+    @test TL._samples_per_update(VectorTrackingLoop(GPSL1CA(); navigation_filter_update_interval = 70ms).navigation_processor, 5e6) ===
+          350_000.0
+    # Exact a year into the session at 100 MHz, where seconds would round apart.
+    nav_processor = VectorTrackingLoop(GPSL1CA()).navigation_processor
+    epoch = 315_360_000
+    @test TL._epoch_at_or_after(nav_processor, epoch * 10_000_000, 100e6) == epoch
+    @test TL._epoch_at_or_after(nav_processor, epoch * 10_000_000 + 1, 100e6) == epoch + 1
 end
 
 @testset "A satellite registers on its first integration" begin
@@ -114,9 +122,8 @@ function take_snapshot!(nav_processor, group, slot, decoder, epoch_sample_index;
     slot.driver.sampling_frequency = fs * Hz
     nco_history = ConstantNCOCommand(0.0Hz, code_doppler * Hz)
     post_correlation_state = nav_processor_integration(3, epoch_sample_index + 4000; signal = group.driver_signal)
-    times = (TL._epoch_time(nav_processor, nav_processor.pending_epoch_index), TL._end_time(post_correlation_state))
-    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, nco_history, times...)
-    TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, nco_history, times...)
+    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, nco_history)
+    TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, nco_history)
     TL._complete_snapshot!(nav_processor, group, slot)
     slot.snapshot.decoder.num_bits_since_time_reference, slot.snapshot.code_phase
 end
@@ -165,9 +172,8 @@ end
     slot.driver_epoch_index = slot.decoding_epoch_index = slot.snapshot_epoch_index = typemin(Int)
     slot.driver.last_end_sample_index = slot.decoding.last_end_sample_index = 300_000
     post_correlation_state = nav_processor_integration(3, 304_000)
-    times = (TL._epoch_time(nav_processor, nav_processor.pending_epoch_index), TL._end_time(post_correlation_state))
-    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, ConstantNCOCommand(0.0Hz, 0.0Hz), times...)
-    TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, ConstantNCOCommand(0.0Hz, 0.0Hz), times...)
+    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, ConstantNCOCommand(0.0Hz, 0.0Hz))
+    TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, ConstantNCOCommand(0.0Hz, 0.0Hz))
     TL._complete_snapshot!(nav_processor, group, slot)
     @test nav_processor.num_snapshots == 0
     @test slot.driver_epoch_index == slot.decoding_epoch_index == typemin(Int)

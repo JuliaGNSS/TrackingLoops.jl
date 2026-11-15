@@ -805,7 +805,7 @@ function run_pipeline!(receiver::PipelineReceiver, duration; start_sample = 0,
             nav_processor = receiver.vt
             pvt = nav_processor.pvt
             push!(results, (; pvt = deepcopy(pvt), status = nav_processor.status, code_errors = copy(code_errors),
-                time = receiver.truth.t0 + TrackingLoops._epoch_time(nav_processor, nav_processor.update_epoch_index),
+                time = receiver.truth.t0 + nav_processor.update_epoch_index * TrackingLoops._update_interval_seconds(nav_processor),
                 measured = collect(keys(pvt.observations)),
                 reasons = [get_satellite_report(tracking_loop, sat.signal, sat.decoder.prn).release_reason for sat in receiver.sats]))
         end

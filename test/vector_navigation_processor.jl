@@ -151,7 +151,7 @@ end
               TL.calc_nco_code_correction(predicted[j], measured, member.chip_rate, Δt_nav) * Hz atol = 1e-6Hz
         @test sat.state.ramp.doppler ≈
               TL.predict_carrier_doppler(rate_at_epoch, member.wavelength) * Hz atol = 1e-6Hz
-        @test sat.state.ramp.reference_time ≈ TL._epoch_time(vt, vt.update_epoch_index) * s
+        @test sat.state.ramp.reference_time ≈ vt.update_epoch_index * TL._update_interval_seconds(vt) * s
         # The post-fit rate is predicted at the measurement's own instant.
         @test buffers.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.nav_filter.x, idxs, member) atol = 1e-9
         @test sat.state.feedback_delay == 0.0s

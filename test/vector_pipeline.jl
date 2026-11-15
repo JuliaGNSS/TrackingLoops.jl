@@ -380,7 +380,7 @@ function snapshot_range_errors(rx)
     group = nav_processor.groups[1]
     map(rx.sats) do sat
         slot = group.slots[sat.state.slot_index]
-        t = rx.truth.t0 + TL._epoch_time(nav_processor, slot.snapshot_epoch_index)
+        t = rx.truth.t0 + slot.snapshot_epoch_index * TL._update_interval_seconds(nav_processor)
         u_true = uncorrected_time(sat, first(true_transmit(sat, rx.truth, t)))
         (calc_uncorrected_transmit_time(TL._signal_observation(group.driver_signal, slot)) - u_true) *
             TL.SPEED_OF_LIGHT
