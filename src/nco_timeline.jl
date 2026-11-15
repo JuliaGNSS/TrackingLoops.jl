@@ -1,15 +1,15 @@
 # Physical NCO Doppler commands and their device-sample timeline.
 
 """
-    NCOCommand(carrier_doppler_hz, code_doppler_hz)
+    NCOCommand(carrier_doppler, code_doppler)
 
-Physical carrier and code Doppler offsets in Hz, stored as plain `Float64` values.
+Physical carrier and code Doppler offsets, frequencies such as `100.0Hz`, stored in Hz.
 These are frequency offsets, independent of any device register encoding. Read them
 by name: `command.carrier_doppler`, or `(; carrier_doppler, code_doppler) = command`.
 """
 struct NCOCommand
-    carrier_doppler::Float64
-    code_doppler::Float64
+    carrier_doppler::typeof(1.0Hz)
+    code_doppler::typeof(1.0Hz)
 end
 
 """
@@ -43,19 +43,19 @@ end
 
 function NCOTimeline(; capacity::Integer = 64)
     capacity >= 1 || throw(ArgumentError("an NCOTimeline needs a capacity of at least 1"))
-    NCOTimeline(NCOCommand(0.0, 0.0),
-        [ScheduledNCOCommand(0, false, NCOCommand(0.0, 0.0)) for _ = 1:capacity], 0)
+    NCOTimeline(NCOCommand(0.0Hz, 0.0Hz),
+        [ScheduledNCOCommand(0, false, NCOCommand(0.0Hz, 0.0Hz)) for _ = 1:capacity], 0)
 end
 
 "A handover: start on the given Doppler offsets with no commands in flight."
-function reset_timeline!(timeline::NCOTimeline, carrier_doppler_hz, code_doppler_hz)
-    timeline.applied_command = NCOCommand(carrier_doppler_hz, code_doppler_hz)
+function reset_timeline!(timeline::NCOTimeline, carrier_doppler, code_doppler)
+    timeline.applied_command = NCOCommand(carrier_doppler, code_doppler)
     timeline.num_scheduled_commands = 0
     timeline
 end
 
 """
-    schedule_command!(timeline, application_sample_index, carrier_doppler_hz, code_doppler_hz)
+    schedule_command!(timeline, application_sample_index, carrier_doppler, code_doppler)
 
 Schedule physical Doppler offsets to take effect at `application_sample_index` and
 return `true`. Anything queued at or past that sample is superseded: a device keeps the
@@ -64,7 +64,7 @@ queue full, return `false` and leave the timeline as it is: the host must not wr
 command to the device, and a queue that stays full means [`advance_timeline!`](@ref) is
 not keeping up.
 """
-function schedule_command!(timeline::NCOTimeline, application_sample_index, carrier_doppler_hz, code_doppler_hz)
+function schedule_command!(timeline::NCOTimeline, application_sample_index, carrier_doppler, code_doppler)
     commands = timeline.scheduled_commands
     count = timeline.num_scheduled_commands
     @inbounds while count > 0 && commands[count].application_sample_index >= application_sample_index
@@ -72,7 +72,7 @@ function schedule_command!(timeline::NCOTimeline, application_sample_index, carr
     end
     count < length(commands) || return false
     @inbounds commands[count+1] =
-        ScheduledNCOCommand(Int64(application_sample_index), false, NCOCommand(carrier_doppler_hz, code_doppler_hz))
+        ScheduledNCOCommand(Int64(application_sample_index), false, NCOCommand(carrier_doppler, code_doppler))
     timeline.num_scheduled_commands = count + 1
     true
 end
@@ -189,8 +189,8 @@ function calc_mean_nco_command(timeline::NCOTimeline, a::Real, b::Real)
     total = b - a
     total > 0 || return get_nco_command(timeline, a)
     (; carrier_doppler, code_doppler) = timeline.applied_command
-    carrier_sum = 0.0
-    code_sum = 0.0
+    carrier_sum = 0.0Hz
+    code_sum = 0.0Hz
     t = a
     @inbounds for i = 1:timeline.num_scheduled_commands
         scheduled = timeline.scheduled_commands[i]
@@ -208,7 +208,7 @@ function calc_mean_nco_command(timeline::NCOTimeline, a::Real, b::Real)
 end
 
 """
-    ConstantNCOCommand(carrier_doppler_hz, code_doppler_hz)
+    ConstantNCOCommand(carrier_doppler, code_doppler)
     ConstantNCOCommand(command::NCOCommand)
 
 A physical command held constant for every queried span, as in a software receiver
@@ -217,7 +217,7 @@ within one chunk. See [`calc_mean_nco_command`](@ref).
 struct ConstantNCOCommand
     command::NCOCommand
 end
-ConstantNCOCommand(carrier_doppler_hz, code_doppler_hz) =
-    ConstantNCOCommand(NCOCommand(carrier_doppler_hz, code_doppler_hz))
+ConstantNCOCommand(carrier_doppler, code_doppler) =
+    ConstantNCOCommand(NCOCommand(carrier_doppler, code_doppler))
 calc_mean_nco_command(command::ConstantNCOCommand, a::Real, b::Real) = command.command
 get_nco_command(command::ConstantNCOCommand, sample_index) = command.command

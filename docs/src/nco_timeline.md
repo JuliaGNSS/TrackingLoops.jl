@@ -5,8 +5,8 @@ CurrentModule = TrackingLoops
 # NCO timeline
 
 An [`NCOCommand`](@ref) describes physical carrier and code Doppler offsets in Hz.
-Both offsets are stored as plain `Float64` values. Device adapters translate these
-frequencies to their hardware representation.
+Both offsets are frequencies, stored in Hz. Device adapters translate them to their
+hardware representation.
 
 A hardware correlator holds each command until the next one takes effect, often
 several integrations after the integration that motivated it. An [`NCOTimeline`](@ref)
@@ -23,8 +23,8 @@ command if the device rejects it:
 
 ```julia
 timeline = NCOTimeline(; capacity = 64)
-reset_timeline!(timeline, 100.0, 0.1)
-schedule_command!(timeline, 1000, 110.0, 0.11) || error("NCO timeline full")
+reset_timeline!(timeline, 100.0Hz, 0.1Hz)
+schedule_command!(timeline, 1000, 110.0Hz, 0.11Hz) || error("NCO timeline full")
 confirm_command!(timeline, 1000, 1200)
 (; carrier_doppler, code_doppler) = calc_mean_nco_command(timeline, 1000, 1400)
 ```

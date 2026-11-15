@@ -45,7 +45,7 @@ end
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     correlator_bank = EarlyPromptLateCorrelatorBank(SVector{3,ComplexF64}(0.5, 1.0, 0.5), 0.5)
     output = CorrelatorBankOutput(correlator_bank, 4000, 4000, 0.0)
-    nco_history = ConstantNCOCommand(100.0, 0.1)
+    nco_history = ConstantNCOCommand(100.0Hz, 0.1Hz)
     @test_throws ArgumentError step_loop!(tracking_loop, state,
         processed_state(GPSL1CA(), correlator_bank, complex(0.0), output, 1, 4e6Hz), nco_history, nothing)
     galileo = init_loop_state(tracking_loop, GalileoE1B(), 100.0Hz, 0.1Hz)
@@ -306,8 +306,8 @@ end
     @test dropped.release_reason == VT_INELIGIBLE
     nco_command = get_nco_command(sat.timeline, sample + 15 * SAMPLES_PER_MS)
     application_carrier, application_code = nco_command.carrier_doppler, nco_command.code_doppler
-    @test sat.state.scalar_state.initial_carrier_doppler ≈ application_carrier * Hz atol = 0.01Hz
-    @test sat.state.scalar_state.initial_code_doppler == application_code * Hz
+    @test sat.state.scalar_state.initial_carrier_doppler ≈ application_carrier atol = 0.01Hz
+    @test sat.state.scalar_state.initial_code_doppler == application_code
     @test sat.state.scalar_state.initial_carrier_doppler != dropped.snapshot.carrier_doppler
 end
 

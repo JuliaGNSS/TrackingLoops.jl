@@ -1030,9 +1030,9 @@ function _commands_at_application(
     feedback_delay = max(feedback_delay, 0.0)
     Δt_nav = _update_interval_seconds(nav_processor)
     chip_rate = ustrip(Hz, get_chip_rate(group.driver_signal))
-    code_command = calc_mean_nco_command(nco_history, slot.driver.last_end_sample_index, application_sample_index).code_doppler
+    code_command = ustrip(Hz, calc_mean_nco_command(nco_history, slot.driver.last_end_sample_index, application_sample_index).code_doppler)
     chips = slot.driver.chips_since_epoch +
-        _replica_chips(nco_history, slot.driver.last_end_sample_index, application_sample_index, fs, chip_rate)
+        _replica_chips(nco_history, slot.driver.last_end_sample_index, application_sample_index, fs * Hz, chip_rate * Hz)
     reference_system = _reference_system(nav_processor.nav_filter)
     reference_tow = get_time_of_week(reference_system, nav_processor.nav_filter.reference_epoch)
     j = slot.member_index
