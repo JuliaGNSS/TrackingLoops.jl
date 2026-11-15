@@ -128,10 +128,9 @@ end
     @test get_carrier_loop_stage(stepped.scalar_state) == get_carrier_loop_stage(state.scalar_state)
 end
 
-@testset "A vector loop needs an FLL-assisted inner loop" begin
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop())
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop(ThirdOrderBilinearLF))
-    @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); scalar_loop = VectorTrackingLoop(GPSL1CA()))
+@testset "A vector loop's inner loop is a scalar loop" begin
+    @test_throws TypeError VectorTrackingLoop(GPSL1CA(); scalar_loop = VectorTrackingLoop(GPSL1CA()))
+    @test VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop()) isa VectorTrackingLoop
     @test VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)) isa VectorTrackingLoop
     @test VectorTrackingLoop(GPSL1CA(); scalar_loop = DelayCompensatedTrackingLoop()) isa VectorTrackingLoop
 end
