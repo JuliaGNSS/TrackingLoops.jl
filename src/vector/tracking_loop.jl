@@ -379,18 +379,22 @@ _disc_mean((count, disc_sum)) = count == 0 ? nothing : disc_sum / count
 has_disc_sums(loop_state::VectorLoopState) = first(loop_state.code_disc_sum) > 0 && first(loop_state.fll_disc_sum) > 0
 
 # `(cycles, duration)` the replica's carrier advanced by over each half of `integration`,
-# from the commands it ran on (Hz).
+# from the commands it ran on, and the mean command over the whole integration (`command`).
 @inline function _replica_halves(post_correlation_state::PostCorrelationState, nco_history)
     fs = post_correlation_state.sampling_frequency
     integration_end_sample_index = post_correlation_state.last_sample_index
     half_samples = post_correlation_state.last_num_integrated_samples / 2
     center = _integration_center(post_correlation_state)
-    first_command = calc_mean_nco_command(nco_history, _integration_start(post_correlation_state), center).carrier_doppler
-    second_command = calc_mean_nco_command(nco_history, center, integration_end_sample_index).carrier_doppler
+    first_command = calc_mean_nco_command(nco_history, _integration_start(post_correlation_state), center)
+    second_command = calc_mean_nco_command(nco_history, center, integration_end_sample_index)
     half_duration = convert(typeof(1.0s), half_samples / fs)
-    first_cycles = Float64(uconvert(NoUnits, first_command * half_duration))
-    second_cycles = Float64(uconvert(NoUnits, second_command * half_duration))
-    (first = (first_cycles, half_duration), second = (second_cycles, half_duration))
+    first_cycles = ustrip(NoUnits, first_command.carrier_doppler * half_duration)
+    second_cycles = ustrip(NoUnits, second_command.carrier_doppler * half_duration)
+    command = NCOCommand(
+        (first_command.carrier_doppler + second_command.carrier_doppler) / 2,
+        (first_command.code_doppler + second_command.code_doppler) / 2,
+    )
+    (first = (first_cycles, half_duration), second = (second_cycles, half_duration), command)
 end
 
 # The FLL accumulator with `integration`'s discriminator added. An integration without a previous
@@ -434,7 +438,7 @@ end
 )
     scalar_state = loop_state.scalar_state
     application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_sample_index : application_sample_index
-    measured = _measure_discriminators(post_correlation_state, nco_history, loop_state.residual_pll.last_prompt_sample_index; form_fll = true)
+    measured = _measure_discriminators(post_correlation_state, replica_halves.command, loop_state.residual_pll.last_prompt_sample_index; form_fll = true)
     residual_pll, fll_disc_sum =
         _measure_carrier(loop_state, post_correlation_state, nco_history, replica_halves, measured.carrier_frequency_error, min_tracking_cn0)
     # The command takes effect on an integration taken to be this one's length.

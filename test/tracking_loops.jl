@@ -278,7 +278,12 @@ end
 
 # A scalar loop's discriminators for an integration without a command to compensate.
 measured_discriminators(loop_state, post_correlation_state, nco_history; form_fll) =
-    TrackingLoops._measure_discriminators(post_correlation_state, nco_history, loop_state.previous_prompt_sample_index; form_fll)
+    TrackingLoops._measure_discriminators(
+        post_correlation_state,
+        TrackingLoops._replica_command(post_correlation_state, nco_history),
+        loop_state.previous_prompt_sample_index;
+        form_fll,
+    )
 
 @testset "$(nameof(typeof(tracking_loop))) reads an integration of known sign four-quadrant" for tracking_loop in (
     ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
