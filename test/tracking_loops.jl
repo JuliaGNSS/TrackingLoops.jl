@@ -276,6 +276,10 @@ end
     @test get_navigation_solution(tracking_loop) === nothing
 end
 
+# A scalar loop's discriminators for an integration without a command to compensate.
+measured_discriminators(loop_state, post_correlation_state, nco_history; form_fll) =
+    TrackingLoops._measure_discriminators(post_correlation_state, nco_history, loop_state.previous_prompt_sample_index; form_fll)
+
 @testset "$(nameof(typeof(tracking_loop))) reads an integration of known sign four-quadrant" for tracking_loop in (
     ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
     DelayCompensatedTrackingLoop(),
@@ -284,22 +288,20 @@ end
     # The prompt 0.4 cycles ahead of the replica and of the previous prompt.
     output = CorrelatorBankOutput(loop_epl(0.5, cis(0.8π), 0.5), LOOP_N, LOOP_N)
     coherent_integration_time = LOOP_N / LOOP_FS
-    discriminators(; kwargs...) = TrackingLoops._discriminators(
-        tracking_loop,
+    discriminators(; kwargs...) = measured_discriminators(
         state,
         processed_state(LOOP_SIGNAL, output.correlator_bank, complex(1.0), output, 1, LOOP_FS; kwargs...),
-        ConstantNCOCommand(0.0Hz, 0.0Hz),
-        nothing;
+        ConstantNCOCommand(0.0Hz, 0.0Hz);
         form_fll = true,
     )
     costas = discriminators()
-    @test costas.phase_error ≈ -0.1
-    @test costas.frequency_error ≈ -0.1 / coherent_integration_time
+    @test costas.carrier_phase_error ≈ -0.1
+    @test costas.carrier_frequency_error ≈ -0.1 / coherent_integration_time
     four_quadrant = discriminators(; carrier_phase_polarity = 1)
-    @test four_quadrant.phase_error ≈ 0.4
-    @test four_quadrant.frequency_error ≈ 0.4 / coherent_integration_time
+    @test four_quadrant.carrier_phase_error ≈ 0.4
+    @test four_quadrant.carrier_frequency_error ≈ 0.4 / coherent_integration_time
     # The prompt's sign negative: the error read around the inverted prompt.
-    @test discriminators(; carrier_phase_polarity = -1).phase_error ≈ -0.1
+    @test discriminators(; carrier_phase_polarity = -1).carrier_phase_error ≈ -0.1
 end
 
 @testset "$(nameof(typeof(tracking_loop))) reads the FLL over the time between the prompts' centres" for tracking_loop in (
@@ -310,14 +312,12 @@ end
     # integration starts half an integration after the previous one ended.
     output = CorrelatorBankOutput(loop_epl(0.5, cis(0.2π), 0.5), LOOP_N, 5 * LOOP_N ÷ 2)
     coherent_integration_time = LOOP_N / LOOP_FS
-    frequency_error(previous_center) = TrackingLoops._discriminators(
-        tracking_loop,
+    frequency_error(previous_center) = measured_discriminators(
         ScalarLoopState(init_loop_state(tracking_loop, LOOP_SIGNAL, 0.0Hz, 0.0Hz); previous_prompt_sample_index = previous_center),
         processed_state(LOOP_SIGNAL, output.correlator_bank, complex(1.0), output, 1, LOOP_FS),
-        ConstantNCOCommand(0.0Hz, 0.0Hz),
-        nothing;
+        ConstantNCOCommand(0.0Hz, 0.0Hz);
         form_fll = true,
-    ).frequency_error
+    ).carrier_frequency_error
     @test frequency_error(LOOP_N / 2) ≈ 0.1 / (1.5 * coherent_integration_time)
     # Without a previous prompt centre, the integrations are taken to be back to back.
     @test frequency_error(NaN) ≈ 0.1 / coherent_integration_time
@@ -351,15 +351,13 @@ end
         post_correlation_state = processed_state(LOOP_SIGNAL, output.correlator_bank, previous_prompt, output, 1, LOOP_FS)
         uses_fll = get_carrier_loop_stage(state) == FLL_ASSISTED_PLL
         # The FLL discriminator is formed only while the loop uses it.
-        discriminators = TrackingLoops._discriminators(
-            tracking_loop,
+        discriminators = measured_discriminators(
             state,
             post_correlation_state,
-            ConstantNCOCommand(carrier_command * Hz, 0.0Hz),
-            nothing;
+            ConstantNCOCommand(carrier_command * Hz, 0.0Hz);
             form_fll = uses_fll,
         )
-        uses_fll || @test discriminators.frequency_error == 0.0Hz
+        uses_fll || @test discriminators.carrier_frequency_error == 0.0Hz
         state, carrier, = step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(carrier_command * Hz, 0.0Hz), nothing)
         push!(stages, get_carrier_loop_stage(state))
         carrier_command = ustrip(Hz, carrier)

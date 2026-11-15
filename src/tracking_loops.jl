@@ -131,55 +131,40 @@ end
     loop_state, carrier_doppler, code_doppler
 end
 
-# One integration's discriminators plus its integration time and centre sample.
-# `phase_error` (cycles) and `frequency_error` (Hz) feed the scalar carrier filter;
-# the frequency error is formed only if `form_fll` (while FLL-assisted), else zero.
-# The DLL's `code_error` is normalised with the code command the integration ran on.
-# The conventional loop does not read the application sample.
-@inline function _discriminators(
-    ::ScalarTrackingLoop,
-    loop_state::ScalarLoopState,
-    post_correlation_state::PostCorrelationState,
-    nco_history,
-    _::Union{Nothing,Integer};
-    form_fll::Bool,
-)
-    _calc_discriminators(post_correlation_state, nco_history, loop_state.previous_prompt_sample_index; form_fll)
-end
-
-# The carrier discriminators (`_calc_carrier_discriminators`) and the DLL's
-# (`_calc_code_discriminator`) under the mean NCO command the integration ran on.
-@inline function _calc_discriminators(post_correlation_state::PostCorrelationState, nco_history, previous_center; form_fll::Bool)
-    integration_start_sample_index = _integration_start(post_correlation_state)
-    nco_command = calc_mean_nco_command(nco_history, integration_start_sample_index, post_correlation_state.last_sample_index)
-    (;
-        _calc_carrier_discriminators(post_correlation_state, nco_command.carrier_doppler, previous_center; form_fll)...,
-        code_error = _calc_code_discriminator(post_correlation_state, nco_command.code_doppler),
-    )
-end
-
-# An integration's carrier discriminators under the carrier command `applied_carrier`
-# it ran on, with its coherent integration time and centre sample. The FLL reads the
-# rotation since the prompt centred on `previous_center` (`NaN` for none) over the
-# time between the two centres, which spans any gap before the integration.
-@inline function _calc_carrier_discriminators(post_correlation_state::PostCorrelationState, applied_carrier, previous_center; form_fll::Bool)
-    coherent_integration_time = _coherent_integration_time(post_correlation_state)
+# An integration's discriminators under the mean NCO command the replica ran on
+# (`replica_carrier_doppler`, `replica_code_doppler`), with its coherent integration time and
+# centre sample: `carrier_phase_error` (cycles), `carrier_frequency_error` (Hz, formed only
+# if `form_fll`, else zero) and the DLL's `code_phase_error` (chips), normalised with the
+# replica's code Doppler.
+# The FLL reads the rotation since the prompt centred on `previous_center` (`NaN` for none)
+# over the time between the two centres, which spans any gap before the integration.
+@inline function _measure_discriminators(post_correlation_state::PostCorrelationState, nco_history, previous_center; form_fll::Bool)
+    (; carrier_doppler, code_doppler) =
+        calc_mean_nco_command(nco_history, _integration_start(post_correlation_state), post_correlation_state.last_sample_index)
     filtered_correlator_bank = post_correlation_state.last_filtered_correlator_bank
+    polarity = post_correlation_state.last_carrier_phase_polarity
     center = _integration_center(post_correlation_state)
-    frequency_error =
+    carrier_frequency_error =
         form_fll ?
         fll_disc(
             filtered_correlator_bank,
             post_correlation_state.previous_filtered_prompt,
             _prompt_interval(post_correlation_state, previous_center, center);
-            polarity = post_correlation_state.last_carrier_phase_polarity,
+            polarity,
         ) : 0.0Hz
     (;
-        coherent_integration_time,
-        applied_carrier,
-        phase_error = pll_disc(filtered_correlator_bank; polarity = post_correlation_state.last_carrier_phase_polarity),
-        frequency_error,
+        coherent_integration_time = _coherent_integration_time(post_correlation_state),
         center,
+        replica_carrier_doppler = carrier_doppler,
+        replica_code_doppler = code_doppler,
+        carrier_phase_error = pll_disc(filtered_correlator_bank; polarity),
+        carrier_frequency_error,
+        code_phase_error = dll_disc(
+            post_correlation_state.signal,
+            filtered_correlator_bank,
+            code_doppler,
+            post_correlation_state.sampling_frequency,
+        ),
     )
 end
 
@@ -188,15 +173,6 @@ end
 @inline _prompt_interval(post_correlation_state::PostCorrelationState, previous_center, center) =
     isnan(previous_center) ? _coherent_integration_time(post_correlation_state) :
     (center - previous_center) / post_correlation_state.sampling_frequency
-
-# An integration's DLL output (chips), normalised with the code command `applied_code`
-# the replica ran on.
-@inline _calc_code_discriminator(post_correlation_state::PostCorrelationState, applied_code) = dll_disc(
-    post_correlation_state.signal,
-    post_correlation_state.last_filtered_correlator_bank,
-    applied_code,
-    post_correlation_state.sampling_frequency,
-)
 
 # The carrier filter's input: the FLL-assisted filter takes both
 # discriminators, any other the phase discriminator alone.
@@ -232,14 +208,11 @@ end
 
 # One integration through a scalar loop (see `step_loop!`).
 @inline function _step_scalar_loop(tracking_loop, loop_state, post_correlation_state::PostCorrelationState, nco_history, application_sample_index::Union{Nothing,Integer})
-    discriminators = _discriminators(
-        tracking_loop,
-        loop_state,
-        post_correlation_state,
-        nco_history,
-        application_sample_index;
-        form_fll = loop_state.staging.stage == FLL_ASSISTED_PLL,
-    )
+    form_fll = loop_state.staging.stage == FLL_ASSISTED_PLL
+    discriminators = _measure_discriminators(post_correlation_state, nco_history, loop_state.previous_prompt_sample_index; form_fll)
+    if tracking_loop isa DelayCompensatedTrackingLoop && tracking_loop.compensate_delay
+        discriminators = _compensate_delay(discriminators, loop_state, post_correlation_state, nco_history, application_sample_index; form_fll)
+    end
     coherent_integration_time = discriminators.coherent_integration_time
     code_loop_bandwidth =
         calc_effective_code_loop_bandwidth(loop_state.bandwidths.code, coherent_integration_time)
@@ -247,15 +220,15 @@ end
         loop_state.carrier_loop_filter,
         _carrier_filter_input(
             loop_state.carrier_loop_filter,
-            discriminators.phase_error,
-            discriminators.frequency_error,
+            discriminators.carrier_phase_error,
+            discriminators.carrier_frequency_error,
         ),
         coherent_integration_time,
         _carrier_loop_bandwidth(loop_state, coherent_integration_time),
     )
     code_frequency_correction, code_loop_filter = filter_loop(
         loop_state.code_loop_filter,
-        discriminators.code_error,
+        discriminators.code_phase_error,
         coherent_integration_time,
         code_loop_bandwidth,
     )
@@ -428,51 +401,44 @@ integration's end under `nothing`), so applying it changes nothing.
     _step_scalar_loop(tracking_loop, loop_state, post_correlation_state, nco_history, application_sample_index) :
     _step_passenger(loop_state, post_correlation_state, nco_history, application_sample_index)
 
-@inline function _discriminators(
-    tracking_loop::DelayCompensatedTrackingLoop,
+# The delay-compensated loop's discriminators: `measured` (see `_measure_discriminators`) moved
+# onto the integration the delay-free loop would see where the command takes effect, the phase
+# error predicted there and the FLL reading re-based onto the command running there.
+@inline function _compensate_delay(
+    measured,
     loop_state::ScalarLoopState,
     post_correlation_state::PostCorrelationState,
     nco_history,
     application_sample_index::Union{Nothing,Integer};
     form_fll::Bool,
 )
-    sampling_frequency = post_correlation_state.sampling_frequency
-    previous_center = loop_state.previous_prompt_sample_index
-    measured = _calc_discriminators(post_correlation_state, nco_history, previous_center; form_fll)
-    (; center, coherent_integration_time, phase_error, frequency_error) = measured
-    integration_end_sample_index = post_correlation_state.last_sample_index
-    integration_start_sample_index = _integration_start(post_correlation_state)
     # Every integration of the batch maps onto the delay-free loop's integration this far ahead.
     shift = isnothing(application_sample_index) ? 0 : application_sample_index - post_correlation_state.last_command_issue_sample_index
-
-    if tracking_loop.compensate_delay && shift > 0
-        phase_error = _predict_application_phase_error(
-            phase_error,
-            post_correlation_state.last_carrier_phase_polarity,
-            loop_state,
-            nco_history,
-            center,
-            shift,
-            coherent_integration_time,
-            sampling_frequency,
-        )
-        # Re-base the FLL reading from the command between the prompts' centres onto
-        # the command running `shift` samples ahead.
-        fll_command =
-            isnan(previous_center) ? measured.applied_carrier :
-            calc_mean_nco_command(nco_history, previous_center, center).carrier_doppler
-        application_command =
-            calc_mean_nco_command(nco_history, integration_start_sample_index + shift, integration_end_sample_index + shift).carrier_doppler
-        form_fll && (frequency_error += fll_command - application_command)
-    end
-
-    (;
-        coherent_integration_time,
-        phase_error,
-        frequency_error,
-        code_error = measured.code_error,
+    shift > 0 || return measured
+    (; center, coherent_integration_time, carrier_frequency_error) = measured
+    previous_center = loop_state.previous_prompt_sample_index
+    carrier_phase_error = _predict_application_phase_error(
+        measured.carrier_phase_error,
+        post_correlation_state.last_carrier_phase_polarity,
+        loop_state,
+        nco_history,
         center,
+        shift,
+        coherent_integration_time,
+        post_correlation_state.sampling_frequency,
     )
+    # Re-base the FLL reading from the command between the prompts' centres onto
+    # the command running `shift` samples ahead.
+    fll_command =
+        isnan(previous_center) ? measured.replica_carrier_doppler :
+        calc_mean_nco_command(nco_history, previous_center, center).carrier_doppler
+    application_command = calc_mean_nco_command(
+        nco_history,
+        _integration_start(post_correlation_state) + shift,
+        post_correlation_state.last_sample_index + shift,
+    ).carrier_doppler
+    form_fll && (carrier_frequency_error += fll_command - application_command)
+    (; measured..., carrier_phase_error, carrier_frequency_error)
 end
 
 """
