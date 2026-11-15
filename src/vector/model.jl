@@ -422,21 +422,18 @@ function calc_mean_fll_disc(loop_state::VectorLoopState)
     isnothing(mean) ? 0.0 : ustrip(Hz, mean)
 end
 
-# Whether a member accumulated both a code and a carrier measurement this update (none
-# without a full coherent integration, e.g. admitted at the update's end or starved of samples). The zero
-# `calc_mean_code_disc_at_epoch` and `calc_mean_fll_disc` substitute would be a confidently zero
-# residual at full `R` weight, pulling the state toward the NCO, so such members are
-# withheld from the measurements (still commanded, like a member out of code lock). The
-# carrier sum counts only integrations with a previous prompt, so it can be empty alone (a
-# update whose only integration is the first after a (re)start); that member is withheld too.
-has_disc_sums(loop_state::VectorLoopState) = first(loop_state.code_disc_sum) > 0 && first(loop_state.fll_disc_sum) > 0
-
 # Linear C/N₀ (Hz) from dB-Hz, floored to 1 against a degenerate weight; a NaN estimate
 # (empty correlator bank) maps to 1 so it cannot corrupt the Kalman update.
 function calc_linear_cn0_floor(cn0_dbhz)
     cn0_lin = 10^(cn0_dbhz / 10)
     isnan(cn0_lin) ? 1.0 : max(cn0_lin, 1.0)
 end
+
+# Cap on the weighting C/N₀: the moments estimator reads a noise-free (simulated) signal
+# as infinite, which would give the filter a noiseless measurement.
+const MAX_CN0 = 80.0dBHz
+# A C/N₀ estimate capped at `MAX_CN0`.
+_capped_cn0(cn0) = cn0 > MAX_CN0 ? MAX_CN0 : cn0
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Measurement prediction
