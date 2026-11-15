@@ -129,8 +129,10 @@ end
     @test @inferred(get_prompt_buffer(cn0_estimator)) == zeros(ComplexF64, 20)
     @test cn0_estimator.newest_index == 0
     @test @inferred(Base.length(cn0_estimator)) == 0
-    # An empty buffer reports 0 dB-Hz rather than dividing by zero.
-    @test @inferred(estimate_cn0(cn0_estimator, CN0_T)) == 0.0dBHz
+    # An empty buffer reports -Inf dB-Hz, no estimate, rather than dividing by zero.
+    @test @inferred(estimate_cn0(cn0_estimator, CN0_T)) == -Inf * dBHz
+    # So do prompts without power.
+    @test estimate_cn0(update!(MomentsCN0Estimator(; num_averaged_integrations = 20), 0.0im), CN0_T) == -Inf * dBHz
     @test !requires_noise_density(cn0_estimator)
 
     next_cn0_estimator = @inferred update!(cn0_estimator, 1 + 2im)
@@ -440,7 +442,7 @@ end
     estimator = NWPRCN0Estimator(; num_averaged_integrations = 100, num_narrowband_code_periods = 20)
     @test @inferred(Base.length(estimator)) == 0
     @test estimator.newest_index == 0
-    @test @inferred(estimate_cn0(estimator, 1ms)) == 0.0dBHz
+    @test @inferred(estimate_cn0(estimator, 1ms)) == -Inf * dBHz
     for _ = 1:19
         estimator = @inferred update!(estimator, 1.0 + 0.0im, FREE_RUNNING_CN0_CONTEXT)
     end
