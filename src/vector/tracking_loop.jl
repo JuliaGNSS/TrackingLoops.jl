@@ -419,16 +419,9 @@ end
     _step_vector_loop(loop_state, post_correlation_state, nco_history, application_sample_index, replica_halves, tracking_loop.navigation_processor.min_tracking_cn0)
 end
 
-# An integration's DLL output (chips), normalised by the code command the replica ran on, as
-# the scalar loops measure it.
-@inline function _code_discriminator(post_correlation_state::PostCorrelationState, nco_history)
-    integration_start_sample_index = _integration_start(post_correlation_state)
-    applied_code = calc_mean_nco_command(nco_history, integration_start_sample_index, post_correlation_state.last_end_sample_index).code_doppler
-    _calc_code_discriminator(post_correlation_state, applied_code)
-end
-
-# One integration of a member: the DLL accumulated, the carrier measured
-# (`_measure_carrier`), and the next command: the ramp at the middle of the integration it
+# One integration of a member: its discriminators measured as the scalar loops measure
+# them, the FLL since the residual PLL's previous prompt; the DLL accumulated, the carrier
+# measured (`_measure_carrier`), and the next command: the ramp at the middle of the integration it
 # takes effect on and, carrier-aided, the code correction. The scalar loop and its staging
 # stand still; a release re-initialises them.
 @inline function _step_vector_loop(
@@ -441,7 +434,9 @@ end
 )
     scalar_state = loop_state.scalar_state
     application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_end_sample_index : application_sample_index
-    residual_pll, fll_disc_sum = _measure_carrier(loop_state, post_correlation_state, nco_history, replica_halves, min_tracking_cn0)
+    measured = _measure_discriminators(post_correlation_state, nco_history, loop_state.residual_pll.last_prompt_sample_index; form_fll = true)
+    residual_pll, fll_disc_sum =
+        _measure_carrier(loop_state, post_correlation_state, nco_history, replica_halves, measured.carrier_frequency_error, min_tracking_cn0)
     # The command takes effect on an integration taken to be this one's length.
     carrier =
         _doppler_at(loop_state.ramp, (application_sample_index + post_correlation_state.last_num_integrated_samples / 2) / _sampling_frequency_hz(post_correlation_state))
@@ -454,7 +449,7 @@ end
     )
     VectorLoopState(
         loop_state;
-        code_disc_sum = loop_state.code_disc_sum .+ (1, _code_discriminator(post_correlation_state, nco_history)),
+        code_disc_sum = loop_state.code_disc_sum .+ (1, measured.code_phase_error),
         fll_disc_sum,
         previous_replica_tail = replica_halves.second,
         residual_pll,
@@ -463,15 +458,17 @@ end
     code_doppler
 end
 
-# A member's carrier: the FLL accumulated, the residual PLL stepped on the prompt and
-# its lock tested (`_with_lock_test`). Returns the residual PLL and the FLL accumulator.
-# Both span the previous prompt's centre to this one's, including any gap a host left
-# between the integrations (the replica ran on through it on the commands in force).
+# A member's carrier: the FLL discriminator `fll_discriminator` accumulated, the residual PLL
+# stepped on the prompt and its lock tested (`_with_lock_test`). Returns the residual PLL and
+# the FLL accumulator. Both span the previous prompt's centre to this one's, including any
+# gap a host left between the integrations (the replica ran on through it on the commands
+# in force); the replica runs on the filter's command alone, so only the signal moves the FLL.
 @inline function _measure_carrier(
     loop_state::VectorLoopState,
     post_correlation_state::PostCorrelationState,
     nco_history,
     replica_halves,
+    fll_discriminator,
     min_tracking_cn0::typeof(1.0dBHz),
 )
     fs = _sampling_frequency_hz(post_correlation_state)
@@ -488,14 +485,6 @@ end
     gap = num_gap_samples / fs
     gap_cycles = num_gap_samples == 0 ? 0.0 :
         ustrip(Hz, calc_mean_nco_command(nco_history, previous_end_sample_index, integration_start_sample_index).carrier_doppler) * gap
-    # The incoming carrier against the replica between the prompts' centres; the replica
-    # runs on the filter's command alone, so only the signal moves this.
-    fll_discriminator = fll_disc(
-        post_correlation_state.last_filtered_correlator_bank,
-        post_correlation_state.previous_filtered_prompt,
-        _prompt_interval(post_correlation_state, loop_state.residual_pll.last_prompt_sample_index, _integration_center(post_correlation_state));
-        polarity = post_correlation_state.last_carrier_phase_polarity,
-    )
     residual_pll, wiped_prompt =
         _step_residual_pll(loop_state, post_correlation_state, previous_cycles + gap_cycles + first_cycles)
     host_cn0 = estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time * s)
