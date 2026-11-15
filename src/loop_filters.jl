@@ -186,6 +186,12 @@ _reset_loop_filter(filter::F) where {F<:Union{SecondOrderBilinearLF,SecondOrderB
 _reset_loop_filter(filter::F) where {F<:Union{ThirdOrderBilinearLF,ThirdOrderAssistedBilinearLF,ThirdOrderBoxcarLF}} =
     F(zero(filter.x1), zero(filter.x2))
 
+# A fresh carrier filter of `filter`'s type at the Doppler rate `rate` (Hz/s), kept in
+# `x2` by a third-order one; one of lower order starts at zero.
+_carrier_filter_at_rate(filter::F, rate) where {F<:Union{ThirdOrderBilinearLF,ThirdOrderAssistedBilinearLF,ThirdOrderBoxcarLF}} =
+    F(zero(filter.x1), rate * Hz^2)
+_carrier_filter_at_rate(filter::AbstractLoopFilter, rate) = _reset_loop_filter(filter)
+
 """
 $(SIGNATURES)
 

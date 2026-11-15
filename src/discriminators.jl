@@ -127,6 +127,16 @@ function pll_disc(correlator_bank; polarity::Real = 0)
 end
 
 """
+    wrap_phase_error(phase_error; polarity = 0)
+
+Fold a carrier-phase error in cycles into the range of [`pll_disc`](@ref) with the
+same `polarity`: ±1/4 cycle for the Costas PLL (`polarity = 0`; a bit flip turns
+the prompt by half a cycle), ±1/2 for the four-quadrant one. Exact inside it.
+"""
+wrap_phase_error(phase_error; polarity::Real = 0) =
+    rem(phase_error, iszero(polarity) ? 0.5 : 1.0, RoundNearest)
+
+"""
 $(SIGNATURES)
 
 Carrier frequency error in `Hz`, whatever unit the time carries, from the rotation
