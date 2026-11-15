@@ -132,16 +132,19 @@ end
     loop_state, carrier_doppler, code_doppler
 end
 
-# An integration's discriminators under the mean NCO command the replica ran on
-# (`replica_carrier_doppler`, `replica_code_doppler`), with its coherent integration time and
+# The mean NCO command the replica ran on over the integration.
+@inline _replica_command(post_correlation_state::PostCorrelationState, nco_history) =
+    calc_mean_nco_command(nco_history, _integration_start(post_correlation_state), post_correlation_state.last_end_sample_index)
+
+# An integration's discriminators under `replica_command`, the mean NCO command the replica
+# ran on (`replica_carrier_doppler`, `replica_code_doppler`), with its coherent integration time and
 # centre sample: `carrier_phase_error` (cycles), `carrier_frequency_error` (Hz, formed only
 # if `form_fll`, else zero) and the DLL's `code_phase_error` (chips), normalised with the
 # replica's code Doppler.
 # The FLL reads the rotation since the prompt centred on `previous_center` (`NaN` for none)
 # over the time between the two centres, which spans any gap before the integration.
-@inline function _measure_discriminators(post_correlation_state::PostCorrelationState, nco_history, previous_center; form_fll::Bool)
-    (; carrier_doppler, code_doppler) =
-        calc_mean_nco_command(nco_history, _integration_start(post_correlation_state), post_correlation_state.last_end_sample_index)
+@inline function _measure_discriminators(post_correlation_state::PostCorrelationState, replica_command::NCOCommand, previous_center; form_fll::Bool)
+    (; carrier_doppler, code_doppler) = replica_command
     filtered_correlator_bank = post_correlation_state.last_filtered_correlator_bank
     polarity = post_correlation_state.last_carrier_phase_polarity
     center = _integration_center(post_correlation_state)
@@ -197,20 +200,15 @@ end
     pll, calc_effective_fll_assist_loop_bandwidth(loop_state.bandwidths.fll_assist, coherent_integration_time)
 end
 
-# The state after one integration, with both loop filters stepped and the staging
-# advanced.
-@inline _stepped_state(
-    loop_state::ScalarLoopState,
-    carrier_loop_filter,
-    code_loop_filter,
-    center,
-    staging,
-) = ScalarLoopState(loop_state; carrier_loop_filter, code_loop_filter, staging, previous_prompt_sample_index = center)
-
 # One integration through a scalar loop (see `step_loop!`).
 @inline function _step_scalar_loop(tracking_loop, loop_state, post_correlation_state::PostCorrelationState, nco_history, application_sample_index::Union{Nothing,Integer})
     form_fll = loop_state.staging.stage == FLL_ASSISTED_PLL
-    discriminators = _measure_discriminators(post_correlation_state, nco_history, loop_state.previous_prompt_sample_index; form_fll)
+    discriminators = _measure_discriminators(
+        post_correlation_state,
+        _replica_command(post_correlation_state, nco_history),
+        loop_state.previous_prompt_sample_index;
+        form_fll,
+    )
     if tracking_loop isa DelayCompensatedTrackingLoop && tracking_loop.compensate_delay
         discriminators = _compensate_delay(discriminators, loop_state, post_correlation_state, nco_history, application_sample_index; form_fll)
     end
@@ -240,12 +238,12 @@ end
         carrier_frequency_correction,
         code_frequency_correction,
     )
-    _stepped_state(
-        loop_state,
+    ScalarLoopState(
+        loop_state;
         carrier_loop_filter,
         code_loop_filter,
-        discriminators.center,
-        _advance_staging(loop_state.staging, post_correlation_state),
+        staging = _advance_staging(loop_state.staging, post_correlation_state),
+        previous_prompt_sample_index = discriminators.center,
     ),
     carrier_doppler,
     code_doppler

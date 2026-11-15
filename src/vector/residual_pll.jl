@@ -231,9 +231,8 @@ end
 function _step_residual_pll(loop_state, post_correlation_state::PostCorrelationState, replica_cycles)
     (; residual_pll, ramp) = loop_state
     fs = _sampling_frequency_hz(post_correlation_state)
-    num_samples = post_correlation_state.last_num_integrated_samples
-    coherent_integration_time = num_samples / fs
-    center = post_correlation_state.last_end_sample_index - num_samples / 2
+    coherent_integration_time = _coherent_integration_time(post_correlation_state)
+    center = _integration_center(post_correlation_state)
     polarity = post_correlation_state.last_carrier_phase_polarity
 
     # The scalar loop hands over phase-locked: the first prompt is read as is.
@@ -251,8 +250,8 @@ function _step_residual_pll(loop_state, post_correlation_state::PostCorrelationS
         phase_error = pll_disc(wiped; polarity)
     end
 
-    bandwidth = calc_effective_carrier_loop_bandwidth(residual_pll.bandwidth, coherent_integration_time * s)
-    carrier_frequency_correction, loop_filter = filter_loop(residual_pll.loop_filter, phase_error, coherent_integration_time * s, bandwidth)
+    bandwidth = calc_effective_carrier_loop_bandwidth(residual_pll.bandwidth, coherent_integration_time)
+    carrier_frequency_correction, loop_filter = filter_loop(residual_pll.loop_filter, phase_error, coherent_integration_time, bandwidth)
     ResidualPLL(
         residual_pll;
         carrier_frequency_correction = uconvert(Hz, carrier_frequency_correction),

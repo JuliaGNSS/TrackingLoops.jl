@@ -557,7 +557,8 @@ end
 
 function get_satellite_report(tracking_loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
     nav_processor = tracking_loop.navigation_processor
-    _satellite_report(nav_processor, nav_processor.groups, signal, Int(prn))
+    slot = _driver_slot(nav_processor.groups, signal, Int(prn))
+    isnothing(slot) ? nothing : _satellite_report(nav_processor, slot)
 end
 
 # The slot that holds or held `prn`, or `nothing`.
@@ -580,12 +581,15 @@ function _find_slot(slots, prn)
     free
 end
 
-_satellite_report(nav_processor, ::Tuple{}, signal, prn) = nothing
-function _satellite_report(nav_processor, groups::Tuple, signal::S, prn) where {S}
+# The slot of the group `signal` drives that holds or held `prn`, or `nothing`; searched by
+# type, so the search folds at compile time.
+_driver_slot(::Tuple{}, signal, prn) = nothing
+function _driver_slot(groups::Tuple, signal::S, prn) where {S}
     group = first(groups)
-    group.driver_signal isa S || return _satellite_report(nav_processor, Base.tail(groups), signal, prn)
-    slot = _held_slot(group, prn)
-    isnothing(slot) && return nothing
+    group.driver_signal isa S ? _held_slot(group, prn) : _driver_slot(Base.tail(groups), signal, prn)
+end
+
+function _satellite_report(nav_processor, slot::VectorTrackingSlot)
     snapshot_time = slot.snapshot_epoch_index == typemin(Int) ? nothing :
         slot.snapshot_epoch_index * nav_processor.navigation_filter_update_interval
     SatelliteReport(
@@ -610,8 +614,10 @@ change on the next integration, and a reused slot gives them to another satellit
 Copy the decoder to retain its current contents; construct a fresh decoder for
 independent decoding.
 """
-get_decoder(tracking_loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer) =
-    _get_decoder(tracking_loop.navigation_processor.groups, signal, Int(prn))
+function get_decoder(tracking_loop::VectorTrackingLoop, signal::AbstractGNSSSignal, prn::Integer)
+    slot = _driver_slot(tracking_loop.navigation_processor.groups, signal, Int(prn))
+    isnothing(slot) ? nothing : slot.decoding.decoder
+end
 
 """
     get_signal_pairs(tracking_loop::VectorTrackingLoop) -> Tuple
@@ -630,14 +636,6 @@ The scalar tracking loop each satellite runs outside vector control (the `scalar
 `tracking_loop` was built with).
 """
 get_scalar_loop(tracking_loop::VectorTrackingLoop) = tracking_loop.scalar_loop
-
-_get_decoder(::Tuple{}, signal, prn) = nothing
-function _get_decoder(groups::Tuple, signal::S, prn) where {S}
-    group = first(groups)
-    group.driver_signal isa S || return _get_decoder(Base.tail(groups), signal, prn)
-    slot = _held_slot(group, prn)
-    isnothing(slot) ? nothing : slot.decoding.decoder
-end
 
 """
     get_vector_tracking_members(tracking_loop::VectorTrackingLoop)
@@ -992,24 +990,6 @@ function _assign_commands!(acc, group, group_index, nav_processor)
     acc
 end
 
-# The NCO commands (Hz) of member `j`, `τ` after the epoch: where its command takes effect,
-# and one update interval later for the carrier ramp's end (see `_predict_after_epoch`). The code
-# correction removes the range error (TOW-based, atmosphere-corrected, no
-# discriminator term); the carrier is the predicted Doppler itself.
-function _member_commands(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, j, reference_system, reference_tow, τ, chips)
-    nav_filter = nav_processor.nav_filter
-    member = nav_processor.buffers.members[j]
-    predicted_pseudorange, predicted_rate, measured_pseudorange =
-        _predict_after_epoch(nav_processor, slot, member, j, reference_system, reference_tow, τ, chips)
-    code_update = calc_nco_code_correction(
-        predicted_pseudorange,
-        measured_pseudorange,
-        member.chip_rate,
-        ustrip(s, nav_filter.model.propagation_interval),
-    )
-    code_update, predict_carrier_doppler(predicted_rate, member.wavelength)
-end
-
 # The slot's commands applied at sample `application_sample_index` of a device sampling at `fs`
 # (Hz): the code correction, the carrier Doppler ramp from the predicted Dopplers there and one
 # update interval later (with the replica's code moved on at its NCO command), and the
@@ -1036,27 +1016,36 @@ function _commands_at_application(
     code_command = ustrip(Hz, calc_mean_nco_command(nco_history, slot.driver.last_end_sample_index, application_sample_index).code_doppler)
     chips = slot.driver.chips_since_epoch +
         _replica_chips(nco_history, slot.driver.last_end_sample_index, application_sample_index, fs * Hz, chip_rate * Hz)
-    reference_system = _reference_system(nav_processor.nav_filter)
-    reference_tow = get_time_of_week(reference_system, nav_processor.nav_filter.reference_epoch)
-    j = slot.member_index
-    code_update, doppler = _member_commands(nav_processor, slot, j, reference_system, reference_tow, feedback_delay, chips)
-    member = nav_processor.buffers.members[j]
-    _, next_rate, _ = _predict_after_epoch(
-        nav_processor, slot, member, j, reference_system, reference_tow, feedback_delay + Δt_nav, chips + Δt_nav * (chip_rate + code_command),
+    member = nav_processor.buffers.members[slot.member_index]
+    # The code correction removes the range error where the command takes effect (TOW-based,
+    # atmosphere-corrected, no discriminator term); the carrier is the predicted Doppler itself,
+    # there and one update interval later for the ramp's end.
+    predicted_pseudorange, predicted_rate, replica_pseudorange = _predict_after_epoch(nav_processor, slot, feedback_delay, chips)
+    code_update = calc_nco_code_correction(
+        predicted_pseudorange,
+        replica_pseudorange,
+        member.chip_rate,
+        ustrip(s, nav_processor.nav_filter.model.propagation_interval),
     )
+    doppler = predict_carrier_doppler(predicted_rate, member.wavelength)
+    _, next_rate, _ = _predict_after_epoch(nav_processor, slot, feedback_delay + Δt_nav, chips + Δt_nav * (chip_rate + code_command))
     next_doppler = predict_carrier_doppler(next_rate, member.wavelength)
     code_update, CarrierDopplerRamp(doppler * Hz, (next_doppler - doppler) / Δt_nav * Hz / s, application_sample_index / fs * s), feedback_delay
 end
 
-# Member `j`'s predicted pseudorange and rate `τ` after the epoch, from the filter's `x`
+# The slot's member's predicted pseudorange and rate `τ` after the epoch, from the filter's `x`
 # propagated by `τ`, and the pseudorange its replica realises there: transmit time
 # moved on by the `chips` the replica advances (the satellite clock correction changes
-# by picoseconds in `τ`), receive time `τ` after `reference_tow`, the receive epoch's time of week
-# on the count of `reference_system` (see `_measure_pseudoranges!`), and the epoch's
+# by picoseconds in `τ`), receive time `τ` after the receive epoch's time of week on the
+# count of the reference system (see `_measure_pseudoranges!`), and the epoch's
 # atmospheric delay (it moves by millimetres in `τ`).
-function _predict_after_epoch(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, member::VectorTrackingObservation, j, reference_system, reference_tow, τ, chips)
+function _predict_after_epoch(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, τ, chips)
     nav_filter = nav_processor.nav_filter
     buffers = nav_processor.buffers
+    j = slot.member_index
+    member = buffers.members[j]
+    reference_system = _reference_system(nav_filter)
+    reference_tow = get_time_of_week(reference_system, nav_filter.reference_epoch)
     idxs = nav_filter.model.idxs
     application_transmit_tow = member.transmit_time + chips / member.chip_rate
     ephemeris = something(get_broadcast_ephemeris(slot.snapshot.decoder))
@@ -1085,14 +1074,14 @@ function _predict_after_epoch(nav_processor::NavigationProcessor, slot::VectorTr
         application_velocity,
         calc_satellite_clock_drift(ephemeris, application_transmit_tow),
     )
-    measured_pseudorange =
+    replica_pseudorange =
         calc_pseudorange(
             reference_tow + τ,
             application_transmit_tow,
             get_time_system_offset(buffers.measurements[j].time_system, reference_system),
         ) -
         buffers.delays[j]
-    predicted_pseudorange, predicted_rate, measured_pseudorange
+    predicted_pseudorange, predicted_rate, replica_pseudorange
 end
 
 # Release the group's members below the horizon; returns whether any was.
