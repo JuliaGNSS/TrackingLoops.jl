@@ -302,6 +302,27 @@ end
     @test discriminators(; carrier_phase_polarity = -1).phase_error ≈ -0.1
 end
 
+@testset "$(nameof(typeof(tracking_loop))) reads the FLL over the time between the prompts' centres" for tracking_loop in (
+    ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
+    DelayCompensatedTrackingLoop(),
+)
+    # The prompt 0.1 cycles ahead of the previous one, centred at `LOOP_N / 2`; this
+    # integration starts half an integration after the previous one ended.
+    output = CorrelatorBankOutput(loop_epl(0.5, cis(0.2π), 0.5), LOOP_N, 5 * LOOP_N ÷ 2)
+    coherent_integration_time = LOOP_N / LOOP_FS
+    frequency_error(previous_center) = TrackingLoops._discriminators(
+        tracking_loop,
+        ScalarLoopState(init_loop_state(tracking_loop, LOOP_SIGNAL, 0.0Hz, 0.0Hz); previous_prompt_sample_index = previous_center),
+        processed_state(LOOP_SIGNAL, output.correlator_bank, complex(1.0), output, 1, LOOP_FS),
+        ConstantNCOCommand(0.0, 0.0),
+        nothing;
+        form_fll = true,
+    ).frequency_error
+    @test frequency_error(LOOP_N / 2) ≈ 0.1 / (1.5 * coherent_integration_time)
+    # Without a previous prompt centre, the integrations are taken to be back to back.
+    @test frequency_error(NaN) ≈ 0.1 / coherent_integration_time
+end
+
 @testset "A phase error is folded into the PLL discriminator's range" begin
     # The Costas PLL reads ±1/4 cycle, the four-quadrant one ±1/2.
     @test @inferred(TrackingLoops.wrap_phase_error(0.3)) ≈ -0.2
