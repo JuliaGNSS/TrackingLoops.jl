@@ -246,15 +246,16 @@ end
 """
 $(SIGNATURES)
 
-The window's mean density weighted by `num_squared_magnitudes` (`M`), or `nothing`
-while it is empty. **O(1)**, read off the running totals.
+The window's mean density weighted by `num_squared_magnitudes` (`M`), or zero while it
+is empty ([`get_noise_density_and_status`](@ref) says which). **O(1)**, read off the
+running totals.
 
 An entry's relative variance is `1/M` (its squared magnitudes), so entries of
 different dump counts combine correctly only weighted by `M`.
 """
-function get_noise_density(estimator::CorrelatorNoiseDensityEstimator)
+function get_noise_density(estimator::CorrelatorNoiseDensityEstimator{D}) where {D}
     totals = estimator.totals[]
-    totals.num_squared_magnitudes == 0 && return nothing
+    totals.num_squared_magnitudes == 0 && return zero(D)
     totals.weighted_density / totals.num_squared_magnitudes
 end
 
