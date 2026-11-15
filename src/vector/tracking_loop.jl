@@ -482,7 +482,7 @@ end
     fs = _sampling_frequency_hz(post_correlation_state)
     coherent_integration_time = post_correlation_state.last_num_integrated_samples / fs
     previous_cycles, previous_duration = loop_state.previous_replica_tail
-    first_cycles, first_duration = replica_halves.first
+    first_cycles, _ = replica_halves.first
     integration_start_sample_index = _integration_start(post_correlation_state)
     # The previous integration's end, known once the residual PLL has stepped on its prompt:
     # its prompt's sample index plus the replica's second half, a sample index up to rounding.
@@ -493,14 +493,13 @@ end
     gap = num_gap_samples / fs
     gap_cycles = num_gap_samples == 0 ? 0.0 :
         calc_mean_nco_command(nco_history, previous_end_sample_index, integration_start_sample_index).carrier_doppler * gap
-    span = ustrip(s, previous_duration) + gap + ustrip(s, first_duration)
     # The incoming carrier against the replica between the prompts' centres; the replica
     # runs on the filter's command alone, so only the signal moves this.
     fll_discriminator = fll_disc(
         post_correlation_state.signal,
         post_correlation_state.last_filtered_correlator_bank,
         post_correlation_state.previous_filtered_prompt,
-        (isnan(span) ? coherent_integration_time : span) * s;
+        _prompt_interval(post_correlation_state, loop_state.residual_pll.last_prompt_sample_index, _integration_center(post_correlation_state));
         polarity = post_correlation_state.last_carrier_phase_polarity,
     )
     residual_pll, wiped_prompt =
