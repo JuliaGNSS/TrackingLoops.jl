@@ -507,21 +507,8 @@ end
 _signal_observation_buffer(group::VectorTrackingSlotGroup{S,DS,<:VectorTrackingSlot{D}}) where {S,DS,D} =
     sizehint!(SignalObservation{Float64,D,S}[], 2 * max(length(group.slots), 1))
 
-"""
-    calc_position_std(tracking_loop::VectorTrackingLoop)
-
-The navigation filter's 1σ 3-D position uncertainty (m), once seeded.
-"""
-calc_position_std(tracking_loop::VectorTrackingLoop) = calc_position_std(tracking_loop.navigation_processor)
-
-"""
-    calc_clock_bias_std(tracking_loop::VectorTrackingLoop)
-
-The navigation filter's 1σ uncertainty (m) of the solution's reference clock
-bias, once seeded.
-"""
-calc_clock_bias_std(tracking_loop::VectorTrackingLoop) = calc_clock_bias_std(tracking_loop.navigation_processor)
-
+# The navigation filter's 1σ 3-D position uncertainty and that of the solution's reference
+# clock bias (m), reported in `VectorTrackingStatus`.
 calc_position_std(nav_processor::NavigationProcessor) = calc_position_std(nav_processor.nav_filter.P, nav_processor.nav_filter.model.idxs)
 
 function calc_clock_bias_std(nav_processor::NavigationProcessor)

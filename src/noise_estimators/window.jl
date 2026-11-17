@@ -266,14 +266,6 @@ get_num_squared_magnitudes(estimator::CorrelatorNoiseDensityEstimator) = estimat
 """
 $(SIGNATURES)
 
-Number of observations in the window. Diagnostic only: it varies with the
-producer's dump cadence.
-"""
-Base.length(estimator::CorrelatorNoiseDensityEstimator) = length(estimator.observations)
-
-"""
-$(SIGNATURES)
-
 Measure this signal's noise over samples `sample_range` of `measurement`, append the
 observations and return `estimator`. Forwards to [`despread_noise!`](@ref) on
 `context.downconvert_and_correlate`; a loop process fills the window through

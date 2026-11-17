@@ -284,8 +284,7 @@ application sample may lie up to 2.5 update intervals after the epoch.
 Nothing is logged. [`get_navigation_solution`](@ref) is the latest solution (the
 scalar PVT's before the filter is seeded) and [`get_navigation_status`](@ref) the
 [`VectorTrackingStatus`](@ref TrackingLoops.VectorTrackingStatus) of the latest update: its events and the filter's
-position and clock uncertainties (also [`calc_position_std`](@ref TrackingLoops.calc_position_std) and
-[`calc_clock_bias_std`](@ref TrackingLoops.calc_clock_bias_std)). A satellite's [`get_satellite_report`](@ref) says whether and why the
+position and clock uncertainties (`position_std`, `clock_bias_std`). A satellite's [`get_satellite_report`](@ref) says whether and why the
 latest update released it (`release_reason`), and [`get_vector_tracking_members`](@ref) reports every
 member, measured and coasted. [`get_navigation_update_index`](@ref) counts the updates, so a
 consumer polling it after each step reads each update's results, and
@@ -356,10 +355,8 @@ get_decoder
 get_signal_pairs(::VectorTrackingLoop)
 get_scalar_loop(::VectorTrackingLoop)
 TrackingLoops.VectorTrackingReleaseReason
-TrackingLoops.calc_clock_bias_std(::VectorTrackingLoop)
 get_navigation_solution(::VectorTrackingLoop)
 get_navigation_status(::VectorTrackingLoop)
-TrackingLoops.calc_position_std(::VectorTrackingLoop)
 get_vector_tracking_members(::VectorTrackingLoop)
 NavFilterConfig
 ```

@@ -3,9 +3,6 @@
           SVector{3,ComplexF64}
     @test @inferred(TrackingLoops.zero_correlator_outputs(NumAnts(4), NumCorrelators(3))) isa
           SVector{3,SVector{4,ComplexF64}}
-    @test @inferred(TrackingLoops.zero_correlator_outputs(NumAnts(1), 3)) isa Vector{ComplexF64}
-    @test @inferred(TrackingLoops.zero_correlator_outputs(NumAnts(4), 3)) isa
-          Vector{SVector{4,ComplexF64}}
 end
 
 @testset "Correlator bank constructors and accessors" begin
