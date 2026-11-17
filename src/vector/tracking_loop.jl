@@ -346,13 +346,12 @@ _set_vector_controlled(loop_state::VectorLoopState, vector_controlled::Bool) =
 # scalar loop pulls in again FLL-assisted at the wide bandwidth.
 function _hand_over_to_scalar_loop(scalar_loop, loop_state::VectorLoopState, nco_history, application_sample_index, fs)
     (; carrier_doppler, code_doppler) = get_nco_command(nco_history, application_sample_index)
-    time = application_sample_index / fs
     ramp, residual_pll = loop_state.ramp, loop_state.residual_pll
     rate = ustrip(Hz / s, ramp.doppler_rate)
     if residual_pll.lock.locked && _has_span(residual_pll.last_prompt_span)
         dt = _samples_since_center(residual_pll.last_prompt_span, application_sample_index) / fs
         carrier_doppler =
-            (_doppler_at(ramp, time) + _residual_doppler(residual_pll) + _residual_doppler_rate(residual_pll) * dt) * Hz
+            (_doppler_at(ramp, application_sample_index, fs) + _residual_doppler(residual_pll) + _residual_doppler_rate(residual_pll) * dt) * Hz
         rate += _residual_doppler_rate(residual_pll)
     end
     scalar_state = loop_state.scalar_state
@@ -386,7 +385,7 @@ function _set_vector_commands(
         _residual_pll_on_new_ramp(loop_state.residual_pll, loop_state.ramp, ramp, fs)
     else
         scalar_doppler = ustrip(Hz, get_nco_command(nco_history, application_sample_index).carrier_doppler)
-        _initialized_residual_pll(loop_state.residual_pll, ramp, scalar_doppler, ustrip(s, ramp.reference_time), loop_state.scalar_state.staging)
+        _initialized_residual_pll(loop_state.residual_pll, ramp, scalar_doppler, loop_state.scalar_state.staging)
     end
     VectorLoopState(
         loop_state;
@@ -405,7 +404,7 @@ end
 # Whether the satellite has a carrier ramp: from the filter's first command until it
 # leaves the vector loop. A member always has one; `_set_vector_commands` reads this to
 # tell the first command from the later ones.
-_has_carrier_ramp(loop_state::VectorLoopState) = !isnan(loop_state.ramp.reference_time)
+_has_carrier_ramp(loop_state::VectorLoopState) = loop_state.ramp.start_sample_index != typemin(Int)
 
 # Empty both accumulators once the filter has read them.
 _reset_discriminator_accumulators(loop_state::VectorLoopState) =
@@ -488,7 +487,11 @@ end
         _measure_carrier(loop_state, post_correlation_state, nco_history, replica_halves, measured.carrier_frequency_error, min_tracking_cn0)
     # The command takes effect on an integration taken to be this one's length.
     carrier =
-        _doppler_at(loop_state.ramp, (application_sample_index + post_correlation_state.last_num_integrated_samples / 2) / _sampling_frequency_hz(post_correlation_state))
+        _doppler_at(
+            loop_state.ramp,
+            application_sample_index + post_correlation_state.last_num_integrated_samples / 2,
+            _sampling_frequency_hz(post_correlation_state),
+        )
     carrier_doppler, code_doppler = calc_carrier_aided_dopplers(
         post_correlation_state.signal,
         scalar_state.initial_carrier_doppler,
