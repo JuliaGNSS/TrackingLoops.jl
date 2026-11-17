@@ -1,5 +1,5 @@
 # Running sums over a `CorrelatorNoiseDensityEstimator`'s window so neither appending nor
-# reading walks it: `span` drives the trim, `weighted_density / num_squared_magnitudes` is
+# reading walks it: `duration` drives the trim, `weighted_density / num_squared_magnitudes` is
 # `get_noise_density`.
 #
 # `num_appends_since_refresh` counts the appends since the last exact recomputation:
@@ -10,14 +10,14 @@
 # Immutable and isbits, held in the estimator's single `Ref`: an update is one write
 # to one cache line, and the estimator itself is never rebuilt. It is a cache derived
 # exactly from `observations`, not independent state.
-struct NoiseWindowTotals{D,T}
-    span::T
+struct NoiseWindowTotals{D}
+    duration::typeof(1.0s)
     weighted_density::D
     num_squared_magnitudes::Int
     num_appends_since_refresh::Int
 end
 
-NoiseWindowTotals{D,T}() where {D,T} = NoiseWindowTotals{D,T}(zero(T), zero(D), 0, 0)
+NoiseWindowTotals{D}() where {D} = NoiseWindowTotals{D}(0.0s, zero(D), 0, 0)
 
 """
 $(SIGNATURES)
@@ -98,12 +98,12 @@ DC balance (an ADC offset would bias the despread), and break cadence parity wit
 hardware correlator dumping on the code epoch. A long window buys the variance back
 cheaply (~1000 `Float64` per signal per second).
 """
-struct CorrelatorNoiseDensityEstimator{D,T,R<:AbstractRNG} <: AbstractNoiseDensityEstimator
+struct CorrelatorNoiseDensityEstimator{D,R<:AbstractRNG} <: AbstractNoiseDensityEstimator
     window_duration::typeof(1.0s)
     early_late_to_prompt_spacing::Float64
     carrier_dither::typeof(1.0Hz)
-    observations::Vector{NoiseObservation{D,T}}
-    totals::Base.RefValue{NoiseWindowTotals{D,T}}
+    observations::Vector{NoiseObservation{D}}
+    totals::Base.RefValue{NoiseWindowTotals{D}}
     rng::R
 end
 
@@ -136,7 +136,7 @@ function CorrelatorNoiseDensityEstimator(;
     carrier_dither >= zero(carrier_dither) ||
         throw(ArgumentError("carrier_dither must not be negative, got $carrier_dither"))
     D = _density_type_for_num_ants(num_ants)
-    observations = NoiseObservation{D,typeof(1.0s)}[]
+    observations = NoiseObservation{D}[]
     # 4× the 1 ms despread count; see the docstring.
     sizehint!(observations, 4 * max(1, round(Int, window_duration / 1.0ms)) + 1)
     CorrelatorNoiseDensityEstimator(
@@ -144,7 +144,7 @@ function CorrelatorNoiseDensityEstimator(;
         Float64(early_late_to_prompt_spacing),
         uconvert(Hz, float(carrier_dither)),
         observations,
-        Ref(NoiseWindowTotals{D,typeof(1.0s)}()),
+        Ref(NoiseWindowTotals{D}()),
         rng,
     )
 end
@@ -160,15 +160,14 @@ The window is bounded in **time**, not count, so one producer may report 16-chip
 accumulations and another a single pre-averaged 0.2 s figure under the same
 configuration.
 
-Any [`NoiseObservation`](@ref) is converted to the window's field types (free for
-builder output), so a hand-assembled or `Float32` one is not silently dropped by
-falling through to the abstract no-op.
+Any [`NoiseObservation`](@ref) is converted to the window's density type (free for
+builder output), so a hand-assembled or `Float32` one lands as well.
 """
 function append_noise_observation!(
-    estimator::CorrelatorNoiseDensityEstimator{D,T},
+    estimator::CorrelatorNoiseDensityEstimator{D},
     observation::NoiseObservation,
-) where {D,T}
-    observation = convert(NoiseObservation{D,T}, observation)
+) where {D}
+    observation = convert(NoiseObservation{D}, observation)
     observations = estimator.observations
     totals = estimator.totals
     push!(observations, observation)
@@ -181,7 +180,7 @@ end
 @inline function _add_observation!(totals::Base.RefValue{<:NoiseWindowTotals}, observation)
     t = totals[]
     totals[] = typeof(t)(
-        t.span + observation.duration,
+        t.duration + observation.duration,
         t.weighted_density + observation.num_squared_magnitudes * observation.noise_density,
         t.num_squared_magnitudes + observation.num_squared_magnitudes,
         t.num_appends_since_refresh,
@@ -192,7 +191,7 @@ end
 @inline function _drop_observation!(totals::Base.RefValue{<:NoiseWindowTotals}, observation)
     t = totals[]
     totals[] = typeof(t)(
-        t.span - observation.duration,
+        t.duration - observation.duration,
         t.weighted_density - observation.num_squared_magnitudes * observation.noise_density,
         t.num_squared_magnitudes - observation.num_squared_magnitudes,
         t.num_appends_since_refresh,
@@ -208,7 +207,7 @@ end
     window_duration,
 )
     @inbounds while length(observations) > 1 &&
-                    totals[].span - observations[1].duration >= window_duration
+                    totals[].duration - observations[1].duration >= window_duration
         _drop_observation!(totals, observations[1])
         popfirst!(observations)
     end
@@ -221,25 +220,25 @@ end
     totals::Base.RefValue{<:NoiseWindowTotals},
 )
     t = totals[]
-    totals[] = typeof(t)(t.span, t.weighted_density, t.num_squared_magnitudes, t.num_appends_since_refresh + 1)
+    totals[] = typeof(t)(t.duration, t.weighted_density, t.num_squared_magnitudes, t.num_appends_since_refresh + 1)
     t.num_appends_since_refresh + 1 < length(observations) && return nothing
     _refresh_totals!(observations, totals)
 end
 
 function _refresh_totals!(
     observations::Vector{<:NoiseObservation},
-    totals::Base.RefValue{NoiseWindowTotals{D,T}},
-) where {D,T}
-    span = zero(T)
+    totals::Base.RefValue{NoiseWindowTotals{D}},
+) where {D}
+    duration = 0.0s
     weighted_density = zero(D)
     num_squared_magnitudes = 0
     @inbounds for i in eachindex(observations)
         observation = observations[i]
-        span += observation.duration
+        duration += observation.duration
         weighted_density += observation.num_squared_magnitudes * observation.noise_density
         num_squared_magnitudes += observation.num_squared_magnitudes
     end
-    totals[] = NoiseWindowTotals{D,T}(span, weighted_density, num_squared_magnitudes, 0)
+    totals[] = NoiseWindowTotals{D}(duration, weighted_density, num_squared_magnitudes, 0)
     nothing
 end
 
