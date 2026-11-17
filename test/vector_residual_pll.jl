@@ -72,7 +72,7 @@ residual_pll_error(sat, before) =
             lock = TL.ResidualPLLLock(state.residual_pll.lock.lock_detector, false, 0)))
         @test get_phase_lock_indicator(unlocked) > 0.9 && !is_phase_locked(unlocked)
         # Out of the vector loop, the inner loop's.
-        @test is_phase_locked(TL._release_from_vector_loop(state)) == is_phase_locked(state.scalar_state)
+        @test is_phase_locked(TL._set_vector_controlled(state, false)) == is_phase_locked(state.scalar_state)
     end
     @test rx.sats[1].state.residual_pll.bandwidth == 10.0Hz
     narrow = SimReceiver(; tracking_loop_kw = (; residual_pll_loop_bandwidth = 7.0Hz))
@@ -96,7 +96,7 @@ end
         @test calc_carrier_phase_correction(sat.state, nco_history, sample_index + round(Int, dt * fs), SIM_FS) ≈
             sat.phase_error + (f_true - sat.carrier_doppler) * dt atol = 1e-4
         # Out of the vector loop the replica is the loop's estimate.
-        @test calc_carrier_phase_correction(TL._release_from_vector_loop(sat.state), nco_history, sample_index, SIM_FS) == 0.0
+        @test calc_carrier_phase_correction(TL._set_vector_controlled(sat.state, false), nco_history, sample_index, SIM_FS) == 0.0
     end
     scalar = init_loop_state(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA(), 100.0Hz, 0.0Hz)
     @test calc_carrier_phase_correction(scalar, ConstantNCOCommand(100.0Hz, 0.0Hz), 0, SIM_FS) == 0.0
@@ -365,7 +365,7 @@ residual_pll_at(center, predicted_prompt_phase; carrier_frequency_correction = 0
     group = first(nav_processor.groups)
     slot = first(group.slots)
     nco_history = ConstantNCOCommand(100.0Hz, 0.0Hz)
-    state = TL._add_to_vector_loop(init_loop_state(tracking_loop, signal, 100.0Hz, 0.0Hz))
+    state = TL._set_vector_controlled(init_loop_state(tracking_loop, signal, 100.0Hz, 0.0Hz), true)
     sentinel = 12345.0f0
     slot.bit_accumulator.soft_bit[1] = sentinel
     # The prompts of one data bit of value `-1` turn by 0.1 cycle an integration at the

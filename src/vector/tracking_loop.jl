@@ -322,13 +322,14 @@ end
 # What the navigation processor does to a satellite's state; each keeps its place in
 # the navigation processor.
 
-# Into the vector loop with the vector interface cleared, so it never runs on stale
-# values; a no-op if already in it.
-_add_to_vector_loop(loop_state::VectorLoopState) =
-    loop_state.vector_controlled ? loop_state :
+# Into (`true`) or out of (`false`) the vector loop, with the vector interface cleared so
+# it never runs on stale values and the scalar loop as it stands, not re-initialised (a
+# satellite leaving the vector loop hands over in `_hand_over_to_scalar_loop`). The
+# replica's last half integration and the residual PLL's bandwidth are kept.
+_set_vector_controlled(loop_state::VectorLoopState, vector_controlled::Bool) =
     VectorLoopState(
         loop_state.scalar_state,
-        true,
+        vector_controlled,
         loop_state.slot_index,
         loop_state.slot_generation,
         loop_state.applied_update_index;
@@ -336,21 +337,7 @@ _add_to_vector_loop(loop_state::VectorLoopState) =
         residual_pll_loop_bandwidth = loop_state.residual_pll.bandwidth,
     )
 
-# Out of the vector loop with the vector interface cleared and the scalar loop as it
-# stands, not re-initialised: a satellite registering with a slot starts out of the loop
-# (the satellite's own state hands over in `_apply_nav_filter_feedback`).
-_release_from_vector_loop(loop_state::VectorLoopState) =
-    VectorLoopState(
-        loop_state.scalar_state,
-        false,
-        loop_state.slot_index,
-        loop_state.slot_generation,
-        loop_state.applied_update_index;
-        loop_state.last_replica_tail,
-        residual_pll_loop_bandwidth = loop_state.residual_pll.bandwidth,
-    )
-
-# `_release_from_vector_loop` with `scalar_loop`'s state re-initialised at the sample `application_sample_index`
+# Out of the vector loop (`_set_vector_controlled`) with `scalar_loop`'s state re-initialised at the sample `application_sample_index`
 # (integrations' grid at `fs`, Hz) where the release takes effect: at the residual PLL's estimate of
 # the incoming Doppler (ramp plus residual) and its rate, which a third-order carrier
 # filter starts from. A residual PLL out of lock (or never stepped) knows no better than
@@ -370,7 +357,7 @@ function _hand_over_to_scalar_loop(scalar_loop, loop_state::VectorLoopState, nco
     end
     scalar_state = loop_state.scalar_state
     VectorLoopState(
-        _release_from_vector_loop(loop_state);
+        _set_vector_controlled(loop_state, false);
         scalar_state = ScalarLoopState(
             reinit_loop_state(scalar_loop, scalar_state, carrier_doppler, code_doppler);
             carrier_loop_filter = _carrier_filter_at_rate(scalar_state.carrier_loop_filter, rate),
@@ -469,7 +456,7 @@ end
     loop_state::VectorLoopState,
     post_correlation_state::PostCorrelationState,
     nco_history,
-    application_sample_index::Union{Nothing,Int64},
+    application_sample_index::Int64,
 )
     replica_halves = _replica_halves(post_correlation_state, nco_history)
     if !loop_state.vector_controlled
@@ -491,12 +478,11 @@ end
     loop_state::VectorLoopState,
     post_correlation_state::PostCorrelationState,
     nco_history,
-    application_sample_index::Union{Nothing,Int64},
+    application_sample_index::Int64,
     replica_halves,
     min_tracking_cn0::typeof(1.0dBHz),
 )
     scalar_state = loop_state.scalar_state
-    application_sample_index = isnothing(application_sample_index) ? post_correlation_state.last_end_sample_index : application_sample_index
     measured = _measure_discriminators(post_correlation_state, replica_halves.command, loop_state.residual_pll.last_prompt_span; form_fll = true)
     residual_pll, fll_disc_sum =
         _measure_carrier(loop_state, post_correlation_state, nco_history, replica_halves, measured.carrier_frequency_error, min_tracking_cn0)

@@ -248,7 +248,7 @@ function _apply_nav_filter_feedback(
     fs = _sampling_frequency_hz(post_correlation_state)
     slot_in_loop = slot.vector_controlled
     if slot_in_loop && !loop_state.vector_controlled
-        loop_state = _add_to_vector_loop(loop_state)
+        loop_state = _set_vector_controlled(loop_state, true)
     elseif !slot_in_loop && loop_state.vector_controlled
         loop_state = _hand_over_to_scalar_loop(tracking_loop.scalar_loop, loop_state, nco_history, application_sample_index, fs)
     end
