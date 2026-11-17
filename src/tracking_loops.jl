@@ -523,10 +523,6 @@ calc_carrier_phase_correction(
     sampling_frequency,
 ) = 0.0
 
-"The loop-state type a tracking loop produces (for slot typing), from `init_loop_state`, which must be pure for it."
-loop_state_type(tracking_loop::AbstractTrackingLoop, driver_signal::AbstractGNSSSignal) =
-    typeof(init_loop_state(tracking_loop, driver_signal, 0.0Hz, 0.0Hz))
-
 # ── What a loop knows of the navigation solution ───────────────────────
 
 """

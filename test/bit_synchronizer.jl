@@ -17,6 +17,27 @@ using TrackingLoops:
     _packed_secondary_code,
     _advance_secondary_phase
 
+
+# A synced bit synchronizer with the given prompt-sign history and open bit: zero
+# secondary-code phase and polarity, empty sync accumulators, `soft_bits` aliased.
+synced_bit_synchronizer(
+    prompt_sign_history::B,
+    num_prompt_signs,
+    bit_prompt_sum,
+    num_code_periods_into_bit,
+    soft_bits = Float32[],
+) where {B<:Unsigned} = BitSynchronizer{B}(
+    prompt_sign_history,
+    num_prompt_signs,
+    true,
+    0,
+    Int8(0),
+    ComplexF64(bit_prompt_sum),
+    num_code_periods_into_bit,
+    soft_bits,
+    SyncHypothesisAccumulators(),
+)
+
 @testset "A SyncResult carries found, phase and polarity" begin
     r = @inferred SyncResult(false, 0, Int8(0))
     @test r.found == false
@@ -371,7 +392,7 @@ end
 end
 
 @testset "A fresh bit synchronizer is empty and unsynced" begin
-    for bit_synchronizer in (@inferred(BitSynchronizer()), @inferred(BitSynchronizer{UInt8}()))
+    for bit_synchronizer in (@inferred(BitSynchronizer{UInt128}()), @inferred(BitSynchronizer{UInt8}()))
         @test bit_synchronizer.prompt_sign_history == 0
         @test bit_synchronizer.num_prompt_signs == 0
         @test is_bit_or_secondary_code_synced(bit_synchronizer) == false
@@ -383,21 +404,20 @@ end
         @test bit_synchronizer.bit_prompt_sum == complex(0, 0)
         @test bit_synchronizer.num_code_periods_into_bit == 0
     end
-    @test BitSynchronizer() isa BitSynchronizer{UInt128}
 end
 
 @testset "Buffering more than one code period before sync is an error" begin
     @test_throws "The number of code periods must be equal to 1" TrackingLoops.update_bit_sync!(
         GPSL1CA(),
         1,
-        BitSynchronizer(),
+        BitSynchronizer{UInt128}(),
         2,
         2 + 0im,
     )
 end
 
 @testset "A pre-sync code period shifts its prompt sign into the search window" begin
-    next_bit_synchronizer = @inferred TrackingLoops.update_bit_sync!(GPSL1CA(), 1, BitSynchronizer(), 1, 2 + 0im)
+    next_bit_synchronizer = @inferred TrackingLoops.update_bit_sync!(GPSL1CA(), 1, BitSynchronizer{UInt128}(), 1, 2 + 0im)
     @test length(next_bit_synchronizer) == 0
     @test next_bit_synchronizer.prompt_sign_history == 1
     @test next_bit_synchronizer.num_prompt_signs == 1
@@ -433,7 +453,7 @@ end
     num_prompt_signs = ndigits(prompt_sign_history; base = 2)
     signal = GPSL1CA()
 
-    bit_synchronizer = BitSynchronizer(prompt_sign_history, num_prompt_signs, true, complex(-1, 0), 1)
+    bit_synchronizer = synced_bit_synchronizer(prompt_sign_history, num_prompt_signs, complex(-1, 0), 1)
     next_bit_synchronizer = @inferred TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 1, -2 + 0im)
     @test isempty(get_soft_bits(next_bit_synchronizer))
     @test next_bit_synchronizer.bit_prompt_sum == -3 + 0im
@@ -441,10 +461,9 @@ end
 
     # The 20th code period completes the bit; the soft bit is the real part of the sum
     # and lands after the seeded soft bits.
-    bit_synchronizer = BitSynchronizer(
+    bit_synchronizer = synced_bit_synchronizer(
         prompt_sign_history,
         num_prompt_signs,
-        true,
         complex(-10.0, 2.0),
         19,
         Float32[-1.0, 1.0],
@@ -455,10 +474,9 @@ end
     @test next_bit_synchronizer.num_code_periods_into_bit == 0
 
     # A multi-period integration completes the bit as well.
-    bit_synchronizer = BitSynchronizer(
+    bit_synchronizer = synced_bit_synchronizer(
         prompt_sign_history,
         num_prompt_signs,
-        true,
         complex(10, 2),
         10,
         Float32[1.0, 1.0],
@@ -478,7 +496,7 @@ end
 @testset "An integration that carries the accumulator past the bit boundary drops sync" begin
     signal = GPSL1CA()
     soft_bits = Float32[1.0, -1.0]
-    bit_synchronizer = BitSynchronizer(UInt64(0xff), 40, true, complex(18.0, 0.0), 18, soft_bits)
+    bit_synchronizer = synced_bit_synchronizer(UInt64(0xff), 40, complex(18.0, 0.0), 18, soft_bits)
     resynced = TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 3, 3.0 + 0.0im)
     @test !is_bit_or_secondary_code_synced(resynced)
     @test resynced.prompt_sign_history == 0
@@ -504,7 +522,7 @@ end
 @testset "An integration that lands exactly on the bit boundary commits the bit" begin
     # GPS L1 C/A, synced at 17 of the bit's 20 code periods: a 3-period integration ends it.
     signal = GPSL1CA()
-    bit_synchronizer = BitSynchronizer(UInt64(0), 0, true, complex(10.0, 0.0), 17)
+    bit_synchronizer = synced_bit_synchronizer(UInt64(0), 0, complex(10.0, 0.0), 17)
     committed = TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 3, 3.0 + 0.0im)
     @test is_bit_or_secondary_code_synced(committed)
     @test get_soft_bits(committed) == Float32[13.0]
@@ -571,7 +589,7 @@ end
 
 @testset "Bit accumulation is unbounded" begin
     signal = GPSL1CA()
-    bit_synchronizer = BitSynchronizer(UInt128(0), 0, true, complex(0.0, 0.0), 0)
+    bit_synchronizer = synced_bit_synchronizer(UInt128(0), 0, complex(0.0, 0.0), 0)
     for _ = 1:(200*20)
         bit_synchronizer = TrackingLoops.update_bit_sync!(signal, 1, bit_synchronizer, 1, 1.0 + 0.0im)
     end
@@ -655,7 +673,7 @@ end
 end
 
 @testset "The secondary phase advances modulo the secondary-code length" begin
-    bit_synchronizer = BitSynchronizer(UInt32(0), 0, true, complex(0.0, 0.0), 0)
+    bit_synchronizer = synced_bit_synchronizer(UInt32(0), 0, complex(0.0, 0.0), 0)
     advanced = _advance_secondary_phase(GPSL5I(), bit_synchronizer, 13)
     @test advanced.secondary_code_phase == 3
     @test _advance_secondary_phase(GPSL5I(), advanced, 7).secondary_code_phase == 0

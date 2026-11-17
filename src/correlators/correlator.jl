@@ -64,23 +64,16 @@ correlator_output_type(num_ants::NumAnts{M}) where {M} = SVector{M,ComplexF64}
 """
     zero_correlator_outputs(num_ants::NumAnts,
                             num_correlators::NumCorrelators{K}) -> SVector{K}
-    zero_correlator_outputs(num_ants::NumAnts, num_correlators::Integer) -> Vector
 
 The zeroed correlator outputs a correlator bank starts from: `num_correlators` of them, each a
-`ComplexF64` for one antenna or an `SVector{M,ComplexF64}` for `M` antennas. With
-[`NumCorrelators`](@ref) the correlator count is a type parameter and the correlator outputs an `SVector`,
-as a custom correlator bank's keyword constructor builds them; with an integer they are a
-`Vector`.
+`ComplexF64` for one antenna or an `SVector{M,ComplexF64}` for `M` antennas, in an
+`SVector`, as a custom correlator bank's keyword constructor builds them.
 """
 function zero_correlator_outputs(
     num_ants::NumAnts,
     num_correlators::NumCorrelators{K},
 ) where {K}
     zero(SVector{K,correlator_output_type(num_ants)})
-end
-
-function zero_correlator_outputs(num_ants::NumAnts, num_correlators::Integer)
-    [zero(correlator_output_type(num_ants)) for i = 1:num_correlators]
 end
 
 """

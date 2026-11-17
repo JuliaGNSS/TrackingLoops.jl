@@ -55,7 +55,7 @@ end
     @test isnan(state.ramp.reference_time)
     @test !TL._has_carrier_ramp(state)
     @test state.residual_pll.bandwidth == 10.0Hz
-    @test loop_state_type(tracking_loop, GPSL1CA()) === typeof(state)
+    @test typeof(init_loop_state(tracking_loop, GPSL1CA(), 0.0Hz, 0.0Hz)) === typeof(state)
     @test TL._disc_mean(state.code_disc_sum) === nothing
     @test TL._disc_mean(state.fll_disc_sum) === nothing
 end

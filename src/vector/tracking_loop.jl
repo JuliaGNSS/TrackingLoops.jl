@@ -23,9 +23,9 @@ navigation filter from its first fix and then runs one filter update every
 vector-specific code: it builds a satellite's state with
 [`init_loop_state`](@ref) for its driver and steps it with every integration of the
 satellite. Read the results, keyed by the driver, with
-[`get_navigation_solution`](@ref), [`get_navigation_status`](@ref),
-[`get_satellite_report`](@ref), [`get_vector_tracking_members`](@ref), [`calc_position_std`](@ref)
-and [`calc_clock_bias_std`](@ref).
+[`get_navigation_solution`](@ref), [`get_navigation_status`](@ref) (with the filter's
+`position_std` and `clock_bias_std`), [`get_satellite_report`](@ref) and
+[`get_vector_tracking_members`](@ref).
 
 The navigation processor reads the host's bit clock and C/N₀ estimator from the integrations (see
 [What the integrations must carry](@ref)); the C/N₀, read at each navigation epoch for the

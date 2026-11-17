@@ -110,7 +110,7 @@ end
             calc_noise_observation_from_samples(4000.0 * k, 4000, fs),
         )
     end
-    @test length(estimator) == 10
+    @test length(estimator.observations) == 10
     # Equal `M`, so the plain mean of `k = 41 … 50`, i.e. 45.5 / f_s.
     @test ustrip(Hz^-1, get_noise_density(estimator)) ≈ ustrip(Hz^-1, 45.5 / fs)
     @test get_num_squared_magnitudes(estimator) == 10 * 4000
@@ -118,11 +118,11 @@ end
     # An observation longer than the window is still kept.
     long = CorrelatorNoiseDensityEstimator(; window_duration = 1.0ms)
     append_noise_observation!(long, calc_noise_observation_from_samples(1.0e5, 100_000, fs))
-    @test length(long) == 1
+    @test length(long.observations) == 1
     @test get_noise_density(long) > zero(NoiseDensity)
     # ... and is replaced once a newer one covers the window on its own.
     append_noise_observation!(long, calc_noise_observation_from_samples(2.0e5, 100_000, fs))
-    @test length(long) == 1
+    @test length(long.observations) == 1
     @test ustrip(Hz^-1, get_noise_density(long)) ≈ ustrip(Hz^-1, 2.0 / fs)
 
     # `M` makes observations from different producers combinable.
@@ -158,7 +158,7 @@ end
 @testset "An empty noise window has no density" begin
     estimator = CorrelatorNoiseDensityEstimator()
     @test get_noise_density(estimator) == zero(NoiseDensity)
-    @test length(estimator) == 0
+    @test length(estimator.observations) == 0
     @test get_num_squared_magnitudes(estimator) == 0
     append_noise_observation!(
         estimator,
@@ -196,7 +196,7 @@ end
     @test f32 isa NoiseObservation{NoiseDensity}
     e32 = CorrelatorNoiseDensityEstimator()
     append_noise_observation!(e32, f32)
-    @test length(e32) == 1
+    @test length(e32.observations) == 1
     @test ustrip(Hz^-1, get_noise_density(e32)) ≈ 6.25e-11 rtol = 1e-6
 
     mixed = calc_noise_observation_from_correlator_powers(1.0, 1, 4000, 4_000_000Hz; duration = 1ms)
@@ -213,7 +213,7 @@ end
     @test convert(NoiseObservation{NoiseDensity}, converted) === converted
     ehand = CorrelatorNoiseDensityEstimator()
     append_noise_observation!(ehand, hand)
-    @test length(ehand) == 1
+    @test length(ehand.observations) == 1
     @test ustrip(Hz^-1, get_noise_density(ehand)) ≈ 1.0e-10 rtol = 1e-6
 end
 
@@ -308,7 +308,7 @@ end
     samples = fill(complex(1.0, 1.0), 8000)
     context = TrackingLoops.NoiseUpdateContext(GPSL1CA(), FakeDespreadBackend())
     @test update_noise!(estimator, samples, 1:4000, context) === estimator
-    @test length(estimator) == 1
+    @test length(estimator.observations) == 1
     # |x|² = 2 per sample ⇒ N₀ = 2 / f_s.
     @test ustrip(Hz^-1, get_noise_density(estimator)) ≈ 2 / 4e6
 end
@@ -482,7 +482,7 @@ end
         Int16(3),
     )
     append_noise_observation!(estimator, hand_built)
-    @test length(estimator) == 2
+    @test length(estimator.observations) == 2
 end
 
 @testset "A noise covariance is withheld until it spans its own dimensions" begin

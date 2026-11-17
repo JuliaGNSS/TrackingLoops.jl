@@ -6,7 +6,6 @@
 using Random: Xoshiro, randn
 using Statistics: mean, std
 using Unitful: ms, kHz, MHz
-using TrackingLoops: get_prompt_buffer
 
 # Float64 throughout, matching what the tracking loop produces
 # (`num_integrated_samples / sampling_frequency`); `1ms` would make the density a
@@ -28,7 +27,7 @@ cn0_context(; noise_density = CN0_N₀, coherent_integration_time = CN0_T) =
 
 # A synced pilot of one code period per integration: NWPR's windows run back to back at
 # `num_narrowband_code_periods`.
-const FREE_RUNNING_CN0_CONTEXT = CN0UpdateContext(GPSL1C_P(), 1, 0)
+const FREE_RUNNING_CN0_CONTEXT = CN0UpdateContext(GPSL1C_P(), 1, 0, nothing, nothing)
 
 cn0_update(estimator, prompts) = foldl(update!, prompts; init = estimator)
 cn0_update(estimator, prompts, context) =
@@ -81,8 +80,8 @@ end
 
 @testset "CN0UpdateContext derives the bit grid" begin
     bit_synchronizer = BitSynchronizer{UInt64}()
-    # Positional form: noise density and integration time default to `nothing`.
-    positional = @inferred CN0UpdateContext(GPSL1CA(), 2, 3)
+    # Every field given: here without noise density and integration time.
+    positional = @inferred CN0UpdateContext(GPSL1CA(), 2, 3, nothing, nothing)
     @test positional.num_code_periods == 2
     @test positional.num_code_periods_into_bit == 3
     @test positional.noise_density === nothing
@@ -123,7 +122,7 @@ end
     @test_throws ArgumentError MomentsCN0Estimator(; num_averaged_integrations = 0)
     @test_throws ArgumentError MomentsCN0Estimator(; num_averaged_integrations = -1)
     cn0_estimator = MomentsCN0Estimator(; num_averaged_integrations = 20)
-    @test @inferred(get_prompt_buffer(cn0_estimator)) == zeros(ComplexF64, 20)
+    @test cn0_estimator.prompt_buffer == zeros(ComplexF64, 20)
     @test cn0_estimator.newest_index == 0
     @test @inferred(Base.length(cn0_estimator)) == 0
     # An empty buffer reports -Inf dB-Hz, no estimate, rather than dividing by zero.
@@ -133,14 +132,14 @@ end
     @test !requires_noise_density(cn0_estimator)
 
     next_cn0_estimator = @inferred update!(cn0_estimator, 1 + 2im)
-    @test @inferred(get_prompt_buffer(next_cn0_estimator))[1] == 1 + 2im
+    @test next_cn0_estimator.prompt_buffer[1] == 1 + 2im
     @test next_cn0_estimator.newest_index == 1
     @test @inferred(Base.length(next_cn0_estimator)) == 1
 
     # The ring wraps from the last slot back to the first.
     cn0_estimator = MomentsCN0Estimator(ones(ComplexF64, 20), 20, 20)
     next_cn0_estimator = @inferred update!(cn0_estimator, 1 + 2im)
-    @test @inferred(get_prompt_buffer(next_cn0_estimator))[1] == 1 + 2im
+    @test next_cn0_estimator.prompt_buffer[1] == 1 + 2im
     @test next_cn0_estimator.newest_index == 1
     @test @inferred(Base.length(next_cn0_estimator)) == 20
 
@@ -524,7 +523,7 @@ end
     # Feed a constant prompt and walk the bit grid by hand, so only the window
     # logic is under test.
     context(signal, num_code_periods_into_bit) =
-        CN0UpdateContext(signal, 1, num_code_periods_into_bit)
+        CN0UpdateContext(signal, 1, num_code_periods_into_bit, nothing, nothing)
     fresh() = NWPRCN0Estimator(; num_averaged_integrations = 100, num_narrowband_code_periods = 20)
 
     # GPS L1 C/A, synced: one window per 20-period navigation bit, and it only
@@ -661,7 +660,7 @@ end
 
 @testset "NWPR CN0 estimator when an integration outgrows its own window" begin
     context(num_code_periods, num_code_periods_into_bit) =
-        CN0UpdateContext(GPSL1CA(), num_code_periods, num_code_periods_into_bit)
+        CN0UpdateContext(GPSL1CA(), num_code_periods, num_code_periods_into_bit, nothing, nothing)
 
     # Integrations as long as a whole navigation bit close every window on a single
     # integration; the windows buffered before the switch have to go with it.
@@ -686,7 +685,7 @@ end
     # The fractional integration right after a sync phase-snap leaves the open
     # window untouched; its prompt still reaches the fallback.
     context(num_code_periods, num_code_periods_into_bit) =
-        CN0UpdateContext(GPSL1CA(), num_code_periods, num_code_periods_into_bit)
+        CN0UpdateContext(GPSL1CA(), num_code_periods, num_code_periods_into_bit, nothing, nothing)
 
     estimator = NWPRCN0Estimator(; num_averaged_integrations = 100, num_narrowband_code_periods = 5)
     for num_code_periods_into_bit = 0:2

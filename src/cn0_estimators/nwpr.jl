@@ -212,10 +212,6 @@ end
 end
 
 length(estimator::NWPRCN0Estimator) = estimator.num_buffered
-get_buffered_narrowband_powers(estimator::NWPRCN0Estimator) =
-    estimator.buffered_narrowband_powers
-get_buffered_wideband_powers(estimator::NWPRCN0Estimator) =
-    estimator.buffered_wideband_powers
 
 # Ring slots in use at the current `M`, capped by the buffer.
 @inline function _num_ratios(estimator::NWPRCN0Estimator)
@@ -409,10 +405,10 @@ averaging the estimate does.
 function estimate_cn0(estimator::NWPRCN0Estimator, coherent_integration_time)
     length(estimator) == 0 && return estimate_cn0(estimator.fallback, coherent_integration_time)
     M = estimator.num_integrations_per_ratio
-    total_wideband_power = sum(get_buffered_wideband_powers(estimator))
+    total_wideband_power = sum(estimator.buffered_wideband_powers)
     iszero(total_wideband_power) &&
         return estimate_cn0(estimator.fallback, coherent_integration_time)
-    mean_ratio = sum(get_buffered_narrowband_powers(estimator)) / total_wideband_power
+    mean_ratio = sum(estimator.buffered_narrowband_powers) / total_wideband_power
     mean_ratio <= 1 && return -Inf * dBHz
     mean_ratio >= M && return Inf * dBHz
     SNR = (mean_ratio - 1) / (M - mean_ratio)
