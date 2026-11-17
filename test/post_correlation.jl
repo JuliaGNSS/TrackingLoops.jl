@@ -52,6 +52,8 @@ end
     updated = PostCorrelationState(state; previous_filtered_prompt = 1 + 2im, last_carrier_phase_polarity = 1)
     @test updated.previous_filtered_prompt === complex(1.0, 2.0)
     @test updated.last_carrier_phase_polarity === Int8(1)
+    # The driver's carrier-phase offset follows a change of driver.
+    @test PostCorrelationState(state; driver_carrier_phase_offset = 1 // 4).driver_carrier_phase_offset === 0.25
 end
 
 @testset "A passenger component is de-rotated onto the driver's phase" begin

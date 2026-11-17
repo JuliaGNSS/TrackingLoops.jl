@@ -135,7 +135,8 @@ function PostCorrelationState(
 end
 
 """
-    PostCorrelationState(state::PostCorrelationState; prn, sampling_frequency, bit_synchronizer,
+    PostCorrelationState(state::PostCorrelationState; prn, driver_carrier_phase_offset,
+                    sampling_frequency, bit_synchronizer,
                     cn0_estimator, post_corr_filter, last_filtered_correlator_bank,
                     previous_filtered_prompt, last_num_integrated_samples, last_sample_index,
                     last_command_issue_sample_index, last_num_code_periods, last_code_phase,
@@ -144,10 +145,13 @@ end
 `state` with the fields passed replaced, every other one kept, so a host that
 swaps a part of the state (a C/N₀ estimator, say) need not list the rest, and one that
 builds a latest integration without [`process_correlator_bank_output!`](@ref) can set it.
+A host whose driver changes (a hardware channel re-armed on another component) passes
+the new driver's `driver_carrier_phase_offset` (cycles).
 """
 function PostCorrelationState(
     state::PostCorrelationState;
     prn::Maybe{Integer} = nothing,
+    driver_carrier_phase_offset::Maybe{Real} = nothing,
     sampling_frequency = nothing,
     bit_synchronizer::Maybe{BitSynchronizer} = nothing,
     cn0_estimator::Maybe{AbstractCN0Estimator} = nothing,
@@ -166,7 +170,8 @@ function PostCorrelationState(
     PostCorrelationState(
         state.signal,
         isnothing(prn) ? state.prn : Int(prn),
-        state.driver_carrier_phase_offset,
+        isnothing(driver_carrier_phase_offset) ? state.driver_carrier_phase_offset :
+        Float64(driver_carrier_phase_offset),
         isnothing(sampling_frequency) ? state.sampling_frequency : _sampling_frequency(sampling_frequency),
         isnothing(bit_synchronizer) ? state.bit_synchronizer : bit_synchronizer,
         isnothing(cn0_estimator) ? state.cn0_estimator : cn0_estimator,
@@ -487,11 +492,14 @@ reset_sync!(state::PostCorrelationState) = PostCorrelationState(
     cispi(2 * (driver_carrier_phase_offset - get_carrier_phase_offset(signal) - phase))
 
 """
-    reset_post_correlation!(state::PostCorrelationState; prn = state.prn) -> PostCorrelationState
+    reset_post_correlation!(state::PostCorrelationState; prn = state.prn,
+                            driver_carrier_phase_offset = state.driver_carrier_phase_offset)
+        -> PostCorrelationState
 
 The state a channel starts tracking from (no sync, no soft bits, empty C/N₀
 estimator, no latest integration), reusing the old vectors so a re-initialisation
-allocates nothing. Pass `prn` for a channel given another satellite of the same signal. The
+allocates nothing. Pass `prn` for a channel given another satellite of the same signal,
+and `driver_carrier_phase_offset` (cycles) for one whose driver changes. The
 post-correlation filter is kept: it is configuration, not history;
 an adaptive beamformer must be reset by its owner.
 
@@ -499,10 +507,14 @@ A custom [`AbstractCN0Estimator`](@ref) with history needs a
 `TrackingLoops.reset_cn0_estimator!` method; without one this throws rather than
 hand the new satellite the old one's C/N₀.
 """
-reset_post_correlation!(state::PostCorrelationState; prn::Integer = state.prn) = PostCorrelationState(
+reset_post_correlation!(
+    state::PostCorrelationState;
+    prn::Integer = state.prn,
+    driver_carrier_phase_offset::Real = state.driver_carrier_phase_offset,
+) = PostCorrelationState(
     state.signal,
     Int(prn),
-    state.driver_carrier_phase_offset,
+    Float64(driver_carrier_phase_offset),
     NaN * Hz,
     _fresh_bit_synchronizer(state.bit_synchronizer),
     reset_cn0_estimator!(state.cn0_estimator),
