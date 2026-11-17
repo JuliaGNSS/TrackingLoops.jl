@@ -3,7 +3,9 @@ const TL = TrackingLoops
 
 # The satellite's own loop under the vector loop, without the navigation processor around
 # it: what `step_loop!` runs after the navigation processor's part.
-step_satellite(tracking_loop::VectorTrackingLoop, args...) = TL._step_satellite(tracking_loop, args...)
+step_satellite(tracking_loop::VectorTrackingLoop, state, post_correlation_state, nco_history, application_sample_index) =
+    TL._step_satellite(tracking_loop, state, post_correlation_state, nco_history,
+        something(application_sample_index, post_correlation_state.last_end_sample_index))
 step_satellite(tracking_loop, args...) = step_loop!(tracking_loop, args...)
 
 # A host's C/N₀ estimator that reads `cn0_dbhz` whatever the prompts.
@@ -36,7 +38,7 @@ prompt_integration(signal, prompt, num_samples, fs; sample_index = num_samples, 
 # A satellite in the vector loop, commanded the Doppler `ramp` and the code correction
 # `code_update`, its residual PLL taking over from the scalar command `scalar_doppler`.
 function commanded(state, ramp; code_update = 0.0Hz, lead = 0.0s, scalar_doppler = ustrip(Hz, ramp.doppler), fs = 1e6)
-    TL._set_vector_commands(TL._add_to_vector_loop(state), code_update, ramp, lead, ConstantNCOCommand(scalar_doppler * Hz, 0.0Hz), 0, fs)
+    TL._set_vector_commands(TL._set_vector_controlled(state, true), code_update, ramp, lead, ConstantNCOCommand(scalar_doppler * Hz, 0.0Hz), 0, fs)
 end
 
 @testset "Vector PLL and DLL state" begin
@@ -89,8 +91,8 @@ end
         @test vector_state.residual_pll.bandwidth == 5.0Hz
         @test vector_state.scalar_state == init_loop_state(inner, GPSL1CA(), 100.0Hz, 0.0Hz)
         # A satellite keeps it across the hand-overs.
-        @test TL._add_to_vector_loop(vector_state).residual_pll.bandwidth == 5.0Hz
-        @test TL._hand_over_to_scalar_loop(inner, TL._add_to_vector_loop(vector_state), ConstantNCOCommand(1.0Hz, 0.0Hz), 0, 1e6).residual_pll.bandwidth == 5.0Hz
+        @test TL._set_vector_controlled(vector_state, true).residual_pll.bandwidth == 5.0Hz
+        @test TL._hand_over_to_scalar_loop(inner, TL._set_vector_controlled(vector_state, true), ConstantNCOCommand(1.0Hz, 0.0Hz), 0, 1e6).residual_pll.bandwidth == 5.0Hz
     end
     @test_throws ArgumentError VectorTrackingLoop(GPSL1CA(); residual_pll_loop_bandwidth = 0.0Hz)
 end
@@ -301,16 +303,14 @@ end
 @testset "Vector tracking state management" begin
     tracking_loop = VectorTrackingLoop(GPSL1CA())
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
-    joined = TL._add_to_vector_loop(state)
+    joined = TL._set_vector_controlled(state, true)
     @test joined.vector_controlled
     ramp = TL.CarrierDopplerRamp(110.0 * Hz, 2.0 * Hz / s, 0.01 * s)
-    # A member joining again changes nothing, so the members can join every update.
     steered = VectorLoopState(
         TL._set_vector_commands(joined, 1.0Hz, ramp, 0.02s, ConstantNCOCommand(100.0Hz, 0.0Hz), 0, 1e6);
         discriminators = TL.DiscriminatorAccumulator((3, 0.3), (3, 0.3Hz), (1.0Hz, 0.0Hz, 0.0Hz), 0.02s),
         last_replica_tail = 0.1,
     )
-    @test TL._add_to_vector_loop(steered) === steered
     # The first ramp starts the residual PLL from the scalar loop's command, against the ramp.
     @test steered.ramp == ramp
     @test TL._has_carrier_ramp(steered)
@@ -335,7 +335,7 @@ end
     @test next.discriminators.code_disc_sum == (3, 0.3)
     # Leaving zeroes everything the vector loop owned, so a satellite that joins again
     # never runs on stale values.
-    released = TL._release_from_vector_loop(next)
+    released = TL._set_vector_controlled(next, false)
     @test !released.vector_controlled
     @test released.scalar_state == next.scalar_state
     @test released.discriminators.code_disc_sum == (0, 0.0)
@@ -347,8 +347,8 @@ end
     @test !TL._has_carrier_ramp(released)
     # The replica's last half integration is the replica's: it survives the hand-over both ways.
     @test released.last_replica_tail == 0.1
-    @test TL._add_to_vector_loop(released).last_replica_tail == 0.1
-    @test TL._add_to_vector_loop(released).code_frequency_correction == 0.0Hz
+    @test TL._set_vector_controlled(released, true).last_replica_tail == 0.1
+    @test TL._set_vector_controlled(released, true).code_frequency_correction == 0.0Hz
 end
 
 @testset "Resetting keeps the vector flag and stops applying the code correction" begin
@@ -492,7 +492,7 @@ function track_carrier(phase, doppler0, rate; offset = 0.5, integration_samples 
         output = CorrelatorBankOutput(loop_epl(0.5prompt, prompt, 0.5prompt), integration_end_sample_index - integration_start_sample_index, integration_end_sample_index)
         post_correlation_state = processed_state(RATE_SIGNAL, output.correlator_bank, previous_prompt, output, 1, RATE_FS * Hz)
         state, new_carrier, = TL._step_satellite(tracking_loop, state, post_correlation_state,
-            ConstantNCOCommand(carrier * Hz, 0.0Hz), nothing)
+            ConstantNCOCommand(carrier * Hz, 0.0Hz), post_correlation_state.last_end_sample_index)
         replica_phase += carrier * (t1 - t0)
         carrier = ustrip(Hz, new_carrier)
         previous_prompt = prompt

@@ -27,7 +27,7 @@ const SUITE = BenchmarkGroup()
 step_members(tracking_loop, ::Tuple{}) = nothing
 function step_members(tracking_loop, steps::Tuple)
     for (state, post_correlation_state, nco_history) in first(steps)
-        TrackingLoops._step_satellite(tracking_loop, state, post_correlation_state, nco_history, nothing)
+        TrackingLoops._step_satellite(tracking_loop, state, post_correlation_state, nco_history, post_correlation_state.last_end_sample_index)
     end
     step_members(tracking_loop, Base.tail(steps))
 end
