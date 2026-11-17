@@ -68,6 +68,7 @@ get_secondary_code_phase(::PostCorrelationState)
 get_num_code_periods_into_bit(::PostCorrelationState)
 get_last_num_code_periods(::PostCorrelationState)
 get_bit_polarity(::PostCorrelationState)
+estimate_cn0(::PostCorrelationState)
 ```
 
 ## A host's lifecycle
