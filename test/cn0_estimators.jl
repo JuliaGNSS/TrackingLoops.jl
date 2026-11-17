@@ -28,7 +28,7 @@ cn0_context(; noise_density = CN0_N₀, coherent_integration_time = CN0_T) =
 
 # A synced pilot of one code period per integration: NWPR's windows run back to back at
 # `num_narrowband_code_periods`.
-const FREE_RUNNING_CN0_CONTEXT = CN0UpdateContext(GPSL1C_P(), 1, 0, 0, BitSynchronizer{UInt64}())
+const FREE_RUNNING_CN0_CONTEXT = CN0UpdateContext(GPSL1C_P(), 1, 0, 0)
 
 cn0_update(estimator, prompts) = foldl(update!, prompts; init = estimator)
 cn0_update(estimator, prompts, context) =
@@ -82,7 +82,7 @@ end
 @testset "CN0UpdateContext derives the bit grid" begin
     bit_synchronizer = BitSynchronizer{UInt64}()
     # Positional form: noise density and integration time default to `nothing`.
-    positional = @inferred CN0UpdateContext(GPSL1CA(), 2, 20, 3, bit_synchronizer)
+    positional = @inferred CN0UpdateContext(GPSL1CA(), 2, 20, 3)
     @test positional.num_code_periods == 2
     @test positional.num_code_periods_per_bit == 20
     @test positional.num_code_periods_into_bit == 3
@@ -382,7 +382,6 @@ end
     # One bit per code period, or a secondary code before sync: NWPR admits no
     # coherent window ever and reports its fallback; the noise reference has no
     # window, so these are ordinary integrations to it.
-    bit_synchronizer = BitSynchronizer{UInt64}()
     cases = (
         ("GPS L1C-D, synced", GPSL1C_D(), 1, 0),
         ("Galileo E1B, synced", GalileoE1B(), 1, 0),
@@ -395,7 +394,6 @@ end
                 1,
                 code_periods_per_bit,
                 code_period_index,
-                bit_synchronizer,
                 CN0_N₀,
                 CN0_T,
             )
@@ -528,9 +526,8 @@ end
 @testset "NWPR CN0 estimator follows the navigation-bit grid" begin
     # Feed a constant prompt and walk the bit grid by hand, so only the window
     # logic is under test.
-    bit_synchronizer = BitSynchronizer{UInt64}()
     context(signal, code_periods_per_bit, num_code_periods_into_bit) =
-        CN0UpdateContext(signal, 1, code_periods_per_bit, num_code_periods_into_bit, bit_synchronizer)
+        CN0UpdateContext(signal, 1, code_periods_per_bit, num_code_periods_into_bit)
     fresh() = NWPRCN0Estimator(; num_averaged_integrations = 100, num_narrowband_code_periods = 20)
 
     # GPS L1 C/A, synced: one window per 20-period navigation bit, and it only
@@ -666,9 +663,8 @@ end
 end
 
 @testset "NWPR CN0 estimator when an integration outgrows its own window" begin
-    bit_synchronizer = BitSynchronizer{UInt64}()
     context(num_code_periods, num_code_periods_into_bit) =
-        CN0UpdateContext(GPSL1CA(), num_code_periods, 20, num_code_periods_into_bit, bit_synchronizer)
+        CN0UpdateContext(GPSL1CA(), num_code_periods, 20, num_code_periods_into_bit)
 
     # Integrations as long as a whole navigation bit close every window on a single
     # integration; the windows buffered before the switch have to go with it.
@@ -692,9 +688,8 @@ end
 @testset "NWPR CN0 estimator skips an integration spanning no whole code period" begin
     # The fractional integration right after a sync phase-snap leaves the open
     # window untouched; its prompt still reaches the fallback.
-    bit_synchronizer = BitSynchronizer{UInt64}()
     context(num_code_periods, num_code_periods_into_bit) =
-        CN0UpdateContext(GPSL1CA(), num_code_periods, 20, num_code_periods_into_bit, bit_synchronizer)
+        CN0UpdateContext(GPSL1CA(), num_code_periods, 20, num_code_periods_into_bit)
 
     estimator = NWPRCN0Estimator(; num_averaged_integrations = 100, num_narrowband_code_periods = 5)
     for num_code_periods_into_bit = 0:2
