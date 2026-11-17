@@ -76,6 +76,9 @@ struct HistoryCN0Estimator <: AbstractCN0Estimator end
 @testset "Re-initialising a channel for another satellite" begin
     state = synced_l1ca_state()
     @test reset_post_correlation!(state; prn = 9).prn == 9
+    # A channel re-armed on another driver takes that driver's carrier-phase offset.
+    @test reset_post_correlation!(state).driver_carrier_phase_offset == state.driver_carrier_phase_offset
+    @test reset_post_correlation!(state; driver_carrier_phase_offset = 0.25).driver_carrier_phase_offset === 0.25
 end
 
 @testset "Re-initialising refuses a C/N₀ estimator it cannot reset" begin
