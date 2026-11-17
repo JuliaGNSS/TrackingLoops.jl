@@ -28,6 +28,9 @@ using Random: MersenneTwister
     # C/N0: |P|²/N0 − 1/T with |P| = 0.5 and N0 = 1e-6/Hz over 1 ms integrations.
     cn0 = estimate_cn0(state, 1023 / get_chip_rate(signal))
     @test 10 * log10(ustrip(Hz, Unitful.linear(cn0))) ≈ 10 * log10(0.25 / 1e-6 - 1000) atol = 1e-6
+    # The state knows the integration time itself.
+    @test estimate_cn0(state) ≈ cn0
+    @test estimate_cn0(PostCorrelationState(signal, 7)) == -Inf * dBHz
     # A restarted bit clock forgets sync and keeps the rest.
     restarted = reset_sync!(state)
     @test !is_bit_or_secondary_code_synced(restarted)
