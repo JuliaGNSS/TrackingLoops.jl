@@ -354,9 +354,17 @@ end
 # A snapshot set by hand, as `_complete_snapshot!` sets one: membership follows its state.
 function set_snapshot!(slot; kwargs...)
     slot.snapshot = TrackingLoops.SatelliteSnapshot(slot.snapshot; kwargs...)
-    haskey(kwargs, :loop_state) && (slot.vector_controlled = slot.snapshot.loop_state.vector_controlled)
+    haskey(kwargs, :vector_controlled) && (slot.vector_controlled = slot.snapshot.vector_controlled)
     slot
 end
+
+# A satellite's state as its snapshot takes it at an epoch.
+set_snapshot!(slot, loop_state::TrackingLoops.VectorLoopState; kwargs...) = set_snapshot!(
+    slot;
+    vector_controlled = loop_state.vector_controlled,
+    discriminators = loop_state.discriminators,
+    kwargs...,
+)
 
 # Fill the slot of a channel at the measurement epoch (device sample `epoch_sample_index`), as the
 # satellite's snapshot would: the replica at the epoch, from the fixture decoder.
@@ -369,12 +377,11 @@ function fill_slot!(slot, sat::SimSat, epoch_sample_index, application_sample_in
     nco_command = calc_mean_nco_command(sim_nco_history(sat, application_sample_index), epoch_sample_index, epoch_sample_index)
     carrier, code = ustrip(Hz, nco_command.carrier_doppler), ustrip(Hz, nco_command.code_doppler)
     set_snapshot!(
-        slot;
-        loop_state,
+        slot,
+        loop_state;
         decoder = epoch_state.decoder,
         code_phase = epoch_state.code_phase,
-        carrier_doppler = carrier * Hz,
-        code_doppler = code * Hz,
+        replica_carrier_doppler = carrier * Hz,
         cn0 = 45.0dBHz,
         coherent_integration_time = integration_ms(sat.signal) * 1.0ms,
         early_late_spacing = TrackingLoops.calc_early_late_sample_spacing(
@@ -468,7 +475,7 @@ function SimReceiver(;
         slot.prn = sat.decoder.prn
         slot.occupied = true
         slot.slot_generation = nav_processor.next_slot_generation
-        set_snapshot!(slot; loop_state = sat.state, decoder = sat.decoder)
+        set_snapshot!(slot, sat.state; decoder = sat.decoder)
     end
     SimReceiver(channels, tracking_loop, truth, integrations_per_update, nominal_integrations, delay_integrations, polarity)
 end

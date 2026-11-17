@@ -35,7 +35,8 @@ section numbers come from; Misra & Enge, *Global Positioning System*; Spilker et
   measurement gate selects among them yet; a planned one would take these as its
   candidates.
 - **Snapshot**: what a satellite latches at a measurement epoch for the next
-  update: replica code phase, Dopplers, C/N₀, decoder and bit clock, and its loop state.
+  update: replica code phase, carrier Doppler, C/N₀, decoder and bit clock, and the
+  discriminators it accumulated.
 - **Measurement epoch**: the time point a navigation update estimates the state
   at, a multiple of the update interval `Δt_nav` on the integrations' sample grid.
 - **Update**: one navigation update at a measurement epoch: the navigation filter's time

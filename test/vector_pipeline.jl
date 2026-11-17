@@ -223,7 +223,7 @@ end
     @test pipeline_errors(rx, tail) < 2 * pipeline_errors(rx0, tail0) + 0.5
     @test pipeline_code_errors(tail) < 2 * pipeline_code_errors(tail0) + 0.01
     # The feedback delay is the NCO delay plus the wait for the next integration after the update.
-    @test all(sat -> 0.015 <= ustrip(s, sat.state.feedback_delay) <= 0.018, rx.sats)
+    @test all(sat -> 0.015 <= ustrip(s, sat.state.discriminators.feedback_delay) <= 0.018, rx.sats)
 end
 
 @testset "A dropped satellite frees its slot for the next" begin

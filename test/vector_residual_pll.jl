@@ -291,9 +291,9 @@ end
     previous_acc = Ref((0, 0.0Hz))
     step_residual(residual, ends; scalar_doppler = 102.0, on_integration = (state, k) -> begin
         push!(errors, rem(state.residual_pll.predicted_prompt_phase - residual(TL._center(state.residual_pll.last_prompt_span) / 1e6), 0.5, RoundNearest))
-        count, total = state.fll_disc_sum
+        count, total = state.discriminators.fll_disc_sum
         count > previous_acc[][1] && push!(fll, ustrip(Hz, total - previous_acc[][2]))
-        previous_acc[] = state.fll_disc_sum
+        previous_acc[] = state.discriminators.fll_disc_sum
     end)
     # The prediction across the gap stays on the incoming carrier…
     @test maximum(abs, errors) < 1e-3
