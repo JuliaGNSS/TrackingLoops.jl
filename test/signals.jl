@@ -177,7 +177,7 @@ end
     @test detect_sync(signal, prn, UInt32(0x3ca) ⊻ UInt32(0x1), 10).found == false
     _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
-    @test @inferred(prompt_sign_history_type(signal)) === UInt32
+    @test @inferred(prompt_sign_history_type(signal)) === UInt16
     @test uses_soft_secondary_code_detection(signal) == true
 end
 
@@ -260,7 +260,7 @@ end
     end
     _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
-    @test @inferred(prompt_sign_history_type(signal)) === UInt32
+    @test @inferred(prompt_sign_history_type(signal)) === UInt8
     @test uses_soft_secondary_code_detection(signal) == true
 end
 
@@ -394,7 +394,7 @@ end
     @test get_band_id(signal) === :L5
     _sig_test_correlator(signal, EarlyPromptLateCorrelatorBank)
     _sig_test_bandwidths(signal, 18.0Hz)
-    @test @inferred(prompt_sign_history_type(signal)) === UInt32
+    @test @inferred(prompt_sign_history_type(signal)) === UInt8
     @test uses_soft_secondary_code_detection(signal) == true
 end
 

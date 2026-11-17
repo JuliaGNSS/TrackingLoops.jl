@@ -486,10 +486,8 @@ Hard-path detector for secondary-coded signals: once `N` code periods are buffer
 `floor(tolerance × N)` errors ([`get_secondary_code_error_tolerance`](@ref));
 at the default, an exact match for a code shorter than 40 chips.
 
-A new secondary-coded signal needs `get_secondary_code`, a
-`prompt_sign_history_type` of at least `N` bits and a
-`detect_sync` method delegating here (a soft-path signal
-reaches it only with its soft trait overridden).
+The generic [`detect_sync`](@ref) delegates here for every secondary-coded signal (a
+soft-path signal reaches it only with its soft trait overridden).
 """
 @inline function _detect_secondary_code_sync(
     signal::AbstractGNSSSignal,
@@ -673,19 +671,6 @@ The bit synchronizer's own vector, not a copy: drain it (`empty!`) after reading
 """
 $(SIGNATURES)
 
-Concrete `Unsigned` width `B` of `BitSynchronizer.prompt_sign_history` for `signal`
-(default `UInt64`), a type parameter so construction is type-stable.
-
-Hard-path signals need at least `N` bits (the 1800-chip overlay pilots use
-`UInt1800`); soft secondary-code signals keep one period so their hard path stays
-available; GPS L1 C/A's holds the pre-sync bits recovered at sync; signals with
-nothing to search use `UInt8`. Per-signal values: [Prompt-sign history widths](@ref).
-"""
-@inline prompt_sign_history_type(::AbstractGNSSSignal) = UInt64
-
-"""
-$(SIGNATURES)
-
 Hamming tolerance of the **hard-decision** `_secondary_code_search`: the largest
 fraction of chip errors accepted, `max_errors = floor(Int, tolerance × N)`. Default
 `0.025` (45 of 1800 chips). Only hard-path signals (GPS L1C-P, BeiDou B1C-P) read
@@ -721,8 +706,8 @@ TrackingLoops.uses_soft_bit_edge_detection(::SomeSignal) = false
 Constant-folded per signal type.
 """
 @inline uses_soft_bit_edge_detection(signal::AbstractGNSSSignal) =
-    get_code_periods_per_bit(signal) > 1 &&
-    get_secondary_code_length(signal) == 1
+    get_code_periods_per_bit(typeof(signal)) > 1 &&
+    get_secondary_code_length(typeof(signal)) == 1
 
 """
 $(SIGNATURES)
@@ -742,7 +727,7 @@ TrackingLoops.uses_soft_secondary_code_detection(::GPSL5I) = false
 Constant-folded per signal type.
 """
 @inline uses_soft_secondary_code_detection(signal::AbstractGNSSSignal) =
-    1 < get_secondary_code_length(signal) <= 100
+    1 < get_secondary_code_length(typeof(signal)) <= 100
 
 """
 $(SIGNATURES)

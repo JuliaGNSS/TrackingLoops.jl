@@ -36,29 +36,8 @@ is_bit_or_secondary_code_synced(::BitSynchronizer)
 drain_soft_bits!
 TrackingLoops.uses_soft_bit_edge_detection(::AbstractGNSSSignal)
 TrackingLoops.uses_soft_secondary_code_detection(::AbstractGNSSSignal)
-get_default_correlator_bank(::GPSL1CA, ::NumAnts = NumAnts(1))
-TrackingLoops.detect_sync(::GPSL1C_D, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GPSL1C_P, ::Integer, ::UInt1800, ::Integer)
-TrackingLoops.detect_sync(::GPSL2CL, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GPSL2CM, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GPSL5I, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GPSL5Q, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GalileoE1B, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GalileoE1C, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GalileoE5aI, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GalileoE5aQ, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GalileoE5aQP, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GalileoE5bI, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GalileoE5bQ, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GalileoE6B, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::GalileoE6C, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::BeiDouB1I, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::BeiDouB3I, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::BeiDouB2aI, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::BeiDouB2aQ, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::BeiDouB2bI, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::BeiDouB1C_D, ::Integer, ::Unsigned, ::Integer)
-TrackingLoops.detect_sync(::BeiDouB1C_P, ::Integer, ::UInt1800, ::Integer)
+get_default_correlator_bank(::AbstractGNSSSignal, ::NumAnts = NumAnts(1))
+TrackingLoops.detect_sync(::AbstractGNSSSignal, ::Integer, ::Unsigned, ::Integer)
 ```
 
 ## Prompt-sign history widths
@@ -70,7 +49,7 @@ width is for:
 |:------------- |:---------- |:--------------------------------------------------- |
 | GPS L1 C/A    | `UInt64`   | soft bit-edge CFAR — holds up to 3 pre-sync bits    |
 | Galileo E1B   | `UInt8`    | bit = primary period, history unused                |
-| GPS L5I       | `UInt32`   | soft secondary CFAR — sign history vestigial        |
+| GPS L5I       | `UInt16`   | soft secondary CFAR — sign history vestigial        |
 | GPS L5Q       | `UInt32`   | soft secondary CFAR — sign history vestigial        |
 | GPS L1C-D     | `UInt8`    | bit = primary period, history unused                |
 | GPS L1C-P     | `UInt1800` | **hard** rotation sweep — 1800-chip overlay horizon |
@@ -80,13 +59,13 @@ width is for:
 | Galileo E5a-I | `UInt32`   | soft secondary CFAR — sign history vestigial        |
 | Galileo E5a-Q | `UInt128`  | soft secondary CFAR — sign history vestigial        |
 | Galileo E5a-QP| `UInt8`    | no data, no overlay, history unused                 |
-| Galileo E5b-I | `UInt32`   | soft secondary CFAR — sign history vestigial        |
+| Galileo E5b-I | `UInt8`    | soft secondary CFAR — sign history vestigial        |
 | Galileo E5b-Q | `UInt128`  | soft secondary CFAR — sign history vestigial        |
 | Galileo E6-B  | `UInt8`    | bit = primary period, history unused                |
 | Galileo E6-C  | `UInt128`  | soft secondary CFAR — sign history vestigial        |
 | BeiDou B1I    | `UInt32`   | soft secondary CFAR — sign history vestigial        |
 | BeiDou B3I    | `UInt32`   | soft secondary CFAR — sign history vestigial        |
-| BeiDou B2a-I  | `UInt32`   | soft secondary CFAR — sign history vestigial        |
+| BeiDou B2a-I  | `UInt8`    | soft secondary CFAR — sign history vestigial        |
 | BeiDou B2a-Q  | `UInt128`  | soft secondary CFAR — sign history vestigial        |
 | BeiDou B2b-I  | `UInt8`    | bit = primary period, history unused                |
 | BeiDou B1C-D  | `UInt8`    | bit = primary period, history unused                |

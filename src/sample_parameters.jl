@@ -12,7 +12,7 @@ signs away.
 
 The default degenerates to a single code period for a signal that has neither a
 multi-period data bit nor an overlay; Galileo E5a-QP overrides it to a whole
-31-period code cycle (see `galileo/e5a_qp.jl`). GPS L2CL is the same shape and
+31-period code cycle (see `signals.jl`). GPS L2CL is the same shape and
 deliberately keeps the default: its 1.5 s primary period is already a whole
 coherent integration.
 """
