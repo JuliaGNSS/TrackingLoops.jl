@@ -127,7 +127,7 @@ TrackingLoops.draw_noise_probe(::CorrelatorNoiseDensityEstimator, ::AbstractGNSS
 TrackingLoops.append_noise_correlator_outputs!(::CorrelatorNoiseDensityEstimator, ::NoiseProbe, ::Any, ::Integer, ::Any)
 TrackingLoops.NoiseDespread
 TrackingLoops.append_despread_noise!(::CorrelatorNoiseDensityEstimator, ::NoiseDespread, ::Any)
-append_noise_observation!(::CorrelatorNoiseDensityEstimator{D, T}, ::NoiseObservation) where {D, T}
+append_noise_observation!(::CorrelatorNoiseDensityEstimator{D}, ::NoiseObservation) where {D}
 TrackingLoops.despread_noise!
 TrackingLoops.get_noise_density(::CorrelatorNoiseDensityEstimator)
 TrackingLoops.get_noise_correlator_bank(::CorrelatorNoiseDensityEstimator)
