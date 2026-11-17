@@ -113,7 +113,7 @@ end
     @test !only(results).status.vector_tracking_active
 end
 
-@testset "Without an NCO delay the corrections are the residuals at the updated state" begin
+@testset "Without a feedback delay the corrections are the residuals at the updated state" begin
     rx = SimReceiver()
     run_simulation!(rx, 3)
     vt = rx.vt
@@ -293,7 +293,7 @@ end
 end
 
 @testset "A released satellite takes over from the replica at application_sample_index" begin
-    # Under an NCO delay the commands committed until the application sample are the vector loop's,
+    # Under a feedback delay the commands committed until the application sample are the vector loop's,
     # so the scalar loop re-initialises at the replica's there, not from the epoch's: the
     # code from its command, the carrier from the residual PLL's estimate on the ramp there.
     rx = SimReceiver(; inner = DelayCompensatedTrackingLoop(), integrations_per_update = 20, delay_integrations = 15)

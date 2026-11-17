@@ -13,6 +13,14 @@ carrier to the predicted Doppler, the code by a correction). Weak or briefly
 obscured satellites are carried through by the common solution instead of losing
 lock on their own.
 
+With the pseudoranges alone this is Spilker's vector delay lock loop (Parkinson &
+Spilker, Vol. I, ch. 7). Kaplan & Hegarty's integrated tracker (§9.2.4.8), "sometimes
+referred to as vector tracking", is the same structure; its optional averaging
+prefilter is the discriminator accumulation over an update interval (see the
+[Glossary](@ref)). Commanding the carrier NCO from the filter's prediction is their
+open carrier loop aiding (§5.2.5), in which they warn that data demodulation is
+unlikely; the residual PLL's rotation of the prompts it decodes addresses that.
+
 The filter is an unscented Kalman filter over position, velocity, one clock bias
 per GNSS time system (all driven by the one oscillator's drift) and one
 inter-frequency bias per band beyond the reference band. It follows the bias
@@ -41,7 +49,7 @@ processor, which
 
 - decodes each satellite's navigation data from the demodulated soft bits its
   integrations carry;
-- snapshots each satellite at every navigation epoch (every `navigation_update_interval`
+- snapshots each satellite at every measurement epoch (every `navigation_update_interval`
   on the integrations' time grid): code phase from the last data-bit edge, decoder,
   Dopplers, C/N₀ and the discriminators accumulated since the last epoch;
 - runs the epoch's navigation update on the integration that completes the last
@@ -127,7 +135,7 @@ tracking loop must carry what only the correlator knows:
 
 `nothing` still means the command computed from an integration acts from the
 integration's end; a hardware host passes the application sample (see
-[Under a hardware NCO delay](@ref)).
+[Under a hardware feedback delay](@ref)).
 
 ## The lifecycle of a satellite
 
@@ -269,10 +277,11 @@ times the scalar PLL's prompt-phase jitter.
 Not done yet: a receiver-clock phase common to all satellites, estimated at the
 integration rate (vector phase lock), and a carrier-phase output for RTK.
 
-## Under a hardware NCO delay
+## Under a hardware feedback delay
 
 With a hardware correlator, the command computed from an integration takes effect only
-when the NCO applies it. Pass the application sample and the channel's
+when the NCO applies it, a feedback delay (see the [Glossary](@ref)) after the
+measurement. Pass the application sample and the channel's
 [`NCOTimeline`](@ref) to `step_loop!` as `application_sample_index` and
 `nco_history`, respectively. Each satellite then sizes its
 commands for the moment they take effect, against the replica the timeline predicts

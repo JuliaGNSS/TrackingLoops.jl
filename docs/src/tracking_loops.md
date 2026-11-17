@@ -156,7 +156,7 @@ has read lock ([`is_phase_locked`](@ref TrackingLoops.is_phase_locked): at least
 [`CarrierLoopStage`](@ref TrackingLoops.CarrierLoopStage); in the vector loop, see [The carrier in the vector
 loop](@ref vector-carrier).
 
-A wider loop tolerates less command delay: at 50 Hz the conventional loop holds
+A wider loop tolerates less feedback delay: at 50 Hz the conventional loop holds
 through three integrations of delay. The [`DelayCompensatedTrackingLoop`](@ref), meant for
 hardware correlators whose commands take effect integrations later, therefore pulls in at
 the narrow 18 Hz by default.
@@ -169,7 +169,7 @@ TrackingLoops.CarrierLoopStage
 
 The PLL pulls in at a wide 50 Hz and narrows to 18 Hz once phase lock has held;
 the FLL path of the FLL-assisted filter runs at 5 Hz while it is in use, and the
-code loop at 1 Hz, all for every signal. All are one-sided noise bandwidths `BL`
+code loop at 1 Hz, all for every signal. All are one-sided noise bandwidths `B_n`
 (Kaplan & Hegarty), so they plug into the usual jitter and dynamic-stress
 formulas: the carrier filter is fed the phase error in cycles and the FLL error
 in Hz. 18 Hz is the third-order PLL bandwidth of the literature (Kaplan & Hegarty
@@ -179,24 +179,25 @@ the bandwidth, do not depend on it.
 
 ### Stability cap
 
-Stability does depend on the loop update interval `Δt`, so at filter time every
-bandwidth, default or explicit, is capped against the coherent integration time
+Stability does depend on the loop's update interval, the coherent integration time
+`T` (Kaplan & Hegarty's predetection integration time), so at filter time every
+bandwidth, default or explicit, is capped against it
 ([`calc_effective_carrier_loop_bandwidth`](@ref TrackingLoops.calc_effective_carrier_loop_bandwidth),
 [`calc_effective_fll_assist_loop_bandwidth`](@ref TrackingLoops.calc_effective_fll_assist_loop_bandwidth),
 [`calc_effective_code_loop_bandwidth`](@ref TrackingLoops.calc_effective_code_loop_bandwidth)). The cap only ever narrows a
 loop.
 
 ```julia
-BL_pll  = min(BL_pll_configured,  0.09  / Δt)   # wide and narrow alike
-BL_fll  = min(BL_fll_configured,  0.02  / Δt)
-BL_code = min(BL_code_configured, 0.018 / Δt)
+Bn_pll  = min(Bn_pll_configured,  0.09  / T)   # wide and narrow alike
+Bn_fll  = min(Bn_fll_configured,  0.02  / T)
+Bn_code = min(Bn_code_configured, 0.018 / T)
 ```
 
-The default FLL-assisted third-order carrier filter diverges at `BL · Δt ≈ 0.4`
+The default FLL-assisted third-order carrier filter diverges at `B_n T ≈ 0.4`
 (the plain third-order one at ≈ 0.43). Below that, the loop's actual noise
 bandwidth runs wider than configured:
 
-| `BL · Δt`                      | 0.018 | 0.036 | 0.072 | 0.09  | 0.18  | 0.36 |
+| `B_n T`                        | 0.018 | 0.036 | 0.072 | 0.09  | 0.18  | 0.36 |
 |--------------------------------|------:|------:|------:|------:|------:|-----:|
 | `ThirdOrderAssistedBilinearLF` | 1.05× | 1.09× | 1.19× | 1.25× | 1.65× | 5.2× |
 | `ThirdOrderBilinearLF`         | 0.97× | 1.00× | 1.07× | 1.12× | 1.38× | 2.8× |
@@ -208,8 +209,8 @@ matches GNSS-SDR's narrow post-sync bandwidths (5 Hz at 20 ms). A tighter cap on
 the narrow bandwidth would buy little: at 20 ms and 30 dB-Hz the thermal jitter
 is about 4° at 4.5 Hz and 2.6° at 2 Hz, while a TCXO's jitter (Allan deviation
 1e-10, GPS L1) grows from about 6° to 13° and the jerk the loop tolerates falls
-with `BL³`. From 10 ms on, the cap sets wide and narrow alike. The resulting
-defaults, `BL` in Hz:
+with `B_n³`. From 10 ms on, the cap sets wide and narrow alike. The resulting
+defaults, `B_n` in Hz:
 
 | Integration time | Signals                                  |  Wide | Narrow | FLL-assist |  Code |
 |------------------|------------------------------------------|------:|-------:|-----------:|------:|

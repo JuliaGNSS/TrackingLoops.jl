@@ -2,7 +2,7 @@
 # The per-integration side of the navigation processor (see `step_loop!`).
 #
 # Times are `sample_index / sampling_frequency` seconds since an origin shared by every
-# satellite; the navigation epochs are the multiples of the update interval.
+# satellite; the measurement epochs are the multiples of the update interval.
 # ─────────────────────────────────────────────────────────────────────────────
 
 """
@@ -16,7 +16,7 @@ signal. An integration of its
 
   - **driver** applies the latest update's admission, release and commands,
     snapshots the replica, carrier Doppler, accumulated discriminators and C/N₀ when it
-    crosses a navigation epoch, and runs the loop;
+    crosses a measurement epoch, and runs the loop;
   - **decoding signal** feeds its new soft bits to the decoder and notes where the bit
     clock stands (the snapshot's bit count); it returns the command in force and
     the state unchanged;

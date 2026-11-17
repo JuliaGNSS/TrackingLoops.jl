@@ -112,7 +112,7 @@ end
     # signal: each integration's true mean phase error against what the loop predicted for it —
     # the replica's phase for the scalar loop, the residual PLL's prediction for the
     # residual PLL, which the navigation processor rotates the prompts it decodes by. A third-order loop's
-    # jitter goes as `√B_L`, so 10 Hz is `√(10/18) = 0.75` times the 18 Hz loop's.
+    # jitter goes as `√B_n`, so 10 Hz is `√(10/18) = 0.75` times the 18 Hz loop's.
     noise = (c, i) -> noise_std_at(40.0)
     scalar = SimReceiver(; signals = (signal,))
     scalar_errors = Float64[]

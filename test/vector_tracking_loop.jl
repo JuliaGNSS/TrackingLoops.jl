@@ -141,7 +141,7 @@ end
     ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
     DelayCompensatedTrackingLoop(),
 )
-    # Under an NCO delay too: the delayed simulation of `tracking_loops.jl`.
+    # Under a feedback delay too: the delayed simulation of `tracking_loops.jl`.
     for d in (0, 3)
         @test simulate_delayed_loop(VectorTrackingLoop(GPSL1CA(); scalar_loop = inner), d; steps = 300) ==
               simulate_delayed_loop(inner, d; steps = 300)
@@ -446,7 +446,7 @@ end
 # The pseudorange-rate observable of a satellite in the vector loop, on a carrier of
 # known phase: the replica commanded a ramp `offset` Hz off the carrier's Doppler, the
 # residual PLL following the rest integration by integration, and the accumulators read and
-# emptied at every navigation epoch, as the navigation processor's snapshot does — before the integration
+# emptied at every measurement epoch, as the navigation processor's snapshot does — before the integration
 # that crosses the epoch, with the command that integration runs on as the replica's Doppler.
 
 using Random: Xoshiro, randn

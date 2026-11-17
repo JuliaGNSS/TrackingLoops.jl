@@ -9,7 +9,7 @@ nav_processor_integration(prn, sample_index; n = 4000, code_phase = 0.0, p = 1.0
     processed_state(signal, nav_processor_correlator_bank(p), complex(0.0), n, sample_index, sample_index, 1, 4e6Hz;
         prn, code_phase)
 
-@testset "The navigation epochs are the multiples of the update interval" begin
+@testset "The measurement epochs are the multiples of the update interval" begin
     nav_processor = VectorTrackingLoop(GPSL1CA()).navigation_processor
     @test TL._epoch_at_or_after(nav_processor, 0, 4e6) == 0
     @test TL._epoch_at_or_after(nav_processor, 1_200_000, 4e6) == 3

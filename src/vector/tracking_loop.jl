@@ -28,7 +28,7 @@ satellite. Read the results, keyed by the driver, with
 [`get_vector_tracking_members`](@ref).
 
 The navigation processor reads the host's bit clock and C/N₀ estimator from the integrations (see
-[What the integrations must carry](@ref)); the C/N₀, read at each navigation epoch for the
+[What the integrations must carry](@ref)); the C/N₀, read at each measurement epoch for the
 lock and the measurement weights, is capped at 80 dB-Hz. A satellite is in lock when
 the driver's C/N₀ is at least `min_tracking_cn0` and the decoding signal holds its
 bit sync. An integration without a PRN, or of a driver not among `signals`, throws an
@@ -64,7 +64,7 @@ restarted staging, FLL-assisted again.
 the scalar PLL's ([`calc_effective_carrier_loop_bandwidth`](@ref)). Under the
 default `motion_model_order = 2` the prediction does not carry the user's acceleration, so
 the residual PLL follows a manoeuvre by itself: a third-order loop's error to a jerk
-`j` is `j / (λ ω₀³)` cycles (`ω₀ = 1.2 B_L`), 5.4° at 10 Hz for the 2.5 m/s³ of a
+`j` is `j / (λ ω₀³)` cycles (`ω₀ = 1.2 B_n`), 5.4° at 10 Hz for the 2.5 m/s³ of a
 0.5 g manoeuvre built up over two seconds, 43° at 5 Hz. Narrower suits a gentler
 platform or `motion_model_order = 3`.
 

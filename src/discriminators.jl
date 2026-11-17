@@ -3,7 +3,8 @@ $(SIGNATURES)
 
 Code phase error in chips from the noncoherent early-minus-late envelope normalized
 discriminator `(2 - d) / 2 * (E - L) / (E + L)` for early-late spacing `d` in chips
-(`1/2 * (E - L) / (E + L)` at 1 chip). Positive when the early correlator outweighs the
+(`1/2 * (E - L) / (E + L)` at 1 chip). `d` is Kaplan & Hegarty's `D`, the early-to-late
+distance, twice the correlator bank's early-late-to-prompt spacing. Positive when the early correlator outweighs the
 late one: the replica code lags the incoming code, and the code NCO must run faster.
 
 See: Kaplan & Hegarty, "Understanding GPS: Principles and Applications", 2nd ed.,
