@@ -111,17 +111,17 @@ end
 @noinline update!(
     ::NoiseReferencedCN0Estimator,
     prompt,
-    ::CN0UpdateContext{<:AbstractGNSSSignal,<:Unsigned,Nothing},
+    ::CN0UpdateContext{<:AbstractGNSSSignal,Nothing},
 ) = _throw_noise_ref_needs_density()
 @noinline update!(
     ::NoiseReferencedCN0Estimator,
     prompt,
-    ::CN0UpdateContext{<:AbstractGNSSSignal,<:Unsigned,Nothing,Nothing},
+    ::CN0UpdateContext{<:AbstractGNSSSignal,Nothing,Nothing},
 ) = _throw_noise_ref_needs_density()
 @noinline update!(
     ::NoiseReferencedCN0Estimator,
     prompt,
-    ::CN0UpdateContext{<:AbstractGNSSSignal,<:Unsigned,<:Any,Nothing},
+    ::CN0UpdateContext{<:AbstractGNSSSignal,<:Any,Nothing},
 ) = _throw_noise_ref_needs_coherent_integration_time()
 
 @noinline _throw_noise_ref_needs_density() = throw(

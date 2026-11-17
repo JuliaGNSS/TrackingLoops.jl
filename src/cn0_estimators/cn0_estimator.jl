@@ -40,9 +40,6 @@ Fields:
     secondary-coded signal, for an integration correlated without the overlay wipe-off
     a sync in the same batch just established (see `process_correlator_bank_output!`).
     Such an integration's code periods still count towards the grid.
-  - `bit_synchronizer` — the signal's `BitSynchronizer` as of *before* this integration:
-    the soft bits decoded so far, the open coherent bit accumulator, the lock
-    polarity and the secondary-code phase.
   - `noise_density` — **this signal's** measured noise density `N₀` (dimension
     `1/Hz`), read by [`NoiseReferencedCN0Estimator`](@ref). `Nothing` (in the type, not
     as a sentinel) means no [`AbstractNoiseDensityEstimator`](@ref) is configured for
@@ -50,14 +47,13 @@ Fields:
     still empty never reaches here — post-correlation processing skips the update — so otherwise
     this is always a plain scalar.
   - `coherent_integration_time` — this integration's own `T`, so integrations of different lengths
-    in one ring are each handled correctly. `nothing` on the bare-prompt-stream
-    path.
+    in one ring are each handled correctly. `nothing` where the caller does not pass
+    it.
 """
-struct CN0UpdateContext{S<:AbstractGNSSSignal,B<:Unsigned,N,T}
+struct CN0UpdateContext{S<:AbstractGNSSSignal,N,T}
     signal::S
     num_code_periods::Int
     num_code_periods_into_bit::Int
-    bit_synchronizer::BitSynchronizer{B}
     noise_density::N
     coherent_integration_time::T
 end
@@ -68,17 +64,15 @@ end
     signal::AbstractGNSSSignal,
     num_code_periods::Integer,
     num_code_periods_into_bit::Integer,
-    bit_synchronizer::BitSynchronizer,
 ) = CN0UpdateContext(
     signal,
     Int(num_code_periods),
     Int(num_code_periods_into_bit),
-    bit_synchronizer,
     nothing,
     nothing,
 )
 
-# Build the context from the post-correlation state. `bit_synchronizer` must be the
+# Build the context from the bit grid of `bit_synchronizer`, which must be the
 # one from *before* this integration was processed, so `num_code_periods_into_bit` is this
 # integration's offset. `bit_sync_usable = false` forces the "no bit grid" marker (see
 # `drop_prompt` in `process_correlator_bank_output!`).
@@ -115,7 +109,6 @@ end
         signal,
         Int(num_code_periods),
         usable ? bit_synchronizer.num_code_periods_into_bit : -1,
-        bit_synchronizer,
         noise_density,
         coherent_integration_time,
     )
