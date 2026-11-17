@@ -11,14 +11,24 @@ The package's terms and the textbook terms they stand for (Kaplan & Hegarty,
 - **Integration** (coherent integration): Kaplan and Hegarty's predetection
   integration, the correlator outputs of one signal summed over one or more primary
   code periods ahead of the discriminators; one hardware dump or a sum of dumps.
-  A [`PostCorrelationState`](@ref) holds the latest one of a signal.
+  A [`PostCorrelationState`](@ref) holds the latest one of a signal. Its length, the
+  *coherent integration time* `T`, is Kaplan and Hegarty's predetection integration
+  time, Misra and Enge's coherent averaging time `T_CO` and Van Dierendonck's
+  predetection integration interval `T_I`.
+- **Prompt**: the on-time correlator, the *punctual* one in some texts.
+- **Correlator spacing**: the package's `*_to_prompt_spacing` is one-sided, from prompt
+  to early (or late), in chips. Kaplan and Hegarty's early-late spacing `D` is twice it;
+  [`dll_disc`](@ref TrackingLoops.dll_disc) normalises its output for any `D`.
 - **Batch, chunk**: what a host processes at once. A chunk is a span of samples a
   software receiver correlates in one call (Tracking.jl's `track!`); a batch is the
   integrations of one signal a host hands over together, which share a command issue
   sample index. Neither changes what an integration measures.
 - **Bit vs symbol**: outside GNSSDecoder a *bit* is a navigation bit as tracked,
   i.e. a channel symbol before error-correction decoding where the signal has FEC
-  (GPS L5, L2C, Galileo E1B, BeiDou B-CNAV), as in GNSSSignals.
+  (GPS L5, L2C, Galileo E1B, BeiDou B-CNAV), as in GNSSSignals. The textbooks call
+  such a value a *symbol*; the package keeps *bit* (`get_soft_bits`) on purpose.
+- **Secondary code**: the code overlaid on the primary code, also *Neuman-Hofman
+  (NH) code*, and the *product code* with it. A *pilot* is a dataless component.
 - **Driver, passenger**: of a satellite's signals on one carrier, the *driver* is
   the one whose integrations close the carrier and code loops; a *passenger* rides on
   the driver's replica and is only demodulated or used for C/N₀. For GPS L1 C/A,
@@ -44,14 +54,23 @@ The package's terms and the textbook terms they stand for (Kaplan & Hegarty,
   cycles only.
 - **Feedback delay**: how long after the measurement epoch an update's NCO commands
   take effect; a hardware NCO applies a command at an *application sample index*,
-  later than the *command issue sample index* where the loop computed it.
+  later than the *command issue sample index* where the loop computed it. Kaplan and
+  Hegarty's *latency*, Spilker's *computation delay*; a loop that does not compensate
+  it stays stable only while it is short against `1/B_n`.
+- **Carrier aiding**: the code loop driven by the carrier Doppler scaled by the
+  chip rate over the carrier frequency (Misra and Enge's *rate aiding*). Not the
+  *carrier smoothing* of pseudoranges, which some texts also call carrier aiding.
+- **Time update, measurement update**: the navigation filter's two Kalman steps,
+  *extrapolation* and *update* in some texts. The *innovation* is the prefit
+  residual, the measurement against the prediction before the update.
 - **Residual PLL**: in vector tracking, the PLL that tracks the residual carrier phase
   of a member against the navigation filter's carrier ramp; it never steers the NCO.
 - **Ramp**: the carrier Doppler ramp the navigation filter commands a member's NCO
   with, the predicted Doppler and its rate over the next update interval.
 - **Staging**: the scalar carrier loop's stages (FLL-assisted PLL, wide PLL, narrow
   PLL) and the phase-lock indicator that moves it between them
-  ([`CarrierLoopStage`](@ref)).
+  ([`CarrierLoopStage`](@ref)). The FLL-assisted stage is the *pull-in* (Kaplan and
+  Hegarty's AFC loop ahead of the PLL).
 - **Loop bandwidth**: the closed-loop noise bandwidth `B_n` (Kaplan & Hegarty's
   `B_n`, one-sided), as every `*_loop_bandwidth` keyword sets it.
 - **Units**: values of the API, configuration and loop states carry linear units
@@ -63,6 +82,11 @@ The package's terms and the textbook terms they stand for (Kaplan & Hegarty,
   Unitful's comparison of a `NaN` level passes every threshold. Nothing computes on
   the dB values: averaging, weighting and margins work on the linear C/N₀ in Hz.
 
+- **`last_` and `previous_`**: in a state, `last_x` is `x` of the latest
+  integration and `previous_x` that of the integration before it, next to a `last_`
+  field (`previous_filtered_prompt` beside `last_filtered_correlator_bank`, the two
+  prompts of the FLL). Locals are not bound by it.
+
 ## Sign conventions
 
 - **DLL discriminator** ([`dll_disc`](@ref TrackingLoops.dll_disc)): positive when the
@@ -72,3 +96,8 @@ The package's terms and the textbook terms they stand for (Kaplan & Hegarty,
   the nominal one).
 - **Pseudorange rate**: positive while the satellite recedes, as PositionVelocityTime
   reports it; a carrier Doppler `f_D` corresponds to a pseudorange rate `-λ f_D`.
+- **Carrier phase**: accumulates the carrier Doppler, so it grows while the satellite
+  closes; Misra and Enge's carrier phase grows with range instead.
+- **Innovation and post-fit residual**: measured minus predicted (observed minus
+  computed), as PositionVelocityTime reports residuals. Van Dierendonck and Misra and
+  Enge define a *residual* as predicted minus measured, the opposite sign.

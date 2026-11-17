@@ -280,6 +280,12 @@ loop tolerates less command delay.
 
 With zero delay step 2 is the identity and the loop *is* the conventional
 loop at the same bandwidths, inheriting its noise performance.
+
+Kaplan & Hegarty ask that a loop be "delay-compensated for the latency" without
+giving a method, and Spilker bounds an uncompensated computation delay against
+`1/B_n`; the compensation above is the package's own. Its FLL reads the commands back
+to the previous prompt's centre, so a host keeps its [`NCOTimeline`](@ref) history at
+least that far back (see [`advance_timeline!`](@ref)).
 `compensate_delay = false` drops step 2, making it arithmetically the
 `ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)`: the documented **negative control**,
 which fails like it at a few epochs of delay.
@@ -463,6 +469,12 @@ averaged over 0.1 s or 25 integrations, whichever is longer. The signal power
 `A² = √(2 M₂² − M₄)`, from the prompts' moments `Mₖ = ⟨|P|ᵏ⟩`, is free of noise, so
 unlike `⟨I² − Q²⟩ / ⟨I² + Q²⟩` a locked loop's reading gets noisier at low C/N₀,
 not lower. `NaN` until the averages span that time.
+
+The `cos 2φ` estimate is Van Dierendonck's (Parkinson & Spilker, Vol. I, ch. 8), who
+divides the narrowband difference by the narrowband power, noise included, and puts
+the lock threshold near 0.4; with the noise out of the denominator the threshold here
+is 0.5, an RMS phase error of about 30°. Kaplan & Hegarty's lock detector compares
+`|I|` with `|Q|` instead.
 """
 get_phase_lock_indicator(loop_state::ScalarLoopState) =
     loop_state.staging.lock_detector.indicator

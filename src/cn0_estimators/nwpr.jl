@@ -20,7 +20,9 @@ and over the windows that fit in `num_averaged_integrations` integrations report
 Ĉ/N₀ = (1 / T) · (μ̂ − 1) / (M − μ̂)
 ```
 
-with `T` the coherent integration time. Reference:
+with `T` the coherent integration time. `M` is `num_integrations_per_ratio`, the
+window of `num_narrowband_code_periods` code periods, and `K` the ratios buffered, up
+to `num_averaged_integrations ÷ M`. Reference:
 A. J. Van Dierendonck,
 "GPS Receivers", ch. 8 in *Global Positioning System: Theory and Applications*,
 Vol. I, ed. B. W. Parkinson & J. J. Spilker Jr.; the formulas above are reproduced on

@@ -1034,6 +1034,11 @@ function _commands_at_application(
     # atmosphere-corrected, no discriminator term); the carrier is the predicted Doppler itself,
     # there and one update interval later for the ramp's end.
     predicted_pseudorange, predicted_rate, replica_pseudorange = _predict_after_epoch(nav_processor, slot, feedback_delay, chips)
+    # Spread over the propagation interval, the actual `k·Δt_nav` after `k − 1` skipped
+    # epochs: the command, held for one nominal interval, removes `1/k` of the range error
+    # and the next update the rest. The nominal interval would remove it at once after a
+    # single gap, but under persistent skipping the command holds `k·Δt_nav` and
+    # overshoots `k`-fold, an oscillation that grows for `k > 2`.
     code_frequency_correction = calc_code_frequency_correction(
         predicted_pseudorange,
         replica_pseudorange,
