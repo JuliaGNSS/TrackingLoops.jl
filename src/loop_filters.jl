@@ -1,19 +1,19 @@
 """
     MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT
 
-The largest carrier-loop bandwidth–update interval product `BL · Δt`, `0.09`, that
-[`calc_effective_carrier_loop_bandwidth`](@ref) caps at. The default FLL-assisted
-third-order filter diverges at `BL · Δt ≈ 0.4`, and at `0.09` its noise bandwidth
-already runs 25 % wider than configured.
+The largest product `B_n T` of the carrier loop's noise bandwidth and the coherent
+integration time, `0.09`, that [`calc_effective_carrier_loop_bandwidth`](@ref) caps at.
+The default FLL-assisted third-order filter diverges at `B_n T ≈ 0.4`, and at `0.09` its
+noise bandwidth already runs 25 % wider than configured.
 """
 const MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT = 0.09
 
 """
     MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT
 
-The largest code-loop bandwidth–update interval product `BL · Δt`, `0.018`, that
-[`calc_effective_code_loop_bandwidth`](@ref) caps at. Conservative: the
-second-order code filter destabilizes only around `BL · Δt ≈ 0.4` (Stephens &
+The largest product `B_n T` of the code loop's noise bandwidth and the coherent
+integration time, `0.018`, that [`calc_effective_code_loop_bandwidth`](@ref) caps at.
+Conservative: the second-order code filter destabilizes only around `B_n T ≈ 0.4` (Stephens &
 Thomas 1995, "Controlled-Root Formulation for Digital Phase-Locked Loops", IEEE
 Trans. AES 31(1)).
 """
@@ -22,9 +22,10 @@ const MAX_CODE_LOOP_BANDWIDTH_TIME_PRODUCT = 0.018
 """
     MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT
 
-The largest bandwidth–update interval product `BL · Δt` of an FLL-assisted carrier
-filter's FLL path, `0.02`, that [`calc_effective_fll_assist_loop_bandwidth`](@ref)
-caps at: 5 Hz up to 4 ms integrations, 2 Hz at 10 ms.
+The largest product `B_n T` of an FLL-assisted carrier filter's FLL-path noise bandwidth
+and the coherent integration time, `0.02`, that
+[`calc_effective_fll_assist_loop_bandwidth`](@ref) caps at: 5 Hz up to 4 ms integrations,
+2 Hz at 10 ms.
 """
 const MAX_FLL_ASSIST_LOOP_BANDWIDTH_TIME_PRODUCT = 0.02
 

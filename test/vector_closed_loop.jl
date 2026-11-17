@@ -1,7 +1,7 @@
 # Vector tracking closed over many updates on the synthetic satellites of
 # `vector_simulation.jl`, with the navigation processor filled by hand from the fixture decoders:
 # convergence, an outage, the fallback after the measurement deficit timeout, several
-# constellations and bands, and an NCO delay whose application the corrections are sized
+# constellations and bands, and a feedback delay whose application the corrections are sized
 # for. `vector_pipeline.jl` closes the loop on integrations alone.
 
 using Accessors: @set

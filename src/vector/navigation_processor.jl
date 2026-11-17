@@ -3,7 +3,7 @@
 #
 # One `NavigationProcessor` is shared by every satellite a `VectorTrackingLoop` steps. Each
 # satellite's slot is filled by its integrations: the decoder from the soft bits of its
-# decoding signal and, at every navigation epoch, a snapshot of the driver's replica,
+# decoding signal and, at every measurement epoch, a snapshot of the driver's replica,
 # C/N₀ and accumulated discriminators, with the decoding signal's bit count. Once
 # every satellite has completed the epoch's snapshot the update runs: a scalar PVT solve
 # until its first fix seeds the filter, one filter iteration after. The update leaves its
@@ -110,7 +110,7 @@ mutable struct BitAccumulator
     const prompt_history::PromptHistory
 end
 
-# A satellite at a navigation epoch. A slot builds the pending epoch's from its two
+# A satellite at a measurement epoch. A slot builds the pending epoch's from its two
 # signals' halves (`pending_snapshot`) and, once both are in, keeps it as the snapshot
 # the update reads (`snapshot`). The update does not write it: its decisions are the slot's.
 struct SatelliteSnapshot{D}
@@ -646,7 +646,7 @@ get_vector_tracking_members(tracking_loop::VectorTrackingLoop) = tracking_loop.n
 # ─────────────────────────────────────────────────────────────────────────────
 # Time on the integrations' grid
 
-# The navigation epochs are compared with the integrations in samples, on each signal's own
+# The measurement epochs are compared with the integrations in samples, on each signal's own
 # grid, not in seconds since the origin: `sample_index / fs` and `k · Δt_nav` round apart as
 # the session grows, by nanoseconds after a year, while sample indices stay exact.
 
@@ -1039,6 +1039,11 @@ function _commands_at_application(
     # atmosphere-corrected, no discriminator term); the carrier is the predicted Doppler itself,
     # there and one update interval later for the ramp's end.
     predicted_pseudorange, predicted_rate, replica_pseudorange = _predict_for_command(nav_processor, slot, feedback_delay, chips)
+    # Spread over the propagation interval, the actual `k·Δt_nav` after `k − 1` skipped
+    # epochs: the command, held for one nominal interval, removes `1/k` of the range error
+    # and the next update the rest. The nominal interval would remove it at once after a
+    # single gap, but under persistent skipping the command holds `k·Δt_nav` and
+    # overshoots `k`-fold, an oscillation that grows for `k > 2`.
     code_frequency_correction = calc_code_frequency_correction(
         predicted_pseudorange,
         replica_pseudorange,

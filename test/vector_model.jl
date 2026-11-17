@@ -784,7 +784,7 @@ end
 @testset "The code measurement is moved from mid-interval to the epoch" begin
     base = init_loop_state(VectorTrackingLoop(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
     Δt_nav = 0.1
-    # Without an NCO delay the advance is the correction's `c·Δt_nav/2`, bit for bit.
+    # Without a feedback delay the advance is the correction's `c·Δt_nav/2`, bit for bit.
     for c_new in (0.37, -2.5, 1e-3), c_old in (0.0, 4.0, -1.1)
         state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierDopplerRamp(20.0 * Hz, 0.0 * Hz / s, 0), 0.0s, ConstantNCOCommand(20.0Hz, 0.0Hz), 0, 1e6), c_new * Hz, TL.CarrierDopplerRamp(20.0 * Hz, 0.0 * Hz / s, 0), 0.0s, ConstantNCOCommand(20.0Hz, 0.0Hz), 0, 1e6)
         discriminators = state.discriminators
@@ -798,7 +798,7 @@ end
         )
         @test TL.calc_mean_code_disc_at_epoch(discriminators, Δt_nav) === -0.05 + c_new * Δt_nav / 2
     end
-    # Under an NCO delay the second half-interval ran on the corrections in effect before
+    # Under a feedback delay the second half-interval ran on the corrections in effect before
     # the newest took effect: on `c₁` while the newest takes effect inside it or after the epoch, and
     # on `c₂` while `c₁` itself takes effect only after mid-interval (`L > 1.5Δt_nav`).
     c₂, c₁, c₀ = 0.5, 1.0, 2.0

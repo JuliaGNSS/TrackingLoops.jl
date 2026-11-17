@@ -41,7 +41,10 @@ Scheduling a fresh command replaces the pending suffix at or after its sample, a
 device keeps the newest command per sample.
 
 Resolve hardware feedback before [`advance_timeline!`](@ref) retires the affected
-history, and advance only when future queries will start at or beyond that sample.
+history, and advance only when future queries will start at or beyond that sample. The
+earliest a loop queries is the centre of the latest integration stepped on the timeline:
+the [`DelayCompensatedTrackingLoop`](@ref)'s FLL reads the commands from the previous
+prompt's centre on, and the vector loop the replica from its last integration's end.
 Advancement trusts the recorded application samples. The fixed-capacity queue never
 allocates and never rewrites its history: `schedule_command!` returns `false` for a
 command that does not fit, and the host does not write that command to the device.

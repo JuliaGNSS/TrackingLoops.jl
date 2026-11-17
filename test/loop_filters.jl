@@ -79,7 +79,7 @@ end
 end
 
 # The DLL bandwidth is an absolute value, not a per-primary-period reference: a
-# longer coherent integration must not narrow it; only its own `BL·Δt`
+# longer coherent integration must not narrow it; only its own `B_n T`
 # stability product may cap it.
 @testset "code loop bandwidth is not narrowed by the integration length" begin
     bw = 1.0Hz
@@ -103,7 +103,7 @@ end
 
 @testset "The carrier loop has the configured noise bandwidth" begin
     # Closed loop with white phase noise σ_n: the NCO jitter must be
-    # σ² = σ_n² · 2 · BL · T. Fed radians, the loop was ≈5.6× wider.
+    # σ² = σ_n² · 2 · B_n · T. Fed radians, the loop was ≈5.6× wider.
     T = 1ms
     bandwidth = 18.0Hz
     σ_n = 0.05

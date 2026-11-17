@@ -204,7 +204,7 @@ end
     @test all(sat -> sat.state.vector_controlled, rx.sats)
 end
 
-@testset "From integrations alone, under an NCO delay" begin
+@testset "From integrations alone, under a feedback delay" begin
     # A 20 ms navigation filter update and the delay-compensated inner loop, the commands applied
     # 15 ms after the integration that computed them: each satellite sizes its corrections
     # for its own application sample.
@@ -222,7 +222,7 @@ end
     @test all(r -> r.status.vector_tracking_active, tail)
     @test pipeline_errors(rx, tail) < 2 * pipeline_errors(rx0, tail0) + 0.5
     @test pipeline_code_errors(tail) < 2 * pipeline_code_errors(tail0) + 0.01
-    # The feedback delay is the NCO delay plus the wait for the next integration after the update.
+    # The feedback delay is the hardware's delay plus the wait for the next integration after the update.
     @test all(sat -> 0.015 <= ustrip(s, sat.state.discriminators.feedback_delay) <= 0.018, rx.sats)
 end
 

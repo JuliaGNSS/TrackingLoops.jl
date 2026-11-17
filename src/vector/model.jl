@@ -420,7 +420,7 @@ function code_phase_advance(discriminators::DiscriminatorAccumulator, Δt)
     (c₁ - c₂) * clamp(L - 3Δt / 2, 0.0, Δt / 2)
 end
 
-# Longest NCO delay (update intervals) `code_phase_advance` covers; longer ones throw.
+# Longest feedback delay (update intervals) `code_phase_advance` covers; longer ones throw.
 const MAX_FEEDBACK_DELAY_UPDATE_INTERVALS = 2.5
 
 # Mean DLL discriminator (chips), advanced to the epoch by `code_phase_advance`; negated
@@ -443,7 +443,7 @@ end
 # epoch. The ramp is the filter's prediction alone, so no loop's jitter enters the
 # replica's command; with the PLL on the NCO, one integration's jitter
 # (`f_NCO,end − mean(f_NCO)`) would make the integrated rate error walk. A command
-# applied inside the update interval (an NCO delay) leaves a share of the filter's own correction
+# applied inside the update interval (a feedback delay) leaves a share of the filter's own correction
 # in the measurement: on the simulator the residuals stay at `√R` and the integrated
 # rate error at a centimetre, but the lag-1 autocorrelation shortens from −1/2 (−0.3 at
 # 20 ms of delay, −0.1 at 50 ms).

@@ -448,7 +448,7 @@ function SimReceiver(;
     correct_atmosphere = atmosphere, # and let the filter correct them
     integrations_per_update = 100, # update interval in milliseconds
     nominal_integrations = integrations_per_update, # the tracking_loop's update interval
-    delay_integrations = 0,       # NCO delay in milliseconds
+    delay_integrations = 0,       # feedback delay of the hardware, in milliseconds
     truth_kw = (;),
     tracking_loop_kw = (;),
     polarity = 0,
