@@ -333,7 +333,7 @@ end
     @test slot.vector_controlled
     # A running update admits it back at the filter's own position, and the satellite
     # applies the admission.
-    rx.sats[1].state = TL._release_from_vector_loop(rx.sats[1].state)
+    rx.sats[1].state = TL._set_vector_controlled(rx.sats[1].state, false)
     results, _, _ = run_simulation!(rx, 1; start_sample = sample)
     @test rx.sats[1].state.vector_controlled
     @test results[1].status.num_vector_tracking_members == length(rx.sats)

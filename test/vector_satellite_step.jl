@@ -377,7 +377,7 @@ end
     end
     # `b` is a member of the vector loop, in the slot and in the state its host keeps.
     slot = group.slots[b.slot_index]
-    b = TL._add_to_vector_loop(b)
+    b = TL._set_vector_controlled(b, true)
     slot.snapshot = TL.SatelliteSnapshot(slot.snapshot; vector_controlled = true, discriminators = b.discriminators)
     # Its integrations stop for longer than two update intervals: an update drops it and releases it, but
     # only in the slot — the host never hands the satellite the release.

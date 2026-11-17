@@ -337,7 +337,8 @@ function simulate_integration!(sat::SimSat, tracking_loop, truth, t_end, num_sam
     post_correlation_state = with_cn0(processed_state(sat.signal, correlator_bank, sat.previous_prompt, num_samples,
         sample_index, sample_index, 1, SIM_FS; carrier_phase_polarity = polarity), sat.in_view ? 45.0 : -Inf)
     sat.state, new_carrier, new_code =
-        TrackingLoops._step_satellite(tracking_loop, sat.state, post_correlation_state, nco_history, application_sample_index)
+        TrackingLoops._step_satellite(tracking_loop, sat.state, post_correlation_state, nco_history,
+            something(application_sample_index, sample_index))
     sat.previous_prompt = prompt
     advance_replica!(sat, f_true, carrier, code, num_samples / ustrip(Hz, SIM_FS),
         new_carrier, new_code, sample_index - num_samples, sample_index, application_sample_index)
