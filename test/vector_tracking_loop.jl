@@ -54,7 +54,7 @@ end
     @test state.code_frequency_correction == 0.0Hz
     @test state.discriminators.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test state.discriminators.feedback_delay == 0.0s
-    @test isnan(state.ramp.reference_time)
+    @test state.ramp.start_sample_index == typemin(Int)
     @test !TL._has_carrier_ramp(state)
     @test state.residual_pll.bandwidth == 10.0Hz
     @test typeof(init_loop_state(tracking_loop, GPSL1CA(), 0.0Hz, 0.0Hz)) === typeof(state)
@@ -107,7 +107,7 @@ end
     signal = GPSL1CA()
     fs = 5e6Hz
     tracking_loop = VectorTrackingLoop(signal; scalar_loop = inner)
-    ramp = TL.CarrierDopplerRamp(110.0 * Hz, 4.0 * Hz / s, 0.0 * s)
+    ramp = TL.CarrierDopplerRamp(110.0 * Hz, 4.0 * Hz / s, 0)
     state = commanded(init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz), ramp; code_update = -0.25Hz)
     nco_history = ConstantNCOCommand(100.0Hz, 0.1Hz)
     ratio = get_chip_rate_to_center_frequency_ratio(signal)
@@ -152,7 +152,7 @@ end
     fs = 5e6Hz
     vector = VectorTrackingLoop(GPSL1CA(); scalar_loop = inner)
     vector_state = TL._set_vector_commands(init_loop_state(vector, signal, 100.0Hz, 0.1Hz), 0.5Hz,
-        TL.CarrierDopplerRamp(120.0 * Hz, 0.0 * Hz / s, 0.0 * s), 0.0s, ConstantNCOCommand(100.0Hz, 0.0Hz), 0, 5e6)
+        TL.CarrierDopplerRamp(120.0 * Hz, 0.0 * Hz / s, 0), 0.0s, ConstantNCOCommand(100.0Hz, 0.0Hz), 0, 5e6)
     inner_state = init_loop_state(inner, signal, 100.0Hz, 0.1Hz)
     post_correlation_state = vector_integration(signal, (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im), 5000, fs; previous_prompt = cis(0.1))
     nco_history = ConstantNCOCommand(100.0Hz, 0.1Hz)
@@ -182,7 +182,7 @@ end
     correlator_outputs = (1000.0 + 10im, 2000.0 + 20im, 750.0 + 10im)
     tracking_loop = VectorTrackingLoop(GPSL1CA(); scalar_loop = inner)
     state = init_loop_state(tracking_loop, gpsl1, carrier_doppler, initial_code_doppler)
-    state = commanded(state, TL.CarrierDopplerRamp(100.0 * Hz, 0.0 * Hz / s, 0.0 * s); code_update = -0.25Hz)
+    state = commanded(state, TL.CarrierDopplerRamp(100.0 * Hz, 0.0 * Hz / s, 0); code_update = -0.25Hz)
     post_correlation_state = vector_integration(gpsl1, correlator_outputs, num_samples, sampling_frequency)
     nco_history = ConstantNCOCommand(carrier_doppler, initial_code_doppler)
     state, = step_satellite(tracking_loop, state, post_correlation_state, nco_history, nothing)
@@ -223,7 +223,7 @@ end
     signal = GPSL1CA()
     fs = 5e6Hz
     tracking_loop = VectorTrackingLoop(GPSL1CA())
-    state = commanded(init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz), TL.CarrierDopplerRamp(100.0 * Hz, 0.0 * Hz / s, 0.0 * s))
+    state = commanded(init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz), TL.CarrierDopplerRamp(100.0 * Hz, 0.0 * Hz / s, 0))
     previous = cis(0.2)
     correlator_outputs = (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im)
     integrations = [vector_integration(signal, correlator_outputs, 5000, fs; previous_prompt = previous, sample_index = 5000k)
@@ -250,7 +250,7 @@ end
     signal = GPSL1CA()
     tracking_loop = VectorTrackingLoop(GPSL1CA())
     function accumulated(fs)
-        state = commanded(init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz), TL.CarrierDopplerRamp(100.0 * Hz, 0.0 * Hz / s, 0.0 * s))
+        state = commanded(init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz), TL.CarrierDopplerRamp(100.0 * Hz, 0.0 * Hz / s, 0))
         post_correlation_state = vector_integration(signal, (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im), 5000, fs;
             previous_prompt = cis(0.2))
         state, = step_satellite(tracking_loop, state, post_correlation_state, ConstantNCOCommand(100.0Hz, 0.1Hz), nothing)
@@ -270,7 +270,7 @@ end
     function run(inner, application_offset)
         tracking_loop = VectorTrackingLoop(GPSL1CA(); scalar_loop = inner)
         state = init_loop_state(tracking_loop, signal, 100.0Hz, 0.1Hz)
-        state = commanded(state, TL.CarrierDopplerRamp(100.5 * Hz, 1.0 * Hz / s, 0.0 * s); code_update = 0.1Hz, scalar_doppler = 100.0)
+        state = commanded(state, TL.CarrierDopplerRamp(100.5 * Hz, 1.0 * Hz / s, 0); code_update = 0.1Hz, scalar_doppler = 100.0)
         timeline = NCOTimeline()
         reset_timeline!(timeline, 100.0Hz, 0.1Hz)
         previous = complex(0.0, 0.0)
@@ -305,7 +305,7 @@ end
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     joined = TL._set_vector_controlled(state, true)
     @test joined.vector_controlled
-    ramp = TL.CarrierDopplerRamp(110.0 * Hz, 2.0 * Hz / s, 0.01 * s)
+    ramp = TL.CarrierDopplerRamp(110.0 * Hz, 2.0 * Hz / s, 10_000)
     steered = VectorLoopState(
         TL._set_vector_commands(joined, 1.0Hz, ramp, 0.02s, ConstantNCOCommand(100.0Hz, 0.0Hz), 0, 1e6);
         discriminators = TL.DiscriminatorAccumulator((3, 0.3), (3, 0.3Hz), (1.0Hz, 0.0Hz, 0.0Hz), 0.02s),
@@ -320,11 +320,11 @@ end
     @test steered.discriminators.code_frequency_correction_history == (1.0Hz, 0.0Hz, 0.0Hz)
     @test steered.discriminators.feedback_delay == 0.02s
     # A later one keeps the residual PLL's estimates of the incoming Doppler and its rate.
-    next_ramp = TL.CarrierDopplerRamp(105.0 * Hz, 0.0 * Hz / s, 0.11 * s)
+    next_ramp = TL.CarrierDopplerRamp(105.0 * Hz, 0.0 * Hz / s, 110_000)
     next = TL._set_vector_commands(steered, 2.0Hz, next_ramp, 0.0s, ConstantNCOCommand(999.0Hz, 0.0Hz), 0, 1e6)
-    @test TL._doppler_at(next_ramp, 0.01) + ustrip(Hz, next.residual_pll.carrier_frequency_correction) ≈ TL._doppler_at(ramp, 0.01) + ustrip(Hz, steered.residual_pll.carrier_frequency_correction)
-    @test TL._doppler_at(next_ramp, 0.01) + TL._residual_doppler(next.residual_pll) ≈
-          TL._doppler_at(ramp, 0.01) + TL._residual_doppler(steered.residual_pll)
+    @test TL._doppler_at(next_ramp, 10_000, 1e6) + ustrip(Hz, next.residual_pll.carrier_frequency_correction) ≈ TL._doppler_at(ramp, 10_000, 1e6) + ustrip(Hz, steered.residual_pll.carrier_frequency_correction)
+    @test TL._doppler_at(next_ramp, 10_000, 1e6) + TL._residual_doppler(next.residual_pll) ≈
+          TL._doppler_at(ramp, 10_000, 1e6) + TL._residual_doppler(steered.residual_pll)
     @test ustrip(Hz / s, next_ramp.doppler_rate) + TL._residual_doppler_rate(next.residual_pll) ≈
           ustrip(Hz / s, ramp.doppler_rate) + TL._residual_doppler_rate(steered.residual_pll)
     @test next.discriminators.code_frequency_correction_history == (2.0Hz, 1.0Hz, 0.0Hz)
@@ -343,7 +343,7 @@ end
     @test released.code_frequency_correction == 0.0Hz
     @test released.discriminators.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test released.discriminators.feedback_delay == 0.0s
-    @test isnan(released.ramp.reference_time)
+    @test released.ramp.start_sample_index == typemin(Int)
     @test !TL._has_carrier_ramp(released)
     # The replica's last half integration is the replica's: it survives the hand-over both ways.
     @test released.last_replica_tail == 0.1
@@ -355,7 +355,7 @@ end
     tracking_loop = VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF; narrow_carrier_loop_bandwidth = 12.0Hz))
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     post_correlation_state = vector_integration(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
-    ramp = TL.CarrierDopplerRamp(104.0 * Hz, 0.0 * Hz / s, 0.0 * s)
+    ramp = TL.CarrierDopplerRamp(104.0 * Hz, 0.0 * Hz / s, 0)
     state = commanded(state, ramp; code_update = 0.5Hz)
     state, = step_satellite(tracking_loop, state, post_correlation_state, ConstantNCOCommand(100.0Hz, 0.1Hz), nothing)
     state = TL._set_vector_commands(state, 0.6Hz, ramp, 0.01s, ConstantNCOCommand(0.0Hz, 0.0Hz), 0, 5e6)
@@ -395,7 +395,7 @@ end
     tracking_loop = VectorTrackingLoop(GPSL1CA(); scalar_loop = inner)
     state = init_loop_state(tracking_loop, GPSL1CA(), 100.0Hz, 0.1Hz)
     post_correlation_state = vector_integration(GPSL1CA(), (1000.0 + 10im, 2000.0 + 200im, 750.0 + 10im), 5000, 5e6Hz; previous_prompt = cis(0.1))
-    ramp = TL.CarrierDopplerRamp(104.0 * Hz, 2.0 * Hz / s, 0.0 * s)
+    ramp = TL.CarrierDopplerRamp(104.0 * Hz, 2.0 * Hz / s, 0)
     state = commanded(state, ramp; code_update = 0.5Hz, lead = 0.01s)
     state, = step_satellite(tracking_loop, state, post_correlation_state, ConstantNCOCommand(100.0Hz, 0.1Hz), nothing)
     # A residual PLL out of lock knows no better than the filter: the inner loop starts over
@@ -423,7 +423,7 @@ end
         TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
     locked = TL._hand_over_to_scalar_loop(inner, TL.VectorLoopState(state; residual_pll), ConstantNCOCommand(150.0Hz, 0.2Hz), 10_000, 5e6)
     @test locked.scalar_state.initial_carrier_doppler ≈
-          (TL._doppler_at(ramp, 0.002) + 1.5 + 0.5 * (0.002 - TL._center(residual_pll.last_prompt_span) / 5e6)) * Hz
+          (TL._doppler_at(ramp, 10_000, 5e6) + 1.5 + 0.5 * (0.002 - TL._center(residual_pll.last_prompt_span) / 5e6)) * Hz
     @test locked.scalar_state.carrier_loop_filter.x2 ≈ 2.5Hz^2
     @test locked.scalar_state.initial_code_doppler == 0.2Hz
     @test released.scalar_state.bandwidths.narrow_carrier == 12.0Hz
@@ -466,7 +466,7 @@ function track_carrier(phase, doppler0, rate; offset = 0.5, integration_samples 
         update_interval = 0.1, duration = 2.0, noise_std = 0.0, rng = Xoshiro(1))
     tracking_loop = VectorTrackingLoop(RATE_SIGNAL)
     state = init_loop_state(tracking_loop, RATE_SIGNAL, doppler0 * Hz, 0.0Hz)
-    state = commanded(state, TL.CarrierDopplerRamp((doppler0 + offset) * Hz, rate * Hz / s, 0.0 * s); scalar_doppler = doppler0)
+    state = commanded(state, TL.CarrierDopplerRamp((doppler0 + offset) * Hz, rate * Hz / s, 0); scalar_doppler = doppler0)
     carrier = doppler0
     replica_phase = phase(0.0) # cycles, at the start of the integration ahead
     previous_prompt = complex(0.0)

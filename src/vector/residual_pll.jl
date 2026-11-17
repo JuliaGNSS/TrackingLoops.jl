@@ -8,22 +8,24 @@
 """
     CarrierDopplerRamp
 
-The carrier Doppler the navigation filter commands a member with: `doppler` (Hz) at
-`reference_time` (s, integrations' grid) and its `doppler_rate` (Hz/s). Each integration is commanded the ramp at
-the middle of the integration it takes effect on.
+The carrier Doppler the navigation filter commands a member with: `doppler` (Hz) from
+`start_sample_index` on, the sample of the integrations' grid where the command takes
+effect, and its `doppler_rate` (Hz/s). Each integration is commanded the ramp at the
+middle of the integration it takes effect on.
 """
 struct CarrierDopplerRamp
     doppler::typeof(1.0Hz)
     doppler_rate::typeof(1.0Hz / s)
-    reference_time::typeof(1.0s)
+    start_sample_index::Int
 end
 
-CarrierDopplerRamp() = CarrierDopplerRamp(NaN * Hz, 0.0Hz / s, NaN * s)
+CarrierDopplerRamp() = CarrierDopplerRamp(NaN * Hz, 0.0Hz / s, typemin(Int))
 
-# The ramp's Doppler (Hz) at `t` (s, integrations' grid), unit-free as the residual PLL's
-# states it is added to.
-@inline _doppler_at(ramp::CarrierDopplerRamp, t) =
-    ustrip(Hz, ramp.doppler) + ustrip(Hz / s, ramp.doppler_rate) * (t - ustrip(s, ramp.reference_time))
+# The ramp's Doppler (Hz) at the sample `sample_index` of the integrations' grid sampled at
+# `fs` (Hz), unit-free as the residual PLL's states it is added to. The time since the
+# start is a difference of sample indices, exact however long a session runs.
+@inline _doppler_at(ramp::CarrierDopplerRamp, sample_index, fs) =
+    ustrip(Hz, ramp.doppler) + ustrip(Hz / s, ramp.doppler_rate) * ((sample_index - ramp.start_sample_index) / fs)
 
 """
 $(SIGNATURES)
@@ -126,19 +128,18 @@ ResidualPLL(
 )
 
 # A residual PLL taking over from the phase-locked scalar loop as the satellite is added:
-# at its command `scalar_doppler` (Hz) against the ramp at `time`, in lock, with the
+# at its command `scalar_doppler` (Hz) against the ramp where it starts, in lock, with the
 # averages of the scalar loop's `staging`.
 _initialized_residual_pll(
     residual_pll::ResidualPLL,
     ramp::CarrierDopplerRamp,
     scalar_doppler,
-    time,
     staging::CarrierLoopStaging,
 ) =
     ResidualPLL(
         residual_pll.bandwidth,
-        (scalar_doppler - _doppler_at(ramp, time)) * Hz,
-        _residual_pll_loop_filter(scalar_doppler - _doppler_at(ramp, time), 0.0),
+        (scalar_doppler - ustrip(Hz, ramp.doppler)) * Hz,
+        _residual_pll_loop_filter(scalar_doppler - ustrip(Hz, ramp.doppler), 0.0),
         IntegrationSpan(),
         Int8(0),
         NaN,
@@ -149,8 +150,8 @@ _initialized_residual_pll(
 # incoming Doppler at its latest prompt (before the first: where the old ramp took
 # over) and of its rate unmoved; `fs` (Hz) dates the prompt.
 function _residual_pll_on_new_ramp(residual_pll::ResidualPLL, old::CarrierDopplerRamp, new::CarrierDopplerRamp, fs)
-    time = _has_span(residual_pll.last_prompt_span) ? _center(residual_pll.last_prompt_span) / fs : ustrip(s, old.reference_time)
-    step = _doppler_at(new, time) - _doppler_at(old, time)
+    sample_index = _has_span(residual_pll.last_prompt_span) ? _center(residual_pll.last_prompt_span) : old.start_sample_index
+    step = _doppler_at(new, sample_index, fs) - _doppler_at(old, sample_index, fs)
     ResidualPLL(
         residual_pll;
         carrier_frequency_correction = residual_pll.carrier_frequency_correction - step * Hz,
@@ -205,7 +206,7 @@ _reset_to_ramp(residual_pll::ResidualPLL, lock::ResidualPLLLock) =
 @inline function _predicted_phase(residual_pll::ResidualPLL, ramp::CarrierDopplerRamp, samples_since_prompt, fs, replica_cycles)
     dt = samples_since_prompt / fs
     # The ramp's mean Doppler since that prompt is its value halfway there.
-    mean_doppler = _doppler_at(ramp, _center(residual_pll.last_prompt_span) / fs + dt / 2)
+    mean_doppler = _doppler_at(ramp, _center(residual_pll.last_prompt_span) + samples_since_prompt / 2, fs)
     residual_pll.predicted_prompt_phase + (mean_doppler + ustrip(Hz, residual_pll.carrier_frequency_correction)) * dt - replica_cycles
 end
 

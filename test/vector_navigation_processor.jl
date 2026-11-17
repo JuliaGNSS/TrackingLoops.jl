@@ -151,7 +151,7 @@ end
               TL.calc_code_frequency_correction(predicted[j], measured, member.chip_rate, Δt_nav) * Hz atol = 1e-6Hz
         @test sat.state.ramp.doppler ≈
               TL.predict_carrier_doppler(rate_at_epoch, member.wavelength) * Hz atol = 1e-6Hz
-        @test sat.state.ramp.reference_time ≈ vt.last_update_epoch_index * TL._update_interval_seconds(vt) * s
+        @test sat.state.ramp.start_sample_index ≈ TL._epoch_sample_index(vt, vt.last_update_epoch_index, ustrip(Hz, SIM_FS)) atol = 1
         # The post-fit rate is predicted at the measurement's own instant.
         @test workspace.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.nav_filter.x, idxs, member) atol = 1e-9
         @test sat.state.discriminators.feedback_delay == 0.0s
@@ -182,7 +182,8 @@ end
     later = TL._commands_at_application(vt, rx.group, slot, TL._sampling_frequency_hz(post_correlation_state), nco_history, Int64(sample + 80_000))
     @test later[3] ≈ 0.02
     @test later[1] ≈ at_epoch[1] atol = 0.05
-    @test ustrip(Hz, later[2].doppler) ≈ TL._doppler_at(at_epoch[2], ustrip(s, later[2].reference_time)) atol = 1e-3
+    @test ustrip(Hz, later[2].doppler) ≈
+          TL._doppler_at(at_epoch[2], later[2].start_sample_index, TL._sampling_frequency_hz(post_correlation_state)) atol = 1e-3
     # It must take effect within 2.5 update intervals of the epoch.
     @test_throws ArgumentError TL._commands_at_application(vt, rx.group, slot, TL._sampling_frequency_hz(post_correlation_state), nco_history,
         Int64(sample + 1_100_000))
