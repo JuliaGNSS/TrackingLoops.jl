@@ -11,22 +11,27 @@ Integrating past it would straddle a bit boundary and average two opposite
 signs away.
 
 The default degenerates to a single code period for a signal that has neither a
-multi-period data bit nor an overlay; Galileo E5a-QP overrides it to a whole
-31-period code cycle (see `galileo/e5a_qp.jl`). GPS L2CL is the same shape and
-deliberately keeps the default: its 1.5 s primary period is already a whole
-coherent integration.
+multi-period data bit nor an overlay; Galileo E5a-QP overrides it to its 31 code
+periods of 2 ms. GPS L2CL is the same shape and deliberately keeps the default: its
+1.5 s primary period is already a whole coherent integration.
 """
 @inline max_num_code_periods_to_integrate(signal::AbstractGNSSSignal) =
     max(get_secondary_code_length(signal), get_code_periods_per_bit(signal))
+
+# Galileo E5a-QP: 2 ms, the 31 repetitions of its 330-chip code (OS SIS ICD v2.2 Table 15),
+# not the single 64.5 µs code period of the generic ceiling, since it has no bit and no
+# overlay.
+@inline max_num_code_periods_to_integrate(::GalileoE5aQP) = 31
 
 """
 $(SIGNATURES)
 
 Coherent integration length, in primary code periods, a freshly tracked signal
 starts at. One code period for every signal but Galileo E5a-QP, whose 64.5 µs code period is
-too short to run a loop on and which starts at a whole 31-period code cycle.
+too short to run a loop on and which starts at 31 code periods, 2 ms.
 """
 @inline default_num_code_periods_to_integrate(::AbstractGNSSSignal) = 1
+@inline default_num_code_periods_to_integrate(::GalileoE5aQP) = 31
 
 """
 $(SIGNATURES)
