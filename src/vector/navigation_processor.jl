@@ -997,7 +997,7 @@ end
 function _assign_commands!(acc, group, group_index, nav_processor)
     workspace = nav_processor.workspace
     for (j, member) in enumerate(workspace.members)
-        member.group == group_index && workspace.above_horizon[j] || continue
+        member.group_index == group_index && workspace.above_horizon[j] || continue
         slot = group.slots[member.slot_index]
         slot.commanded_update_index = nav_processor.update_index
         slot.member_index = j
@@ -1106,7 +1106,7 @@ end
 function _release_below_horizon!(released, group, group_index, nav_processor)
     workspace = nav_processor.workspace
     for (j, member) in enumerate(workspace.members)
-        member.group == group_index && !workspace.above_horizon[j] || continue
+        member.group_index == group_index && !workspace.above_horizon[j] || continue
         _mark_release!(group.slots[member.slot_index], VT_BELOW_HORIZON)
         released = true
     end
@@ -1520,7 +1520,7 @@ function _is_measured(predicate::F, members, used) where {F}
     false
 end
 _member_key(layout::NavFilterLayout, member::VectorTrackingObservation) =
-    (layout.signal_id_by_group[member.group], member.prn)
+    (layout.signal_id_by_group[member.group_index], member.prn)
 
 _observation_residuals(workspace::VectorTrackingWorkspace, j) = ObservationResiduals(
     workspace.members[j].sat_pos,
