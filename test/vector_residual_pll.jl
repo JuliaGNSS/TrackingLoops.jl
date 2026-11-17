@@ -63,7 +63,7 @@ residual_pll_error(sat, before) =
         # The replica's command is the filter's ramp at the middle of the next integration…
         T = integration_ms(sat.signal) * 1e-3
         @test sat.carrier_doppler ≈
-              TL._doppler_at(state.ramp, TL._center(state.residual_pll.last_prompt_span) / ustrip(Hz, SIM_FS) + T) atol = 1e-4
+              TL._doppler_at(state.ramp, TL._center(state.residual_pll.last_prompt_span) + T * ustrip(Hz, SIM_FS), ustrip(Hz, SIM_FS)) atol = 1e-4
         # …which the residual PLL's residual brings onto the incoming carrier.
         @test abs(TL._residual_doppler(state.residual_pll)) < 0.1
         @test get_phase_lock_indicator(state) > 0.9 && is_phase_locked(state)
@@ -203,7 +203,7 @@ end
 # replica's command, the ramp's, is `residual(t)` (cycles), at amplitude `amplitude(t)` plus
 # noise of σ `noise_std`, the host reading no signal while the amplitude is zero; the
 # integrations end at `ends` (samples). `on_integration(state, k)` after the `k`-th.
-function step_residual(residual, ends; ramp = TL.CarrierDopplerRamp(100.0 * Hz, 0.0 * Hz / s, 0.0 * s), scalar_doppler = ustrip(Hz, ramp.doppler),
+function step_residual(residual, ends; ramp = TL.CarrierDopplerRamp(100.0 * Hz, 0.0 * Hz / s, 0), scalar_doppler = ustrip(Hz, ramp.doppler),
         unlocked = false, amplitude = t -> 1.0, noise_std = 0.0, on_integration = (state, k) -> nothing)
     rng = Xoshiro(1)
     tracking_loop = VectorTrackingLoop(GPSL1CA())
@@ -312,14 +312,14 @@ end
     residual_pll = sat.state.residual_pll
     @test TL._has_carrier_ramp(sat.state)
     t = TL._center(residual_pll.last_prompt_span) / ustrip(Hz, SIM_FS)
-    @test abs(TL._doppler_at(sat.state.ramp, t) + TL._residual_doppler(residual_pll) -
+    @test abs(TL._doppler_at(sat.state.ramp, TL._center(residual_pll.last_prompt_span), ustrip(Hz, SIM_FS)) + TL._residual_doppler(residual_pll) -
               true_doppler(sat, rx.truth, sim_time(rx, round(Int, t * ustrip(Hz, SIM_FS))))) < 0.5
     # The scalar loop is re-initialised at the residual PLL's estimate of the incoming Doppler
     # where the release takes effect — on the truth — and at its Doppler rate, and its staging
     # restarts.
     @test residual_pll.lock.locked
     application_time = sample / ustrip(Hz, SIM_FS)
-    estimate = TL._doppler_at(sat.state.ramp, application_time) + TL._residual_doppler(residual_pll) +
+    estimate = TL._doppler_at(sat.state.ramp, sample, ustrip(Hz, SIM_FS)) + TL._residual_doppler(residual_pll) +
                TL._residual_doppler_rate(residual_pll) * (application_time - t)
     rate = ustrip(Hz / s, sat.state.ramp.doppler_rate) + TL._residual_doppler_rate(residual_pll)
     TL._mark_release!(slot, VT_INELIGIBLE)
@@ -419,7 +419,7 @@ end
     history = TL.PromptHistory(8)
     TL._push_prompt!(history, residual_pll_at(2000, 0.2))
     TL._push_prompt!(history, residual_pll)
-    ramp = TL.CarrierDopplerRamp(1000.0 * Hz, 0.0 * Hz / s, 0.0 * s)
+    ramp = TL.CarrierDopplerRamp(1000.0 * Hz, 0.0 * Hz / s, 0)
     nco_history = ConstantNCOCommand(1000.0Hz, 0.0Hz)
     half = 1000.0 * 0.0005
     state = TL.VectorLoopState(TL.VectorLoopState(init_loop_state(ScalarTrackingLoop(), signal, 1000.0Hz, 0.0Hz), true);

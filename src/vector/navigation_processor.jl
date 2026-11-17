@@ -1048,7 +1048,7 @@ function _commands_at_application(
     doppler = predict_carrier_doppler(predicted_rate, member.wavelength)
     _, next_rate, _ = _predict_for_command(nav_processor, slot, feedback_delay + Δt_nav, chips + Δt_nav * (chip_rate + code_command))
     next_doppler = predict_carrier_doppler(next_rate, member.wavelength)
-    code_frequency_correction, CarrierDopplerRamp(doppler * Hz, (next_doppler - doppler) / Δt_nav * Hz / s, application_sample_index / fs * s), feedback_delay
+    code_frequency_correction, CarrierDopplerRamp(doppler * Hz, (next_doppler - doppler) / Δt_nav * Hz / s, application_sample_index), feedback_delay
 end
 
 # The slot's member's state, satellite position and pseudorange predicted `τ` after the
