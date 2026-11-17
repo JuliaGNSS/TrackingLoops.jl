@@ -58,20 +58,6 @@ struct CN0UpdateContext{S<:AbstractGNSSSignal,N,T}
     coherent_integration_time::T
 end
 
-# Positional convenience for the first four fields, defaulting the two only a
-# noise-referenced estimator reads.
-@inline CN0UpdateContext(
-    signal::AbstractGNSSSignal,
-    num_code_periods::Integer,
-    num_code_periods_into_bit::Integer,
-) = CN0UpdateContext(
-    signal,
-    Int(num_code_periods),
-    Int(num_code_periods_into_bit),
-    nothing,
-    nothing,
-)
-
 # Build the context from the bit grid of `bit_synchronizer`, which must be the
 # one from *before* this integration was processed, so `num_code_periods_into_bit` is this
 # integration's offset. `bit_sync_usable = false` forces the "no bit grid" marker (see

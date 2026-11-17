@@ -17,7 +17,6 @@ function MomentsCN0Estimator(; num_averaged_integrations::Integer = 100)
 end
 
 length(estimator::MomentsCN0Estimator) = estimator.num_buffered
-get_prompt_buffer(estimator::MomentsCN0Estimator) = estimator.prompt_buffer
 
 """
 $(SIGNATURES)
@@ -46,7 +45,7 @@ from an empty buffer or from prompts without power.
 """
 function estimate_cn0(estimator::MomentsCN0Estimator, coherent_integration_time)
     length(estimator) == 0 && return -Inf * dBHz
-    prompt_buffer = get_prompt_buffer(estimator)
+    prompt_buffer = estimator.prompt_buffer
     M₂ = 1 / length(estimator) * sum(abs2, prompt_buffer)
     M₄ = 1 / length(estimator) * sum(x -> abs2(x)^2, prompt_buffer)
     Pd = sqrt(abs(2 * M₂^2 - M₄))

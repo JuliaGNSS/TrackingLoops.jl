@@ -130,7 +130,7 @@ end
     # A carrier filter without an FLL path starts at the wide PLL.
     @test get_carrier_loop_stage(init_loop_state(ScalarTrackingLoop(), GPSL1CA(), 0.0Hz, 0.0Hz)) ==
           WIDE_PLL
-    @test loop_state_type(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA()) === typeof(conv)
+    @test typeof(init_loop_state(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA(), 0.0Hz, 0.0Hz)) === typeof(conv)
     @test typeof(state) === typeof(conv)
     @test isbitstype(typeof(state))
     @test !TrackingLoops._has_span(conv.last_prompt_span)
@@ -200,7 +200,7 @@ end
 )
     # What a host calls, and nothing else: build, step an integration, reset.
     state = init_loop_state(tracking_loop, LOOP_SIGNAL, 100.0Hz, 0.0Hz)
-    @test state isa loop_state_type(tracking_loop, LOOP_SIGNAL)
+    @test state isa typeof(init_loop_state(tracking_loop, LOOP_SIGNAL, 0.0Hz, 0.0Hz))
     output = CorrelatorBankOutput(loop_epl(0.5, 1.0, 0.5), LOOP_N, LOOP_N)
     # The integration names its satellite, which the vector loop's navigation processor needs.
     post_correlation_state = processed_state(LOOP_SIGNAL, output.correlator_bank, complex(0.0, 0.0), output, 1, LOOP_FS; prn = 5)

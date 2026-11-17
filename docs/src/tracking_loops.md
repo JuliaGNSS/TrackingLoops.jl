@@ -135,7 +135,6 @@ DelayCompensatedTrackingLoop
 TrackingLoops.ScalarLoopState
 get_carrier_loop_stage(::ScalarLoopState)
 TrackingLoops.calc_carrier_phase_correction(::Any, ::Any, ::Any, ::Any)
-TrackingLoops.loop_state_type(::AbstractTrackingLoop, ::AbstractGNSSSignal)
 init_loop_state(::ScalarTrackingLoop{CA, CO}, ::AbstractGNSSSignal, ::Any, ::Any) where {CA<:AbstractLoopFilter, CO<:AbstractLoopFilter}
 get_navigation_update_index(::AbstractTrackingLoop)
 get_navigation_elapsed_time(::AbstractTrackingLoop)

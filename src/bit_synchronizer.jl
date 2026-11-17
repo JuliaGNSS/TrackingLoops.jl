@@ -518,9 +518,6 @@ struct BitSynchronizer{B<:Unsigned}
     hypothesis_accumulators::SyncHypothesisAccumulators
 end
 
-# Untyped default: a `UInt128` prompt-sign history.
-BitSynchronizer() = BitSynchronizer{UInt128}()
-
 BitSynchronizer{B}() where {B<:Unsigned} =
     _unsynced_bit_synchronizer(B, Float32[], SyncHypothesisAccumulators())
 
@@ -553,29 +550,6 @@ function BitSynchronizer(
         Int(num_code_periods_into_bit),
         bit_synchronizer.soft_bits,
         isnothing(hypothesis_accumulators) ? bit_synchronizer.hypothesis_accumulators : hypothesis_accumulators,
-    )
-end
-
-# For tests and benchmarks: zero phase / polarity, empty accumulators; `soft_bits`
-# is aliased, not copied.
-function BitSynchronizer(
-    prompt_sign_history::B,
-    num_prompt_signs::Integer,
-    found::Bool,
-    bit_prompt_sum::Complex,
-    num_code_periods_into_bit::Integer,
-    soft_bits::Vector{Float32} = Float32[],
-) where {B<:Unsigned}
-    BitSynchronizer{B}(
-        prompt_sign_history,
-        Int(num_prompt_signs),
-        found,
-        0,
-        Int8(0),
-        ComplexF64(bit_prompt_sum),
-        Int(num_code_periods_into_bit),
-        soft_bits,
-        SyncHypothesisAccumulators(),
     )
 end
 
