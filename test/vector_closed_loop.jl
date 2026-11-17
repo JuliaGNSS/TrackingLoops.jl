@@ -108,7 +108,7 @@ end
     @test isempty(results[fallback].measured)
     # The released satellites run their scalar loops: nothing steered, nothing accumulated.
     @test all(sat -> !sat.state.vector_controlled && sat.state.code_frequency_correction == 0.0Hz, rx.sats)
-    @test all(sat -> sat.state.code_disc_sum == (0, 0.0), rx.sats)
+    @test all(sat -> sat.state.discriminators.code_disc_sum == (0, 0.0), rx.sats)
     # Not ready, no satellite enters the scalar solve, so nothing re-seeds…
     @test all(r -> !r.status.vector_tracking_active && !r.status.seeded, results[fallback+1:end])
     # …until the receiver flags them in lock again: the first scalar fix seeds vector
@@ -190,7 +190,7 @@ end
         # The rate residue of NCO motion the signal does not back stays at the level of
         # the undelayed loop's.
         @test rate_residual(tail) < 2 * rate_residual(tail0) + 1e-3u"m/s"
-        @test all(sat -> sat.state.feedback_delay ≈ delay * 1.0ms, rx.sats)
+        @test all(sat -> sat.state.discriminators.feedback_delay ≈ delay * 1.0ms, rx.sats)
     end
     # The negative control: the same delay with the corrections sized as if they acted at
     # the epoch loses the loop.

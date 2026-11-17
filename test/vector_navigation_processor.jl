@@ -75,7 +75,7 @@ end
     # empty accumulators to accumulate from now on.
     for (sat, slot) in zip(rx.sats, channel_slots(rx.group, rx.sats))
         @test sat.state.vector_controlled
-        @test sat.state.code_disc_sum == (0, 0.0)
+        @test sat.state.discriminators.code_disc_sum == (0, 0.0)
         @test isfinite(sat.state.code_frequency_correction)
         @test sat.state.applied_update_index == vt.update_index
         @test slot.commanded_update_index == vt.update_index
@@ -154,9 +154,9 @@ end
         @test sat.state.ramp.reference_time ≈ vt.last_update_epoch_index * TL._update_interval_seconds(vt) * s
         # The post-fit rate is predicted at the measurement's own instant.
         @test workspace.predicted_pseudorange_rates[j] ≈ TL.predict_pseudorange_rate(vt.nav_filter.x, idxs, member) atol = 1e-9
-        @test sat.state.feedback_delay == 0.0s
+        @test sat.state.discriminators.feedback_delay == 0.0s
         # The accumulators were emptied at the epoch's snapshot.
-        @test sat.state.code_disc_sum == (0, 0.0)
+        @test sat.state.discriminators.code_disc_sum == (0, 0.0)
         # Applied once: applying it again changes nothing.
         @test TL._apply_nav_filter_feedback(rx.tracking_loop, rx.group, slot, sat.state, feedback_integration(sat, 0),
             sim_nco_history(sat, nothing), Int64(0)) === sat.state
@@ -308,7 +308,7 @@ end
     application_carrier, application_code = nco_command.carrier_doppler, nco_command.code_doppler
     @test sat.state.scalar_state.initial_carrier_doppler ≈ application_carrier atol = 0.01Hz
     @test sat.state.scalar_state.initial_code_doppler == application_code
-    @test sat.state.scalar_state.initial_carrier_doppler != dropped.snapshot.carrier_doppler
+    @test sat.state.scalar_state.initial_carrier_doppler != dropped.snapshot.replica_carrier_doppler
 end
 
 @testset "A satellite is admitted only above the admission mask" begin
@@ -317,7 +317,7 @@ end
     vt = rx.vt
     group = rx.group
     slot = group.slots[1]
-    set_snapshot!(slot; loop_state = TL._release_from_vector_loop(slot.snapshot.loop_state))
+    set_snapshot!(slot; vector_controlled = false, discriminators = TL.DiscriminatorAccumulator())
     user_pos = first(TL.nav_filter_states(vt.nav_filter.x, vt.nav_filter.process_model.idxs))
     here = ENUfromECEF(ECEF(user_pos...), wgs84)
     antipode = ENUfromECEF(ECEF((-user_pos)...), wgs84)

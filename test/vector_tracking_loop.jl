@@ -46,18 +46,18 @@ end
     @test state isa VectorLoopState
     @test state.scalar_state == init_loop_state(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA(), 500.0Hz, 100.0Hz)
     @test state.vector_controlled == false
-    @test state.code_disc_sum == (0, 0.0)
-    @test state.fll_disc_sum == (0, 0.0Hz)
+    @test state.discriminators.code_disc_sum == (0, 0.0)
+    @test state.discriminators.fll_disc_sum == (0, 0.0Hz)
     @test isnan(state.last_replica_tail)
     @test state.code_frequency_correction == 0.0Hz
-    @test state.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
-    @test state.feedback_delay == 0.0s
+    @test state.discriminators.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
+    @test state.discriminators.feedback_delay == 0.0s
     @test isnan(state.ramp.reference_time)
     @test !TL._has_carrier_ramp(state)
     @test state.residual_pll.bandwidth == 10.0Hz
     @test typeof(init_loop_state(tracking_loop, GPSL1CA(), 0.0Hz, 0.0Hz)) === typeof(state)
-    @test TL._disc_mean(state.code_disc_sum) === nothing
-    @test TL._disc_mean(state.fll_disc_sum) === nothing
+    @test TL._disc_mean(state.discriminators.code_disc_sum) === nothing
+    @test TL._disc_mean(state.discriminators.fll_disc_sum) === nothing
 end
 
 @testset "Vector PLL and DLL seeding" begin
@@ -159,8 +159,8 @@ end
     @test vector_carrier == inner_carrier
     @test vector_code == inner_code
     @test new_vector_state.scalar_state == new_inner_state
-    @test new_vector_state.code_disc_sum == (0, 0.0)
-    @test new_vector_state.fll_disc_sum == (0, 0.0Hz)
+    @test new_vector_state.discriminators.code_disc_sum == (0, 0.0)
+    @test new_vector_state.discriminators.fll_disc_sum == (0, 0.0Hz)
     # The replica's last half integration is kept, for the span a later vector loop opens
     # with: half of the 1 ms integration on the 100 Hz command.
     @test new_vector_state.last_replica_tail == 100.0 * 0.0005
@@ -192,11 +192,11 @@ end
     @test state.scalar_state.code_loop_filter == SecondOrderBilinearLF()
     # The DLL discriminator is accumulated. Without a previous prompt there is no
     # frequency measurement, so no carrier span opens: not a span of zero rotation.
-    @test state.code_disc_sum == (1, dll_discriminator)
-    @test state.fll_disc_sum == (0, 0.0Hz)
-    @test TL._disc_mean(state.code_disc_sum) == dll_discriminator
-    @test TL._disc_mean(state.fll_disc_sum) === nothing
-    @test !TL.has_disc_sums(state)
+    @test state.discriminators.code_disc_sum == (1, dll_discriminator)
+    @test state.discriminators.fll_disc_sum == (0, 0.0Hz)
+    @test TL._disc_mean(state.discriminators.code_disc_sum) == dll_discriminator
+    @test TL._disc_mean(state.discriminators.fll_disc_sum) === nothing
+    @test !TL._has_disc_sums(state.discriminators)
     @test TL._has_carrier_ramp(state)
     @test TL._center(state.residual_pll.last_prompt_span) ≈ 0.0005 * ustrip(Hz, sampling_frequency)
     # The replica's second half integration is kept for the next span.
@@ -208,11 +208,11 @@ end
     @test state.scalar_state.staging == init_loop_state(inner, gpsl1, carrier_doppler, initial_code_doppler).staging
 
     state = TL._reset_discriminator_accumulators(state)
-    @test state.code_disc_sum == (0, 0.0)
-    @test state.fll_disc_sum == (0, 0.0Hz)
+    @test state.discriminators.code_disc_sum == (0, 0.0)
+    @test state.discriminators.fll_disc_sum == (0, 0.0Hz)
     @test state.last_replica_tail == ustrip(Hz, carrier_doppler) * 0.0005
-    @test TL._disc_mean(state.code_disc_sum) === nothing
-    @test TL._disc_mean(state.fll_disc_sum) === nothing
+    @test TL._disc_mean(state.discriminators.code_disc_sum) === nothing
+    @test TL._disc_mean(state.discriminators.fll_disc_sum) === nothing
     @test state.vector_controlled
     @test state.code_frequency_correction == -0.25Hz
 end
@@ -230,15 +230,15 @@ end
     @test fll != 0.0Hz
     state, = step_satellite(tracking_loop, state, integrations[1], ConstantNCOCommand(100.0Hz, 0.1Hz), nothing)
     state, = step_satellite(tracking_loop, state, integrations[2], ConstantNCOCommand(120.0Hz, 0.1Hz), nothing)
-    @test state.fll_disc_sum == (2, fll + fll)
-    @test TL._disc_mean(state.fll_disc_sum) == (fll + fll) / 2
+    @test state.discriminators.fll_disc_sum == (2, fll + fll)
+    @test TL._disc_mean(state.discriminators.fll_disc_sum) == (fll + fll) / 2
     # The replica's last half integration, which the residual PLL propagates by.
     @test state.last_replica_tail == 120.0 * 0.0005
     # An integration without a previous prompt (a changed carrier phase polarity) has no
     # frequency measurement, so it is left out rather than taken as 0 Hz.
     no_prompt = vector_integration(signal, correlator_outputs, 5000, fs; sample_index = 15000)
     skipped, = step_satellite(tracking_loop, state, no_prompt, ConstantNCOCommand(160.0Hz, 0.1Hz), nothing)
-    @test skipped.fll_disc_sum == state.fll_disc_sum
+    @test skipped.discriminators.fll_disc_sum == state.discriminators.fll_disc_sum
     @test skipped.last_replica_tail == 160.0 * 0.0005
 end
 
@@ -252,7 +252,7 @@ end
         post_correlation_state = vector_integration(signal, (1000.0 + 10im, 2000.0 + 400im, 750.0 + 10im), 5000, fs;
             previous_prompt = cis(0.2))
         state, = step_satellite(tracking_loop, state, post_correlation_state, ConstantNCOCommand(100.0Hz, 0.1Hz), nothing)
-        state.fll_disc_sum
+        state.discriminators.fll_disc_sum
     end
     count, carrier_sum = accumulated(5.0u"MHz")
     @test count == 1
@@ -290,11 +290,11 @@ end
         referenced, referenced_state = run(DelayCompensatedTrackingLoop(), application_offset)
         conventional, conventional_state = run(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), application_offset)
         @test referenced == conventional
-        @test referenced_state.code_disc_sum == conventional_state.code_disc_sum
-        @test referenced_state.fll_disc_sum == conventional_state.fll_disc_sum
+        @test referenced_state.discriminators.code_disc_sum == conventional_state.discriminators.code_disc_sum
+        @test referenced_state.discriminators.fll_disc_sum == conventional_state.discriminators.fll_disc_sum
         @test referenced_state.residual_pll == conventional_state.residual_pll
         # The first integration has no previous prompt.
-        @test first(conventional_state.fll_disc_sum) == 49
+        @test first(conventional_state.discriminators.fll_disc_sum) == 49
     end
 end
 
@@ -307,8 +307,7 @@ end
     # A member joining again changes nothing, so the members can join every update.
     steered = VectorLoopState(
         TL._set_vector_commands(joined, 1.0Hz, ramp, 0.02s, ConstantNCOCommand(100.0Hz, 0.0Hz), 0, 1e6);
-        code_disc_sum = (3, 0.3),
-        fll_disc_sum = (3, 0.3Hz),
+        discriminators = TL.DiscriminatorAccumulator((3, 0.3), (3, 0.3Hz), (1.0Hz, 0.0Hz, 0.0Hz), 0.02s),
         last_replica_tail = 0.1,
     )
     @test TL._add_to_vector_loop(steered) === steered
@@ -318,8 +317,8 @@ end
     @test steered.residual_pll.carrier_frequency_correction ≈ (100.0 - 110.0) * Hz
     @test TL._residual_doppler(steered.residual_pll) ≈ 100.0 - 110.0
     @test steered.code_frequency_correction == 1.0Hz
-    @test steered.code_frequency_correction_history == (1.0Hz, 0.0Hz, 0.0Hz)
-    @test steered.feedback_delay == 0.02s
+    @test steered.discriminators.code_frequency_correction_history == (1.0Hz, 0.0Hz, 0.0Hz)
+    @test steered.discriminators.feedback_delay == 0.02s
     # A later one keeps the residual PLL's estimates of the incoming Doppler and its rate.
     next_ramp = TL.CarrierDopplerRamp(105.0 * Hz, 0.0 * Hz / s, 0.11 * s)
     next = TL._set_vector_commands(steered, 2.0Hz, next_ramp, 0.0s, ConstantNCOCommand(999.0Hz, 0.0Hz), 0, 1e6)
@@ -328,22 +327,22 @@ end
           TL._doppler_at(ramp, 0.01) + TL._residual_doppler(steered.residual_pll)
     @test ustrip(Hz / s, next_ramp.doppler_rate) + TL._residual_doppler_rate(next.residual_pll) ≈
           ustrip(Hz / s, ramp.doppler_rate) + TL._residual_doppler_rate(steered.residual_pll)
-    @test next.code_frequency_correction_history == (2.0Hz, 1.0Hz, 0.0Hz)
-    @test TL._set_vector_commands(next, 3.0Hz, next_ramp, 0.0s, ConstantNCOCommand(0.0Hz, 0.0Hz), 0, 1e6).code_frequency_correction_history ==
+    @test next.discriminators.code_frequency_correction_history == (2.0Hz, 1.0Hz, 0.0Hz)
+    @test TL._set_vector_commands(next, 3.0Hz, next_ramp, 0.0s, ConstantNCOCommand(0.0Hz, 0.0Hz), 0, 1e6).discriminators.code_frequency_correction_history ==
           (3.0Hz, 2.0Hz, 1.0Hz)
     @test next.code_frequency_correction == 2.0Hz
-    @test next.feedback_delay == 0.0s
-    @test next.code_disc_sum == (3, 0.3)
+    @test next.discriminators.feedback_delay == 0.0s
+    @test next.discriminators.code_disc_sum == (3, 0.3)
     # Leaving zeroes everything the vector loop owned, so a satellite that joins again
     # never runs on stale values.
     released = TL._release_from_vector_loop(next)
     @test !released.vector_controlled
     @test released.scalar_state == next.scalar_state
-    @test released.code_disc_sum == (0, 0.0)
-    @test released.fll_disc_sum == (0, 0.0Hz)
+    @test released.discriminators.code_disc_sum == (0, 0.0)
+    @test released.discriminators.fll_disc_sum == (0, 0.0Hz)
     @test released.code_frequency_correction == 0.0Hz
-    @test released.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
-    @test released.feedback_delay == 0.0s
+    @test released.discriminators.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
+    @test released.discriminators.feedback_delay == 0.0s
     @test isnan(released.ramp.reference_time)
     @test !TL._has_carrier_ramp(released)
     # The replica's last half integration is the replica's: it survives the hand-over both ways.
@@ -363,17 +362,17 @@ end
     reset = reinit_loop_state(tracking_loop, state, 150.0Hz, 0.2Hz)
     @test reset isa typeof(state)
     @test reset.vector_controlled
-    @test reset.code_disc_sum == (0, 0.0)
-    @test reset.fll_disc_sum == (0, 0.0Hz)
+    @test reset.discriminators.code_disc_sum == (0, 0.0)
+    @test reset.discriminators.fll_disc_sum == (0, 0.0Hz)
     @test reset.last_replica_tail == state.last_replica_tail
     # The re-initialised Dopplers carry the last code correction, so it is no longer applied…
     @test reset.code_frequency_correction == 0.0Hz
     # …but the replica is still steered by it, so the next code measurement is moved to
     # the epoch exactly as without the reset.
-    @test reset.code_frequency_correction_history == (0.6Hz, 0.5Hz, 0.0Hz)
-    @test reset.feedback_delay == 0.01s
-    @test TrackingLoops.code_phase_advance(reset, 0.1) == TrackingLoops.code_phase_advance(state, 0.1)
-    @test TrackingLoops.code_phase_advance(reset, 0.1) != 0.0
+    @test reset.discriminators.code_frequency_correction_history == (0.6Hz, 0.5Hz, 0.0Hz)
+    @test reset.discriminators.feedback_delay == 0.01s
+    @test TrackingLoops.code_phase_advance(reset.discriminators, 0.1) == TrackingLoops.code_phase_advance(state.discriminators, 0.1)
+    @test TrackingLoops.code_phase_advance(reset.discriminators, 0.1) != 0.0
     # The carrier command is the filter's Doppler itself, and the residual PLL carries on.
     @test reset.ramp == state.ramp
     @test reset.residual_pll == state.residual_pll
@@ -432,11 +431,11 @@ end
     @test get_carrier_loop_stage(state) == VECTOR_LOOP
     @test get_carrier_loop_stage(released) == FLL_ASSISTED_PLL
     # Nothing the vector loop owned survives.
-    @test released.code_disc_sum == (0, 0.0)
-    @test released.fll_disc_sum == (0, 0.0Hz)
+    @test released.discriminators.code_disc_sum == (0, 0.0)
+    @test released.discriminators.fll_disc_sum == (0, 0.0Hz)
     @test released.last_replica_tail == state.last_replica_tail
     @test released.code_frequency_correction == 0.0Hz
-    @test released.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
+    @test released.discriminators.code_frequency_correction_history == (0.0Hz, 0.0Hz, 0.0Hz)
     @test !TL._has_carrier_ramp(released)
     # Out of the vector loop it steps exactly as the re-initialised inner loop.
     @test step_satellite(tracking_loop, released, post_correlation_state, ConstantNCOCommand(150.0Hz, 0.2Hz), nothing)[2:3] ==
@@ -481,8 +480,8 @@ function track_carrier(phase, doppler0, rate; offset = 0.5, integration_samples 
         # integration that crosses it, whose command is the replica's there.
         if t1 > epoch * update_interval
             push!(epochs, (; epoch = epoch * update_interval,
-                doppler = carrier + TL.calc_mean_fll_disc(state),
-                count = first(state.fll_disc_sum)))
+                doppler = carrier + TL.calc_mean_fll_disc(state.discriminators),
+                count = first(state.discriminators.fll_disc_sum)))
             state = TL._reset_discriminator_accumulators(state)
             epoch += 1
         end

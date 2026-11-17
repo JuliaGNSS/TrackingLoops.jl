@@ -5,80 +5,6 @@
 # satellite; the navigation epochs are the multiples of the update interval.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# The loop's ranging signals as `(driver, decoding signal)` pairs; a plain signal
-# is both.
-_ranging_pair(signal::AbstractGNSSSignal) = (signal, signal)
-_ranging_pair(pair::Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}) = (pair.first, pair.second)
-
-_is_plain_pair((driver, decoding)) = typeof(driver) == typeof(decoding)
-
-function _check_ranging_pair((driver, decoding))
-    if iszero(get_bit_rate(decoding))
-        hint =
-            _is_plain_pair((driver, decoding)) ?
-            "; pair it with its data component, `$(nameof(typeof(driver)))() => data`" : ""
-        throw(
-            ArgumentError(
-                "vector tracking decodes the navigation data of each satellite's decoding " *
-                "signal; $(nameof(typeof(decoding))) carries none" * hint,
-            ),
-        )
-    end
-    get_chip_rate(decoding) == get_chip_rate(driver) || throw(
-        ArgumentError(
-            "a decoding signal must have its driver's chip rate: " *
-            "$(nameof(typeof(decoding))) has $(get_chip_rate(decoding)), " *
-            "$(nameof(typeof(driver))) $(get_chip_rate(driver))",
-        ),
-    )
-    nothing
-end
-
-# The loop, built here, after the navigation processor it holds.
-function VectorTrackingLoop(
-    signals::Union{AbstractGNSSSignal,Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}}...;
-    scalar_loop::Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop} = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
-    nav_filter_config::NavFilterConfig = NavFilterConfig(),
-    navigation_update_interval = 100.0ms,
-    min_tracking_cn0 = 30.0dBHz,
-    residual_pll_loop_bandwidth = default_residual_pll_loop_bandwidth(),
-    satellite_capacity_per_signal::Integer = 16,
-    approximate_year::Integer = year(now(UTC)),
-    enable_ionospheric_correction::Bool = true,
-    enable_tropospheric_correction::Bool = true,
-)
-    isempty(signals) &&
-        throw(ArgumentError("vector tracking needs at least one ranging signal"))
-    pairs = map(_ranging_pair, signals)
-    signal_types = DataType[]
-    for pair in pairs
-        push!(signal_types, typeof(first(pair)))
-        _is_plain_pair(pair) || push!(signal_types, typeof(last(pair)))
-    end
-    allunique(signal_types) ||
-        throw(ArgumentError("each signal can be given only once, as a driver or a decoding signal"))
-    foreach(_check_ranging_pair, pairs)
-    satellite_capacity_per_signal >= 1 ||
-        throw(ArgumentError("`satellite_capacity_per_signal` must be at least 1"))
-    Δt_nav = Float64(ustrip(s, navigation_update_interval)) * s
-    0.0s < Δt_nav < Inf * s ||
-        throw(ArgumentError("`navigation_update_interval` must be positive and finite"))
-    residual_pll_loop_bandwidth > 0.0Hz ||
-        throw(ArgumentError("`residual_pll_loop_bandwidth` must be positive"))
-    navigation_processor = NavigationProcessor(
-        nav_filter_config,
-        pairs,
-        scalar_loop;
-        navigation_update_interval = Δt_nav,
-        min_tracking_cn0 = convert(typeof(1.0dBHz), min_tracking_cn0),
-        satellite_capacity_per_signal = Int(satellite_capacity_per_signal),
-        approximate_year,
-        enable_ionospheric_correction,
-        enable_tropospheric_correction,
-    )
-    VectorTrackingLoop(scalar_loop, navigation_processor, Float64(ustrip(Hz, residual_pll_loop_bandwidth)) * Hz)
-end
-
 """
     step_loop!(tracking_loop::VectorTrackingLoop, loop_state, post_correlation_state::PostCorrelationState, nco_history, application_sample_index)
         -> (loop_state, carrier_doppler, code_doppler)
@@ -89,7 +15,7 @@ The satellite registers with the navigation processor on its first integration, 
 signal. An integration of its
 
   - **driver** applies the latest update's admission, release and commands,
-    snapshots the replica, Dopplers, accumulated discriminators and C/N₀ when it
+    snapshots the replica, carrier Doppler, accumulated discriminators and C/N₀ when it
     crosses a navigation epoch, and runs the loop;
   - **decoding signal** feeds its new soft bits to the decoder and notes where the bit
     clock stands (the snapshot's bit count); it returns the command in force and
@@ -236,20 +162,20 @@ function _assign_slot!(nav_processor::NavigationProcessor, group::VectorTracking
     )
     index = _find_slot(slots, prn)
     if index == 0
-        push!(slots, VectorTrackingSlot(group.decoding_signal, prn, group.prototype, group.prompt_history_length))
+        push!(slots, VectorTrackingSlot(group.decoding_signal, prn, group.prompt_history_length))
         index = length(slots)
     end
     slot = slots[index]
     nav_processor.next_slot_generation += 1
     loop_state = _registered(loop_state, index, nav_processor.next_slot_generation)
-    _reset_slot!(nav_processor, slot, prn, loop_state, post_correlation_state)
+    _reset_slot!(nav_processor, slot, prn, post_correlation_state)
     loop_state, slot
 end
 
 # Reset `slot` in place for a registering satellite. The decoder restarts its sync,
 # keeping the decoded data only for the same PRN; both signals start at the integration's
 # start.
-function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, prn::Int, loop_state, post_correlation_state::PostCorrelationState)
+function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, prn::Int, post_correlation_state::PostCorrelationState)
     slot.decoding.decoder =
         slot.prn == prn && slot.slot_generation > 0 ? reset_decoder_state!(slot.decoding.decoder) :
         reset_decoder_state!(slot.decoding.decoder, prn)
@@ -289,7 +215,8 @@ function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSl
     # `_apply_nav_filter_feedback`, re-initialising its scalar loop.
     slot.snapshot = SatelliteSnapshot(
         slot.snapshot;
-        loop_state = _release_from_vector_loop(loop_state),
+        vector_controlled = false,
+        discriminators = DiscriminatorAccumulator(),
         decoder = slot.decoding.decoder,
         measurement_ready = false,
         positioning_ready = false,
@@ -374,14 +301,13 @@ function _snapshot_driver!(
     epoch_sample_index = _epoch_sample_index(nav_processor, nav_processor.pending_epoch_index, _sampling_frequency_hz(post_correlation_state))
     chips_to_epoch =
         _replica_chips(nco_history, slot.driver.last_end_sample_index, epoch_sample_index, fs, get_chip_rate(group.driver_signal))
-    (; carrier_doppler, code_doppler) = get_nco_command(nco_history, epoch_sample_index)
     coherent_integration_time = uconvert(s, _coherent_integration_time(post_correlation_state))
     slot.pending_snapshot = SatelliteSnapshot(
         slot.pending_snapshot;
-        loop_state = loop_state,
+        vector_controlled = loop_state.vector_controlled,
+        discriminators = loop_state.discriminators,
         driver_code_phase = slot.driver.last_code_phase + chips_to_epoch,
-        carrier_doppler,
-        code_doppler,
+        replica_carrier_doppler = get_nco_command(nco_history, epoch_sample_index).carrier_doppler,
         cn0 = _capped_cn0(estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time)),
         coherent_integration_time = slot.driver.last_coherent_integration_time,
         early_late_spacing = slot.driver.last_early_late_spacing,
@@ -437,7 +363,7 @@ function _complete_snapshot!(nav_processor::NavigationProcessor, group::VectorTr
         positioning_ready = measurement_ready && has_positioning_data(decoder) && is_sat_healthy(decoder),
     )
     # Membership follows the satellite's state until the update decides.
-    slot.vector_controlled = pending.loop_state.vector_controlled
+    slot.vector_controlled = pending.vector_controlled
     slot.snapshot_epoch_index = epoch_index
     nav_processor.num_snapshots += 1
     nothing
