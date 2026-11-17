@@ -82,11 +82,10 @@ end
 """
 $(SIGNATURES)
 
-Per-hypothesis bin statistics for the soft CFAR sync detectors, one entry per
-timing hypothesis: bit-edge phase with one-bit bins (`_detect_bit_edge_cfar`,
-`_update_hypothesis_accumulators!`) or overlay rotation with one overlay-wiped
-secondary period per bin (`_detect_secondary_code_cfar`,
-`_update_secondary_accumulators!`). O(hypotheses) per code period, no growing history.
+Per-hypothesis bin statistics for the soft CFAR sync detector (`_detect_cfar`), one
+entry per timing hypothesis: bit-edge phase with one-bit bins
+(`_update_hypothesis_accumulators!`) or overlay rotation with one overlay-wiped
+secondary period per bin (`_update_secondary_accumulators!`). O(hypotheses) per code period, no growing history.
 `period` is `code_periods_per_bit` or the secondary-code length `N`.
 
 The vectors are mutated in place across [`BitSynchronizer`](@ref) rebuilds: an immutable
@@ -315,33 +314,37 @@ end
 """
 $(SIGNATURES)
 
-Soft CFAR bit-edge detector (see [`uses_soft_bit_edge_detection`](@ref); GPS L1 C/A)
-running `_cfar_decide` over the edge phases `0:code_periods_per_bit-1`.
+The soft CFAR sync detector, running `_cfar_decide` over the `period` timing hypotheses
+of `accumulators`: the bit-edge phases `0:code_periods_per_bit-1` (see
+[`uses_soft_bit_edge_detection`](@ref); GPS L1 C/A) or the overlay rotations
+`0:N-1` of a short secondary code (see [`uses_soft_secondary_code_detection`](@ref)).
+Unlike the hard `_secondary_code_search` it rejects the noise-driven false locks a
+short template match is prone to.
 
-Fires only when the latest code period *ends* the winning phase's bit, so the upcoming
-integration starts a fresh bit (rules out the off-by-one lock of
-JuliaGNSS/Tracking.jl#124).
-`polarity` is the sign of the last completed bin's sum.
+Fires only when the latest code period *ends* the winning hypothesis's bin, so the
+upcoming integration starts a fresh bit or secondary chip 0 and `SyncResult.phase` is
+`0` (rules out the off-by-one lock of JuliaGNSS/Tracking.jl#124). `polarity` is the
+sign of the winning bin's last (overlay-wiped) sum.
 """
-function _detect_bit_edge_cfar(
+function _detect_cfar(
     accumulators::SyncHypothesisAccumulators,
-    code_periods_per_bit::Int,
+    period::Int,
     confidence::Float64,
     num_code_periods::Int,
 )
-    accepted, peak_phase = _cfar_decide(
+    accepted, peak_hypothesis = _cfar_decide(
         accumulators.mean_bin_energy,
         accumulators.bin_energy_sum_of_squared_deviations,
         num_code_periods,
-        code_periods_per_bit,
+        period,
         confidence,
     )
     accepted || return SyncResult(false, 0, Int8(0))
 
-    num_code_periods % code_periods_per_bit != peak_phase && return SyncResult(false, 0, Int8(0))
+    num_code_periods % period != peak_hypothesis && return SyncResult(false, 0, Int8(0))
 
     @inbounds polarity =
-        accumulators.last_bin_polarity[peak_phase+1] < 0 ? Int8(-1) : Int8(+1)
+        accumulators.last_bin_polarity[peak_hypothesis+1] < 0 ? Int8(-1) : Int8(+1)
     SyncResult(true, 0, polarity)
 end
 
@@ -378,41 +381,6 @@ function _update_secondary_accumulators!(
         end
     end
     accumulators
-end
-
-"""
-$(SIGNATURES)
-
-Soft CFAR secondary-code detector, the analog of `_detect_bit_edge_cfar` for short
-overlays (see [`uses_soft_secondary_code_detection`](@ref)). Unlike the hard
-`_secondary_code_search` it rejects the noise-driven false locks a short template
-match is prone to.
-
-Fires only when the latest code period ends the winning rotation's period, so the
-upcoming integration starts at secondary chip 0 and `SyncResult.phase` is `0`.
-`polarity` is the sign of the winning period's overlay-wiped sum.
-"""
-function _detect_secondary_code_cfar(
-    accumulators::SyncHypothesisAccumulators,
-    secondary_code_length::Int,
-    confidence::Float64,
-    num_code_periods::Int,
-)
-    accepted, peak_rotation = _cfar_decide(
-        accumulators.mean_bin_energy,
-        accumulators.bin_energy_sum_of_squared_deviations,
-        num_code_periods,
-        secondary_code_length,
-        confidence,
-    )
-    accepted || return SyncResult(false, 0, Int8(0))
-
-    num_code_periods % secondary_code_length != peak_rotation &&
-        return SyncResult(false, 0, Int8(0))
-
-    @inbounds polarity =
-        accumulators.last_bin_polarity[peak_rotation+1] < 0 ? Int8(-1) : Int8(+1)
-    SyncResult(true, 0, polarity)
 end
 
 """
@@ -558,33 +526,14 @@ struct BitSynchronizer{B<:Unsigned}
 end
 
 # Untyped default: a `UInt128` prompt-sign history.
-function BitSynchronizer()
-    BitSynchronizer{UInt128}(
-        zero(UInt128),
-        0,
-        false,
-        0,
-        Int8(0),
-        complex(0.0, 0.0),
-        0,
-        Float32[],
-        SyncHypothesisAccumulators(),
-    )
-end
+BitSynchronizer() = BitSynchronizer{UInt128}()
 
-function BitSynchronizer{B}() where {B<:Unsigned}
-    BitSynchronizer{B}(
-        zero(B),
-        0,
-        false,
-        0,
-        Int8(0),
-        complex(0.0, 0.0),
-        0,
-        Float32[],
-        SyncHypothesisAccumulators(),
-    )
-end
+BitSynchronizer{B}() where {B<:Unsigned} =
+    _unsynced_bit_synchronizer(B, Float32[], SyncHypothesisAccumulators())
+
+# A bit synchronizer before sync, on the given soft bits and hypothesis accumulators.
+@inline _unsynced_bit_synchronizer(::Type{B}, soft_bits, hypothesis_accumulators) where {B<:Unsigned} =
+    BitSynchronizer{B}(zero(B), 0, false, 0, Int8(0), complex(0.0, 0.0), 0, soft_bits, hypothesis_accumulators)
 
 # A copy of `bit_synchronizer` with the given fields replaced; the soft bits are the same
 # vector.
@@ -692,7 +641,7 @@ Takes effect at the next detector call.
 $(SIGNATURES)
 
 Whether `signal`'s bit edge is found by the soft CFAR detector
-`_detect_bit_edge_cfar` instead of the hard `detect_sync`.
+`_detect_cfar` instead of the hard `detect_sync`.
 
 By default true when a bit spans **more than one** code period **and** there is no
 secondary code (currently only GPS L1 C/A). BeiDou B1I/B3I do not qualify even on
@@ -713,7 +662,7 @@ Constant-folded per signal type.
 $(SIGNATURES)
 
 Whether `signal`'s secondary code is found by the soft CFAR detector
-`_detect_secondary_code_cfar` instead of the hard `_secondary_code_search`.
+`_detect_cfar` instead of the hard `_secondary_code_search`.
 
 Each bin integrates one secondary period coherently, so the default enables it
 only for short codes, `1 < N ≤ 100`; the 1800-chip overlays (18 s) are too long to
@@ -813,19 +762,16 @@ function update_bit_sync!(
 end
 
 # Back to pre-sync after an overshoot; `soft_bits` is kept (same vector).
-@inline function _resync_bit_synchronizer(bit_synchronizer::BitSynchronizer{B}) where {B<:Unsigned}
-    BitSynchronizer{B}(
-        zero(B),
-        0,
-        false,
-        0,
-        Int8(0),
-        complex(0.0, 0.0),
-        0,
+@inline _resync_bit_synchronizer(bit_synchronizer::BitSynchronizer{B}) where {B<:Unsigned} =
+    _unsynced_bit_synchronizer(
+        B,
         bit_synchronizer.soft_bits,
         _reset_hypothesis_accumulators!(bit_synchronizer.hypothesis_accumulators),
     )
-end
+
+# An unsynchronised bit synchronizer reusing `bit_synchronizer`'s vectors, emptied in place.
+_fresh_bit_synchronizer(bit_synchronizer::BitSynchronizer) =
+    (empty!(bit_synchronizer.soft_bits); _resync_bit_synchronizer(bit_synchronizer))
 
 function _update_sync_search(
     signal,
@@ -857,7 +803,7 @@ function _update_sync_search(
             num_prompt_signs - 1,
             code_periods_per_bit,
         )
-        sync = _detect_bit_edge_cfar(
+        sync = _detect_cfar(
             hypothesis_accumulators,
             code_periods_per_bit,
             get_sync_detection_confidence(signal),
@@ -875,7 +821,7 @@ function _update_sync_search(
             signal,
             prn,
         )
-        sync = _detect_secondary_code_cfar(
+        sync = _detect_cfar(
             hypothesis_accumulators,
             secondary_code_length,
             get_sync_detection_confidence(signal),

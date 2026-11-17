@@ -7,8 +7,7 @@ using TrackingLoops:
     _norm_quantile,
     _t_quantile,
     _cfar_decide,
-    _detect_bit_edge_cfar,
-    _detect_secondary_code_cfar,
+    _detect_cfar,
     _seed_hypothesis_accumulators!,
     _update_hypothesis_accumulators!,
     _fold_bin_energy!,
@@ -99,12 +98,12 @@ function _bb_detect_over(prompts, confidence; upto = 0)
             BB_L1CA_CODE_PERIODS_PER_BIT,
         )
         result =
-            _detect_bit_edge_cfar(accumulators, BB_L1CA_CODE_PERIODS_PER_BIT, confidence, code_period_number)
+            _detect_cfar(accumulators, BB_L1CA_CODE_PERIODS_PER_BIT, confidence, code_period_number)
         upto == 0 && result.found && return code_period_number
         upto == code_period_number && return result
     end
     return upto == 0 ? 0 :
-           _detect_bit_edge_cfar(accumulators, BB_L1CA_CODE_PERIODS_PER_BIT, confidence, length(prompts))
+           _detect_cfar(accumulators, BB_L1CA_CODE_PERIODS_PER_BIT, confidence, length(prompts))
 end
 
 @testset "The soft bit-edge detector needs at least two bins" begin
@@ -169,7 +168,7 @@ end
             code_period_number - 1,
             BB_L1CA_CODE_PERIODS_PER_BIT,
         )
-        if _detect_bit_edge_cfar(accumulators, BB_L1CA_CODE_PERIODS_PER_BIT, 0.999, code_period_number).found
+        if _detect_cfar(accumulators, BB_L1CA_CODE_PERIODS_PER_BIT, 0.999, code_period_number).found
             found = true
             break
         end
@@ -273,7 +272,7 @@ function _bb_secondary_detect_over(prompts, signal, prn, confidence; upto = 0)
     local result
     for (code_period_number, prompt) in enumerate(prompts)
         _update_secondary_accumulators!(accumulators, ComplexF64(prompt), code_period_number - 1, N, signal, prn)
-        result = _detect_secondary_code_cfar(accumulators, N, confidence, code_period_number)
+        result = _detect_cfar(accumulators, N, confidence, code_period_number)
         upto == 0 && result.found && return code_period_number
         upto == code_period_number && return result
     end
