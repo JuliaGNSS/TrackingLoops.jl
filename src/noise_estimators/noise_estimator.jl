@@ -13,14 +13,18 @@ for why per signal rather than per band, and why a density.
 
 # The interface
 
-Three required methods, all with a default on this abstract type:
+Three methods:
 
   - [`update_noise!`](@ref) — the **software** fill path, called only inside
-    Tracking.jl's `downconvert_and_correlate!`.
+    Tracking.jl's `downconvert_and_correlate!`; a no-op by default, for a source fed
+    from outside.
   - [`append_noise_observation!`](@ref) — the **hardware** fill path, parallel to
-    `Tracking.append_correlator_bank_output!`.
-  - [`get_noise_density`](@ref) — the signal's current density, zero while there is none
-    while nothing has been measured yet.
+    `Tracking.append_correlator_bank_output!`. Required.
+  - [`get_noise_density`](@ref) — the signal's current density, zero while nothing has
+    been measured yet. Required.
+
+A source that forgets a required method fails with a `MethodError` rather than drop
+its observations or report no floor in silence.
 
 A fourth, `TrackingLoops.get_num_squared_magnitudes`, is optional and only matters to a
 source that reports a **covariance**.
@@ -67,12 +71,16 @@ Fields:
   - `prn` — the PRN whose code measured it; also carries the software source's
     PRN-rotation position (see [`noise_despreads`](@ref)).
 """
-struct NoiseObservation{D,T}
+struct NoiseObservation{D}
     noise_density::D
     num_squared_magnitudes::Int
-    duration::T
+    duration::typeof(1.0s)
     prn::Int16
 end
+
+# A duration of any time unit and number type is held in seconds.
+NoiseObservation(noise_density::D, num_squared_magnitudes::Integer, duration, prn::Integer) where {D} =
+    NoiseObservation{D}(noise_density, num_squared_magnitudes, duration, prn)
 
 """
     NoiseDensity
@@ -103,18 +111,13 @@ NumAnts(::Type{NoiseDensity}) = NumAnts(1)
 NumAnts(::Type{<:SMatrix{M,M}}) where {M} = NumAnts(M)
 NumAnts(estimator::AbstractNoiseDensityEstimator) = NumAnts(noise_density_type(estimator))
 
-# Retype an observation onto a window's own `{D,T}`, for one assembled by hand
-# (the builders already emit the canonical pair). The identity method is explicit
+# Retype an observation onto a window's own density type `D`, for one assembled by hand
+# (the builders already emit the canonical one). The identity method is explicit
 # because the retyping method below is more specific than Base's
 # `convert(::Type{T}, ::T)`; with it, the steady state converts nothing by dispatch.
-Base.convert(::Type{NoiseObservation{D,T}}, o::NoiseObservation{D,T}) where {D,T} = o
-Base.convert(::Type{NoiseObservation{D,T}}, o::NoiseObservation) where {D,T} =
-    NoiseObservation{D,T}(
-        convert(D, o.noise_density),
-        o.num_squared_magnitudes,
-        convert(T, o.duration),
-        o.prn,
-    )
+Base.convert(::Type{NoiseObservation{D}}, o::NoiseObservation{D}) where {D} = o
+Base.convert(::Type{NoiseObservation{D}}, o::NoiseObservation) where {D} =
+    NoiseObservation{D}(convert(D, o.noise_density), o.num_squared_magnitudes, o.duration, o.prn)
 
 """
 $(SIGNATURES)
@@ -327,13 +330,16 @@ update_noise!(
     context,
 ) = estimator
 
+function append_noise_observation! end
+
 """
-$(SIGNATURES)
+    append_noise_observation!(estimator::AbstractNoiseDensityEstimator, observation::NoiseObservation) -> estimator
 
 Append one externally built [`NoiseObservation`](@ref) to `estimator`'s sliding
 window and return `estimator`. This is the **hardware** fill path, parallel to
 `Tracking.append_correlator_bank_output!`. The window is mutated in place, so this
-works through the immutable `TrackState`.
+works through the immutable `TrackState`. Every estimator implements it; there is no
+default.
 
 The `Tracking.TrackState` form selects the signal:
 
@@ -343,18 +349,21 @@ append_noise_observation!(track_state, obs, :GPSL1CA)   # explicit signal id
 append_noise_observation!(track_state, obs, GPSL1CA)    # or the signal type
 ```
 """
-append_noise_observation!(estimator::AbstractNoiseDensityEstimator, ::NoiseObservation) = estimator
+append_noise_observation!(::AbstractNoiseDensityEstimator, ::NoiseObservation)
+
+function get_noise_density end
 
 """
-$(SIGNATURES)
+    get_noise_density(estimator::AbstractNoiseDensityEstimator) -> density
 
 The signal's current noise density `N₀`, a zero of [`noise_density_type`](@ref) while
 there is none; [`get_noise_density_and_status`](@ref) says why.
 
 A **read, not a drain**: the window keeps sliding across chunks and `track!`
 calls. The returned quantity has dimension `1/Hz` (see [Noise estimation](@ref)).
+Every estimator implements it; there is no default.
 """
-get_noise_density(estimator::AbstractNoiseDensityEstimator) = zero(noise_density_type(estimator))
+get_noise_density(::AbstractNoiseDensityEstimator)
 
 """
 $(SIGNATURES)
@@ -368,8 +377,6 @@ Fields:
     period sets the despread length and its code family is what the
     reference despreads with, so the measurement carries that signal's spectral
     weighting.
-  - `chunk_index` — the index of the chunk being measured, on the same grid
-    `downconvert_and_correlate!` uses.
   - `downconvert_and_correlate` — the backend running this call. A software
     source **must** despread on it: the one- and two-bit accumulators are
     popcount counts, so another kernel would put `|P|²` and `N̂₀` on different
@@ -380,7 +387,6 @@ carries no satellite state; see [`CorrelatorNoiseDensityEstimator`](@ref).
 """
 struct NoiseUpdateContext{S<:AbstractGNSSSignal,DC}
     signal::S
-    chunk_index::Int
     downconvert_and_correlate::DC
 end
 

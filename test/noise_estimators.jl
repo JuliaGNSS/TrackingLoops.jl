@@ -18,8 +18,8 @@ function white_noise_dump(σ², n, seed)
     (; accumulation, sample_power)
 end
 
-# A hardware-style source that keeps no window: it reports no density and no
-# squared-magnitude count, and relies on every interface default.
+# A hardware-style source that keeps no window and implements none of the interface:
+# only the software fill path and the counts have defaults.
 struct ExternalOnlyNoiseDensityEstimator <: AbstractNoiseDensityEstimator end
 
 # A stand-in for a software backend: Tracking.jl implements `despread_noise!` for
@@ -193,24 +193,24 @@ end
 
 @testset "A noise observation lands whatever number type the producer used" begin
     f32 = calc_noise_observation(complex(1.0f0, 0.0f0), 4000, 4.0f6Hz)
-    @test f32 isa NoiseObservation{NoiseDensity,typeof(1.0s)}
+    @test f32 isa NoiseObservation{NoiseDensity}
     e32 = CorrelatorNoiseDensityEstimator()
     append_noise_observation!(e32, f32)
     @test length(e32) == 1
     @test ustrip(Hz^-1, get_noise_density(e32)) ≈ 6.25e-11 rtol = 1e-6
 
     mixed = calc_noise_observation_from_correlator_powers(1.0, 1, 4000, 4_000_000Hz; duration = 1ms)
-    @test mixed isa NoiseObservation{NoiseDensity,typeof(1.0s)}
+    @test mixed isa NoiseObservation{NoiseDensity}
     @test mixed.duration === 1.0e-3s
 
     # A hand-assembled observation is retyped on append rather than dropped.
     hand = NoiseObservation(1.0f-10 / 1.0f0Hz, 1, 1.0f-3s, Int16(3))
-    @test !(hand isa NoiseObservation{NoiseDensity,typeof(1.0s)})
-    converted = convert(NoiseObservation{NoiseDensity,typeof(1.0s)}, hand)
-    @test converted isa NoiseObservation{NoiseDensity,typeof(1.0s)}
+    @test !(hand isa NoiseObservation{NoiseDensity})
+    converted = convert(NoiseObservation{NoiseDensity}, hand)
+    @test converted isa NoiseObservation{NoiseDensity}
     @test converted.prn == 3
     # Converting an already-canonical observation is the identity.
-    @test convert(NoiseObservation{NoiseDensity,typeof(1.0s)}, converted) === converted
+    @test convert(NoiseObservation{NoiseDensity}, converted) === converted
     ehand = CorrelatorNoiseDensityEstimator()
     append_noise_observation!(ehand, hand)
     @test length(ehand) == 1
@@ -290,23 +290,23 @@ end
     @test few_reads <= 128
 end
 
-@testset "The abstract noise estimator interface has no-op defaults" begin
+@testset "The abstract noise estimator interface requires filling and reading" begin
     estimator = ExternalOnlyNoiseDensityEstimator()
+    # The software fill path is a no-op for a source fed from outside.
     @test update_noise!(estimator, nothing, 1:10, nothing) === estimator
+    # Filling and reading have no silent defaults: a source that forgets one fails.
     obs = calc_noise_observation_from_samples(4000.0, 4000, 4e6Hz)
-    @test append_noise_observation!(estimator, obs) === estimator
-    @test get_noise_density(estimator) == zero(NoiseDensity)
+    @test_throws MethodError append_noise_observation!(estimator, obs)
+    @test_throws MethodError get_noise_density(estimator)
     @test noise_density_type(estimator) === NoiseDensity
     @test isnothing(get_num_squared_magnitudes(estimator))
-    @test get_noise_density_and_status(estimator) == (zero(NoiseDensity), NOISE_WINDOW_EMPTY)
     @test (GPSL1CA = CorrelatorNoiseDensityEstimator(), E1B = estimator) isa NoiseDensityEstimators
 end
 
 @testset "update_noise! forwards to the backend's despread_noise!" begin
     estimator = CorrelatorNoiseDensityEstimator()
     samples = fill(complex(1.0, 1.0), 8000)
-    context = TrackingLoops.NoiseUpdateContext(GPSL1CA(), 3, FakeDespreadBackend())
-    @test context.chunk_index == 3
+    context = TrackingLoops.NoiseUpdateContext(GPSL1CA(), FakeDespreadBackend())
     @test update_noise!(estimator, samples, 1:4000, context) === estimator
     @test length(estimator) == 1
     # |x|² = 2 per sample ⇒ N₀ = 2 / f_s.
