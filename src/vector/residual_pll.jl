@@ -216,18 +216,24 @@ end
 # the integration's end on; within the half it takes the later commands to have run there.
 @inline function _residual_phase_after(loop_state, samples_since_end, fs, nco_history)
     (; residual_pll, ramp) = loop_state
-    previous_cycles = loop_state.last_replica_tail
-    isnan(previous_cycles) && return NaN
-    previous_span = residual_pll.last_prompt_span
-    previous_end_sample_index = previous_span.end_sample_index
-    command = ustrip(Hz, calc_mean_nco_command(nco_history, previous_end_sample_index, previous_end_sample_index + samples_since_end).carrier_doppler)
+    isnan(loop_state.last_replica_tail) && return NaN
     _predicted_phase(
         residual_pll,
         ramp,
-        samples_since_end + previous_span.num_samples / 2,
+        samples_since_end + residual_pll.last_prompt_span.num_samples / 2,
         fs,
-        previous_cycles + command * samples_since_end / fs,
+        _replica_cycles_after(loop_state, samples_since_end, fs, nco_history),
     )
+end
+
+# The cycles of the replica's carrier from the middle of the latest prompt's integration to
+# `samples_since_end` samples (at `fs`, Hz) after its end: its second half
+# (`last_replica_tail`), then the commands it ran on from the end, through any gap.
+@inline function _replica_cycles_after(loop_state, samples_since_end, fs, nco_history)
+    samples_since_end == 0 && return loop_state.last_replica_tail
+    end_sample_index = loop_state.residual_pll.last_prompt_span.end_sample_index
+    command = calc_mean_nco_command(nco_history, end_sample_index, end_sample_index + samples_since_end).carrier_doppler
+    loop_state.last_replica_tail + ustrip(Hz, command) * (samples_since_end / fs)
 end
 
 # One integration through a `VectorLoopState`'s residual PLL: predict the phase to the

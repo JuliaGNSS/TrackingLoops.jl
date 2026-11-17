@@ -108,7 +108,7 @@ function _step_vector_integration(
     #    update, its membership and NCO commands. Only a satellite that latched the pending
     #    epoch runs an overdue update, and it applied every earlier update then.
     end_time = _end_time(post_correlation_state)
-    _run_overdue_navigation_update!(nav_processor, slot, post_correlation_state)
+    _run_overdue_navigation_update!(nav_processor, slot, post_correlation_state, end_time)
     is_driver && (loop_state = _apply_nav_filter_feedback(tracking_loop, group, slot, loop_state, post_correlation_state, nco_history, application_sample_index))
     # 3. Latch the measurements at the measurement epoch: the integration's half of the
     #    satellite's snapshot, complete once both signals' halves are in.
@@ -283,6 +283,22 @@ function _crosses_pending_epoch(nav_processor::NavigationProcessor, slot::Vector
         _epoch_sample_index(nav_processor, epoch_index, _sampling_frequency_hz(post_correlation_state)) < post_correlation_state.last_sample_index
 end
 
+# The chips the replica of `signal`, in a slot's `role` (`slot.driver` or `slot.decoding`),
+# advances from the role's last integration end to the pending epoch, and the epoch's
+# sample index.
+function _chips_to_pending_epoch(nav_processor::NavigationProcessor, role, signal, post_correlation_state::PostCorrelationState, nco_history)
+    epoch_sample_index =
+        _epoch_sample_index(nav_processor, nav_processor.pending_epoch_index, _sampling_frequency_hz(post_correlation_state))
+    chips = _replica_chips(
+        nco_history,
+        role.last_end_sample_index,
+        epoch_sample_index,
+        post_correlation_state.sampling_frequency,
+        get_chip_rate(signal),
+    )
+    chips, epoch_sample_index
+end
+
 # The driver's half of the snapshot at the pending epoch if this integration crosses it:
 # replica code phase, Dopplers, C/N₀ (from the integration's estimator) and the state with
 # its accumulated discriminators. Returns the state, its accumulators emptied if it
@@ -297,10 +313,8 @@ function _snapshot_driver!(
 )
     _crosses_pending_epoch(nav_processor, slot, slot.driver_epoch_index, slot.driver, post_correlation_state) ||
         return loop_state
-    fs = post_correlation_state.sampling_frequency
-    epoch_sample_index = _epoch_sample_index(nav_processor, nav_processor.pending_epoch_index, _sampling_frequency_hz(post_correlation_state))
-    chips_to_epoch =
-        _replica_chips(nco_history, slot.driver.last_end_sample_index, epoch_sample_index, fs, get_chip_rate(group.driver_signal))
+    chips_to_epoch, epoch_sample_index =
+        _chips_to_pending_epoch(nav_processor, slot.driver, group.driver_signal, post_correlation_state, nco_history)
     coherent_integration_time = uconvert(s, _coherent_integration_time(post_correlation_state))
     slot.pending_snapshot = SatelliteSnapshot(
         slot.pending_snapshot;
@@ -329,11 +343,8 @@ function _snapshot_decoding!(
 )
     _crosses_pending_epoch(nav_processor, slot, slot.decoding_epoch_index, slot.decoding, post_correlation_state) ||
         return nothing
-    fs = post_correlation_state.sampling_frequency
     signal = group.decoding_signal
-    epoch_sample_index = _epoch_sample_index(nav_processor, nav_processor.pending_epoch_index, _sampling_frequency_hz(post_correlation_state))
-    chips_to_epoch =
-        _replica_chips(nco_history, slot.decoding.last_end_sample_index, epoch_sample_index, fs, get_chip_rate(signal))
+    chips_to_epoch, _ = _chips_to_pending_epoch(nav_processor, slot.decoding, signal, post_correlation_state, nco_history)
     slot.pending_snapshot = SatelliteSnapshot(
         slot.pending_snapshot;
         decoder = slot.decoding.decoder,
@@ -444,17 +455,23 @@ function _run_navigation_update_if_due!(nav_processor::NavigationProcessor, time
     true
 end
 
-# If the slot has snapshotted the pending epoch and is already past the next one while
+# If the slot has snapshotted the pending epoch and is already past the next one (the
+# integration ended at `end_time`, s) while
 # the pending one still waits for others, run that update now with the satellites that
 # made it. Returns whether it ran. Only a satellite behind by more than an update interval, yet
 # not stale, holds an epoch up; the update then moves the pending epoch past
 # the satellites stepped before (see `_run_navigation_update!`), so the next one runs as due.
-function _run_overdue_navigation_update!(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, post_correlation_state::PostCorrelationState)
+function _run_overdue_navigation_update!(
+    nav_processor::NavigationProcessor,
+    slot::VectorTrackingSlot,
+    post_correlation_state::PostCorrelationState,
+    end_time,
+)
     slot.snapshot_epoch_index == nav_processor.pending_epoch_index || return false
     next_epoch_sample_index =
         _epoch_sample_index(nav_processor, nav_processor.pending_epoch_index + 1, _sampling_frequency_hz(post_correlation_state))
     post_correlation_state.last_sample_index > next_epoch_sample_index || return false
-    _run_navigation_update!(nav_processor, _end_time(post_correlation_state))
+    _run_navigation_update!(nav_processor, end_time)
     true
 end
 

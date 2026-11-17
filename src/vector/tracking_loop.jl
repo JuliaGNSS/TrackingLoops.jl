@@ -527,17 +527,16 @@ end
 )
     fs = _sampling_frequency_hz(post_correlation_state)
     coherent_integration_time = post_correlation_state.last_num_integrated_samples / fs
-    previous_cycles = loop_state.last_replica_tail
-    integration_start_sample_index = _integration_start(post_correlation_state)
-    # The previous integration's end, known once the residual PLL has stepped on its prompt.
+    # The gap since the previous integration's end, known once the residual PLL has stepped
+    # on its prompt.
     previous_span = loop_state.residual_pll.last_prompt_span
-    previous_end_sample_index = _has_span(previous_span) ? previous_span.end_sample_index : integration_start_sample_index
-    num_gap_samples = max(0, integration_start_sample_index - previous_end_sample_index)
-    gap = num_gap_samples / fs
-    gap_cycles = num_gap_samples == 0 ? 0.0 :
-        ustrip(Hz, calc_mean_nco_command(nco_history, previous_end_sample_index, integration_start_sample_index).carrier_doppler) * gap
-    residual_pll, wiped_prompt =
-        _step_residual_pll(loop_state, post_correlation_state, previous_cycles + gap_cycles + replica_halves.first)
+    num_gap_samples =
+        _has_span(previous_span) ? max(0, _integration_start(post_correlation_state) - previous_span.end_sample_index) : 0
+    residual_pll, wiped_prompt = _step_residual_pll(
+        loop_state,
+        post_correlation_state,
+        _replica_cycles_after(loop_state, num_gap_samples, fs, nco_history) + replica_halves.first,
+    )
     host_cn0 = estimate_cn0(post_correlation_state.cn0_estimator, coherent_integration_time * s)
     residual_pll = _with_lock_test(
         residual_pll,
