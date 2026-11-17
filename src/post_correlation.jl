@@ -261,6 +261,15 @@ before sync.
 get_bit_polarity(state::PostCorrelationState) =
     is_bit_or_secondary_code_synced(state) ? state.bit_synchronizer.bit_polarity : Int8(0)
 
+"""
+    estimate_cn0(state::PostCorrelationState) -> dB-Hz
+
+The C/N₀ of the state's estimator at the latest integration's coherent integration
+time, the samples it integrated over the sampling frequency; `-Inf` dB-Hz before the
+first integration (see [`AbstractCN0Estimator`](@ref)).
+"""
+estimate_cn0(state::PostCorrelationState) = estimate_cn0(state, _coherent_integration_time(state))
+
 estimate_cn0(state::PostCorrelationState, coherent_integration_time) =
     estimate_cn0(state.cn0_estimator, coherent_integration_time)
 
