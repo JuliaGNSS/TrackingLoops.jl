@@ -356,7 +356,7 @@ end
 # downstream per-satellite buffers align with the member vector. Plain data, so it is
 # stored inline and refilled without allocating.
 struct VectorTrackingObservation
-    group::Int             # position of the member's signal group
+    group_index::Int       # position of the member's signal group
     slot_index::Int        # position in that group's satellite vector
     prn::Int
     clock_bias_index::Int  # clock-bias state of this member's time system
