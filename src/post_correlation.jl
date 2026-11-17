@@ -470,22 +470,6 @@ reset_sync!(state::PostCorrelationState) = PostCorrelationState(
     last_num_new_soft_bits = 0,
 )
 
-# An unsynchronised bit synchronizer reusing `bit_synchronizer`'s vectors, emptied in place.
-function _fresh_bit_synchronizer(bit_synchronizer::BitSynchronizer{B}) where {B}
-    empty!(bit_synchronizer.soft_bits)
-    BitSynchronizer{B}(
-        zero(B),
-        0,
-        false,
-        0,
-        Int8(0),
-        complex(0.0, 0.0),
-        0,
-        bit_synchronizer.soft_bits,
-        _reset_hypothesis_accumulators!(bit_synchronizer.hypothesis_accumulators),
-    )
-end
-
 # Rotates a component's bit synchronizer prompt onto the real axis, given the loops lock
 # the driver there: a bit-identical no-op (`cispi(0)`) for an in-phase component,
 # `±90°` for a quadrature one (GPS L5 / Galileo E5a I vs Q), and back by the residual

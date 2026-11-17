@@ -343,7 +343,7 @@ function _sig_b1i_soft_sync(prn, code_periods_per_bit; num_periods, amplitude = 
         chip = GNSSSignals.secondary_value(overlay, prn, mod(i - SIG_B1I_BIT_OFFSET, N))
         prompt = amplitude * bit * chip + randn(rng, ComplexF64)
         TrackingLoops._update_secondary_accumulators!(accumulators, ComplexF64(prompt), i, N, signal, prn)
-        result = TrackingLoops._detect_secondary_code_cfar(accumulators, N, 0.999, i + 1)
+        result = TrackingLoops._detect_cfar(accumulators, N, 0.999, i + 1)
         result.found && return (code_period = i + 1, rotation = mod(i + 1, N))
     end
     nothing
