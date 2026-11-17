@@ -769,15 +769,16 @@ end
     # `fll_disc` measures f_incoming − f_replica, so a positive reading must ADD to the
     # replica Doppler the rate is measured from; the discriminator enters with its own
     # sign, not flipped. Pins the sign so a re-introduced negation is caught.
-    base = init_loop_state(VectorTrackingLoop(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
-    pos = VectorLoopState(base; fll_disc_sum = (1, 3.0Hz))
-    neg = VectorLoopState(base; fll_disc_sum = (2, -8.0Hz))
-    empty_acc = VectorLoopState(base; fll_disc_sum = (0, 0.0Hz))
+    sums(code_disc_sum, fll_disc_sum) =
+        TL.DiscriminatorAccumulator(code_disc_sum, fll_disc_sum, (0.0Hz, 0.0Hz, 0.0Hz), 0.0s)
+    pos = sums((0, 0.0), (1, 3.0Hz))
+    neg = sums((0, 0.0), (2, -8.0Hz))
+    empty_acc = sums((0, 0.0), (0, 0.0Hz))
     @test TL.calc_mean_fll_disc(pos) ≈ 3.0
     @test TL.calc_mean_fll_disc(neg) ≈ -4.0
     @test TL.calc_mean_fll_disc(empty_acc) == 0.0
     # The DLL mean enters negated.
-    @test TL.calc_mean_code_disc_at_epoch(VectorLoopState(base; code_disc_sum = (2, 0.1)), 0.1) ≈ -0.05
+    @test TL.calc_mean_code_disc_at_epoch(sums((2, 0.1), (0, 0.0Hz)), 0.1) ≈ -0.05
 end
 
 @testset "The code measurement is moved from mid-interval to the epoch" begin
@@ -786,10 +787,16 @@ end
     # Without an NCO delay the advance is the correction's `c·Δt_nav/2`, bit for bit.
     for c_new in (0.37, -2.5, 1e-3), c_old in (0.0, 4.0, -1.1)
         state = TL._set_vector_commands(TL._set_vector_commands(base, c_old * Hz, TL.CarrierDopplerRamp(20.0 * Hz, 0.0 * Hz / s, 0.0 * s), 0.0s, ConstantNCOCommand(20.0Hz, 0.0Hz), 0, 1e6), c_new * Hz, TL.CarrierDopplerRamp(20.0 * Hz, 0.0 * Hz / s, 0.0 * s), 0.0s, ConstantNCOCommand(20.0Hz, 0.0Hz), 0, 1e6)
-        @test state.code_frequency_correction_history == (c_new * Hz, c_old * Hz, 0.0Hz)
-        @test TL.code_phase_advance(state, Δt_nav) === c_new * Δt_nav / 2
-        state = VectorLoopState(state; code_disc_sum = (4, 0.2))
-        @test TL.calc_mean_code_disc_at_epoch(state, Δt_nav) === -0.05 + c_new * Δt_nav / 2
+        discriminators = state.discriminators
+        @test discriminators.code_frequency_correction_history == (c_new * Hz, c_old * Hz, 0.0Hz)
+        @test TL.code_phase_advance(discriminators, Δt_nav) === c_new * Δt_nav / 2
+        discriminators = TL.DiscriminatorAccumulator(
+            (4, 0.2),
+            discriminators.fll_disc_sum,
+            discriminators.code_frequency_correction_history,
+            discriminators.feedback_delay,
+        )
+        @test TL.calc_mean_code_disc_at_epoch(discriminators, Δt_nav) === -0.05 + c_new * Δt_nav / 2
     end
     # Under an NCO delay the second half-interval ran on the corrections in effect before
     # the newest took effect: on `c₁` while the newest takes effect inside it or after the epoch, and
@@ -806,7 +813,7 @@ end
         (0.25, c₂ * 0.05),
     )
         state = TL._set_vector_commands(older, c₀ * Hz, TL.CarrierDopplerRamp(20.0 * Hz, 0.0 * Hz / s, 0.0 * s), L * s, ConstantNCOCommand(20.0Hz, 0.0Hz), 0, 1e6)
-        @test TL.code_phase_advance(state, Δt_nav) ≈ expected
+        @test TL.code_phase_advance(state.discriminators, Δt_nav) ≈ expected
     end
 end
 
@@ -815,17 +822,15 @@ end
     # accumulated, which the navigation filter cannot distinguish from a genuine zero
     # residual measured at full weight. `has_disc_sums` is the guard that keeps such a
     # member out of the measurement set.
-    base = init_loop_state(VectorTrackingLoop(GPSL1CA()), GPSL1CA(), 20.0Hz, 0.0Hz)
-    accumulated = VectorLoopState(base; code_disc_sum = (3, 0.06),
-        fll_disc_sum = (3, 6.0Hz))
-    nothing_accumulated = VectorLoopState(base; code_disc_sum = (0, 0.0),
-        fll_disc_sum = (0, 0.0Hz))
+    sums(code_disc_sum, fll_disc_sum) =
+        TL.DiscriminatorAccumulator(code_disc_sum, fll_disc_sum, (0.0Hz, 0.0Hz, 0.0Hz), 0.0s)
+    accumulated = sums((3, 0.06), (3, 6.0Hz))
+    nothing_accumulated = sums((0, 0.0), (0, 0.0Hz))
     @test TL.has_disc_sums(accumulated)
     @test !TL.has_disc_sums(nothing_accumulated)
     # An update without a frequency measurement — its only integration the first after a
     # (re)start — has no rate to measure, and is withheld too.
-    no_fll = VectorLoopState(base; code_disc_sum = (1, 0.02),
-        fll_disc_sum = (0, 0.0Hz))
+    no_fll = sums((1, 0.02), (0, 0.0Hz))
     @test !TL.has_disc_sums(no_fll)
     # The zero the helpers would otherwise hand to the filter is indistinguishable from a
     # measured zero — which is exactly why the guard is needed rather than the fallback.

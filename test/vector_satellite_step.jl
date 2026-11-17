@@ -122,7 +122,7 @@ function take_snapshot!(nav_processor, group, slot, decoder, epoch_sample_index;
     slot.driver.sampling_frequency = fs * Hz
     nco_history = ConstantNCOCommand(0.0Hz, code_doppler * Hz)
     post_correlation_state = nav_processor_integration(3, epoch_sample_index + 4000; signal = group.driver_signal)
-    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, nco_history)
+    TL._snapshot_driver!(nav_processor, group, slot, VectorLoopState(init_loop_state(ScalarTrackingLoop(), group.driver_signal, 0.0Hz, 0.0Hz), false), post_correlation_state, nco_history)
     TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, nco_history)
     TL._complete_snapshot!(nav_processor, group, slot)
     slot.snapshot.decoder.num_bits_since_time_reference, slot.snapshot.code_phase
@@ -172,7 +172,7 @@ end
     slot.driver_epoch_index = slot.decoding_epoch_index = slot.snapshot_epoch_index = typemin(Int)
     slot.driver.last_end_sample_index = slot.decoding.last_end_sample_index = 300_000
     post_correlation_state = nav_processor_integration(3, 304_000)
-    TL._snapshot_driver!(nav_processor, group, slot, group.prototype, post_correlation_state, ConstantNCOCommand(0.0Hz, 0.0Hz))
+    TL._snapshot_driver!(nav_processor, group, slot, VectorLoopState(init_loop_state(ScalarTrackingLoop(), group.driver_signal, 0.0Hz, 0.0Hz), false), post_correlation_state, ConstantNCOCommand(0.0Hz, 0.0Hz))
     TL._snapshot_decoding!(nav_processor, group, slot, post_correlation_state, ConstantNCOCommand(0.0Hz, 0.0Hz))
     TL._complete_snapshot!(nav_processor, group, slot)
     @test nav_processor.num_snapshots == 0
@@ -234,7 +234,7 @@ end
     ended!(fresh, 1.0)
     ended!(stale, 0.75)
     ended!(member, 0.7)
-    member.snapshot = TL.SatelliteSnapshot(member.snapshot; loop_state = TL._add_to_vector_loop(group.prototype))
+    member.snapshot = TL.SatelliteSnapshot(member.snapshot; vector_controlled = true)
     member.vector_controlled = true
     # The stale ones are not waited for…
     @test TL._all_snapshotted(true, group, nav_processor, 1.0)
@@ -378,7 +378,7 @@ end
     # `b` is a member of the vector loop, in the slot and in the state its host keeps.
     slot = group.slots[b.slot_index]
     b = TL._add_to_vector_loop(b)
-    slot.snapshot = TL.SatelliteSnapshot(slot.snapshot; loop_state = b)
+    slot.snapshot = TL.SatelliteSnapshot(slot.snapshot; vector_controlled = true, discriminators = b.discriminators)
     # Its integrations stop for longer than two update intervals: an update drops it and releases it, but
     # only in the slot — the host never hands the satellite the release.
     for k = 11:400

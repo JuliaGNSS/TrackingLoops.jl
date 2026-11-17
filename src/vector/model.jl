@@ -378,14 +378,42 @@ struct VectorTrackingObservation
     coherent_integration_time::Float64 # s, per coherent integration (sets DLL/FLL noise)
 end
 
+# What the navigation filter measures a member by, gathered by the driver's integrations
+# since the filter last read them:
+#
+#   - `code_disc_sum` / `fll_disc_sum`: `(count, sum)` of the DLL output (chips) and the
+#     FLL discriminator (Hz, integrations with a previous prompt only);
+#   - `code_frequency_correction_history` / `feedback_delay`: the last three code
+#     corrections, newest first, and how long after the measurement epoch the newest
+#     reached the replica; the code measurement uses them to move the mid-interval mean
+#     discriminator to the epoch (`code_phase_advance`).
+#
+# A satellite's state carries it and a snapshot copies it at the epoch.
+struct DiscriminatorAccumulator
+    code_disc_sum::Tuple{Int,Float64}
+    fll_disc_sum::Tuple{Int,typeof(1.0Hz)}
+    code_frequency_correction_history::NTuple{3,typeof(1.0Hz)}
+    feedback_delay::typeof(1.0s)
+end
+
+DiscriminatorAccumulator() = DiscriminatorAccumulator((0, 0.0), (0, 0.0Hz), (0.0Hz, 0.0Hz, 0.0Hz), 0.0s)
+
+# The accumulator with both sums emptied, keeping what steered the replica.
+_with_sums_emptied(discriminators::DiscriminatorAccumulator) = DiscriminatorAccumulator(
+    (0, 0.0),
+    (0, 0.0Hz),
+    discriminators.code_frequency_correction_history,
+    discriminators.feedback_delay,
+)
+
 # Code phase (chips) the code correction steered out over the second half of the update interval,
 # `∫_{Δt_nav/2}^{Δt_nav} c(t) dt`: moves the mean code discriminator from mid-interval to the epoch.
 # `c₀, c₁, c₂` are the last three corrections, newest first, each reaching the replica
 # `L` after its measurement epoch; `L = 0` gives `c₀·Δt_nav/2`. Valid for `L ≤ 2.5Δt_nav`
 # (`MAX_FEEDBACK_DELAY_UPDATE_INTERVALS`).
-function code_phase_advance(loop_state::VectorLoopState, Δt_nav)
-    c₀, c₁, c₂ = map(c -> ustrip(Hz, c), loop_state.code_frequency_correction_history)
-    L = ustrip(s, loop_state.feedback_delay)
+function code_phase_advance(discriminators::DiscriminatorAccumulator, Δt_nav)
+    c₀, c₁, c₂ = map(c -> ustrip(Hz, c), discriminators.code_frequency_correction_history)
+    L = ustrip(s, discriminators.feedback_delay)
     c₀ * Δt_nav / 2 - (c₀ - c₁) * clamp(L - Δt_nav / 2, 0.0, Δt_nav / 2) -
     (c₁ - c₂) * clamp(L - 3Δt_nav / 2, 0.0, Δt_nav / 2)
 end
@@ -396,9 +424,9 @@ const MAX_FEEDBACK_DELAY_UPDATE_INTERVALS = 2.5
 # Mean DLL discriminator (chips), advanced to the epoch by `code_phase_advance`; negated
 # because `dll_disc`'s sense is reversed. Zero when nothing was accumulated (see
 # `has_disc_sums`).
-function calc_mean_code_disc_at_epoch(loop_state::VectorLoopState, Δt_nav)
-    mean = _disc_mean(loop_state.code_disc_sum)
-    isnothing(mean) ? 0.0 : -mean + code_phase_advance(loop_state, Δt_nav)
+function calc_mean_code_disc_at_epoch(discriminators::DiscriminatorAccumulator, Δt_nav)
+    mean = _disc_mean(discriminators.code_disc_sum)
+    isnothing(mean) ? 0.0 : -mean + code_phase_advance(discriminators, Δt_nav)
 end
 
 # Mean FLL discriminator (Hz), `f_incoming − f_replica`, so it enters with its own sign:
@@ -417,8 +445,8 @@ end
 # in the measurement: on the simulator the residuals stay at `√R` and the integrated
 # rate error at a centimetre, but the lag-1 autocorrelation shortens from −1/2 (−0.3 at
 # 20 ms of delay, −0.1 at 50 ms).
-function calc_mean_fll_disc(loop_state::VectorLoopState)
-    mean = _disc_mean(loop_state.fll_disc_sum)
+function calc_mean_fll_disc(discriminators::DiscriminatorAccumulator)
+    mean = _disc_mean(discriminators.fll_disc_sum)
     isnothing(mean) ? 0.0 : ustrip(Hz, mean)
 end
 

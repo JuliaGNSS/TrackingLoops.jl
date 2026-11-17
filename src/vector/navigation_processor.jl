@@ -110,15 +110,15 @@ end
 # A satellite at a navigation epoch. A slot builds the pending epoch's from its two
 # signals' halves (`pending_snapshot`) and, once both are in, keeps it as the snapshot
 # the update reads (`snapshot`). The update does not write it: its decisions are the slot's.
-struct SatelliteSnapshot{D,E}
-    # The driver's half: the state at the epoch with the discriminators accumulated up to
-    # it, the replica's code phase there
-    # (chips; `NaN` if not reported), the Dopplers commanded there, the driver's C/N₀,
-    # coherent integration time and early-late spacing.
-    loop_state::E
+struct SatelliteSnapshot{D}
+    # The driver's half: whether the filter controlled its NCOs at the epoch, the
+    # discriminators it accumulated up to it, the replica's code phase there (chips; `NaN`
+    # if not reported), the carrier Doppler commanded there, the driver's C/N₀, coherent
+    # integration time and early-late spacing.
+    vector_controlled::Bool
+    discriminators::DiscriminatorAccumulator
     driver_code_phase::Float64
-    carrier_doppler::typeof(1.0Hz)
-    code_doppler::typeof(1.0Hz)
+    replica_carrier_doppler::typeof(1.0Hz)
     cn0::typeof(1.0dBHz)
     coherent_integration_time::typeof(1.0s)
     early_late_spacing::Float64
@@ -136,10 +136,10 @@ end
 
 SatelliteSnapshot(
     snapshot::SatelliteSnapshot;
-    loop_state = snapshot.loop_state,
+    vector_controlled = snapshot.vector_controlled,
+    discriminators = snapshot.discriminators,
     driver_code_phase = snapshot.driver_code_phase,
-    carrier_doppler = snapshot.carrier_doppler,
-    code_doppler = snapshot.code_doppler,
+    replica_carrier_doppler = snapshot.replica_carrier_doppler,
     cn0 = snapshot.cn0,
     coherent_integration_time = snapshot.coherent_integration_time,
     early_late_spacing = snapshot.early_late_spacing,
@@ -149,10 +149,10 @@ SatelliteSnapshot(
     measurement_ready = snapshot.measurement_ready,
     positioning_ready = snapshot.positioning_ready,
 ) = typeof(snapshot)(
-    loop_state,
+    vector_controlled,
+    discriminators,
     driver_code_phase,
-    carrier_doppler,
-    code_doppler,
+    replica_carrier_doppler,
     cn0,
     coherent_integration_time,
     early_late_spacing,
@@ -165,7 +165,7 @@ SatelliteSnapshot(
 
 # One satellite of the navigation processor. A slot is never deleted: a dropped satellite
 # leaves it, with its storage, for the next one to reuse.
-mutable struct VectorTrackingSlot{D,E<:VectorLoopState}
+mutable struct VectorTrackingSlot{D}
     prn::Int
     occupied::Bool
     # The slot_generation holding the slot; a state of an older one registers again.
@@ -181,8 +181,8 @@ mutable struct VectorTrackingSlot{D,E<:VectorLoopState}
     driver_epoch_index::Int
     decoding_epoch_index::Int
     snapshot_epoch_index::Int
-    pending_snapshot::SatelliteSnapshot{D,E}
-    snapshot::SatelliteSnapshot{D,E}
+    pending_snapshot::SatelliteSnapshot{D}
+    snapshot::SatelliteSnapshot{D}
     # What the latest update decided, for the satellite to apply: whether it is in the
     # vector loop (from its snapshot's state until an update admits or releases it), why it
     # was released, and the update and member index of its commands.
@@ -192,14 +192,22 @@ mutable struct VectorTrackingSlot{D,E<:VectorLoopState}
     member_index::Int
 end
 
-function VectorTrackingSlot(
-    decoding_signal::AbstractGNSSSignal,
-    prn::Integer,
-    loop_state::VectorLoopState,
-    prompt_history_length::Int,
-)
+function VectorTrackingSlot(decoding_signal::AbstractGNSSSignal, prn::Integer, prompt_history_length::Int)
     decoder = GNSSDecoderState(decoding_signal, prn)
-    snapshot = SatelliteSnapshot(loop_state, NaN, 0.0Hz, 0.0Hz, -Inf * dBHz, 0.001s, 0.5, decoder, false, 0.0, false, false)
+    snapshot = SatelliteSnapshot(
+        false,
+        DiscriminatorAccumulator(),
+        NaN,
+        0.0Hz,
+        -Inf * dBHz,
+        0.001s,
+        0.5,
+        decoder,
+        false,
+        0.0,
+        false,
+        false,
+    )
     VectorTrackingSlot(
         Int(prn),
         false,
@@ -214,7 +222,7 @@ function VectorTrackingSlot(
         typemin(Int),
         snapshot,
         snapshot,
-        loop_state.vector_controlled,
+        false,
         VT_NOT_RELEASED,
         -1,
         0,
@@ -222,28 +230,26 @@ function VectorTrackingSlot(
 end
 
 # The slots of one ranging signal: the driver, the signal whose navigation data they
-# decode (the driver itself for a plain signal), the `prototype` state a new slot starts
-# from and the length of a slot's prompt history (`_prompt_history_length`).
-struct VectorTrackingSlotGroup{S<:AbstractGNSSSignal,DS<:AbstractGNSSSignal,V<:VectorTrackingSlot,E<:VectorLoopState}
+# decode (the driver itself for a plain signal) and the length of a slot's prompt history
+# (`_prompt_history_length`).
+struct VectorTrackingSlotGroup{S<:AbstractGNSSSignal,DS<:AbstractGNSSSignal,V<:VectorTrackingSlot}
     driver_signal::S
     decoding_signal::DS
     slots::Vector{V}
-    prototype::E
     prompt_history_length::Int
 end
 
 function VectorTrackingSlotGroup(
     driver_signal::AbstractGNSSSignal,
     decoding_signal::AbstractGNSSSignal,
-    prototype::VectorLoopState,
     capacity,
     navigation_update_interval,
 )
     prompt_history_length = _prompt_history_length(driver_signal, decoding_signal, navigation_update_interval)
-    # Inactive slots need a valid decoder prototype; the receiver validates tracked PRNs.
-    prototype_prn = first(get_supported_prns(decoding_signal))
-    slots = [VectorTrackingSlot(decoding_signal, prototype_prn, prototype, prompt_history_length) for _ = 1:capacity]
-    VectorTrackingSlotGroup(driver_signal, decoding_signal, sizehint!(slots, 2 * capacity), prototype, prompt_history_length)
+    # Inactive slots need a valid decoder; the receiver validates tracked PRNs.
+    placeholder_prn = first(get_supported_prns(decoding_signal))
+    slots = [VectorTrackingSlot(decoding_signal, placeholder_prn, prompt_history_length) for _ = 1:capacity]
+    VectorTrackingSlotGroup(driver_signal, decoding_signal, sizehint!(slots, 2 * capacity), prompt_history_length)
 end
 
 """
@@ -462,8 +468,7 @@ end
 
 function NavigationProcessor(
     config::NavFilterConfig,
-    pairs::Tuple,
-    scalar_loop::AbstractTrackingLoop;
+    pairs::Tuple;
     navigation_update_interval,
     min_tracking_cn0::typeof(1.0dBHz),
     satellite_capacity_per_signal::Int,
@@ -476,8 +481,7 @@ function NavigationProcessor(
     model = NavFilterModel(config, layout, uconvert(s, navigation_update_interval))
     n = num_nav_states(config, layout)
     groups = map(pairs) do (signal, decoding_signal)
-        prototype = VectorLoopState(init_loop_state(scalar_loop, signal, 0.0Hz, 0.0Hz), false)
-        VectorTrackingSlotGroup(signal, decoding_signal, prototype, satellite_capacity_per_signal, navigation_update_interval)
+        VectorTrackingSlotGroup(signal, decoding_signal, satellite_capacity_per_signal, navigation_update_interval)
     end
     max_members = satellite_capacity_per_signal * length(signals)
     signal_observations = map(_signal_observation_buffer, groups)
@@ -711,7 +715,7 @@ _is_positioning_ready(slot::VectorTrackingSlot) = slot.in_update && slot.snapsho
     decoder = slot.snapshot.decoder,
     signal = signal,
     code_phase = slot.snapshot.code_phase,
-    carrier_doppler = slot.snapshot.carrier_doppler,
+    carrier_doppler = slot.snapshot.replica_carrier_doppler,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -783,10 +787,9 @@ function _collect_members!(j, group, group_index, nav_processor, Δt_nav)
     ifb_index = layout.ifb_index_by_group[group_index]
     for (slot_index, slot) in enumerate(group.slots)
         _is_member(slot) || continue
-        # Its loop state at the epoch, as the vector loop sees it: its snapshot's, or, for a
-        # satellite this update admitted, that state with the vector interface empty (no
-        # discriminators accumulated yet), as `_apply_nav_filter_feedback` will make it.
-        loop_state = _add_to_vector_loop(slot.snapshot.loop_state)
+        # A satellite this update admitted accumulated nothing out of the vector loop, so its
+        # snapshot's accumulator is empty and the member is withheld (`has_disc_sums`).
+        discriminators = slot.snapshot.discriminators
         j += 1
         measurement = workspace.measurements[j]
         push!(
@@ -800,14 +803,14 @@ function _collect_members!(j, group, group_index, nav_processor, Δt_nav)
                 chip_length,
                 wavelength,
                 chip_rate,
-                slot.snapshot.measurement_ready && has_disc_sums(loop_state),
+                slot.snapshot.measurement_ready && has_disc_sums(discriminators),
                 measurement.transmit_time,
                 measurement.position,
                 measurement.velocity,
                 measurement.satellite_clock_drift,
-                calc_mean_code_disc_at_epoch(loop_state, Δt_nav),
+                calc_mean_code_disc_at_epoch(discriminators, Δt_nav),
                 -wavelength *
-                (ustrip(Hz, slot.snapshot.carrier_doppler) + calc_mean_fll_disc(loop_state)),
+                (ustrip(Hz, slot.snapshot.replica_carrier_doppler) + calc_mean_fll_disc(discriminators)),
                 calc_linear_cn0_floor(slot.snapshot.cn0),
                 slot.snapshot.early_late_spacing,
                 ustrip(s, slot.snapshot.coherent_integration_time),

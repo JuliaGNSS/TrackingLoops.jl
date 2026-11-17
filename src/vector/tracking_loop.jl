@@ -88,6 +88,78 @@ struct VectorTrackingLoop{E<:Union{ScalarTrackingLoop,DelayCompensatedTrackingLo
     residual_pll_loop_bandwidth::typeof(1.0Hz)
 end
 
+# The loop's ranging signals as `(driver, decoding signal)` pairs; a plain signal
+# is both.
+_ranging_pair(signal::AbstractGNSSSignal) = (signal, signal)
+_ranging_pair(pair::Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}) = (pair.first, pair.second)
+
+_is_plain_pair((driver, decoding)) = typeof(driver) == typeof(decoding)
+
+function _check_ranging_pair((driver, decoding))
+    if iszero(get_bit_rate(decoding))
+        hint =
+            _is_plain_pair((driver, decoding)) ?
+            "; pair it with its data component, `$(nameof(typeof(driver)))() => data`" : ""
+        throw(
+            ArgumentError(
+                "vector tracking decodes the navigation data of each satellite's decoding " *
+                "signal; $(nameof(typeof(decoding))) carries none" * hint,
+            ),
+        )
+    end
+    get_chip_rate(decoding) == get_chip_rate(driver) || throw(
+        ArgumentError(
+            "a decoding signal must have its driver's chip rate: " *
+            "$(nameof(typeof(decoding))) has $(get_chip_rate(decoding)), " *
+            "$(nameof(typeof(driver))) $(get_chip_rate(driver))",
+        ),
+    )
+    nothing
+end
+
+function VectorTrackingLoop(
+    signals::Union{AbstractGNSSSignal,Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}}...;
+    scalar_loop::Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop} = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
+    nav_filter_config::NavFilterConfig = NavFilterConfig(),
+    navigation_update_interval = 100.0ms,
+    min_tracking_cn0 = 30.0dBHz,
+    residual_pll_loop_bandwidth = default_residual_pll_loop_bandwidth(),
+    satellite_capacity_per_signal::Integer = 16,
+    approximate_year::Integer = year(now(UTC)),
+    enable_ionospheric_correction::Bool = true,
+    enable_tropospheric_correction::Bool = true,
+)
+    isempty(signals) &&
+        throw(ArgumentError("vector tracking needs at least one ranging signal"))
+    pairs = map(_ranging_pair, signals)
+    signal_types = DataType[]
+    for pair in pairs
+        push!(signal_types, typeof(first(pair)))
+        _is_plain_pair(pair) || push!(signal_types, typeof(last(pair)))
+    end
+    allunique(signal_types) ||
+        throw(ArgumentError("each signal can be given only once, as a driver or a decoding signal"))
+    foreach(_check_ranging_pair, pairs)
+    satellite_capacity_per_signal >= 1 ||
+        throw(ArgumentError("`satellite_capacity_per_signal` must be at least 1"))
+    Δt_nav = Float64(ustrip(s, navigation_update_interval)) * s
+    0.0s < Δt_nav < Inf * s ||
+        throw(ArgumentError("`navigation_update_interval` must be positive and finite"))
+    residual_pll_loop_bandwidth > 0.0Hz ||
+        throw(ArgumentError("`residual_pll_loop_bandwidth` must be positive"))
+    navigation_processor = NavigationProcessor(
+        nav_filter_config,
+        pairs;
+        navigation_update_interval = Δt_nav,
+        min_tracking_cn0 = convert(typeof(1.0dBHz), min_tracking_cn0),
+        satellite_capacity_per_signal = Int(satellite_capacity_per_signal),
+        approximate_year,
+        enable_ionospheric_correction,
+        enable_tropospheric_correction,
+    )
+    VectorTrackingLoop(scalar_loop, navigation_processor, Float64(ustrip(Hz, residual_pll_loop_bandwidth)) * Hz)
+end
+
 """
     VectorLoopState
 
@@ -102,17 +174,13 @@ struct VectorLoopState{S}
     #
     #   - `vector_controlled`: whether the filter controls the NCOs; while `false` the scalar
     #     loop runs and nothing is accumulated.
-    #   - `code_disc_sum` / `fll_disc_sum`: `(count, sum)` of the DLL output (chips) and
-    #     the FLL discriminator (Hz, integrations with a previous prompt only) since the
-    #     filter last read them.
+    #   - `discriminators`: what the filter measures the satellite by, accumulated since it
+    #     last read them (`DiscriminatorAccumulator`); its correction history and feedback
+    #     delay are kept by `reinit_loop_state` (see there).
     #   - `last_replica_tail`: the cycles of the replica's carrier over the second half
     #     of the driver's last integration (`NaN` before the first), which the residual PLL
     #     propagates its phase by, across a hand-over too.
     #   - `code_frequency_correction`: the code correction from the latest update.
-    #   - `code_frequency_correction_history` / `feedback_delay`: the last three code
-    #     corrections, newest first, and how long after the measurement epoch the newest
-    #     reached the replica; the next code measurement uses them to move the mid-interval
-    #     mean discriminator to the epoch. Kept by `reinit_loop_state` (see there).
     #   - `ramp` / `residual_pll`: the filter's carrier Doppler ramp and the residual
     #     PLL, set by the first command (which adds the satellite to the vector loop)
     #     and cleared out of it (`_has_carrier_ramp`).
@@ -120,12 +188,9 @@ struct VectorLoopState{S}
     #     this satellite (`0` until its first integration), and the latest update applied.
     scalar_state::S
     vector_controlled::Bool
-    code_disc_sum::Tuple{Int,Float64}
-    fll_disc_sum::Tuple{Int,typeof(1.0Hz)}
+    discriminators::DiscriminatorAccumulator
     last_replica_tail::Float64
     code_frequency_correction::typeof(1.0Hz)
-    code_frequency_correction_history::NTuple{3,typeof(1.0Hz)}
-    feedback_delay::typeof(1.0s)
     ramp::CarrierDopplerRamp
     residual_pll::ResidualPLL
     slot_index::Int
@@ -153,12 +218,9 @@ VectorLoopState(
     VectorLoopState(
         scalar_state,
         vector_controlled,
-        (0, 0.0),
-        (0, 0.0Hz),
+        DiscriminatorAccumulator(),
         last_replica_tail,
         0.0Hz,
-        (0.0Hz, 0.0Hz, 0.0Hz),
-        0.0s,
         CarrierDopplerRamp(),
         ResidualPLL(residual_pll_loop_bandwidth),
         slot_index,
@@ -170,12 +232,9 @@ function VectorLoopState(
     loop_state::VectorLoopState{S};
     scalar_state::Maybe{S} = nothing,
     vector_controlled::Maybe{Bool} = nothing,
-    code_disc_sum::Maybe{Tuple{Int,Float64}} = nothing,
-    fll_disc_sum::Maybe{Tuple{Int,typeof(1.0Hz)}} = nothing,
+    discriminators::Maybe{DiscriminatorAccumulator} = nothing,
     last_replica_tail::Maybe{Float64} = nothing,
     code_frequency_correction::Maybe{typeof(1.0Hz)} = nothing,
-    code_frequency_correction_history::Maybe{NTuple{3,typeof(1.0Hz)}} = nothing,
-    feedback_delay::Maybe{typeof(1.0s)} = nothing,
     ramp::Maybe{CarrierDopplerRamp} = nothing,
     residual_pll::Maybe{ResidualPLL} = nothing,
     slot_index::Maybe{Int} = nothing,
@@ -185,15 +244,10 @@ function VectorLoopState(
     VectorLoopState{S}(
         isnothing(scalar_state) ? loop_state.scalar_state : scalar_state,
         isnothing(vector_controlled) ? loop_state.vector_controlled : vector_controlled,
-        isnothing(code_disc_sum) ? loop_state.code_disc_sum : code_disc_sum,
-        isnothing(fll_disc_sum) ? loop_state.fll_disc_sum : fll_disc_sum,
+        isnothing(discriminators) ? loop_state.discriminators : discriminators,
         isnothing(last_replica_tail) ? loop_state.last_replica_tail :
         last_replica_tail,
         isnothing(code_frequency_correction) ? loop_state.code_frequency_correction : code_frequency_correction,
-        isnothing(code_frequency_correction_history) ? loop_state.code_frequency_correction_history :
-        code_frequency_correction_history,
-        isnothing(feedback_delay) ? loop_state.feedback_delay :
-        feedback_delay,
         isnothing(ramp) ? loop_state.ramp : ramp,
         isnothing(residual_pll) ? loop_state.residual_pll : residual_pll,
         isnothing(slot_index) ? loop_state.slot_index : slot_index,
@@ -243,8 +297,7 @@ reinit_loop_state(
 ) = VectorLoopState(
     loop_state;
     scalar_state = reinit_loop_state(tracking_loop.scalar_loop, loop_state.scalar_state, carrier_doppler, code_doppler),
-    code_disc_sum = (0, 0.0),
-    fll_disc_sum = (0, 0.0Hz),
+    discriminators = _with_sums_emptied(loop_state.discriminators),
     code_frequency_correction = 0.0Hz,
 )
 
@@ -327,7 +380,7 @@ function _hand_over_to_scalar_loop(scalar_loop, loop_state::VectorLoopState, nco
 end
 
 # Set the latest update's command, applied `feedback_delay` after the measurement epoch: the
-# code correction (pushed onto `code_frequency_correction_history`) and the carrier `ramp`. A
+# code correction (pushed onto the correction history) and the carrier `ramp`. A
 # satellite just added starts its residual PLL from the scalar loop's carrier command at
 # `application_sample_index`; a member keeps its residual PLL's estimate of the incoming Doppler.
 # `fs` (Hz) is the integrations' sampling frequency.
@@ -340,7 +393,8 @@ function _set_vector_commands(
     application_sample_index,
     fs,
 )
-    newest, previous, _ = loop_state.code_frequency_correction_history
+    discriminators = loop_state.discriminators
+    newest, previous, _ = discriminators.code_frequency_correction_history
     residual_pll = if _has_carrier_ramp(loop_state)
         _residual_pll_on_new_ramp(loop_state.residual_pll, loop_state.ramp, ramp, fs)
     else
@@ -350,8 +404,12 @@ function _set_vector_commands(
     VectorLoopState(
         loop_state;
         code_frequency_correction,
-        code_frequency_correction_history = (code_frequency_correction, newest, previous),
-        feedback_delay = feedback_delay,
+        discriminators = DiscriminatorAccumulator(
+            discriminators.code_disc_sum,
+            discriminators.fll_disc_sum,
+            (code_frequency_correction, newest, previous),
+            feedback_delay,
+        ),
         ramp,
         residual_pll,
     )
@@ -364,7 +422,7 @@ _has_carrier_ramp(loop_state::VectorLoopState) = !isnan(loop_state.ramp.referenc
 
 # Empty both accumulators once the filter has read them.
 _reset_discriminator_accumulators(loop_state::VectorLoopState) =
-    VectorLoopState(loop_state; code_disc_sum = (0, 0.0), fll_disc_sum = (0, 0.0Hz))
+    VectorLoopState(loop_state; discriminators = _with_sums_emptied(loop_state.discriminators))
 
 # The mean of a discriminator sum `(count, sum)`, or `nothing` if empty.
 _disc_mean((count, disc_sum)) = count == 0 ? nothing : disc_sum / count
@@ -376,7 +434,8 @@ _disc_mean((count, disc_sum)) = count == 0 ? nothing : disc_sum / count
 # withheld from the measurements (still commanded, like a member out of code lock). The
 # carrier sum counts only integrations with a previous prompt, so it can be empty alone (a
 # update whose only integration is the first after a (re)start); that member is withheld too.
-has_disc_sums(loop_state::VectorLoopState) = first(loop_state.code_disc_sum) > 0 && first(loop_state.fll_disc_sum) > 0
+has_disc_sums(discriminators::DiscriminatorAccumulator) =
+    first(discriminators.code_disc_sum) > 0 && first(discriminators.fll_disc_sum) > 0
 
 # The cycles the replica's carrier advanced by over each half of `integration`, from the
 # commands it ran on, and the mean command over the whole integration (`command`).
@@ -451,10 +510,15 @@ end
         carrier * Hz - scalar_state.initial_carrier_doppler,
         loop_state.code_frequency_correction,
     )
+    discriminators = loop_state.discriminators
     VectorLoopState(
         loop_state;
-        code_disc_sum = loop_state.code_disc_sum .+ (1, measured.code_phase_error),
-        fll_disc_sum,
+        discriminators = DiscriminatorAccumulator(
+            discriminators.code_disc_sum .+ (1, measured.code_phase_error),
+            fll_disc_sum,
+            discriminators.code_frequency_correction_history,
+            discriminators.feedback_delay,
+        ),
         last_replica_tail = replica_halves.second,
         residual_pll,
     ),
@@ -497,6 +561,6 @@ end
         min_tracking_cn0,
         host_cn0 >= min_tracking_cn0,
     )
-    residual_pll, _accumulate_fll(loop_state.fll_disc_sum, fll_discriminator, post_correlation_state)
+    residual_pll, _accumulate_fll(loop_state.discriminators.fll_disc_sum, fll_discriminator, post_correlation_state)
 end
 
