@@ -343,10 +343,15 @@ mutable struct VectorTrackingWorkspace{SB<:Tuple}
     time_update::KFTUIntermediate{Float64}
     measurement_updates::Vector{Union{Nothing,MeasurementUpdateWorkspace{_UKFIntermediate}}}
     design_matrix::Matrix{Float64}
-    normal_matrices::Vector{Matrix{Float64}}
+    # Square scratch for `HᵀH` of the widest design; a design of `n` columns uses its
+    # leading `n × n` block (`_normal_matrix`), as PositionVelocityTime's solver does.
+    normal_matrix::Matrix{Float64}
 end
 
 _capacity_vector(::Type{T}, n) where {T} = sizehint!(T[], n)
+
+_normal_matrix(workspace::VectorTrackingWorkspace, H) =
+    view(workspace.normal_matrix, 1:size(H, 2), 1:size(H, 2))
 
 function VectorTrackingWorkspace(signal_observations::Tuple, num_states, layout::NavFilterLayout, max_members)
     num_clocks = num_clock_biases(layout)
@@ -384,7 +389,7 @@ function VectorTrackingWorkspace(signal_observations::Tuple, num_states, layout:
             MeasurementUpdateWorkspace(num_states, k) for k = 1:max_measurements
         ],
         zeros(max(max_members, 1), num_lsq),
-        [zeros(n, n) for n = 1:num_lsq],
+        zeros(num_lsq, num_lsq),
     )
 end
 
@@ -1188,7 +1193,7 @@ function _seed_fix_covariance!(nav_processor::NavigationProcessor, inter_system_
         nav_processor.pvt,
         nav_filter.reference_clock_index,
         H,
-        workspace.normal_matrices[size(H, 2)],
+        _normal_matrix(workspace, H),
         fix_bias_layout,
     )
 end
@@ -1464,7 +1469,7 @@ function _write_solution!(nav_processor::NavigationProcessor)
             view(workspace.prepared_observations, used),
             layout.time_systems[nav_filter.reference_clock_index],
         )
-        candidate = calc_dop!(workspace.normal_matrices[size(H, 2)], H, position, reference_column)
+        candidate = calc_dop!(_normal_matrix(workspace, H), H, position, reference_column)
         isnan(candidate.GDOP) || (dop = candidate)
     end
 
