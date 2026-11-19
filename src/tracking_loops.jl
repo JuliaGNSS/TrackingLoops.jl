@@ -114,7 +114,7 @@ function init_loop_state(
     code_doppler,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
     _init_scalar_loop_state(tracking_loop, driver_signal, carrier_doppler, code_doppler,
-        _init_loop_filter(CA), _init_loop_filter(CO), LoopBandwidths(driver_signal))
+        reinit(CA), reinit(CO), LoopBandwidths(driver_signal))
 end
 
 # Whether the integration belongs to the signal the scalar state was initialised with.
@@ -180,13 +180,6 @@ end
     _samples_since_center(previous_span, _integration_span(post_correlation_state)) / post_correlation_state.sampling_frequency :
     _coherent_integration_time(post_correlation_state)
 
-# The carrier filter's input: the FLL-assisted filter takes both
-# discriminators, any other the phase discriminator alone.
-@inline _carrier_loop_filter_input(::ThirdOrderAssistedBilinearLF, phase_error, frequency_error) =
-    (phase_error, frequency_error)
-@inline _carrier_loop_filter_input(::AbstractLoopFilter, phase_error, frequency_error) =
-    phase_error
-
 # The scalar carrier filter's bandwidth for an integration of `coherent_integration_time`: the
 # stage's PLL bandwidth, paired with the FLL path's for an FLL-assisted filter.
 # Capped against the time the integration actually integrated, not the intended length:
@@ -198,7 +191,7 @@ end
         loop_state.bandwidths.wide_carrier,
         coherent_integration_time,
     )
-    _has_fll_path(typeof(loop_state.carrier_loop_filter)) || return pll
+    is_assisted(loop_state.carrier_loop_filter) || return pll
     pll, calc_effective_fll_assist_loop_bandwidth(loop_state.bandwidths.fll_assist, coherent_integration_time)
 end
 
@@ -217,13 +210,13 @@ end
     coherent_integration_time = discriminators.coherent_integration_time
     code_loop_bandwidth =
         calc_effective_code_loop_bandwidth(loop_state.bandwidths.code, coherent_integration_time)
+    # An FLL-assisted filter takes both discriminators, any other the phase
+    # discriminator alone.
     carrier_frequency_correction, carrier_loop_filter = filter_loop(
         loop_state.carrier_loop_filter,
-        _carrier_loop_filter_input(
-            loop_state.carrier_loop_filter,
-            discriminators.carrier_phase_error,
-            discriminators.carrier_frequency_error,
-        ),
+        is_assisted(loop_state.carrier_loop_filter) ?
+        (discriminators.carrier_phase_error, discriminators.carrier_frequency_error) :
+        discriminators.carrier_phase_error,
         coherent_integration_time,
         _carrier_loop_bandwidth(loop_state, coherent_integration_time),
     )
@@ -329,7 +322,7 @@ function init_loop_state(
     defaults = LoopBandwidths(driver_signal;
         wide_carrier = default_narrow_carrier_loop_bandwidth(driver_signal))
     _init_scalar_loop_state(tracking_loop, driver_signal, carrier_doppler, code_doppler,
-        ThirdOrderAssistedBilinearLF(), _init_loop_filter(CO), defaults)
+        ThirdOrderAssistedBilinearLF(), reinit(CO), defaults)
 end
 
 """
@@ -350,8 +343,8 @@ reinit_loop_state(
     ScalarLoopState(
         carrier_doppler,
         code_doppler,
-        _reset_loop_filter(loop_state.carrier_loop_filter),
-        _reset_loop_filter(loop_state.code_loop_filter),
+        reinit(loop_state.carrier_loop_filter),
+        reinit(loop_state.code_loop_filter),
         loop_state.bandwidths,
         IntegrationSpan(),
         loop_state.driver_key,
@@ -360,7 +353,10 @@ reinit_loop_state(
 
 # The phase error (cycles) the integration would show `shift` samples later under the
 # scheduled commands, integrated from the integration's centre with the filter's Doppler
-# estimate before this integration's update, folded as by `wrap_phase_error`.
+# estimate there before this integration's update, folded as by `wrap_phase_error`. The
+# filter's latest integration is the previous driver integration (or none), which this
+# one follows, so its centre lies half the coherent integration time after that one's end
+# (or this one's start).
 @inline function _predict_application_phase_error(
     phase_error,
     polarity,
@@ -372,7 +368,7 @@ reinit_loop_state(
     sampling_frequency,
 )
     f_hat = loop_state.initial_carrier_doppler +
-        _doppler_estimate_at_center(loop_state.carrier_loop_filter, coherent_integration_time)
+        predict_frequency(loop_state.carrier_loop_filter, coherent_integration_time / 2)
     scheduled_carrier_doppler = calc_mean_nco_command(nco_history, center, center + shift).carrier_doppler
     wrap_phase_error(phase_error + ustrip(NoUnits, shift * (f_hat - scheduled_carrier_doppler) / sampling_frequency); polarity)
 end

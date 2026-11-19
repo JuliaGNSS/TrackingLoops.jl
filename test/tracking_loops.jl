@@ -8,13 +8,13 @@ const LOOP_N = 4000
 
 # The delay a loop tolerates shrinks as its bandwidth grows: at 18 Hz the
 # conventional loop holds through about 20 integrations of delay, at its default 50 Hz
-# wide bandwidth through three. The delay tests run the loops at 85 Hz, wide and
-# narrow, where 5 integrations make it limit-cycle. Once the staging drops the FLL the
-# loop tolerates an integration less than with it: the delay-compensated loop holds
-# through 5 integrations there, not 6.
+# wide bandwidth through three. The delay tests run the loops at 75 Hz, wide and
+# narrow, where the conventional loop holds through 4 integrations and 5 make it
+# limit-cycle, while the delay-compensated loop holds through 5, with or without the
+# FLL, and not through 6.
 const WIDE_LOOP = (;
-    wide_carrier_loop_bandwidth = 85.0Hz,
-    narrow_carrier_loop_bandwidth = 85.0Hz,
+    wide_carrier_loop_bandwidth = 75.0Hz,
+    narrow_carrier_loop_bandwidth = 75.0Hz,
 )
 
 # The delay-compensated loop pulls in at the narrow bandwidth by default; the
@@ -117,7 +117,7 @@ end
     reset_state = reinit_loop_state(narrow, narrow_state, 50.0Hz, 0.03Hz)
     @test reset_state.initial_carrier_doppler == 50.0Hz
     @test reset_state.bandwidths.narrow_carrier == 12.0Hz
-    @test reset_state.carrier_loop_filter.x1 == 0.0Hz
+    @test reset_state.carrier_loop_filter == ThirdOrderAssistedBilinearLF()
     conv = init_loop_state(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GalileoE1B(), 0.0Hz, 0.0Hz)
     @test conv isa ScalarLoopState
     @test conv.bandwidths.wide_carrier ==
@@ -175,7 +175,7 @@ end
     output = CorrelatorBankOutput(loop_epl(0.4, cis(0.2), 0.6), LOOP_N, LOOP_N)
     post_correlation_state = processed_state(LOOP_SIGNAL, output.correlator_bank, cis(0.1), output, 1, LOOP_FS)
     state, = step_loop!(tracking_loop, state, post_correlation_state, ConstantNCOCommand(0.0Hz, 0.0Hz), nothing)
-    @test state.carrier_loop_filter.x1 != 0.0Hz
+    @test predict_frequency(state.carrier_loop_filter, 0.0s) != 0.0Hz
     reset = reinit_loop_state(tracking_loop, state, 42.0Hz, 0.02Hz)
     @test reset isa typeof(state)
     @test reset.initial_carrier_doppler == 42.0Hz

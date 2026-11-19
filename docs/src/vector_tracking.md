@@ -276,9 +276,9 @@ Galileo E1 satellites, no oscillator phase noise):
 
 | | |
 |---|---|
-| phase jitter of the residual PLL's prediction at 40 dB-Hz, vs. the 18 Hz scalar PLL | 0.77 (L1 C/A), 0.75 (E1) |
-| FLL rate residuals, Galileo E1 at 37–45 dB-Hz (Costas) and 34 dB-Hz (four-quadrant), GPS L1 C/A at 45 dB-Hz | `σ/√R` 0.92–1.08, lag-1 −0.36 to −0.62, at most 4.7σ, integrated error below 3.5 cm |
-| 0.5 g / 1 g manoeuvre at 40 dB-Hz | in lock throughout, residual Doppler up to 4.0 / 7.6 Hz, phase error up to 10° / 21° |
+| phase jitter of the residual PLL's prediction at 40 dB-Hz, vs. the 18 Hz scalar PLL | 0.73 (L1 C/A), 0.74 (E1) |
+| FLL rate residuals, Galileo E1 at 37–45 dB-Hz (Costas) and 34 dB-Hz (four-quadrant), GPS L1 C/A at 45 dB-Hz | `σ/√R` 0.92–1.10, lag-1 −0.38 to −0.62, at most 4.7σ, integrated error below 3.5 cm |
+| 0.5 g / 1 g manoeuvre at 40 dB-Hz | in lock throughout, residual Doppler up to 3.9 / 8.2 Hz, phase error up to 10° / 21° |
 
 Driving each member's PLL through its FLL branch instead, which leaves the PLL's
 integrators in charge of the replica's frequency, gave 1.47 (L1 C/A) and 1.08 (E1)

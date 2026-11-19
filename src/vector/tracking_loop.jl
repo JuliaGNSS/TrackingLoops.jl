@@ -64,9 +64,9 @@ restarted staging, FLL-assisted again.
 the scalar PLL's ([`calc_effective_carrier_loop_bandwidth`](@ref)). Under the
 default `motion_model_order = 2` the prediction does not carry the user's acceleration, so
 the residual PLL follows a manoeuvre by itself: a third-order loop's error to a jerk
-`j` is `j / (λ ω₀³)` cycles (`ω₀ = 1.2 B_n`), 5.4° at 10 Hz for the 2.5 m/s³ of a
-0.5 g manoeuvre built up over two seconds, 43° at 5 Hz. Narrower suits a gentler
-platform or `motion_model_order = 3`.
+`j` is `j / (λ ω₀³)` cycles (`ω₀ = B_n / 0.7845`; Kaplan & Hegarty, eq. 5.15), 2.3° at
+10 Hz for the 2.5 m/s³ of a 0.5 g manoeuvre built up over two seconds, 18° at 5 Hz.
+Narrower suits a gentler platform or `motion_model_order = 3`.
 
 The latest update's commands are applied on the next driver integration, sized for where
 they take effect: at `application_sample_index`, or at the integration's end when `application_sample_index = nothing`. An
@@ -349,19 +349,20 @@ _set_vector_controlled(loop_state::VectorLoopState, vector_controlled::Bool) =
 function _hand_over_to_scalar_loop(scalar_loop, loop_state::VectorLoopState, nco_history, application_sample_index, fs)
     (; carrier_doppler, code_doppler) = get_nco_command(nco_history, application_sample_index)
     ramp, residual_pll = loop_state.ramp, loop_state.residual_pll
-    rate = ustrip(Hz / s, ramp.doppler_rate)
+    frequency_rate = ramp.doppler_rate
     if residual_pll.lock.locked && _has_span(residual_pll.last_prompt_span)
-        dt = _samples_since_center(residual_pll.last_prompt_span, application_sample_index) / fs
-        carrier_doppler =
-            (_doppler_at(ramp, application_sample_index, fs) + _residual_doppler(residual_pll) + _residual_doppler_rate(residual_pll) * dt) * Hz
-        rate += _residual_doppler_rate(residual_pll)
+        # The residual PLL's estimate at the application sample index, after the end of
+        # its latest prompt's integration.
+        τ = (application_sample_index - residual_pll.last_prompt_span.end_sample_index) / fs * s
+        carrier_doppler = _doppler_at(ramp, application_sample_index, fs) * Hz + predict_frequency(residual_pll.loop_filter, τ)
+        frequency_rate += get_frequency_rate(residual_pll.loop_filter)
     end
     scalar_state = loop_state.scalar_state
     VectorLoopState(
         _set_vector_controlled(loop_state, false);
         scalar_state = ScalarLoopState(
             reinit_loop_state(scalar_loop, scalar_state, carrier_doppler, code_doppler);
-            carrier_loop_filter = _carrier_filter_at_rate(scalar_state.carrier_loop_filter, rate),
+            carrier_loop_filter = reinit(scalar_state.carrier_loop_filter; frequency_rate),
             staging = CarrierLoopStaging(typeof(scalar_state.carrier_loop_filter)),
         ),
     )

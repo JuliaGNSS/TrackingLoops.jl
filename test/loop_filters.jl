@@ -2,11 +2,11 @@
 # the bandwidth parts of Tracking.jl's `test/conventional_pll_and_dll.jl`.
 
 using Unitful: ms
-using TrackingLoopFilters: filter_loop, ThirdOrderBilinearLF
+using TrackingLoopFilters: filter_loop, is_assisted, ThirdOrderBilinearLF
 using Random: MersenneTwister
 using Statistics: median
 
-@testset "Loop filter initialization and reset use explicit factories" begin
+@testset "Loop filters are initialised and reset by their type" begin
     for factory in (
         TrackingLoops.FirstOrderLF,
         TrackingLoops.SecondOrderBilinearLF,
@@ -15,13 +15,13 @@ using Statistics: median
         TrackingLoops.ThirdOrderAssistedBilinearLF,
         TrackingLoops.ThirdOrderBoxcarLF,
     )
-        initial = @inferred TrackingLoops._init_loop_filter(factory)
+        initial = @inferred reinit(factory)
         @test initial == factory()
-        @test TrackingLoops._init_loop_filter(typeof(initial)) == initial
-        input = initial isa ThirdOrderAssistedBilinearLF ? (0.1, 1.0Hz) : 0.1
-        bandwidth = initial isa ThirdOrderAssistedBilinearLF ? (10.0Hz, 2.0Hz) : 10.0Hz
+        @test reinit(typeof(initial)) == initial
+        input = is_assisted(initial) ? (0.1, 1.0Hz) : 0.1
+        bandwidth = is_assisted(initial) ? (10.0Hz, 2.0Hz) : 10.0Hz
         _, stepped = filter_loop(initial, input, 1.0ms, bandwidth)
-        @test @inferred(TrackingLoops._reset_loop_filter(stepped)) === initial
+        @test @inferred(reinit(stepped)) === initial
     end
 end
 

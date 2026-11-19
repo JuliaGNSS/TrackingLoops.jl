@@ -3,8 +3,8 @@
 
 The largest product `B_n T` of the carrier loop's noise bandwidth and the coherent
 integration time, `0.09`, that [`calc_effective_carrier_loop_bandwidth`](@ref) caps at.
-The default FLL-assisted third-order filter diverges at `B_n T ≈ 0.4`, and at `0.09` its
-noise bandwidth already runs 25 % wider than configured.
+The third-order filter, FLL-assisted or not, diverges at `B_n T ≈ 0.65`, and at `0.09` its
+noise bandwidth already runs 16 % wider than configured.
 """
 const MAX_CARRIER_LOOP_BANDWIDTH_TIME_PRODUCT = 0.09
 
@@ -162,36 +162,6 @@ end
         something(configured.fll_assist_loop_bandwidth, defaults.fll_assist),
         something(configured.code_loop_bandwidth, defaults.code),
     )
-
-# Construct through the concrete filter type: this preserves its numeric state
-# types and requires no lookup of a parametric type's wrapper in trimmed builds.
-_init_loop_filter(::Type{F}) where {F<:AbstractLoopFilter} = F()
-_init_loop_filter(::Type{<:SecondOrderBilinearLF}) = SecondOrderBilinearLF()
-_init_loop_filter(::Type{<:SecondOrderBoxcarLF}) = SecondOrderBoxcarLF()
-_init_loop_filter(::Type{<:ThirdOrderBilinearLF}) = ThirdOrderBilinearLF()
-_init_loop_filter(::Type{<:ThirdOrderAssistedBilinearLF}) = ThirdOrderAssistedBilinearLF()
-_init_loop_filter(::Type{<:ThirdOrderBoxcarLF}) = ThirdOrderBoxcarLF()
-
-# The carrier filter's Doppler estimate at the centre of an integration of
-# `coherent_integration_time`: a second-order filter's Doppler state, a third-order one's
-# moved on by half the integration at its Doppler-rate state.
-_doppler_estimate_at_center(filter::Union{SecondOrderBilinearLF,SecondOrderBoxcarLF}, coherent_integration_time) = filter.x
-_doppler_estimate_at_center(
-    filter::Union{ThirdOrderBilinearLF,ThirdOrderAssistedBilinearLF,ThirdOrderBoxcarLF},
-    coherent_integration_time,
-) = filter.x1 + coherent_integration_time / 2 * filter.x2
-
-_reset_loop_filter(filter::F) where {F<:AbstractLoopFilter} = F()
-_reset_loop_filter(filter::F) where {F<:Union{SecondOrderBilinearLF,SecondOrderBoxcarLF}} =
-    F(zero(filter.x))
-_reset_loop_filter(filter::F) where {F<:Union{ThirdOrderBilinearLF,ThirdOrderAssistedBilinearLF,ThirdOrderBoxcarLF}} =
-    F(zero(filter.x1), zero(filter.x2))
-
-# A fresh carrier filter of `filter`'s type at the Doppler rate `rate` (Hz/s), kept in
-# `x2` by a third-order one; one of lower order starts at zero.
-_carrier_filter_at_rate(filter::F, rate) where {F<:Union{ThirdOrderBilinearLF,ThirdOrderAssistedBilinearLF,ThirdOrderBoxcarLF}} =
-    F(zero(filter.x1), rate * Hz^2)
-_carrier_filter_at_rate(filter::AbstractLoopFilter, rate) = _reset_loop_filter(filter)
 
 """
 $(SIGNATURES)
