@@ -13,23 +13,28 @@ carrier to the predicted Doppler, the code by a correction). Weak or briefly
 obscured satellites are carried through by the common solution instead of losing
 lock on their own.
 
-With the pseudoranges alone this is Spilker's vector delay lock loop (Parkinson &
-Spilker, Vol. I, ch. 7). Kaplan & Hegarty's integrated tracker (§9.2.4.8), "sometimes
+In the code this is Spilker's vector delay lock loop (Parkinson & Spilker, Vol. I,
+ch. 7); his VDLL leaves the carrier to its own loops, while here the filter commands the
+carrier NCO too. Kaplan & Hegarty's integrated tracker (§9.2.4.8), "sometimes
 referred to as vector tracking", is the same structure; its optional averaging
 prefilter is the discriminator accumulation over an update interval (see the
 [Glossary](@ref)). Commanding the carrier NCO from the filter's prediction is their
 open carrier loop aiding (§5.2.5), in which they warn that data demodulation is
 unlikely; the residual PLL's rotation of the prompts it decodes addresses that.
 
-The filter is an unscented Kalman filter over position, velocity, one clock bias
-per GNSS time system (all driven by the one oscillator's drift) and one
-inter-frequency bias per band beyond the reference band. It follows the bias
+The filter is a Kalman filter with a linear time update and an unscented measurement
+update over position, velocity, one clock bias per GNSS time system (all driven by the
+one oscillator's drift) and one inter-frequency bias per band beyond the reference
+band. It follows the bias
 model of [PositionVelocityTime.jl](https://github.com/JuliaGNSS/PositionVelocityTime.jl):
 which biases an update can determine is decided per update, and where the
 measurements cannot separate two clocks, a broadcast offset between their
 systems (GGTO, BGTO) ties them as a pseudo-measurement. With `use_pseudorange_rates = true` (the
-default) it also measures the pseudorange rates (VDFLL); with `false` it is a
-VDLL, and the carrier NCOs' Doppler comes from the code measurements alone.
+default) it also measures the pseudorange rates (VDFLL); with `false` it measures
+the pseudoranges alone, a VDLL in the code. Unlike Spilker's VDLL, which closes only
+the delay lock loops and leaves the carrier to its own loops, the filter then still
+commands the carrier NCOs, with the Doppler it predicts from the code measurements
+alone.
 
 `NavFilterConfig` selects the dynamics with `motion_model_order = 2`
 and `clock_model_order = 2` by default. Motion orders `1`, `2`, and `3` carry
@@ -215,8 +220,13 @@ commands the satellite, and the scalar loop's stage otherwise.
   FLL discriminator over the update interval: the replica follows the filter's ramp, so its
   rise to the epoch matches the incoming carrier's, and no loop's jitter is in
   its command. The FLL compares consecutive prompts, so it needs no phase lock, and
-  the measurements telescope across updates (lag-1 correlation −½ without an NCO
-  delay, an integrated error bounded by the boundary prompts' noise).
+  the measurements telescope across updates (lag-1 correlation −½ without a feedback
+  delay, an integrated error bounded by the boundary prompts' noise). It is an average
+  over the interval used as the rate at the epoch, which Kaplan & Hegarty advise against
+  for a delta range (§5.7.2: model it as the change in range over the interval, not as
+  an average velocity). The ramp makes it hold to first order; a Doppler rate the ramp
+  misses leaves half its change over the interval, 0.25 m/s for the onset of a 0.5 g
+  manoeuvre at 100 ms updates.
 - **The navigation processor decodes the prompts it rotated.** The prompts turn at the
   filter's Doppler error, so the navigation processor rotates each of the decoding signal's
   prompts onto the incoming carrier by the residual PLL's phase (and a data
@@ -286,7 +296,10 @@ measurement. Pass the application sample and the channel's
 `nco_history`, respectively. Each satellite then sizes its
 commands for the moment they take effect, against the replica the timeline predicts
 there, and a released satellite's scalar loop takes over from that replica. The
-application sample may lie up to 2.5 update intervals after the epoch.
+application sample may lie up to 2.5 update intervals after the epoch. Out of the
+vector loop a satellite runs `scalar_loop` under the same delay, so give it one that
+compensates it: `VectorTrackingLoop(signals...; scalar_loop =
+DelayCompensatedTrackingLoop())`, as HardwareLoopCore.jl requires.
 
 ## Reading the results
 

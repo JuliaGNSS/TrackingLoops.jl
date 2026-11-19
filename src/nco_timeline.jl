@@ -145,8 +145,9 @@ end
 
 Fold commands at or before `sample_index` into the applied command and retire them.
 Call only after hardware feedback is resolved and no future query starts before
-that sample. Advancing relies on scheduled application times; it does not itself
-verify device execution.
+that sample: not past the first sample of an integration still open, nor past the
+centre of the latest integration stepped (see [NCO timeline](@ref)). Advancing relies on
+scheduled application times; it does not itself verify device execution.
 """
 function advance_timeline!(timeline::NCOTimeline, sample_index)
     commands = timeline.scheduled_commands

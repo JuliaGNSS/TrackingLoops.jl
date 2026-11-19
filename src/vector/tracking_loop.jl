@@ -73,7 +73,9 @@ they take effect: at `application_sample_index`, or at the integration's end whe
 integration of any other signal returns the command in force there.
 
 `scalar_loop` is a [`ScalarTrackingLoop`](@ref) or a [`DelayCompensatedTrackingLoop`](@ref),
-whose per-satellite state the vector loop holds and hands over. A dataless signal given
+whose per-satellite state the vector loop holds and hands over. Under a hardware feedback
+delay make it the `DelayCompensatedTrackingLoop`: out of the vector loop it runs under the
+same delay. A dataless signal given
 alone throws an `ArgumentError` (pair a pilot such as GPS L1C-P or Galileo E1C with its
 data component).
 

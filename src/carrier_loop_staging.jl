@@ -29,10 +29,12 @@ FLL's last correction risks the lock.
 
 Each driver integration's prompt advances the indicator, and the stage it reaches applies
 from the next integration. Stages only advance: a loop that loses lock keeps the narrow
-PLL. [`init_loop_state`](@ref) starts them over, as does a satellite's release
-from the vector loop; [`reinit_loop_state`](@ref) keeps them (a handover to a
-new integration length, say, keeps the lock). In the vector loop the staging stands
-still.
+PLL. This departs deliberately from Kaplan & Hegarty, who run the pure PLL "until phase
+lock is lost" and then close the loop through the FLL again (§5.5): the indicator alone
+does not declare a satellite lost here; a host that does starts the staging over with
+[`init_loop_state`](@ref), as does a satellite's release from the vector loop.
+[`reinit_loop_state`](@ref) keeps the stage (a handover to a new integration length,
+say, keeps the lock). In the vector loop the staging stands still.
 """
 @enum CarrierLoopStage FLL_ASSISTED_PLL WIDE_PLL NARROW_PLL VECTOR_LOOP
 
@@ -58,8 +60,9 @@ end
 const _PHASE_LOCK_THRESHOLD = 0.5
 
 # The phase-lock indicator (see `get_phase_lock_indicator`) and its exponential averages
-# over `_phase_lock_time_constant` integrations: `power_difference` of `I² − Q²` (Van
-# Dierendonck's narrowband difference, NBD), `power` and `squared_power` of `|P|²` and
+# over `_phase_lock_time_constant` integrations: `power_difference` of `I² − Q²` per
+# integration (Van Dierendonck's narrowband difference NBD with M = 1; his eq. (119) sums M
+# integrations coherently first), `power` and `squared_power` of `|P|²` and
 # `|P|⁴` (M₂, M₄). `indicator` is the latest reading, `NaN` until the averages span one
 # time constant. The scalar staging keeps one on the driver's prompts, the vector
 # loop's residual PLL one on the prompts it rotated.

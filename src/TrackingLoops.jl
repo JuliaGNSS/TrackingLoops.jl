@@ -216,9 +216,10 @@ lives with the satellite. Hosts drive every tracking loop through one interface:
     tracking loop chooses to keep.
 
 A custom tracking loop implements `init_loop_state` and `step_loop!`. `init_loop_state`
-must be pure: no side effects, and a state type that depends only on the types of the
-tracking loop and the driver signal, as a host also calls it for a template state and
-to re-initialise. The other methods are optional: `reinit_loop_state` (a host may re-initialise with `init_loop_state`
+must be pure: no side effects, and a state type that depends only on the type of the
+tracking loop, not on the driver signal, as a host also calls it for a template state,
+keeps the states of satellites with different drivers in one container, and
+re-initialises with it. The other methods are optional: `reinit_loop_state` (a host may re-initialise with `init_loop_state`
 instead), [`get_decoder`](@ref) (fallback `nothing`, for a loop without decoders) and
 [`calc_carrier_phase_correction`](@ref TrackingLoops.calc_carrier_phase_correction)
 (fallback `0.0`, for a loop that steers its replica onto the carrier).

@@ -172,10 +172,11 @@ the FLL path of the FLL-assisted filter runs at 5 Hz while it is in use, and the
 code loop at 1 Hz, all for every signal. All are one-sided noise bandwidths `B_n`
 (Kaplan & Hegarty), so they plug into the usual jitter and dynamic-stress
 formulas: the carrier filter is fed the phase error in cycles and the FLL error
-in Hz. 18 Hz is the third-order PLL bandwidth of the literature (Kaplan & Hegarty
-Table 5.6, Pany Table 3.3; Borre et al. quote about 20 Hz), none of which scales
-it with the primary code period: thermal jitter and dynamic stress, which set
-the bandwidth, do not depend on it.
+in Hz. 18 Hz is not a typical bandwidth but Kaplan & Hegarty's stability limit of a
+third-order PLL (Table 5.6), which their design example adopts as the widest safe
+bandwidth at a predetection integration time of 5 ms (Pany Table 3.3 and Borre et al.,
+about 20 Hz, are close). None of them scales it with the primary code period: thermal
+jitter and dynamic stress, which set the bandwidth, do not depend on it.
 
 ### Stability cap
 
@@ -203,8 +204,9 @@ bandwidth runs wider than configured:
 | `ThirdOrderBilinearLF`         | 0.97× | 1.00× | 1.07× | 1.12× | 1.38× | 2.8× |
 
 The PLL cap of 0.09 keeps the loop within 25 % of its configured bandwidth with
-about 4× stability margin, at the wide and the narrow bandwidth alike. It is the
-product of Kaplan & Hegarty's third-order design example (18 Hz at 5 ms) and
+about 4× stability margin, at the wide and the narrow bandwidth alike. It is
+`B_n T` at Kaplan & Hegarty's third-order stability limit in their design example
+(18 Hz at 5 ms) and
 matches GNSS-SDR's narrow post-sync bandwidths (5 Hz at 20 ms). A tighter cap on
 the narrow bandwidth would buy little: at 20 ms and 30 dB-Hz the thermal jitter
 is about 4° at 4.5 Hz and 2.6° at 2 Hz, while a TCXO's jitter (Allan deviation
