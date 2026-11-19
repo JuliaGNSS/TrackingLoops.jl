@@ -131,6 +131,14 @@ end
     @test @inferred(estimate_cn0(cn0_estimator, CN0_T)) == -Inf * dBHz
     # So do prompts without power.
     @test estimate_cn0(update!(MomentsCN0Estimator(; num_averaged_integrations = 20), 0.0im), CN0_T) == -Inf * dBHz
+    # And so do prompts whose fourth moment exceeds twice the squared second, as noise
+    # alone makes them in ~41 % of 100-prompt windows: `2 M₂² − M₄ = −2` here, which read
+    # 35.3 dB-Hz when its magnitude was taken.
+    peaked = cn0_update(MomentsCN0Estimator(; num_averaged_integrations = 4), ComplexF64[2, 0, 0, 0])
+    @test estimate_cn0(peaked, CN0_T) == -Inf * dBHz
+    # Prompts of constant magnitude are all signal.
+    @test estimate_cn0(cn0_update(MomentsCN0Estimator(; num_averaged_integrations = 4), ComplexF64[1, -1, 1, -1]), CN0_T) ==
+          Inf * dBHz
     @test !requires_noise_density(cn0_estimator)
 
     next_cn0_estimator = @inferred update!(cn0_estimator, 1 + 2im)
@@ -465,8 +473,8 @@ end
     @test estimate_cn0(alternating, 1ms) == -Inf * dBHz
 
     # All-zero windows are the division guard: nothing is buffered and the
-    # fallback reports. (`NoCN0Estimator` as the fallback, because the default
-    # `MomentsCN0Estimator` reads `NaN dB-Hz` on an all-zero buffer.)
+    # fallback reports. (`NoCN0Estimator` as the fallback, so the reading does not
+    # depend on how the default `MomentsCN0Estimator` treats an all-zero buffer.)
     zeros_only = NWPRCN0Estimator(;
         num_averaged_integrations = 100,
         num_narrowband_code_periods = 2,
@@ -489,8 +497,9 @@ end
 end
 
 @testset "NWPR CN0 estimator noise floor beats the moment ratio (issue #217)" begin
-    # The moment ratio manufactures signal power out of noise at a finite
-    # window; NWPR does not. Amplitude √(C/N₀·T) in unit-variance complex noise.
+    # The moment ratio reads noise as no signal in only ~41 % of windows and mostly as
+    # 20–30 dB-Hz otherwise; NWPR reports no signal. Amplitude √(C/N₀·T) in
+    # unit-variance complex noise.
     prompts(cn0, n, seed) =
         (isnothing(cn0) ? 0.0 : sqrt(10^(cn0 / 10) * 1e-3)) .+
         randn(Xoshiro(seed), ComplexF64, n)
@@ -508,17 +517,21 @@ end
     )
     seeds = 1:200
 
-    @test cn0_median(moments(nothing, s) for s in seeds) > 25
+    # Pure noise: the moment ratio reads no signal in 84 of the 200 runs (2 M₂² < M₄)
+    # and sits at a median of 23.4 dB-Hz; NWPR's median stays far below any threshold.
+    @test 0.3 < count(s -> moments(nothing, s) == -Inf, seeds) / length(seeds) < 0.6
+    @test cn0_median(moments(nothing, s) for s in seeds) > 20
     @test cn0_median(nwpr(nothing, s) for s in seeds) < 15
     # False alarms against a 25 dB-Hz code-lock threshold on pure noise.
-    @test count(s -> moments(nothing, s) >= 25, seeds) / length(seeds) > 0.5
+    @test count(s -> moments(nothing, s) >= 25, seeds) / length(seeds) > 0.4
     @test count(s -> nwpr(nothing, s) >= 25, seeds) == 0
 
     # An estimate, not just a detector: unbiased to ~1 dB from 20 dB-Hz up.
     for cn0 in (20.0, 25.0, 30.0, 45.0)
         @test cn0_median(nwpr(cn0, s) for s in seeds) ≈ cn0 atol = 1.0
     end
-    @test cn0_median(moments(20.0, s) for s in seeds) - 20 > 5
+    # The moment ratio reads a true 20 dB-Hz as it reads noise (median 25.0 dB-Hz).
+    @test cn0_median(moments(20.0, s) for s in seeds) - 20 > 4
 end
 
 @testset "NWPR CN0 estimator follows the navigation-bit grid" begin
