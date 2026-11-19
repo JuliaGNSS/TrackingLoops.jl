@@ -100,15 +100,10 @@ struct CarrierLoopStaging
 end
 
 CarrierLoopStaging(::Type{F}) where {F<:AbstractLoopFilter} = CarrierLoopStaging(
-    _has_fll_path(F) ? FLL_ASSISTED_PLL : WIDE_PLL,
+    is_assisted(F) ? FLL_ASSISTED_PLL : WIDE_PLL,
     PhaseLockDetector(),
     0,
 )
-
-# Whether a carrier loop filter type has an FLL path (the tracking loops' in
-# `tracking_loops.jl`, after their types).
-@inline _has_fll_path(::Type{<:ThirdOrderAssistedBilinearLF}) = true
-@inline _has_fll_path(::Type{<:AbstractLoopFilter}) = false
 
 # Exponential mean with weight `max(1/n, 1/time_constant)`: the plain mean of the
 # first `time_constant` samples, so it starts unbiased.

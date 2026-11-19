@@ -315,7 +315,7 @@ end
     @test steered.ramp == ramp
     @test TL._has_carrier_ramp(steered)
     @test steered.residual_pll.carrier_frequency_correction ≈ (100.0 - 110.0) * Hz
-    @test TL._residual_doppler(steered.residual_pll) ≈ 100.0 - 110.0
+    @test predict_frequency(steered.residual_pll.loop_filter, 0.0s) ≈ (100.0 - 110.0) * Hz
     @test steered.code_frequency_correction == 1.0Hz
     @test steered.discriminators.code_frequency_correction_history == (1.0Hz, 0.0Hz, 0.0Hz)
     @test steered.discriminators.feedback_delay == 0.02s
@@ -323,10 +323,11 @@ end
     next_ramp = TL.CarrierDopplerRamp(105.0 * Hz, 0.0 * Hz / s, 110_000)
     next = TL._set_vector_commands(steered, 2.0Hz, next_ramp, 0.0s, ConstantNCOCommand(999.0Hz, 0.0Hz), 0, 1e6)
     @test TL._doppler_at(next_ramp, 10_000, 1e6) + ustrip(Hz, next.residual_pll.carrier_frequency_correction) ≈ TL._doppler_at(ramp, 10_000, 1e6) + ustrip(Hz, steered.residual_pll.carrier_frequency_correction)
-    @test TL._doppler_at(next_ramp, 10_000, 1e6) + TL._residual_doppler(next.residual_pll) ≈
-          TL._doppler_at(ramp, 10_000, 1e6) + TL._residual_doppler(steered.residual_pll)
-    @test ustrip(Hz / s, next_ramp.doppler_rate) + TL._residual_doppler_rate(next.residual_pll) ≈
-          ustrip(Hz / s, ramp.doppler_rate) + TL._residual_doppler_rate(steered.residual_pll)
+    # Before its first prompt the residual PLL's estimate refers to where the first ramp took over.
+    @test TL._doppler_at(next_ramp, 10_000, 1e6) * Hz + predict_frequency(next.residual_pll.loop_filter, 0.0s) ≈
+          TL._doppler_at(ramp, 10_000, 1e6) * Hz + predict_frequency(steered.residual_pll.loop_filter, 0.0s)
+    @test next_ramp.doppler_rate + get_frequency_rate(next.residual_pll.loop_filter) ≈
+          ramp.doppler_rate + get_frequency_rate(steered.residual_pll.loop_filter)
     @test next.discriminators.code_frequency_correction_history == (2.0Hz, 1.0Hz, 0.0Hz)
     @test TL._set_vector_commands(next, 3.0Hz, next_ramp, 0.0s, ConstantNCOCommand(0.0Hz, 0.0Hz), 0, 1e6).discriminators.code_frequency_correction_history ==
           (3.0Hz, 2.0Hz, 1.0Hz)
@@ -409,22 +410,24 @@ end
     reset_inner = reinit_loop_state(inner, state.scalar_state, 150.0Hz, 0.2Hz)
     @test released.scalar_state == Base.typename(typeof(reset_inner)).wrapper(
         reset_inner;
-        carrier_loop_filter = TL._carrier_filter_at_rate(reset_inner.carrier_loop_filter, 2.0),
+        carrier_loop_filter = reinit(reset_inner.carrier_loop_filter; frequency_rate = 2.0Hz / s),
         staging = TL.CarrierLoopStaging(typeof(reset_inner.carrier_loop_filter)),
     )
-    @test released.scalar_state.carrier_loop_filter.x2 == 2.0Hz^2
+    @test get_frequency_rate(released.scalar_state.carrier_loop_filter) == 2.0Hz / s
     @test released.scalar_state.initial_carrier_doppler == 150.0Hz
     @test released.scalar_state.initial_code_doppler == 0.2Hz
     # A residual PLL in lock hands over its estimate where the release takes effect: the ramp plus
-    # its residual Doppler, moved on by its rate, and the Doppler rate of both.
+    # its residual Doppler, moved on by its rate, and the Doppler rate of both. Its loop filter
+    # here estimates 1.5 Hz at the end of its latest prompt's integration.
     residual_pll = state.residual_pll
-    residual_pll = TL.ResidualPLL(residual_pll.bandwidth, 1.5Hz, TL._residual_pll_loop_filter(1.5, 0.5), residual_pll.last_prompt_span,
+    residual_pll = TL.ResidualPLL(residual_pll.bandwidth, 1.5Hz,
+        reinit(TL.ResidualPLLLoopFilter; frequency = 1.5Hz, frequency_rate = 0.5Hz / s), residual_pll.last_prompt_span,
         residual_pll.carrier_phase_polarity, residual_pll.predicted_prompt_phase,
         TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
     locked = TL._hand_over_to_scalar_loop(inner, TL.VectorLoopState(state; residual_pll), ConstantNCOCommand(150.0Hz, 0.2Hz), 10_000, 5e6)
     @test locked.scalar_state.initial_carrier_doppler ≈
-          (TL._doppler_at(ramp, 10_000, 5e6) + 1.5 + 0.5 * (0.002 - TL._center(residual_pll.last_prompt_span) / 5e6)) * Hz
-    @test locked.scalar_state.carrier_loop_filter.x2 ≈ 2.5Hz^2
+          (TL._doppler_at(ramp, 10_000, 5e6) + 1.5 + 0.5 * (0.002 - residual_pll.last_prompt_span.end_sample_index / 5e6)) * Hz
+    @test get_frequency_rate(locked.scalar_state.carrier_loop_filter) ≈ 2.5Hz / s
     @test locked.scalar_state.initial_code_doppler == 0.2Hz
     @test released.scalar_state.bandwidths.narrow_carrier == 12.0Hz
     # The carrier loop pulls in afresh, FLL-assisted.

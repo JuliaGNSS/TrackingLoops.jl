@@ -195,17 +195,19 @@ Bn_fll  = min(Bn_fll_configured,  0.02  / T)
 Bn_code = min(Bn_code_configured, 0.018 / T)
 ```
 
-The default FLL-assisted third-order carrier filter diverges at `B_n T ≈ 0.4`
-(the plain third-order one at ≈ 0.43). Below that, the loop's actual noise
-bandwidth runs wider than configured:
+The third-order carrier filter diverges at `B_n T ≈ 0.65`, FLL-assisted or not.
+Below that, the loop's actual noise bandwidth runs wider than configured, measured
+in closed loop on white phase noise of variance `σ²` as `var(φ) / (2 σ² T)` for the
+loop's phase error `φ`:
 
-| `B_n T`                        | 0.018 | 0.036 | 0.072 | 0.09  | 0.18  | 0.36 |
-|--------------------------------|------:|------:|------:|------:|------:|-----:|
-| `ThirdOrderAssistedBilinearLF` | 1.05× | 1.09× | 1.19× | 1.25× | 1.65× | 5.2× |
-| `ThirdOrderBilinearLF`         | 0.97× | 1.00× | 1.07× | 1.12× | 1.38× | 2.8× |
+| `B_n T`                                          | 0.018 | 0.036 | 0.072 | 0.09  | 0.18  | 0.36 |
+|--------------------------------------------------|------:|------:|------:|------:|------:|-----:|
+| `ThirdOrderBilinearLF`, or the FLL dropped       | 1.03× | 1.06× | 1.12× | 1.16× | 1.37× | 2.2× |
+| `ThirdOrderAssistedBilinearLF`, FLL 5 Hz at 1 ms | 1.17× | 1.12× | 1.16× | 1.18× | 1.39× | 2.2× |
 
-The PLL cap of 0.09 keeps the loop within 25 % of its configured bandwidth with
-about 4× stability margin, at the wide and the narrow bandwidth alike. It is
+The FLL path adds its own noise, which counts most against a narrow PLL. The PLL
+cap of 0.09 keeps the loop within 20 % of its configured bandwidth with about 7×
+stability margin, at the wide and the narrow bandwidth alike. It is
 `B_n T` at Kaplan & Hegarty's third-order stability limit in their design example
 (18 Hz at 5 ms) and
 matches GNSS-SDR's narrow post-sync bandwidths (5 Hz at 20 ms). A tighter cap on

@@ -39,7 +39,7 @@ default_residual_pll_loop_bandwidth() = 10.0Hz
 
 # The residual PLL's loop filter: the scalar PLL's third-order filter without its FLL
 # assist.
-const ResidualPLLLoopFilter = ThirdOrderBilinearLF{typeof(1.0Hz),typeof(1.0Hz^2)}
+const ResidualPLLLoopFilter = ThirdOrderBilinearLF{typeof(1.0Hz),typeof(1.0Hz^2),typeof(1.0s)}
 
 # The residual PLL's lock (`_with_lock_test`): a `PhaseLockDetector` on the prompts it
 # rotated, whether it is in lock, and for how many integrations in a row the test has held.
@@ -68,9 +68,9 @@ PLL's. It keeps
     prompt's centre and wiped that prompt with;
   - `carrier_frequency_correction`: the loop filter's output (Hz), which the prediction runs at
     against the ramp until the next prompt;
-  - `loop_filter`: whose states estimate the incoming Doppler against the ramp (`x1`,
-    Hz) and its rate against the ramp's (`x2`, Hz/s). A new ramp leaves these
-    estimates where they are (`_residual_pll_on_new_ramp`).
+  - `loop_filter`: which estimates the incoming Doppler against the ramp
+    (`predict_frequency`, Hz) and its rate against the ramp's (`get_frequency_rate`,
+    Hz/s). A new ramp leaves these estimates where they are (`_residual_pll_on_new_ramp`).
 
 Its `lock` is tested on the prompts it rotated (`_with_lock_test`), which also holds
 it at the ramp while the host's C/N₀ says there is no signal.
@@ -88,20 +88,10 @@ struct ResidualPLL
     lock::ResidualPLLLock
 end
 
-# The residual PLL's loop filter at the Doppler `frequency` (Hz) and its rate `rate`
-# (Hz/s) against the ramp.
-_residual_pll_loop_filter(frequency, rate) = ThirdOrderBilinearLF(frequency * Hz, rate * Hz^2)
-
-# The residual PLL's estimates of the incoming Doppler (Hz) and its rate (Hz/s) against
-# the ramp: the loop filter's states, not `carrier_frequency_correction`, which adds the latest
-# phase error's correction.
-_residual_doppler(residual_pll) = ustrip(Hz, residual_pll.loop_filter.x1)
-_residual_doppler_rate(residual_pll) = ustrip(Hz^2, residual_pll.loop_filter.x2)
-
 ResidualPLL(bandwidth) = ResidualPLL(
     bandwidth,
     0.0Hz,
-    _residual_pll_loop_filter(0.0, 0.0),
+    reinit(ResidualPLLLoopFilter),
     IntegrationSpan(),
     Int8(0),
     NaN,
@@ -130,34 +120,42 @@ ResidualPLL(
 # A residual PLL taking over from the phase-locked scalar loop as the satellite is added:
 # at its command `scalar_doppler` (Hz) against the ramp where it starts, in lock, with the
 # averages of the scalar loop's `staging`.
-_initialized_residual_pll(
+function _initialized_residual_pll(
     residual_pll::ResidualPLL,
     ramp::CarrierDopplerRamp,
     scalar_doppler,
     staging::CarrierLoopStaging,
-) =
+)
+    frequency = (scalar_doppler - ustrip(Hz, ramp.doppler)) * Hz
     ResidualPLL(
         residual_pll.bandwidth,
-        (scalar_doppler - ustrip(Hz, ramp.doppler)) * Hz,
-        _residual_pll_loop_filter(scalar_doppler - ustrip(Hz, ramp.doppler), 0.0),
+        frequency,
+        reinit(ResidualPLLLoopFilter; frequency),
         IntegrationSpan(),
         Int8(0),
         NaN,
         ResidualPLLLock(staging),
     )
+end
 
 # The residual PLL against the ramp `new` in place of `old`, its estimates of the
-# incoming Doppler at its latest prompt (before the first: where the old ramp took
-# over) and of its rate unmoved; `fs` (Hz) dates the prompt.
+# incoming Doppler and of its rate unmoved; `fs` (Hz) dates the prompts. The loop filter
+# restarts at its estimate at the end of its latest prompt's integration (before the
+# first: at the start of its first, where the old ramp took over), so it goes on
+# integrating from there; the filter's output is moved by the step at that prompt's centre.
 function _residual_pll_on_new_ramp(residual_pll::ResidualPLL, old::CarrierDopplerRamp, new::CarrierDopplerRamp, fs)
-    sample_index = _has_span(residual_pll.last_prompt_span) ? _center(residual_pll.last_prompt_span) : old.start_sample_index
-    step = _doppler_at(new, sample_index, fs) - _doppler_at(old, sample_index, fs)
+    span = residual_pll.last_prompt_span
+    step_at(sample_index) = _doppler_at(new, sample_index, fs) - _doppler_at(old, sample_index, fs)
+    filter_sample_index = _has_span(span) ? span.end_sample_index : old.start_sample_index
+    prompt_sample_index = _has_span(span) ? _center(span) : old.start_sample_index
+    loop_filter = residual_pll.loop_filter
     ResidualPLL(
         residual_pll;
-        carrier_frequency_correction = residual_pll.carrier_frequency_correction - step * Hz,
-        loop_filter = _residual_pll_loop_filter(
-            _residual_doppler(residual_pll) - step,
-            _residual_doppler_rate(residual_pll) - ustrip(Hz / s, new.doppler_rate - old.doppler_rate),
+        carrier_frequency_correction = residual_pll.carrier_frequency_correction - step_at(prompt_sample_index) * Hz,
+        loop_filter = reinit(
+            loop_filter;
+            frequency = predict_frequency(loop_filter, 0.0s) - step_at(filter_sample_index) * Hz,
+            frequency_rate = get_frequency_rate(loop_filter) - (new.doppler_rate - old.doppler_rate),
         ),
     )
 end
@@ -198,7 +196,7 @@ end
 
 # With `lock`, and the residual Doppler and rate held at the ramp.
 _reset_to_ramp(residual_pll::ResidualPLL, lock::ResidualPLLLock) =
-    ResidualPLL(residual_pll; carrier_frequency_correction = 0.0Hz, loop_filter = _residual_pll_loop_filter(0.0, 0.0), lock)
+    ResidualPLL(residual_pll; carrier_frequency_correction = 0.0Hz, loop_filter = reinit(residual_pll.loop_filter), lock)
 
 # The residual phase (cycles) predicted `samples_since_prompt` samples (at `fs`, Hz) after the
 # latest prompt's centre: the incoming phase advances at the ramp plus the loop filter's

@@ -65,7 +65,7 @@ residual_pll_error(sat, before) =
         @test sat.carrier_doppler ≈
               TL._doppler_at(state.ramp, TL._center(state.residual_pll.last_prompt_span) + T * ustrip(Hz, SIM_FS), ustrip(Hz, SIM_FS)) atol = 1e-4
         # …which the residual PLL's residual brings onto the incoming carrier.
-        @test abs(TL._residual_doppler(state.residual_pll)) < 0.1
+        @test abs(predict_frequency(state.residual_pll.loop_filter, 0.0s)) < 0.1Hz
         @test get_phase_lock_indicator(state) > 0.9 && is_phase_locked(state)
         # The residual PLL's own lock decides, not the indicator alone.
         unlocked = TL.VectorLoopState(state; residual_pll = TL.ResidualPLL(state.residual_pll;
@@ -184,7 +184,7 @@ end
         run_noisy!(rx, 250; noise = (c, i) -> noise_std_at(40.0), fill! = reporting(40.0),
             on_integration = (c, i, sat, before, T) -> begin
                 c > 30 || return
-                max_frequency = max(max_frequency, abs(TL._residual_doppler(sat.state.residual_pll)))
+                max_frequency = max(max_frequency, abs(ustrip(Hz, predict_frequency(sat.state.residual_pll.loop_filter, 0.0s))))
                 push!(errors, residual_pll_error(sat, before))
             end,
             on_update = c -> begin
@@ -255,7 +255,7 @@ end
     state = step_residual(t -> 0.1 + 8.0 * t, 1000:1000:4_000_000; unlocked = true,
         noise_std = noise_std_at(40.0))
     @test state.residual_pll.lock.locked
-    @test TL._residual_doppler(state.residual_pll) ≈ 8.0 atol = 0.1
+    @test predict_frequency(state.residual_pll.loop_filter, 0.0s) ≈ 8.0Hz atol = 0.1Hz
     @test abs(rem(state.residual_pll.predicted_prompt_phase - (0.1 + 8.0 * TL._center(state.residual_pll.last_prompt_span) / 1e6), 0.5, RoundNearest)) < 0.05
 end
 
@@ -271,13 +271,13 @@ end
         amplitude = t -> outage(t) ? 0.0 : 1.0, noise_std = noise_std_at(40.0),
         on_integration = (state, k) -> begin
             t = TL._center(state.residual_pll.last_prompt_span) / 1e6
-            1.5 <= t < 5.0 && push!(during, TL._residual_doppler(state.residual_pll))
+            1.5 <= t < 5.0 && push!(during, ustrip(Hz, predict_frequency(state.residual_pll.loop_filter, 0.0s)))
             t >= 5.0 && isnan(relock[]) && state.residual_pll.lock.locked && (relock[] = t - 5.0)
         end)
     @test count(iszero, during) > 0.95 * length(during)
     @test maximum(abs, during) < 1.0
     @test relock[] < 0.3
-    @test TL._residual_doppler(state.residual_pll) ≈ 1.0 atol = 0.1
+    @test predict_frequency(state.residual_pll.loop_filter, 0.0s) ≈ 1.0Hz atol = 0.1Hz
 end
 
 @testset "A gap between integrations: the replica ran on through it" begin
@@ -312,16 +312,18 @@ end
     residual_pll = sat.state.residual_pll
     @test TL._has_carrier_ramp(sat.state)
     t = TL._center(residual_pll.last_prompt_span) / ustrip(Hz, SIM_FS)
-    @test abs(TL._doppler_at(sat.state.ramp, TL._center(residual_pll.last_prompt_span), ustrip(Hz, SIM_FS)) + TL._residual_doppler(residual_pll) -
+    # At the latest prompt's centre, half its integration before the end.
+    τ = -residual_pll.last_prompt_span.num_samples / 2 / SIM_FS
+    @test abs(TL._doppler_at(sat.state.ramp, TL._center(residual_pll.last_prompt_span), ustrip(Hz, SIM_FS)) +
+              ustrip(Hz, predict_frequency(residual_pll.loop_filter, τ)) -
               true_doppler(sat, rx.truth, sim_time(rx, round(Int, t * ustrip(Hz, SIM_FS))))) < 0.5
     # The scalar loop is re-initialised at the residual PLL's estimate of the incoming Doppler
     # where the release takes effect — on the truth — and at its Doppler rate, and its staging
     # restarts.
     @test residual_pll.lock.locked
-    application_time = sample / ustrip(Hz, SIM_FS)
-    estimate = TL._doppler_at(sat.state.ramp, sample, ustrip(Hz, SIM_FS)) + TL._residual_doppler(residual_pll) +
-               TL._residual_doppler_rate(residual_pll) * (application_time - t)
-    rate = ustrip(Hz / s, sat.state.ramp.doppler_rate) + TL._residual_doppler_rate(residual_pll)
+    τ = (sample - residual_pll.last_prompt_span.end_sample_index) / SIM_FS
+    estimate = TL._doppler_at(sat.state.ramp, sample, ustrip(Hz, SIM_FS)) + ustrip(Hz, predict_frequency(residual_pll.loop_filter, τ))
+    rate = ustrip(Hz / s, sat.state.ramp.doppler_rate + get_frequency_rate(residual_pll.loop_filter))
     TL._mark_release!(slot, VT_INELIGIBLE)
     rx.vt.update_index += 1
     sat.state = TL._apply_nav_filter_feedback(rx.tracking_loop, rx.group, slot, sat.state, feedback_integration(sat, sample),
@@ -329,7 +331,7 @@ end
     @test !sat.state.vector_controlled
     @test sat.state.scalar_state.initial_carrier_doppler ≈ estimate * Hz
     @test abs(estimate - true_doppler(sat, rx.truth, sim_time(rx, sample))) < 0.5
-    @test sat.state.scalar_state.carrier_loop_filter.x2 ≈ rate * Hz^2
+    @test get_frequency_rate(sat.state.scalar_state.carrier_loop_filter) ≈ rate * Hz / s
     @test get_carrier_loop_stage(sat.state) == FLL_ASSISTED_PLL
     @test !TL._has_carrier_ramp(sat.state)
 end
@@ -354,7 +356,7 @@ end
 # A residual PLL of a satellite in the vector loop that wiped its latest prompt, of an
 # integration of `num_samples` centred at the sample index `center`, with `predicted_prompt_phase`, its loop filter putting out `carrier_frequency_correction`.
 residual_pll_at(center, predicted_prompt_phase; carrier_frequency_correction = 0.0, num_samples = 4000) = TL.ResidualPLL(
-    10.0Hz, carrier_frequency_correction * Hz, TL._residual_pll_loop_filter(carrier_frequency_correction, 0.0),
+    10.0Hz, carrier_frequency_correction * Hz, reinit(TL.ResidualPLLLoopFilter; frequency = carrier_frequency_correction * Hz),
     TL.IntegrationSpan(center + num_samples ÷ 2, num_samples), Int8(0), predicted_prompt_phase,
     TL.ResidualPLLLock(TL.PhaseLockDetector(0.0, 0.0, 0.0, 0, 1.0), true, 0))
 

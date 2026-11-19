@@ -477,9 +477,12 @@ end
     # the commands applied 50 ms after their integration, after the late integrations: up to five
     # 10 ms pilot integrations later, which a slot's history of half an update interval and one integration
     # holds, all of it in use. Every data integration in the loop is rotated by the phase the
-    # residual PLL estimated for its span; none falls back to the host's soft bits.
+    # residual PLL estimated for its span; none falls back to the host's soft bits. Five
+    # integrations of delay are more than the delay-compensated loop holds at the 9 Hz its
+    # PLL is capped to at 10 ms (`B_n T = 0.09`), so the inner loop runs at 7 Hz.
     rx = PipelineReceiver(; pilot = true, num_sats = 6, passenger_lag_ms = 45,
-        inner = DelayCompensatedTrackingLoop(), delay_integrations = 50)
+        inner = DelayCompensatedTrackingLoop(; wide_carrier_loop_bandwidth = 7.0Hz, narrow_carrier_loop_bandwidth = 7.0Hz),
+        delay_integrations = 50)
     results, sample, diverged = run_pipeline!(rx, 28.0)
     @test !diverged
     @test findfirst(r -> r.status.seeded, results) !== nothing
