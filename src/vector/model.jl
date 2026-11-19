@@ -30,8 +30,9 @@ The defaults suit a vehicle with a consumer-grade front end.
 
 # Fields
 - `use_pseudorange_rates`: `true` (VDFLL) also fuses the FLL pseudorange rates; with
-  `false` (VDLL) only pseudoranges enter, and the carrier Doppler the NCOs are set to
-  comes from the code measurements alone.
+  `false` (a VDLL in the code) only pseudoranges enter, and the filter still sets the
+  carrier NCOs, to a Doppler that comes from the code measurements alone (Spilker's
+  VDLL leaves the carrier to its own loops).
 - `motion_model_order`: per-axis states — `1` position, `2` + velocity,
   `3` + acceleration.
 - `clock_model_order`: `1` clock biases only (one per GNSS time system), `2` biases +
@@ -440,9 +441,12 @@ end
 # `mean(f_in) − mean(f_replica)`, and as the replica follows the filter's Doppler ramp,
 # `f_replica(epoch) − mean(f_replica)` is the predicted Doppler's rise over half the
 # update, the incoming carrier's to first order: the sum is the incoming Doppler at the
-# epoch. The ramp is the filter's prediction alone, so no loop's jitter enters the
-# replica's command; with the PLL on the NCO, one integration's jitter
-# (`f_NCO,end − mean(f_NCO)`) would make the integrated rate error walk. A command
+# epoch. Only to first order: the measurement is an interval average used as the rate at
+# the epoch (Kaplan & Hegarty §5.7.2 model a delta range as the interval's change in
+# range instead), and a Doppler rate the ramp misses leaves half its change over the
+# update, 0.25 m/s for a 0.5 g onset at 100 ms. The ramp is the filter's prediction
+# alone, so no loop's jitter enters the replica's command; with the PLL on the NCO, one
+# integration's jitter (`f_NCO,end − mean(f_NCO)`) would make the integrated rate error walk. A command
 # applied inside the update interval (a feedback delay) leaves a share of the filter's own correction
 # in the measurement: on the simulator the residuals stay at `√R` and the integrated
 # rate error at a centimetre, but the lag-1 autocorrelation shortens from −1/2 (−0.3 at
@@ -525,7 +529,8 @@ end
 # propagation interval, over which the discriminators were accumulated.
 #
 # Code: `dll_disc` is the noncoherent early-minus-late discriminator (Kaplan & Hegarty,
-# "Understanding GPS: Principles and Applications", 2nd ed., Artech House 2006, §5.5.2;
+# "Understanding GPS: Principles and Applications", 2nd ed., Artech House 2006, §5.6.3,
+# eq. (5.23);
 # Betz & Kolodziejski, "Generalized Theory of Code Tracking with an Early-Late
 # Discriminator, Part II", IEEE Trans. AES 45(4), 2009, pp. 1557-1564), with their loop
 # bandwidth `B_n` set to one integration's open-loop `1/(2·T_coh)`. Integrations share no

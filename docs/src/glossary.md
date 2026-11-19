@@ -43,8 +43,10 @@ section numbers come from; Misra & Enge, *Global Positioning System*; Spilker et
 - **Vector tracking**: the tracking loops of all satellites closed through one
   navigation filter instead of each on its own (*scalar tracking*): Kaplan and
   Hegarty's *integrated tracker* (§9.2.4.8), "sometimes referred to as vector
-  tracking". With pseudoranges alone it is Spilker's *vector delay lock loop* (VDLL,
-  Vol. I, ch. 7); fusing the pseudorange rates too (`use_pseudorange_rates`, the
+  tracking". In the code it is Spilker's *vector delay lock loop* (VDLL, Vol. I,
+  ch. 7), which leaves the carrier to its own loops; here the filter commands the
+  carrier NCOs too, from the pseudoranges alone without `use_pseudorange_rates`.
+  Fusing the pseudorange rates too (`use_pseudorange_rates`, the
   default) makes it a *vector delay/frequency lock loop* (VDFLL), a name from later
   literature, not from these books.
 - **Navigation processor**: the part that turns the tracking measurements into a

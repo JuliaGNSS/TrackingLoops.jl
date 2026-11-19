@@ -151,7 +151,11 @@ range ±1 / (2 · `prompt_interval`); it needs both prompts to share their sign,
 whether `polarity` is nonzero.
 
 See: Kaplan & Hegarty, "Understanding GPS: Principles and Applications", 2nd ed.,
-Table 5.4.
+Table 5.4, for the four-quadrant form (`ATAN2(dot, cross) / (t₂ − t₁)`); the two-quadrant
+`atan(cross / dot)` is not in that table (it is PocketSDR's Costas FLL). Kaplan & Hegarty
+take disjoint prompt pairs, reusing no prompt in the next discriminator; here each prompt
+is paired with the previous one, so every prompt enters two consecutive discriminators
+and their noise is correlated.
 """
 function fll_disc(
     correlator_bank,

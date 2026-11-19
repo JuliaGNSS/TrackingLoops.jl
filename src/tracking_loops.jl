@@ -105,7 +105,9 @@ state records the driver by its signal id, so [`step_loop!`](@ref) tells its int
 from the satellite's other signals', and starts the [`CarrierLoopStage`](@ref) staging. A
 satellite's signals must therefore have distinct ids: two signals of the driver's id would
 both close the loop.
-Must be **pure**: Tracking.jl also calls it for template states and re-initialisation.
+Must be **pure**, its state type set by the tracking loop's type alone: hosts also call
+it for template states and re-initialisation, and keep the states of satellites with
+different drivers together.
 """
 function init_loop_state(
     tracking_loop::ScalarTrackingLoop{CA,CO},
@@ -475,11 +477,13 @@ unlike `⟨I² − Q²⟩ / ⟨I² + Q²⟩` a locked loop's reading gets noisie
 not lower. `NaN` until the averages span that time.
 
 The `cos 2φ` estimate is Van Dierendonck's (Parkinson & Spilker, Vol. I, ch. 8), who
-divides the narrowband difference by the narrowband power, noise included; here the
-noise is out of the denominator. The threshold of 0.5 is a phase error of about 30° if
-constant and about 34° RMS for Gaussian phase noise (`exp(−2σ²) = 0.5`), about twice
-Kaplan & Hegarty's rule of thumb of 15° (1σ), whose 3σ is 45°. Kaplan & Hegarty's lock
-detector compares `|I|` with `|Q|` instead.
+divides the narrowband difference `NBD` by the narrowband power `NBP`, noise included,
+both formed on sums of `M` integrations (his eqs. 118–119); here `I² − Q²` is NBD with
+`M = 1`, formed on every integration, and the noise is out of the denominator. The
+threshold of 0.5 is a phase error of about 30° if constant and about 34° RMS for
+Gaussian phase noise (`exp(−2σ²) = 0.5`), about twice Kaplan & Hegarty's rule of thumb
+of 15° (1σ), whose 3σ is 45°. Kaplan & Hegarty's lock detector compares `|I|` with
+`|Q|` instead.
 """
 get_phase_lock_indicator(loop_state::ScalarLoopState) =
     loop_state.staging.lock_detector.indicator
