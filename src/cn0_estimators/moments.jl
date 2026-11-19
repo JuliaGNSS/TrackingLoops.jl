@@ -4,6 +4,10 @@ $(SIGNATURES)
     MomentsCN0Estimator(; num_averaged_integrations = 100)
 
 Estimate C/N₀ from the second and fourth moments of the latest `num_averaged_integrations` prompts.
+
+The signal power is `√(2 M₂² − M₄)` with `Mₖ = ⟨|P|ᵏ⟩`, clamped at zero: on noise
+alone `2 M₂² − M₄` is negative in ~41 % of 100-prompt windows, and such a window
+reads no signal rather than a power mirrored from the noise.
 """
 struct MomentsCN0Estimator <: AbstractCN0Estimator
     prompt_buffer::Vector{ComplexF64}
@@ -41,15 +45,16 @@ end
 $(SIGNATURES)
 
 Estimates the CN0 based on the struct `MomentsCN0Estimator`: `-Inf` dB-Hz, no estimate,
-from an empty buffer or from prompts without power.
+from an empty buffer, from prompts without power or from prompts whose moments leave
+no signal power (`2 M₂² ≤ M₄`).
 """
 function estimate_cn0(estimator::MomentsCN0Estimator, coherent_integration_time)
     length(estimator) == 0 && return -Inf * dBHz
     prompt_buffer = estimator.prompt_buffer
     M₂ = 1 / length(estimator) * sum(abs2, prompt_buffer)
     M₄ = 1 / length(estimator) * sum(x -> abs2(x)^2, prompt_buffer)
-    Pd = sqrt(abs(2 * M₂^2 - M₄))
-    noise_power = abs(M₂ - Pd)
+    Pd = sqrt(max(2 * M₂^2 - M₄, 0.0))
+    noise_power = max(M₂ - Pd, 0.0) # `Pd ≤ M₂` as `M₄ ≥ M₂²`, up to rounding
     SNR = Pd / noise_power
     isnan(SNR) && return -Inf * dBHz
     dBHz(SNR / coherent_integration_time)

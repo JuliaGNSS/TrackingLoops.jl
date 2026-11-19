@@ -47,11 +47,13 @@ true 25 dB-Hz in 22.5 % of updates against 15.0 %).
 
 # Against the moments method
 
-Unlike [`MomentsCN0Estimator`](@ref), whose median on pure noise is ~27.6 dB-Hz
-at its default 100-prompt window (so a lock threshold below ~30 dB-Hz never
-trips and one at 30 dB-Hz false-alarms on ~19 % of updates), NWPR reports "no
-signal" on noise (Falletti, Pini & Lo Presti, *IEEE T-AES* 47(1):420–437, 2011;
-JuliaGNSS/Tracking.jl#217).
+[`MomentsCN0Estimator`](@ref) at its default 100-prompt window reads pure noise
+as no signal only when the window's moments leave no signal power (~41 % of
+updates), and otherwise mostly as 20–30 dB-Hz (~49 %): its median on noise is
+~24.1 dB-Hz, ~46 % of updates clear a 25 dB-Hz lock threshold and ~8.5 % a 30 dB-Hz
+one, and a true 20 dB-Hz signal reads much the same (median ~24.5 dB-Hz). NWPR
+reports "no signal" on noise and tracks the truth from 20 dB-Hz up (Falletti, Pini &
+Lo Presti, *IEEE T-AES* 47(1):420–437, 2011; JuliaGNSS/Tracking.jl#217).
 
 # The coherence constraint
 
@@ -94,8 +96,8 @@ loop that has not narrowed or runs wider; raise it where the PLL is narrow, for 
 pilot or for a signal that is never weak.
 
 Where no window is admissible the `fallback` is reported (by default
-[`MomentsCN0Estimator`](@ref), with its noise floor), e.g. for integrations spanning
-a whole navigation bit.
+[`MomentsCN0Estimator`](@ref), which reads noise as 20 dB-Hz or more in ~57 % of
+updates), e.g. for integrations spanning a whole navigation bit.
 
 # Fields / configuration
 
