@@ -221,12 +221,13 @@ lives with the satellite. Hosts drive every tracking loop through one interface:
     code_doppler)` re-initialises it at converged Dopplers, keeping what the
     tracking loop chooses to keep.
 
-A custom tracking loop implements `init_loop_state` and `step_loop!`. `init_loop_state`
+A custom tracking loop implements `init_loop_state`, `step_loop!` and
+`reinit_loop_state`; the state does not record the driver signal, so there is no
+fallback that re-initialises with `init_loop_state`. `init_loop_state`
 must be pure: no side effects, and a state type that depends only on the type of the
-tracking loop, not on the driver signal, as a host also calls it for a template state,
-keeps the states of satellites with different drivers in one container, and
-re-initialises with it. The other methods are optional: `reinit_loop_state` (a host may re-initialise with `init_loop_state`
-instead), [`get_decoder`](@ref) (fallback `nothing`, for a loop without decoders) and
+tracking loop, not on the driver signal, as a host also calls it for a template state
+and keeps the states of satellites with different drivers in one container. The other methods are optional: [`get_decoder`](@ref)
+(fallback `nothing`, for a loop without decoders) and
 [`calc_carrier_phase_correction`](@ref TrackingLoops.calc_carrier_phase_correction)
 (fallback `0.0`, for a loop that steers its replica onto the carrier).
 [`get_carrier_loop_stage`](@ref), [`is_phase_locked`](@ref) and
