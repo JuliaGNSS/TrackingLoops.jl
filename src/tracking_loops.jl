@@ -250,16 +250,17 @@ end
 # ── The delay-compensated PLL/DLL ─────────────────────────────────
 
 """
-    DelayCompensatedTrackingLoop(; wide_carrier_loop_bandwidth = nothing,
+    DelayCompensatedTrackingLoop(CA = ThirdOrderAssistedBilinearLF, CO = SecondOrderBilinearLF;
+                             wide_carrier_loop_bandwidth = nothing,
                              narrow_carrier_loop_bandwidth = nothing,
                              fll_assist_loop_bandwidth = nothing,
                              code_loop_bandwidth = nothing,
                              compensate_delay = true)
 
-FLL-assisted PLL and DLL loop for a replica whose NCO commands are
-applied with a known delay; the hardware-correlator receiver's default.
+PLL and DLL loop for a replica whose NCO commands are applied with a known delay;
+the hardware-correlator receiver's default.
 
-It is the `ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)` (same filters, gains,
+It is the `ScalarTrackingLoop(CA, CO)` (same filters, gains,
 [`CarrierLoopStage`](@ref) staging and bandwidth defaults) with its internals
 referenced to the device NCO. The one different default is the wide PLL bandwidth:
 the narrow one ([`default_narrow_carrier_loop_bandwidth`](@ref)), as a wider
@@ -273,7 +274,7 @@ loop tolerates less feedback delay.
     discriminators *predicted at the new command's application sample*: the phase
     error (cycles) advanced by `∫ (f̂ − w(τ)) dτ` over the commands already
     scheduled, and the frequency measurement re-based onto the command running
-    there.
+    there (the latter only while an FLL assists).
 
 With zero delay step 2 is the identity and the loop *is* the conventional
 loop at the same bandwidths, inheriting its noise performance.
@@ -284,21 +285,33 @@ above is the package's own. Its FLL reads the commands back
 to the previous prompt's centre, so a host keeps its [`NCOTimeline`](@ref) history at
 least that far back (see [`advance_timeline!`](@ref)).
 `compensate_delay = false` drops step 2, making it arithmetically the
-`ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)`: the documented **negative control**,
+`ScalarTrackingLoop(CA, CO)`: the documented **negative control**,
 which fails like it at a few integrations of delay.
+
+`ThirdOrderBilinearLF` drops the FLL. As the loop pulls in at the narrow PLL
+bandwidth, it then pulls in only small initial frequency errors.
 """
-struct DelayCompensatedTrackingLoop{CO<:AbstractLoopFilter} <: AbstractTrackingLoop
+struct DelayCompensatedTrackingLoop{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter} <: AbstractTrackingLoop
     bandwidths::_LoopBandwidthConfiguration
     compensate_delay::Bool
 end
 
 function DelayCompensatedTrackingLoop(
+    ::Type{CA} = ThirdOrderAssistedBilinearLF,
     ::Type{CO} = SecondOrderBilinearLF;
     compensate_delay::Bool = true,
     kwargs...,
-) where {CO<:AbstractLoopFilter}
-    DelayCompensatedTrackingLoop{CO}(_LoopBandwidthConfiguration(; kwargs...), compensate_delay)
+) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}
+    DelayCompensatedTrackingLoop{CA,CO}(_LoopBandwidthConfiguration(; kwargs...), compensate_delay)
 end
+
+# Copy with the given (non-`nothing`) bandwidths and `compensate_delay` replaced.
+DelayCompensatedTrackingLoop(
+    tracking_loop::DelayCompensatedTrackingLoop{CA,CO};
+    compensate_delay::Bool = tracking_loop.compensate_delay,
+    kwargs...,
+) where {CA,CO} =
+    DelayCompensatedTrackingLoop{CA,CO}(_LoopBandwidthConfiguration(tracking_loop.bandwidths; kwargs...), compensate_delay)
 
 function _init_scalar_loop_state(tracking_loop, driver_signal, carrier_doppler, code_doppler,
     carrier_loop_filter, code_loop_filter, defaults::LoopBandwidths)
@@ -317,15 +330,15 @@ end
 # Delay compensation pulls in at the narrow bandwidth: a wider loop tolerates
 # less feedback delay. All other initialization is shared with the scalar loop.
 function init_loop_state(
-    tracking_loop::DelayCompensatedTrackingLoop{CO},
+    tracking_loop::DelayCompensatedTrackingLoop{CA,CO},
     driver_signal::AbstractGNSSSignal,
     carrier_doppler,
     code_doppler,
-) where {CO}
+) where {CA,CO}
     defaults = LoopBandwidths(driver_signal;
         wide_carrier = default_narrow_carrier_loop_bandwidth(driver_signal))
     _init_scalar_loop_state(tracking_loop, driver_signal, carrier_doppler, code_doppler,
-        ThirdOrderAssistedBilinearLF(), reinit(CO), defaults)
+        reinit(CA), reinit(CO), defaults)
 end
 
 """

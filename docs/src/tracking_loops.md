@@ -38,7 +38,7 @@ satellite's signals must have distinct ids.
   initial frequency errors; `ScalarTrackingLoop(ThirdOrderBilinearLF)` drops it.
 - [`DelayCompensatedTrackingLoop`](@ref): stays stable when its correction takes
   effect only several integrations later, as with a hardware NCO. With a fixed command
-  and no application sample it is the FLL-assisted conventional loop at the same
+  and no application sample it is the scalar loop with the same filters at the same
   bandwidths.
 
 The bandwidth rules ([`default_wide_carrier_loop_bandwidth`](@ref TrackingLoops.default_wide_carrier_loop_bandwidth),

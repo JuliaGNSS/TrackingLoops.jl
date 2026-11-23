@@ -10,8 +10,9 @@ const LOOP_N = 4000
 # conventional loop holds through about 20 integrations of delay, at its default 50 Hz
 # wide bandwidth through three. The delay tests run the loops at 75 Hz, wide and
 # narrow, where the conventional loop holds through 4 integrations and 5 make it
-# limit-cycle, while the delay-compensated loop holds through 5, with or without the
-# FLL, and not through 6.
+# limit-cycle, while the delay-compensated loop holds through 5 and not through 6.
+# Without an FLL it holds through 4: at 5 it still rings after 1800 integrations,
+# and its pull-in transient nears the ±π/2 edge.
 const WIDE_LOOP = (;
     wide_carrier_loop_bandwidth = 75.0Hz,
     narrow_carrier_loop_bandwidth = 75.0Hz,
@@ -65,10 +66,17 @@ end
     @test control[2] == conventional[2]
     @test all(abs.(referenced[1][900:end]) .< 0.2)
     @test all(abs.(referenced[2][900:end] .- 130.0) .< 1.0)
+    # Without an FLL too.
+    conventional = simulate_delayed_loop(
+        ScalarTrackingLoop(ThirdOrderBilinearLF; NCO_REFERENCED_WIDE...), 0; steps = 1200)
+    referenced = simulate_delayed_loop(DelayCompensatedTrackingLoop(ThirdOrderBilinearLF), 0; steps = 1200)
+    @test referenced[1] == conventional[1]
+    @test referenced[2] == conventional[2]
 end
 
-@testset "The delay-compensated loop holds lock through $d integrations of delay" for d in 1:5
-    phases, nco_history = simulate_delayed_loop(DelayCompensatedTrackingLoop(; WIDE_LOOP...), d; steps = 2000)
+@testset "The delay-compensated loop with $CA holds lock through $d integrations of delay" for
+        (CA, max_delay) in ((ThirdOrderAssistedBilinearLF, 5), (ThirdOrderBilinearLF, 4)), d in 1:max_delay
+    phases, nco_history = simulate_delayed_loop(DelayCompensatedTrackingLoop(CA; WIDE_LOOP...), d; steps = 2000)
     @test all(abs.(phases[1800:end]) .< 0.05)
     @test all(abs.(nco_history[1800:end] .- 130.0) .< 0.3)
     # The pull-in transient stays clear of the ±π/2 edge where the BPSK
@@ -86,6 +94,8 @@ end
     for tracking_loop in (
         ScalarTrackingLoop(ThirdOrderAssistedBilinearLF; WIDE_LOOP...),
         DelayCompensatedTrackingLoop(; compensate_delay = false, WIDE_LOOP...),
+        ScalarTrackingLoop(ThirdOrderBilinearLF; WIDE_LOOP...),
+        DelayCompensatedTrackingLoop(ThirdOrderBilinearLF; compensate_delay = false, WIDE_LOOP...),
     )
         phases, nco_history = simulate_delayed_loop(tracking_loop, 5; steps = 1200)
         tail = nco_history[600:end] .- 130.0
@@ -104,7 +114,11 @@ end
     @test state.bandwidths.narrow_carrier == 18.0Hz
     @test state.bandwidths.fll_assist == 5.0Hz
     @test get_carrier_loop_stage(state) == FLL_ASSISTED_PLL
+    @test state.carrier_loop_filter isa ThirdOrderAssistedBilinearLF
     @test !TrackingLoops._has_span(state.last_prompt_span)
+    unassisted = init_loop_state(DelayCompensatedTrackingLoop(ThirdOrderBilinearLF), GPSL1CA(), 0.0Hz, 0.0Hz)
+    @test unassisted.carrier_loop_filter isa ThirdOrderBilinearLF
+    @test get_carrier_loop_stage(unassisted) == WIDE_PLL
     narrow = DelayCompensatedTrackingLoop(;
         wide_carrier_loop_bandwidth = 30.0Hz,
         narrow_carrier_loop_bandwidth = 12.0Hz,

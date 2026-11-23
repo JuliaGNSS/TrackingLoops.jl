@@ -79,6 +79,13 @@ end
     bumped = VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop(explicit; narrow_carrier_loop_bandwidth = 15.0Hz))
     @test bumped.scalar_loop.bandwidths.narrow_carrier_loop_bandwidth == 15.0Hz
     @test bumped.scalar_loop.bandwidths.code_loop_bandwidth == 1.0Hz
+    compensated = DelayCompensatedTrackingLoop(ThirdOrderBilinearLF; compensate_delay = false, code_loop_bandwidth = 1.0Hz)
+    bumped_compensated = DelayCompensatedTrackingLoop(compensated; narrow_carrier_loop_bandwidth = 15.0Hz)
+    @test bumped_compensated isa DelayCompensatedTrackingLoop{ThirdOrderBilinearLF}
+    @test bumped_compensated.bandwidths.narrow_carrier_loop_bandwidth == 15.0Hz
+    @test bumped_compensated.bandwidths.code_loop_bandwidth == 1.0Hz
+    @test !bumped_compensated.compensate_delay
+    @test DelayCompensatedTrackingLoop(compensated; compensate_delay = true).compensate_delay
     referenced = init_loop_state(VectorTrackingLoop(GalileoE1B(); scalar_loop = DelayCompensatedTrackingLoop()), GalileoE1B(), 0.0Hz, 0.0Hz)
     @test referenced.scalar_state isa ScalarLoopState
     @test referenced.scalar_state.bandwidths.narrow_carrier ==
