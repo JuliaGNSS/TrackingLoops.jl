@@ -76,8 +76,9 @@ default to `nothing`, **auto**: sized per satellite from its driver signal via
 integration time at filter time (see [`LoopBandwidths`](@ref)), so longer
 integration needs no re-tuning. Each is a loop noise bandwidth `B_n` (Kaplan & Hegarty), one-sided.
 
-Use `ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)` for FLL assistance during
-pull-in, followed by the same carrier staging and PLL tracking.
+By default an FLL assists the PLL during pull-in (`ThirdOrderAssistedBilinearLF`; see
+[`CarrierLoopStage`](@ref)). `ScalarTrackingLoop(ThirdOrderBilinearLF)` drops the FLL
+and pulls in at the wide PLL.
 """
 struct ScalarTrackingLoop{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter} <:
        AbstractTrackingLoop
@@ -85,7 +86,7 @@ struct ScalarTrackingLoop{CA<:AbstractLoopFilter,CO<:AbstractLoopFilter} <:
 end
 
 function ScalarTrackingLoop(
-    ::Type{CA} = ThirdOrderBilinearLF,
+    ::Type{CA} = ThirdOrderAssistedBilinearLF,
     ::Type{CO} = SecondOrderBilinearLF;
     kwargs...,
 ) where {CA<:AbstractLoopFilter,CO<:AbstractLoopFilter}

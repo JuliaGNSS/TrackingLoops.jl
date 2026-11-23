@@ -53,11 +53,10 @@ integration and every loop:
 
 ```julia
 using TrackingLoops, GNSSSignals, Unitful
-using TrackingLoopFilters: ThirdOrderAssistedBilinearLF
 
 signal = GPSL1CA()
 fs = 4e6u"Hz"
-tracking_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)
+tracking_loop = ScalarTrackingLoop()
 loop_state = init_loop_state(tracking_loop, signal, carrier_doppler, code_doppler)  # one per satellite
 post_correlation_state = PostCorrelationState(signal, prn)  # bit synchronizer, C/N₀ estimator, post-correlation filter
 

@@ -46,7 +46,7 @@ end
     @test tracking_loop.scalar_loop isa ScalarTrackingLoop{ThirdOrderAssistedBilinearLF}
     state = init_loop_state(tracking_loop, GPSL1CA(), 500.0Hz, 100.0Hz)
     @test state isa VectorLoopState
-    @test state.scalar_state == init_loop_state(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA(), 500.0Hz, 100.0Hz)
+    @test state.scalar_state == init_loop_state(ScalarTrackingLoop(), GPSL1CA(), 500.0Hz, 100.0Hz)
     @test state.vector_controlled == false
     @test state.discriminators.code_disc_sum == (0, 0.0)
     @test state.discriminators.fll_disc_sum == (0, 0.0Hz)
@@ -133,7 +133,7 @@ end
 @testset "A vector loop's inner loop is a scalar loop" begin
     @test_throws TypeError VectorTrackingLoop(GPSL1CA(); scalar_loop = VectorTrackingLoop(GPSL1CA()))
     @test VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop()) isa VectorTrackingLoop
-    @test VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)) isa VectorTrackingLoop
+    @test VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop(ThirdOrderBilinearLF)) isa VectorTrackingLoop
     @test VectorTrackingLoop(GPSL1CA(); scalar_loop = DelayCompensatedTrackingLoop()) isa VectorTrackingLoop
 end
 

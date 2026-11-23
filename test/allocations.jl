@@ -22,7 +22,7 @@
     schedule_command!(timeline, 12_000, 120.0Hz, 0.12Hz)
     for loop in (
         ScalarTrackingLoop(),
-        ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
+        ScalarTrackingLoop(ThirdOrderBilinearLF),
         DelayCompensatedTrackingLoop(),
     )
         state = init_loop_state(loop, signal, 100.0Hz, 0.1Hz)

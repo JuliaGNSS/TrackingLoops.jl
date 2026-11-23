@@ -36,7 +36,7 @@ using Unitful
 using Unitful: Hz, dBHz, s, ms, @u_str
 using AllocCheck
 using LinearAlgebra: norm
-using TrackingLoopFilters: ThirdOrderAssistedBilinearLF, SecondOrderBilinearLF, reinit, predict_frequency,
+using TrackingLoopFilters: ThirdOrderAssistedBilinearLF, ThirdOrderBilinearLF, SecondOrderBilinearLF, reinit, predict_frequency,
     get_frequency_rate
 
 include("post_correlation_helpers.jl")

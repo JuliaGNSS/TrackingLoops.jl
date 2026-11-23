@@ -33,10 +33,9 @@ data component of a pilot + data pair) to the host, returning the state
 unchanged and the command in force. The state knows the driver by its signal id, so a
 satellite's signals must have distinct ids.
 
-- [`ScalarTrackingLoop`](@ref): a PLL and a carrier-aided DLL.
-- `ScalarTrackingLoop(ThirdOrderAssistedBilinearLF)`: an FLL assists the
+- [`ScalarTrackingLoop`](@ref): a PLL and a carrier-aided DLL. An FLL assists the
   PLL until phase lock (see [Carrier-loop staging](@ref)), to pull in larger
-  initial frequency errors. The default in Tracking.jl.
+  initial frequency errors; `ScalarTrackingLoop(ThirdOrderBilinearLF)` drops it.
 - [`DelayCompensatedTrackingLoop`](@ref): stays stable when its correction takes
   effect only several integrations later, as with a hardware NCO. With a fixed command
   and no application sample it is the FLL-assisted conventional loop at the same

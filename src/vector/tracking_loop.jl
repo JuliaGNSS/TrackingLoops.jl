@@ -2,7 +2,7 @@
 # filter can take over (see `VectorTrackingLoop`).
 
 """
-    VectorTrackingLoop(signals...; scalar_loop = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
+    VectorTrackingLoop(signals...; scalar_loop = ScalarTrackingLoop(),
                     nav_filter_config = NavFilterConfig(), navigation_update_interval = 100ms,
                     min_tracking_cn0 = 30dBHz,
                     residual_pll_loop_bandwidth = default_residual_pll_loop_bandwidth(),
@@ -121,7 +121,7 @@ end
 
 function VectorTrackingLoop(
     signals::Union{AbstractGNSSSignal,Pair{<:AbstractGNSSSignal,<:AbstractGNSSSignal}}...;
-    scalar_loop::Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop} = ScalarTrackingLoop(ThirdOrderAssistedBilinearLF),
+    scalar_loop::Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop} = ScalarTrackingLoop(),
     nav_filter_config::NavFilterConfig = NavFilterConfig(),
     navigation_update_interval = 100.0ms,
     min_tracking_cn0 = 30.0dBHz,

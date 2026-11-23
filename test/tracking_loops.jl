@@ -77,7 +77,7 @@ end
 end
 
 @testset "The default loop holds lock through three integrations of delay" begin
-    phases, nco_history = simulate_delayed_loop(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), 3; steps = 1200)
+    phases, nco_history = simulate_delayed_loop(ScalarTrackingLoop(), 3; steps = 1200)
     @test all(abs.(phases[1100:end]) .< 0.05)
     @test all(abs.(nco_history[1100:end] .- 130.0) .< 0.3)
 end
@@ -128,9 +128,9 @@ end
           default_fll_assist_loop_bandwidth(GalileoE1B()) == 5.0Hz
     @test get_carrier_loop_stage(conv) == FLL_ASSISTED_PLL
     # A carrier filter without an FLL path starts at the wide PLL.
-    @test get_carrier_loop_stage(init_loop_state(ScalarTrackingLoop(), GPSL1CA(), 0.0Hz, 0.0Hz)) ==
+    @test get_carrier_loop_stage(init_loop_state(ScalarTrackingLoop(ThirdOrderBilinearLF), GPSL1CA(), 0.0Hz, 0.0Hz)) ==
           WIDE_PLL
-    @test typeof(init_loop_state(ScalarTrackingLoop(ThirdOrderAssistedBilinearLF), GPSL1CA(), 0.0Hz, 0.0Hz)) === typeof(conv)
+    @test typeof(init_loop_state(ScalarTrackingLoop(), GPSL1CA(), 0.0Hz, 0.0Hz)) === typeof(conv)
     @test typeof(state) === typeof(conv)
     @test isbitstype(typeof(state))
     @test !TrackingLoops._has_span(conv.last_prompt_span)
