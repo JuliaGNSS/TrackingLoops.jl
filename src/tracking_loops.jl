@@ -161,7 +161,7 @@ end
             polarity,
         ) : 0.0Hz
     (;
-        coherent_integration_time = _coherent_integration_time(post_correlation_state),
+        coherent_integration_time = get_last_coherent_integration_time(post_correlation_state),
         center,
         replica_carrier_doppler = carrier_doppler,
         replica_code_doppler = code_doppler,
@@ -180,8 +180,8 @@ end
 # coherent integration time without a previous integration.
 @inline _prompt_interval(post_correlation_state::PostCorrelationState, previous_span::IntegrationSpan) =
     _has_span(previous_span) ?
-    _samples_since_center(previous_span, _integration_span(post_correlation_state)) / post_correlation_state.sampling_frequency :
-    _coherent_integration_time(post_correlation_state)
+    uconvert(s, _samples_since_center(previous_span, _integration_span(post_correlation_state)) / post_correlation_state.sampling_frequency) :
+    get_last_coherent_integration_time(post_correlation_state)
 
 # The scalar carrier filter's bandwidth for an integration of `coherent_integration_time`: the
 # stage's PLL bandwidth, paired with the FLL path's for an FLL-assisted filter.
@@ -233,8 +233,8 @@ end
         post_correlation_state.signal,
         loop_state.initial_carrier_doppler,
         loop_state.initial_code_doppler,
-        carrier_frequency_correction,
-        code_frequency_correction,
+        uconvert(Hz, carrier_frequency_correction),
+        uconvert(Hz, code_frequency_correction),
     )
     ScalarLoopState(
         loop_state;

@@ -194,9 +194,7 @@ function PostCorrelationState(
     )
 end
 
-# The latest integration's coherent integration time, first sample and centre sample, on
-# the band's sample count.
-_coherent_integration_time(state::PostCorrelationState) = state.last_num_integrated_samples / state.sampling_frequency
+# The latest integration's first sample and centre sample, on the band's sample count.
 _integration_start(state::PostCorrelationState) = state.last_end_sample_index - state.last_num_integrated_samples
 _integration_center(state::PostCorrelationState) = state.last_end_sample_index - state.last_num_integrated_samples / 2
 
@@ -257,6 +255,16 @@ integration time and the C/N₀ estimate follow.
 get_last_num_code_periods(state::PostCorrelationState) = state.last_num_code_periods
 
 """
+    get_last_coherent_integration_time(state::PostCorrelationState) -> s
+
+The coherent integration time `T` of the latest integration, the samples it integrated
+over the sampling frequency: the `T` [`estimate_cn0`](@ref) and the loops divide by.
+`NaN` s before the first integration.
+"""
+get_last_coherent_integration_time(state::PostCorrelationState) =
+    uconvert(s, state.last_num_integrated_samples / state.sampling_frequency)
+
+"""
     get_bit_polarity(state::PostCorrelationState) -> Int8
 
 The sign the bit synchronizer found the bits at once
@@ -273,7 +281,7 @@ The C/N₀ of the state's estimator at the latest integration's coherent integra
 time, the samples it integrated over the sampling frequency; `-Inf` dB-Hz before the
 first integration (see [`AbstractCN0Estimator`](@ref)).
 """
-estimate_cn0(state::PostCorrelationState) = estimate_cn0(state, _coherent_integration_time(state))
+estimate_cn0(state::PostCorrelationState) = estimate_cn0(state, get_last_coherent_integration_time(state))
 
 estimate_cn0(state::PostCorrelationState, coherent_integration_time) =
     estimate_cn0(state.cn0_estimator, coherent_integration_time)

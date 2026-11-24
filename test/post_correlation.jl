@@ -19,6 +19,7 @@ using Random: MersenneTwister
     @test length(get_soft_bits(state)) >= 8
     # The host's read-outs: one code period per integration, the bit position, no overlay.
     @test get_last_num_code_periods(state) == 1
+    @test get_last_coherent_integration_time(state) === uconvert(s, 4000 / fs)
     @test get_num_code_periods_into_bit(state) == state.bit_synchronizer.num_code_periods_into_bit
     @test 0 <= get_num_code_periods_into_bit(state) < 20
     @test get_secondary_code_phase(state) == 0

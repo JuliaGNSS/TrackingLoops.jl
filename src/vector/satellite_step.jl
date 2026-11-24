@@ -187,7 +187,7 @@ function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSl
     slot.driver.last_end_sample_index = start
     slot.driver.sampling_frequency = post_correlation_state.sampling_frequency
     slot.driver.last_code_phase = NaN
-    slot.driver.last_coherent_integration_time = uconvert(s, _coherent_integration_time(post_correlation_state))
+    slot.driver.last_coherent_integration_time = get_last_coherent_integration_time(post_correlation_state)
     slot.driver.chips_since_epoch = 0.0
     slot.decoding.last_end_sample_index = start
     slot.decoding.sampling_frequency = post_correlation_state.sampling_frequency
@@ -315,7 +315,7 @@ function _snapshot_driver!(
         return loop_state
     chips_to_epoch, epoch_sample_index =
         _chips_to_pending_epoch(nav_processor, slot.driver, group.driver_signal, post_correlation_state, nco_history)
-    coherent_integration_time = uconvert(s, _coherent_integration_time(post_correlation_state))
+    coherent_integration_time = get_last_coherent_integration_time(post_correlation_state)
     slot.pending_snapshot = SatelliteSnapshot(
         slot.pending_snapshot;
         vector_controlled = loop_state.vector_controlled,
@@ -496,7 +496,7 @@ function _advance_driver!(group::VectorTrackingSlotGroup, slot::VectorTrackingSl
     slot.driver.sampling_frequency = post_correlation_state.sampling_frequency
     slot.driver.last_code_phase = post_correlation_state.last_code_phase
     slot.driver.last_coherent_integration_time =
-        uconvert(s, _coherent_integration_time(post_correlation_state))
+        get_last_coherent_integration_time(post_correlation_state)
     slot.driver.last_early_late_spacing =
         calc_early_late_sample_spacing(
             post_correlation_state.last_filtered_correlator_bank,

@@ -242,7 +242,7 @@ end
 function _step_residual_pll(loop_state, post_correlation_state::PostCorrelationState, replica_cycles)
     (; residual_pll, ramp) = loop_state
     fs = _sampling_frequency_hz(post_correlation_state)
-    coherent_integration_time = _coherent_integration_time(post_correlation_state)
+    coherent_integration_time = get_last_coherent_integration_time(post_correlation_state)
     span = _integration_span(post_correlation_state)
     polarity = post_correlation_state.last_carrier_phase_polarity
 
