@@ -376,6 +376,9 @@ TrackingLoops.SatelliteReport
 get_decoder
 get_signal_pairs(::VectorTrackingLoop)
 get_scalar_loop(::VectorTrackingLoop)
+get_navigation_update_interval(::VectorTrackingLoop)
+get_min_tracking_cn0(::VectorTrackingLoop)
+get_nav_filter_config(::VectorTrackingLoop)
 TrackingLoops.VectorTrackingReleaseReason
 get_navigation_solution(::VectorTrackingLoop)
 get_navigation_status(::VectorTrackingLoop)

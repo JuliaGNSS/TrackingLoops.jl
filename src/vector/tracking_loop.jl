@@ -305,6 +305,7 @@ reinit_loop_state(
 
 get_carrier_loop_stage(loop_state::VectorLoopState) =
     loop_state.vector_controlled ? VECTOR_LOOP : get_carrier_loop_stage(loop_state.scalar_state)
+get_loop_bandwidths(loop_state::VectorLoopState) = get_loop_bandwidths(loop_state.scalar_state)
 get_phase_lock_indicator(loop_state::VectorLoopState) =
     loop_state.vector_controlled ? loop_state.residual_pll.lock.lock_detector.indicator :
     get_phase_lock_indicator(loop_state.scalar_state)

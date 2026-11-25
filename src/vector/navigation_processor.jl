@@ -644,6 +644,30 @@ The scalar tracking loop each satellite runs outside vector control (the `scalar
 get_scalar_loop(tracking_loop::VectorTrackingLoop) = tracking_loop.scalar_loop
 
 """
+    get_navigation_update_interval(tracking_loop::VectorTrackingLoop) -> s
+
+The time between navigation updates (the `navigation_update_interval` `tracking_loop`
+was built with).
+"""
+get_navigation_update_interval(tracking_loop::VectorTrackingLoop) = tracking_loop.navigation_processor.update_interval
+
+"""
+    get_min_tracking_cn0(tracking_loop::VectorTrackingLoop) -> dB-Hz
+
+The C/N₀ a satellite's driver needs to count as in lock (the
+`min_tracking_cn0` `tracking_loop` was built with).
+"""
+get_min_tracking_cn0(tracking_loop::VectorTrackingLoop) = tracking_loop.navigation_processor.min_tracking_cn0
+
+"""
+    get_nav_filter_config(tracking_loop::VectorTrackingLoop) -> NavFilterConfig
+
+The navigation filter's [`NavFilterConfig`](@ref) (the `nav_filter_config`
+`tracking_loop` was built with).
+"""
+get_nav_filter_config(tracking_loop::VectorTrackingLoop) = tracking_loop.navigation_processor.nav_filter.config
+
+"""
     get_vector_tracking_members(tracking_loop::VectorTrackingLoop)
 
 The latest update's per-member results: every member of the vector loop, measured

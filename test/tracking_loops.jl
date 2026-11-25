@@ -128,6 +128,11 @@ end
     @test narrow_state.bandwidths.wide_carrier == 30.0Hz
     @test narrow_state.bandwidths.narrow_carrier == 12.0Hz
     @test narrow_state.bandwidths.fll_assist == 3.0Hz
+    # The loop's bandwidths for a signal, the unset ones at its defaults, are its states'.
+    @test get_loop_bandwidths(narrow, GPSL1CA()) ===
+          LoopBandwidths(30.0Hz, 12.0Hz, 3.0Hz, default_code_loop_bandwidth(GPSL1CA())) ===
+          get_loop_bandwidths(narrow_state)
+    @test get_loop_bandwidths(ScalarTrackingLoop(), GPSL1CA()) === LoopBandwidths(GPSL1CA())
     reset_state = reinit_loop_state(narrow, narrow_state, 50.0Hz, 0.03Hz)
     @test reset_state.initial_carrier_doppler == 50.0Hz
     @test reset_state.bandwidths.narrow_carrier == 12.0Hz

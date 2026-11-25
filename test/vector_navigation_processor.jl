@@ -23,6 +23,16 @@ using Geodesy: ENUfromECEF, wgs84
     @test !state.vector_controlled
     @test VectorTrackingLoop(GPSL1CA(); navigation_update_interval = 20ms).navigation_processor.update_interval == 0.02s
     @test VectorTrackingLoop(GPSL1CA(); min_tracking_cn0 = 35dBHz).navigation_processor.min_tracking_cn0 == 35dBHz
+    # The configuration reads back as built.
+    config = NavFilterConfig(; motion_model_order = 3, measurement_deficit_timeout = 5.0s)
+    configured = VectorTrackingLoop(GPSL1CA(); scalar_loop = ScalarTrackingLoop(; code_loop_bandwidth = 0.5Hz),
+        nav_filter_config = config, navigation_update_interval = 20ms, min_tracking_cn0 = 35dBHz)
+    @test get_navigation_update_interval(configured) == 0.02s
+    @test get_min_tracking_cn0(configured) == 35dBHz
+    @test get_nav_filter_config(configured) === config
+    configured_state = init_loop_state(configured, GPSL1CA(), 100.0Hz, 0.1Hz)
+    @test get_loop_bandwidths(configured_state).code == 0.5Hz
+    @test get_loop_bandwidths(configured_state) === get_loop_bandwidths(get_scalar_loop(configured), GPSL1CA())
     paired = VectorTrackingLoop(GPSL1CA(), BeiDouB1C_P() => BeiDouB1C_D(); scalar_loop = DelayCompensatedTrackingLoop())
     pairs = get_signal_pairs(paired)
     @test map(pair -> typeof(first(pair)) => typeof(last(pair)), pairs) ==

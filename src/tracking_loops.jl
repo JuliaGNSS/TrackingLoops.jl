@@ -474,6 +474,20 @@ get_carrier_loop_stage(loop_state::ScalarLoopState) =
     loop_state.staging.stage
 
 """
+    get_loop_bandwidths(tracking_loop::Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop}, signal) -> LoopBandwidths
+    get_loop_bandwidths(loop_state) -> LoopBandwidths
+
+The [`LoopBandwidths`](@ref) a scalar loop gives a satellite whose driver is `signal`:
+the loop's configured bandwidths, each one left unset at the signal's default. Or those
+a scalar loop's per-satellite state runs at, or a [`VectorTrackingLoop`](@ref)'s, whose
+scalar loop runs at them out of the vector loop (in it, the residual PLL runs at the
+vector loop's `residual_pll_loop_bandwidth`).
+"""
+get_loop_bandwidths(tracking_loop::Union{ScalarTrackingLoop,DelayCompensatedTrackingLoop}, signal::AbstractGNSSSignal) =
+    _resolve_bandwidths(tracking_loop.bandwidths, LoopBandwidths(signal))
+get_loop_bandwidths(loop_state::ScalarLoopState) = loop_state.bandwidths
+
+"""
     get_phase_lock_indicator(loop_state) -> Float64
 
 The latest phase-lock indicator of a scalar loop's per-satellite state, or of
