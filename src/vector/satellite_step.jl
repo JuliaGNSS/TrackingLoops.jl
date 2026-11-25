@@ -223,6 +223,7 @@ function _reset_slot!(nav_processor::NavigationProcessor, slot::VectorTrackingSl
     )
     slot.vector_controlled = false
     slot.release_reason = VT_NOT_RELEASED
+    slot.release_update_index = 0
     slot.commanded_update_index = -1
     slot.member_index = 0
     nothing

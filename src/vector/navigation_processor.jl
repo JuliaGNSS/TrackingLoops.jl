@@ -15,10 +15,10 @@
 """
     VectorTrackingReleaseReason
 
-Why the latest navigation update handed a satellite back to its scalar loop
-(a [`get_satellite_report`](@ref)'s `release_reason`):
+Why a navigation update last handed a satellite back to its scalar loop
+(a [`get_satellite_report`](@ref)'s `release_reason`, at its `release_update_index`):
 
-  - `VT_NOT_RELEASED`: it was not;
+  - `VT_NOT_RELEASED`: it was not, since it took its slot;
   - `VT_INELIGIBLE`: no longer tracked (no integration for two navigation filter
     updates), no longer decoded for positioning, or no longer healthy;
   - `VT_BELOW_HORIZON`: below the horizon at the solution the update starts
@@ -42,8 +42,7 @@ signal (see
   - `prn`; a satellite dropped after two update intervals without an integration is
     still reported, as of its last snapshot, until another satellite takes its slot.
     Its `snapshot_time` stops advancing; only a member is released, with
-    `release_reason` `VT_INELIGIBLE` at the update that drops it, and the next
-    update clears that reason again;
+    `release_reason` `VT_INELIGIBLE` at the update that drops it;
   - `bit_or_secondary_code_synced`: whether the decoding signal's bit clock held the bit sync at
     that signal's last integration;
   - at its latest snapshot (`snapshot_time`, on the navigation-epoch grid, a multiple of
@@ -51,7 +50,13 @@ signal (see
     the first): `cn0` (the driver's, from the host's C/N₀ estimator),
     `measurement_ready` (decoding signal synced and the driver's C/N₀ at least the lock
     threshold) and `positioning_ready` (in lock, decoded for positioning and healthy);
-  - `vector_controlled` and `release_reason`: the latest update's decision.
+  - `vector_controlled`: the latest update's decision;
+  - `release_reason` and `release_update_index`: the latest release of the satellite and
+    the [`get_navigation_update_index`](@ref) of the update that made it (`VT_NOT_RELEASED`
+    and `0` before any). They stay set through later updates, and a re-admission, until
+    another satellite takes the slot, so a host that reads the report less often than
+    the updates run still sees each release: it compares `release_update_index` with
+    the update index it last read.
 
 The report is an immutable snapshot whose values remain valid after later integrations
 and report calls. Access the separately borrowed decoder with [`get_decoder`](@ref).
@@ -65,6 +70,7 @@ struct SatelliteReport
     positioning_ready::Bool
     vector_controlled::Bool
     release_reason::VectorTrackingReleaseReason
+    release_update_index::Int
 end
 
 # A satellite's driver role in the navigation processor: where the driver signal's last
@@ -186,11 +192,12 @@ mutable struct VectorTrackingSlot{D}
     snapshot_epoch_index::Int
     pending_snapshot::SatelliteSnapshot{D}
     snapshot::SatelliteSnapshot{D}
-    # What the latest update decided, for the satellite to apply: whether it is in the
-    # vector loop (from its snapshot's state until an update admits or releases it), why it
-    # was released, and the update and member index of its commands.
+    # What the updates decided, for the satellite to apply: whether it is in the vector
+    # loop (from its snapshot's state until an update admits or releases it), why and at
+    # which update it was last released, and the update and member index of its commands.
     vector_controlled::Bool
     release_reason::VectorTrackingReleaseReason
+    release_update_index::Int
     commanded_update_index::Int
     member_index::Int
 end
@@ -227,6 +234,7 @@ function VectorTrackingSlot(decoding_signal::AbstractGNSSSignal, prn::Integer, p
         snapshot,
         false,
         VT_NOT_RELEASED,
+        0,
         -1,
         0,
     )
@@ -598,6 +606,7 @@ function _satellite_report(nav_processor, slot::VectorTrackingSlot)
         slot.snapshot.positioning_ready,
         slot.vector_controlled,
         slot.release_reason,
+        slot.release_update_index,
     )
 end
 
@@ -730,10 +739,12 @@ _is_positioning_ready(slot::VectorTrackingSlot) = slot.in_update && slot.snapsho
 # ─────────────────────────────────────────────────────────────────────────────
 # Membership
 
-# Hand `slot` back to its scalar loop; applied on its next integration (`_apply_nav_filter_feedback`).
-function _mark_release!(slot::VectorTrackingSlot, reason::VectorTrackingReleaseReason)
+# Hand `slot` back to its scalar loop at update `update_index`; applied on its next
+# integration (`_apply_nav_filter_feedback`).
+function _mark_release!(slot::VectorTrackingSlot, reason::VectorTrackingReleaseReason, update_index::Int)
     slot.vector_controlled = false
     slot.release_reason = reason
+    slot.release_update_index = update_index
     nothing
 end
 
@@ -765,7 +776,7 @@ end
 # satellite whose code phase is still tens of metres out may then enter the filter.
 # `measurement_ready` also decides the members' measurement eligibility, so a stricter gate would
 # withhold discriminators from existing members; the two uses need separating first.
-function _update_membership!(released, group, enu_from_ecef)
+function _update_membership!(released, group, enu_from_ecef, update_index)
     for slot in group.slots
         slot.in_update || continue
         eligible = _is_eligible(slot)
@@ -774,7 +785,7 @@ function _update_membership!(released, group, enu_from_ecef)
                 slot.vector_controlled = true
             end
         elseif !eligible && slot.vector_controlled
-            _mark_release!(slot, VT_INELIGIBLE)
+            _mark_release!(slot, VT_INELIGIBLE, update_index)
             released = true
         end
     end
@@ -1120,7 +1131,7 @@ function _release_below_horizon!(released, group, group_index, nav_processor)
     workspace = nav_processor.workspace
     for (j, member) in enumerate(workspace.members)
         member.group_index == group_index && !workspace.above_horizon[j] || continue
-        _mark_release!(group.slots[member.slot_index], VT_BELOW_HORIZON)
+        _mark_release!(group.slots[member.slot_index], VT_BELOW_HORIZON, nav_processor.update_index)
         released = true
     end
     released
@@ -1128,10 +1139,10 @@ end
 
 # Release every satellite of the group still in the loop, members and those that
 # missed the epoch alike, for `reason`; returns whether any was.
-function _release_all!(released, group, reason::VectorTrackingReleaseReason)
+function _release_all!(released, group, reason::VectorTrackingReleaseReason, update_index)
     for slot in group.slots
         slot.vector_controlled || continue
-        _mark_release!(slot, reason)
+        _mark_release!(slot, reason, update_index)
         released = true
     end
     released
@@ -1260,16 +1271,15 @@ _is_stale(nav_processor::NavigationProcessor, slot::VectorTrackingSlot, time) =
     min(_last_end_time(slot.driver), _last_end_time(slot.decoding)) <
     time - 2 * _update_interval_seconds(nav_processor)
 
-# Before an update: mark the slots it reads, clear release reasons, and free stale slots
-# (storage kept, members released). Returns whether a member was dropped.
+# Before an update: mark the slots it reads and free stale slots (storage kept, members
+# released). Returns whether a member was dropped.
 function _prepare_slots!(released, group::VectorTrackingSlotGroup, nav_processor::NavigationProcessor, time)
     for slot in group.slots
-        slot.release_reason = VT_NOT_RELEASED
         slot.in_update = slot.occupied && slot.snapshot_epoch_index == nav_processor.pending_epoch_index
         if slot.occupied && !slot.in_update && _is_stale(nav_processor, slot, time)
             slot.occupied = false
             if slot.vector_controlled
-                _mark_release!(slot, VT_INELIGIBLE)
+                _mark_release!(slot, VT_INELIGIBLE, nav_processor.update_index)
                 released = true
             end
         end
@@ -1367,7 +1377,7 @@ function _update_nav_filter!(nav_processor::NavigationProcessor, groups, propaga
     #    solution.
     enu_from_ecef = ENUfromECEF(_ecef(first(nav_filter_states(nav_filter.x, idxs))), wgs84)
     released =
-        _fold_groups(_update_membership!, false, groups, enu_from_ecef)
+        _fold_groups(_update_membership!, false, groups, enu_from_ecef, nav_processor.update_index)
     (; ionospheric_model, inter_system_time_offsets) = _gather_members!(nav_processor, groups, Δt)
     members = workspace.members
     num_members = length(members)
@@ -1424,7 +1434,7 @@ function _update_nav_filter!(nav_processor::NavigationProcessor, groups, propaga
     # 8. The NCO commands, or the fallback to scalar tracking.
     fell_back = measurement_deficit_duration > config.measurement_deficit_timeout || num_above_horizon == 0
     if fell_back
-        released = _fold_groups(_release_all!, released, groups, VT_FALLBACK)
+        released = _fold_groups(_release_all!, released, groups, VT_FALLBACK, nav_processor.update_index)
         nav_processor.vector_tracking_active = false
     else
         _fold_groups(_assign_commands!, 0, _indexed(groups), nav_processor)

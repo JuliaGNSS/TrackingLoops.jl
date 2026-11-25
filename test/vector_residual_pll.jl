@@ -324,7 +324,7 @@ end
     τ = (sample - residual_pll.last_prompt_span.end_sample_index) / SIM_FS
     estimate = TL._doppler_at(sat.state.ramp, sample, ustrip(Hz, SIM_FS)) + ustrip(Hz, predict_frequency(residual_pll.loop_filter, τ))
     rate = ustrip(Hz / s, sat.state.ramp.doppler_rate + get_frequency_rate(residual_pll.loop_filter))
-    TL._mark_release!(slot, VT_INELIGIBLE)
+    TL._mark_release!(slot, VT_INELIGIBLE, rx.vt.update_index + 1)
     rx.vt.update_index += 1
     sat.state = TL._apply_nav_filter_feedback(rx.tracking_loop, rx.group, slot, sat.state, feedback_integration(sat, sample),
         sim_nco_history(sat, nothing), Int64(sample))

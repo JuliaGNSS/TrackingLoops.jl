@@ -103,7 +103,7 @@ end
     _, sample, _ = run_simulation!(rx, 1)
     previous_fix = get_navigation_solution(rx.tracking_loop)
     @test previous_fix.time !== nothing
-    foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
+    foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK, rx.vt.update_index), rx.group.slots)
     rx.vt.vector_tracking_active = false
     fill_unready!(slot, sat, epoch, application_sample_index, nav_processor) =
         (fill_slot!(slot, sat, epoch, application_sample_index, nav_processor); set_snapshot!(slot; positioning_ready = false))
@@ -244,11 +244,13 @@ end
     dropped = rx.group.slots[2]
     drop!(v, sat, epoch, application_sample_index, nav_processor) =
         (fill_slot!(v, sat, epoch, application_sample_index, nav_processor); v === dropped && drop_slot!(v))
-    results, _, _ = run_simulation!(rx, 1; fill! = drop!, start_sample = sample)
+    results, sample, _ = run_simulation!(rx, 1; fill! = drop!, start_sample = sample)
     sat = rx.sats[2]
+    release_update_index = get_navigation_update_index(rx.tracking_loop)
     @test results[1].status.released
     @test dropped.release_reason == VT_INELIGIBLE
     @test get_satellite_report(rx.tracking_loop, GPSL1CA(), dropped.prn).release_reason == VT_INELIGIBLE
+    @test get_satellite_report(rx.tracking_loop, GPSL1CA(), dropped.prn).release_update_index == release_update_index
     @test !dropped.occupied
     @test !dropped.vector_controlled
     @test !sat.state.vector_controlled
@@ -327,10 +329,10 @@ end
     # Eligible and in lock, but below the mask: not admitted, so a satellite at the
     # horizon is not admitted and released every update. A member stays a member; the
     # elevation mask of the running update releases it.
-    @test !TL._update_membership!(false, group, antipode)
+    @test !TL._update_membership!(false, group, antipode, 1)
     @test !slot.vector_controlled
     @test all(v -> v.vector_controlled, channel_slots(group, rx.sats)[2:end])
-    TL._update_membership!(false, group, here)
+    TL._update_membership!(false, group, here, 1)
     @test slot.vector_controlled
     # A running update admits it back at the filter's own position, and the satellite
     # applies the admission.
@@ -349,11 +351,20 @@ end
     _, sample, _ = run_simulation!(rx, 5)
     pos = rx.vt.nav_filter.process_model.idxs.pos
     rx.vt.nav_filter.x[pos] .= -rx.vt.nav_filter.x[pos]
-    results, _, _ = run_simulation!(rx, 1; start_sample = sample)
+    results, sample, _ = run_simulation!(rx, 1; start_sample = sample)
     @test all(==(VT_BELOW_HORIZON), results[1].reasons)
     @test isempty(results[1].measured)
     @test results[1].status.fell_back
     @test results[1].status.solution_from_nav_filter
+    # The releases stay reported through the re-seed and the re-admission, for a host
+    # that reads the reports less often than the updates run.
+    release_update_index = get_navigation_update_index(rx.tracking_loop)
+    results, _, _ = run_simulation!(rx, 2; start_sample = sample)
+    @test results[1].status.seeded
+    @test all(sat -> sat.state.vector_controlled, rx.sats)
+    reports = [get_satellite_report(rx.tracking_loop, GPSL1CA(), sat.decoder.prn) for sat in rx.sats]
+    @test all(r -> r.vector_controlled && r.release_reason == VT_BELOW_HORIZON, reports)
+    @test all(r -> r.release_update_index == release_update_index, reports)
 end
 
 @testset "Biases are reported only for what was measured" begin
@@ -376,7 +387,7 @@ end
     # The scalar solve takes over from a receive epoch a week off, which the re-seed must
     # not carry over.
     rx.vt.nav_filter.receive_epoch -= GNSSSignals.SECONDS_PER_WEEK
-    foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK), rx.group.slots)
+    foreach(slot -> TL._is_member(slot) && TL._mark_release!(slot, VT_FALLBACK, rx.vt.update_index), rx.group.slots)
     rx.vt.vector_tracking_active = false
     results, _, _ = run_simulation!(rx, 2; start_sample = sample)
     @test results[1].status.seeded

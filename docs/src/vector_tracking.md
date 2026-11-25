@@ -306,8 +306,8 @@ DelayCompensatedTrackingLoop())`, as HardwareLoopCore.jl requires.
 Nothing is logged. [`get_navigation_solution`](@ref) is the latest solution (the
 scalar PVT's before the filter is seeded) and [`get_navigation_status`](@ref) the
 [`VectorTrackingStatus`](@ref TrackingLoops.VectorTrackingStatus) of the latest update: its events and the filter's
-position and clock uncertainties (`position_std`, `clock_bias_std`). A satellite's [`get_satellite_report`](@ref) says whether and why the
-latest update released it (`release_reason`), and [`get_vector_tracking_members`](@ref) reports every
+position and clock uncertainties (`position_std`, `clock_bias_std`). A satellite's [`get_satellite_report`](@ref) says why and at which update it was
+last released (`release_reason`, `release_update_index`), and [`get_vector_tracking_members`](@ref) reports every
 member, measured and coasted. [`get_navigation_update_index`](@ref) counts the updates, so a
 consumer polling it after each step reads each update's results, and
 [`get_navigation_elapsed_time`](@ref) is the elapsed time of the latest navigation
